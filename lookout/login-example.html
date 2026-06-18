@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Login Dashboard</title>
+    <link rel="stylesheet" href="./src/login.css" />
+  </head>
+  <body>
+    <div class="login-container">
+      <div class="login-card">
+        <!-- Header -->
+        <div class="login-header">
+          <h1>Welcome Back</h1>
+          <p>Sign in to your account to continue</p>
+        </div>
+
+        <!-- Login Form -->
+        <div class="login-body">
+          <!-- Alert Message (Optional) -->
+          <div class="alert alert-success">
+            <span class="alert-icon">✓</span>
+            <span>Welcome! Please log in to your account.</span>
+          </div>
+
+          <form class="login-form" id="loginForm">
+            <!-- Email Field -->
+            <div class="form-group">
+              <label for="email">Email Address</label>
+              <input
+                type="email"
+                id="email"
+                name="email"
+                placeholder="you@example.com"
+                required
+              />
+            </div>
+
+            <!-- Password Field -->
+            <div class="form-group">
+              <label for="password">Password</label>
+              <input
+                type="password"
+                id="password"
+                name="password"
+                placeholder="••••••••"
+                required
+              />
+            </div>
+
+            <!-- Remember Me -->
+            <div class="form-check">
+              <input
+                type="checkbox"
+                id="remember"
+                name="remember"
+              />
+              <label for="remember">Remember me</label>
+            </div>
+
+            <!-- Login Button -->
+            <button type="submit" class="btn btn-primary" id="loginBtn">
+              Sign In
+            </button>
+          </form>
+        </div>
+
+        <!-- Footer Links -->
+        <div class="login-footer">
+          <a href="#" class="btn-link">Forgot password?</a>
+          <span class="signup-link">
+            New user? <a href="#">Create account</a>
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // Handle form submission
+      document.getElementById('loginForm').addEventListener('submit', function (e) {
+        e.preventDefault();
+        const btn = document.getElementById('loginBtn');
+        btn.textContent = 'Signing in...';
+        btn.disabled = true;
+        btn.classList.add('btn-loading');
+
+        // Simulate API call
+        setTimeout(() => {
+          btn.textContent = 'Sign In';
+          btn.disabled = false;
+          btn.classList.remove('btn-loading');
+          alert('Login successful!');
+        }, 2000);
+      });
+    </script>
+  </body>
+</html>
