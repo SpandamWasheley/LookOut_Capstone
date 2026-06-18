@@ -4,6 +4,7 @@ from django.contrib.auth.admin import UserAdmin
 from .models import (
     Alert,
     Camera,
+    EmailVerificationCode,
     Household,
     HouseholdMember,
     Officer,
@@ -83,3 +84,9 @@ class SystemSettingsAdmin(admin.ModelAdmin):
 
     def has_delete_permission(self, request, obj=None):
         return False
+
+
+@admin.register(EmailVerificationCode)
+class EmailVerificationCodeAdmin(admin.ModelAdmin):
+    list_display = ("email", "code", "verified", "used", "created_at")
+    list_filter = ("verified", "used")

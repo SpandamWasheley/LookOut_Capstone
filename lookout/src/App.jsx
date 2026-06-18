@@ -2,6 +2,8 @@ import { useState } from "react";
 import { BrowserRouter, Routes, Route, Navigate, useNavigate } from "react-router-dom";
 import Login from "./LoginPage.jsx";
 import AdminDashboard from "./admin_dashboard.jsx";
+import ChangePasswordPage from "./ChangePasswordPage.jsx";
+import ForgotPasswordPage from "./ForgotPasswordPage.jsx";
 import { clearAuth } from "./api.js";
 
 // Every fresh page load (or hard refresh) requires logging in again —
@@ -23,6 +25,10 @@ function AppRoutes() {
     navigate("/");
   };
 
+  const handlePasswordChanged = () => {
+    setUser((prev) => ({ ...prev, mustChangePassword: false }));
+  };
+
   return (
     <Routes>
       <Route
@@ -30,15 +36,21 @@ function AppRoutes() {
         element={
           user
             ? <Navigate to="/dashboard" replace />
-            : <Login onLogin={handleLogin} />
+            : <Login onLogin={handleLogin} onForgotPassword={() => navigate("/forgot-password")} />
         }
+      />
+      <Route
+        path="/forgot-password"
+        element={<ForgotPasswordPage onBackToLogin={() => navigate("/")} />}
       />
       <Route
         path="/dashboard"
         element={
-          user
-            ? <AdminDashboard user={user} onLogout={handleLogout} />
-            : <Navigate to="/" replace />
+          !user
+            ? <Navigate to="/" replace />
+            : user.mustChangePassword
+              ? <ChangePasswordPage onDone={handlePasswordChanged} />
+              : <AdminDashboard user={user} onLogout={handleLogout} />
         }
       />
       <Route path="*" element={<Navigate to="/" replace />} />

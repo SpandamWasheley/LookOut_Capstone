@@ -14,7 +14,7 @@ function computeAge(birthdate) {
 }
 
 const emptyForm = {
-  firstName: "", middleName: "", lastName: "", birthdate: "",
+  firstName: "", middleName: "", lastName: "", birthdate: "", phone: "",
   imageFile: null, imagePreview: null,
 };
 
@@ -71,6 +71,7 @@ export function EnrollModal({ onClose, onEnroll }) {
         status: "pending",
         enrolledDate: new Date().toISOString().slice(0, 10),
         imageUrl: form.imagePreview ?? `https://ui-avatars.com/api/?name=${form.firstName}+${form.lastName}&size=80&background=random`,
+        phone: form.phone || "",
       });
     }, 2200);
   };
@@ -197,6 +198,19 @@ export function EnrollModal({ onClose, onEnroll }) {
                   </p>
                 )}
               </div>
+
+              {form.birthdate && computeAge(form.birthdate) >= 18 && (
+                <div className="rounded-xl p-3.5 space-y-1.5"
+                  style={{ background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.2)" }}>
+                  <label className="block text-xs font-medium" style={{ color: "#f59e0b" }}>
+                    Mobile number <span className="font-normal" style={{ color: "var(--muted-foreground)" }}>(optional · adult resident)</span>
+                  </label>
+                  <input value={form.phone} onChange={(e) => set("phone", e.target.value)} placeholder="09XXXXXXXXX"
+                    className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
+                    style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "#f1f5f9" }} />
+                </div>
+              )}
+
               <div className="rounded-xl p-3.5 flex items-start gap-2.5"
                 style={{ background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.15)" }}>
                 <Cpu size={13} style={{ color: "#f59e0b", flexShrink: 0, marginTop: 1 }} />
@@ -329,6 +343,7 @@ export function EnrollModal({ onClose, onEnroll }) {
                   ["Name", `${form.lastName}, ${form.firstName} ${form.middleName}`.trim()],
                   ["Date of birth", form.birthdate],
                   ["Age", `${computeAge(form.birthdate)} years old`],
+                  ...(form.phone ? [["Mobile number", form.phone]] : []),
                   ["Status", "Pending verification"],
                   ["Embedding", "ArcFace · 512-d · stored locally"],
                 ].map(([k, v]) => (

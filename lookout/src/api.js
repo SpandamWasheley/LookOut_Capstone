@@ -31,10 +31,16 @@ export async function login(username, password) {
   }
 
   const data = await response.json();
+
+  if (data.user.role === "officer") {
+    throw new Error("Officer accounts can only sign in through the mobile app.");
+  }
+
   const user = {
     username: data.user.username,
     role: data.user.role,
     name: data.user.display_name || data.user.username,
+    mustChangePassword: data.user.must_change_password,
   };
 
   localStorage.setItem(ACCESS_KEY, data.access);
@@ -56,8 +62,16 @@ export async function apiFetch(path, options = {}) {
   });
 
   if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Request to ${path} failed with status ${response.status}: ${body}`);
+    const text = await response.text();
+    let parsed = null;
+    try { parsed = JSON.parse(text); } catch { /* not JSON */ }
+    const message = parsed
+      ? Object.values(parsed).flat().join(" ") || text
+      : text || `Request failed with status ${response.status}`;
+    const err = new Error(message);
+    err.data = parsed;
+    err.status = response.status;
+    throw err;
   }
 
   if (response.status === 204) return null;
@@ -82,3 +96,26 @@ export const createResident = (payload) =>
 export const getSettings = () => apiFetch("/settings/");
 export const saveSettings = (payload) =>
   apiFetch("/settings/", { method: "PATCH", body: JSON.stringify(payload) });
+
+export const getOfficers = () => apiFetch("/officers/");
+export const updateOfficer = (id, payload) =>
+  apiFetch(`/officers/${id}/`, { method: "PATCH", body: JSON.stringify(payload) });
+export const deleteOfficer = (id) =>
+  apiFetch(`/officers/${id}/`, { method: "DELETE" });
+export const sendOfficerCode = (email) =>
+  apiFetch("/officers/send-code/", { method: "POST", body: JSON.stringify({ email }) });
+export const verifyOfficerCode = (email, code) =>
+  apiFetch("/officers/verify-code/", { method: "POST", body: JSON.stringify({ email, code }) });
+export const registerOfficer = (payload) =>
+  apiFetch("/officers/register/", { method: "POST", body: JSON.stringify(payload) });
+
+export const changePassword = (newPassword) =>
+  apiFetch("/auth/change-password/", { method: "POST", body: JSON.stringify({ new_password: newPassword }) });
+
+export const sendForgotPasswordCode = (email) =>
+  apiFetch("/auth/forgot-password/send-code/", { method: "POST", body: JSON.stringify({ email }) });
+export const resetForgotPassword = (email, code, newPassword) =>
+  apiFetch("/auth/forgot-password/reset/", {
+    method: "POST",
+    body: JSON.stringify({ email, code, new_password: newPassword }),
+  });

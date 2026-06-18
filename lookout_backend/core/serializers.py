@@ -17,7 +17,7 @@ from .models import (
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ["id", "username", "display_name", "role", "email"]
+        fields = ["id", "username", "display_name", "role", "email", "must_change_password"]
 
 
 class ZoneSerializer(serializers.ModelSerializer):
@@ -44,12 +44,21 @@ class CameraSerializer(serializers.ModelSerializer):
 
 
 class OfficerSerializer(serializers.ModelSerializer):
+    email = serializers.SerializerMethodField()
+    username = serializers.SerializerMethodField()
+
     class Meta:
         model = Officer
         fields = [
             "id", "code", "name", "badge", "status", "location",
-            "phone", "shift", "joined_date",
+            "phone", "shift", "joined_date", "email", "username",
         ]
+
+    def get_email(self, obj):
+        return obj.user.email if obj.user_id else ""
+
+    def get_username(self, obj):
+        return obj.user.username if obj.user_id else ""
 
 
 class ResidentSerializer(serializers.ModelSerializer):
@@ -57,7 +66,7 @@ class ResidentSerializer(serializers.ModelSerializer):
         model = Resident
         fields = [
             "id", "code", "name", "barangay_id", "age", "status",
-            "gender", "guardian_name", "image_url",
+            "gender", "guardian_name", "image_url", "phone",
         ]
 
 
@@ -98,7 +107,7 @@ class AlertSerializer(serializers.ModelSerializer):
         model = Alert
         fields = [
             "id", "code", "type", "status", "camera", "camera_zone", "timestamp",
-            "confidence", "description", "image_url", "officer_assigned", "suspect",
+            "confidence", "description", "image_url", "officer_assigned", "suspect", "notes",
         ]
 
 

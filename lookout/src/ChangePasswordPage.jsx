@@ -1,10 +1,10 @@
 import { useState } from "react";
-import { Eye, EyeOff, Lock, User } from "lucide-react";
-import { login } from "./api";
+import { Lock, Eye, EyeOff, ShieldCheck } from "lucide-react";
+import { changePassword } from "./api";
 
-export default function LoginPage({ onLogin, onForgotPassword }) {
-  const [username, setUsername] = useState("");
+export default function ChangePasswordPage({ onDone }) {
   const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -12,12 +12,22 @@ export default function LoginPage({ onLogin, onForgotPassword }) {
   const handleSubmit = async (event) => {
     event.preventDefault();
     setError("");
+
+    if (password.length < 8) {
+      setError("Password must be at least 8 characters.");
+      return;
+    }
+    if (password !== confirm) {
+      setError("Passwords do not match.");
+      return;
+    }
+
     setSubmitting(true);
     try {
-      const user = await login(username.trim().toLowerCase(), password);
-      onLogin(user);
+      await changePassword(password);
+      onDone();
     } catch (err) {
-      setError(err.message || "Invalid username or password.");
+      setError(err.message);
     } finally {
       setSubmitting(false);
     }
@@ -28,62 +38,49 @@ export default function LoginPage({ onLogin, onForgotPassword }) {
       <div className="w-full max-w-md rounded-[32px] bg-slate-900 border border-slate-800 p-8 shadow-2xl">
         <div className="mb-8 text-center">
           <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-3xl bg-amber-400 text-slate-950">
-            <Eye size={24} />
+            <ShieldCheck size={24} />
           </div>
-          <h1 className="text-3xl font-semibold text-white">LookOut Login</h1>
-          <p className="mt-2 text-sm text-slate-400">Sign in to access the admin dashboard.</p>
+          <h1 className="text-2xl font-semibold text-white">Set a new password</h1>
+          <p className="mt-2 text-sm text-slate-400">
+            Your account was created with a temporary password. Choose a new password to continue.
+          </p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-5">
           <div className="space-y-2">
-            <label className="block text-sm font-medium text-slate-300">Username</label>
-            <div className="relative">
-              <User size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              <input
-                type="text"
-                value={username}
-                onChange={(e) => {
-                  setUsername(e.target.value);
-                  setError("");
-                }}
-                placeholder="Enter your username"
-                autoComplete="username"
-                className="w-full rounded-3xl border border-slate-700 bg-slate-950 px-11 py-3 text-sm text-white outline-none transition focus:border-amber-400"
-              />
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <label className="block text-sm font-medium text-slate-300">Password</label>
+            <label className="block text-sm font-medium text-slate-300">New password</label>
             <div className="relative">
               <Lock size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <input
                 type={showPassword ? "text" : "password"}
                 value={password}
-                onChange={(e) => {
-                  setPassword(e.target.value);
-                  setError("");
-                }}
-                placeholder="Enter your password"
-                autoComplete="current-password"
+                onChange={(e) => { setPassword(e.target.value); setError(""); }}
+                placeholder="At least 8 characters"
+                autoComplete="new-password"
                 className="w-full rounded-3xl border border-slate-700 bg-slate-950 px-11 py-3 pr-14 text-sm text-white outline-none transition focus:border-amber-400"
               />
               <button
                 type="button"
-                onClick={() => setShowPassword((value) => !value)}
+                onClick={() => setShowPassword((v) => !v)}
                 className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400"
               >
                 {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
               </button>
             </div>
-            <div className="text-right">
-              <button
-                type="button"
-                onClick={onForgotPassword}
-                className="text-xs font-medium text-amber-400 hover:text-amber-300"
-              >
-                Forgot password?
-              </button>
+          </div>
+
+          <div className="space-y-2">
+            <label className="block text-sm font-medium text-slate-300">Confirm new password</label>
+            <div className="relative">
+              <Lock size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type={showPassword ? "text" : "password"}
+                value={confirm}
+                onChange={(e) => { setConfirm(e.target.value); setError(""); }}
+                placeholder="Re-enter new password"
+                autoComplete="new-password"
+                className="w-full rounded-3xl border border-slate-700 bg-slate-950 px-11 py-3 text-sm text-white outline-none transition focus:border-amber-400"
+              />
             </div>
           </div>
 
@@ -94,7 +91,7 @@ export default function LoginPage({ onLogin, onForgotPassword }) {
             disabled={submitting}
             className="w-full rounded-3xl bg-amber-500 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-amber-400 disabled:opacity-60"
           >
-            {submitting ? "Signing in..." : "Sign In"}
+            {submitting ? "Updating…" : "Update password"}
           </button>
         </form>
       </div>

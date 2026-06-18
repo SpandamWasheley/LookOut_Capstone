@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   Search, UserPlus, CheckCircle, Clock, AlertTriangle,
-  Shield, User, X, Home, LayoutList, ChevronDown, ChevronUp, Plus, Save, Loader2,
+  Shield, User, X, Home, LayoutList, ChevronDown, ChevronUp, Plus, Save, Loader2, Phone,
 } from "lucide-react";
 import { ZONES } from "../data/mockData";
 import {
@@ -52,6 +52,7 @@ function mapResident(raw) {
     barangayId: raw.barangay_id,
     guardianName: raw.guardian_name,
     imageUrl: raw.image_url,
+    phone: raw.phone,
   };
 }
 
@@ -349,6 +350,11 @@ function HouseholdCard({ household, onManage, filter, onAddMember }) {
               {minorCount} {minorCount === 1 ? "minor" : "minors"}
             </span>
           )}
+          {secondaryContacts.length > 0 && (
+            <span className="flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full" style={{ background: "rgba(59,130,246,0.15)", color: "#3b82f6" }}>
+              <Phone size={9} /> {secondaryContacts.length} secondary {secondaryContacts.length === 1 ? "number" : "numbers"}
+            </span>
+          )}
           {collapsed && (
             <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "var(--muted)", color: "var(--muted-foreground)" }}>
               {memberCount} member{memberCount !== 1 ? "s" : ""}
@@ -595,6 +601,7 @@ function ResidentRow({ r }) {
           <span className="text-[11px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>{r.barangayId}</span>
           <span className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>Age {r.age}</span>
           {r.guardianName && <span className="text-[11px] flex items-center gap-1" style={{ color: "var(--muted-foreground)" }}><Shield size={9} /> {r.guardianName}</span>}
+          {r.phone && <span className="text-[11px] flex items-center gap-1" style={{ color: "#f59e0b" }}><Phone size={9} /> {r.phone}</span>}
         </div>
       </div>
       <div className="flex items-center gap-3 flex-shrink-0">
@@ -741,6 +748,7 @@ export function ResidentDatabase() {
         status: data.status,
         image_url: data.imageUrl,
         barangay_id: randomBarangayId(),
+        phone: data.phone || "",
       });
       await refreshResidents();
       setShowEnroll(false);

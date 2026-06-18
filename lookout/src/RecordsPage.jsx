@@ -162,6 +162,7 @@ export function RecordsPage() {
               color: "var(--muted-foreground)",
               background: "var(--card)",
               borderBottom: "1px solid var(--border)",
+              zIndex: 1,
             }}
           >
             <span>Violation</span>

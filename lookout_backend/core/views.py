@@ -1,3 +1,9 @@
+import random
+from datetime import timedelta
+
+from django.conf import settings as django_settings
+from django.core.mail import send_mail
+from django.db import transaction
 from django.db.models import Count
 from django.utils import timezone
 from rest_framework import generics, permissions, viewsets
@@ -9,14 +15,18 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 from .models import (
     Alert,
     Camera,
+    EmailVerificationCode,
     Household,
     HouseholdMember,
     Officer,
     Resident,
     SystemSettings,
+    User,
     ViolationType,
     Zone,
 )
+
+CODE_EXPIRY_MINUTES = 10
 from .serializers import (
     AlertSerializer,
     CameraSerializer,
@@ -53,6 +63,175 @@ class LoginView(TokenObtainPairView):
 @permission_classes([permissions.IsAuthenticated])
 def me(request):
     return Response(UserSerializer(request.user).data)
+
+
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated])
+def send_officer_code(request):
+    email = (request.data.get("email") or "").strip().lower()
+    if not email:
+        return Response({"email": "Email is required."}, status=400)
+    if User.objects.filter(email__iexact=email).exists():
+        return Response({"email": "An account with this email already exists."}, status=400)
+
+    code = f"{random.randint(0, 999999):06d}"
+    EmailVerificationCode.objects.create(email=email, code=code)
+
+    send_mail(
+        "Your LookOut verification code",
+        f"Your verification code is {code}. It expires in {CODE_EXPIRY_MINUTES} minutes.",
+        django_settings.DEFAULT_FROM_EMAIL,
+        [email],
+        fail_silently=False,
+    )
+    return Response({"detail": "Verification code sent."})
+
+
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated])
+def verify_officer_code(request):
+    email = (request.data.get("email") or "").strip().lower()
+    code = (request.data.get("code") or "").strip()
+    cutoff = timezone.now() - timedelta(minutes=CODE_EXPIRY_MINUTES)
+    record = (
+        EmailVerificationCode.objects.filter(email=email, code=code, used=False, created_at__gte=cutoff)
+        .order_by("-created_at")
+        .first()
+    )
+    if not record:
+        return Response({"code": "Invalid or expired code."}, status=400)
+    record.verified = True
+    record.save(update_fields=["verified"])
+    return Response({"detail": "Code verified."})
+
+
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated])
+def register_officer(request):
+    data = request.data
+    first_name = (data.get("first_name") or "").strip()
+    last_name = (data.get("last_name") or "").strip()
+    username = (data.get("username") or "").strip()
+    email = (data.get("email") or "").strip().lower()
+    phone = (data.get("phone") or "").strip()
+    password = data.get("password") or ""
+    code = (data.get("code") or "").strip()
+
+    errors = {}
+    if not first_name:
+        errors["first_name"] = "Required."
+    if not last_name:
+        errors["last_name"] = "Required."
+    if not username:
+        errors["username"] = "Required."
+    if not email:
+        errors["email"] = "Required."
+    if not password:
+        errors["password"] = "Required."
+    if errors:
+        return Response(errors, status=400)
+
+    if User.objects.filter(username__iexact=username).exists():
+        return Response({"username": "This username is already taken."}, status=400)
+    if User.objects.filter(email__iexact=email).exists():
+        return Response({"email": "An account with this email already exists."}, status=400)
+
+    cutoff = timezone.now() - timedelta(minutes=CODE_EXPIRY_MINUTES)
+    record = (
+        EmailVerificationCode.objects.filter(
+            email=email, code=code, verified=True, used=False, created_at__gte=cutoff
+        )
+        .order_by("-created_at")
+        .first()
+    )
+    if not record:
+        return Response({"code": "Email is not verified. Please verify the email first."}, status=400)
+
+    display_name = f"{first_name} {last_name}".strip()
+    with transaction.atomic():
+        user = User.objects.create_user(
+            username=username, email=email, password=password,
+            role=User.Role.OFFICER, display_name=display_name,
+            must_change_password=True,
+        )
+        officer = Officer.objects.create(
+            user=user, name=display_name, phone=phone,
+            badge=f"B-{random.randint(100, 999)}",
+            status=Officer.Status.ON_DUTY,
+            joined_date=timezone.now().date(),
+        )
+        record.used = True
+        record.save(update_fields=["used"])
+
+    return Response(OfficerSerializer(officer).data, status=201)
+
+
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated])
+def change_password(request):
+    new_password = request.data.get("new_password") or ""
+    if len(new_password) < 8:
+        return Response({"new_password": "Password must be at least 8 characters."}, status=400)
+    request.user.set_password(new_password)
+    request.user.must_change_password = False
+    request.user.save(update_fields=["password", "must_change_password"])
+    return Response({"detail": "Password updated."})
+
+
+@api_view(["POST"])
+@permission_classes([permissions.AllowAny])
+def forgot_password_send_code(request):
+    email = (request.data.get("email") or "").strip().lower()
+    if not email:
+        return Response({"email": "Email is required."}, status=400)
+
+    user = User.objects.filter(email__iexact=email).first()
+    if user:
+        code = f"{random.randint(0, 999999):06d}"
+        EmailVerificationCode.objects.create(email=email, code=code)
+        send_mail(
+            "Your LookOut password reset code",
+            f"Your password reset code is {code}. It expires in {CODE_EXPIRY_MINUTES} minutes. "
+            "If you didn't request this, you can ignore this email.",
+            django_settings.DEFAULT_FROM_EMAIL,
+            [email],
+            fail_silently=False,
+        )
+    # Same response whether or not the email exists, so this can't be used to enumerate accounts.
+    return Response({"detail": "If an account exists for this email, a reset code has been sent."})
+
+
+@api_view(["POST"])
+@permission_classes([permissions.AllowAny])
+def forgot_password_reset(request):
+    email = (request.data.get("email") or "").strip().lower()
+    code = (request.data.get("code") or "").strip()
+    new_password = request.data.get("new_password") or ""
+
+    if len(new_password) < 8:
+        return Response({"new_password": "Password must be at least 8 characters."}, status=400)
+
+    cutoff = timezone.now() - timedelta(minutes=CODE_EXPIRY_MINUTES)
+    record = (
+        EmailVerificationCode.objects.filter(email=email, code=code, used=False, created_at__gte=cutoff)
+        .order_by("-created_at")
+        .first()
+    )
+    if not record:
+        return Response({"code": "Invalid or expired code."}, status=400)
+
+    user = User.objects.filter(email__iexact=email).first()
+    if not user:
+        return Response({"email": "No account found for this email."}, status=400)
+
+    user.set_password(new_password)
+    user.must_change_password = False
+    user.save(update_fields=["password", "must_change_password"])
+    record.used = True
+    record.verified = True
+    record.save(update_fields=["used", "verified"])
+
+    return Response({"detail": "Password reset successfully."})
 
 
 class SystemSettingsView(generics.RetrieveUpdateAPIView):
@@ -118,6 +297,12 @@ class OfficerViewSet(viewsets.ModelViewSet):
     queryset = Officer.objects.all()
     serializer_class = OfficerSerializer
     filterset_fields = ["status"]
+
+    def perform_destroy(self, instance):
+        user = instance.user
+        instance.delete()
+        if user:
+            user.delete()
 
 
 class ResidentViewSet(viewsets.ModelViewSet):

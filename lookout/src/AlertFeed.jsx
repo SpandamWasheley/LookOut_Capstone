@@ -14,62 +14,51 @@ function AlertCard({ alert, onView }) {
   const vcfg = VIOLATION_CONFIG[alert.type] ?? { label: alert.type, color: "#f59e0b", icon: "⚠️" };
 
   return (
-    <div className="rounded-2xl p-4 mb-3" style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
-      <div className="flex items-start gap-4">
-        {/* Icon tile */}
-        <div className="w-12 h-12 rounded-xl flex items-center justify-center text-xl flex-shrink-0"
+    <div className="rounded-2xl p-3 mb-3" style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
+      {/* Top row: icon, title, time/confidence */}
+      <div className="flex items-center gap-2.5">
+        <div className="w-9 h-9 rounded-lg flex items-center justify-center text-base flex-shrink-0"
           style={{ background: `${vcfg.color}22` }}>
           {vcfg.icon}
         </div>
 
-        {/* Middle content */}
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-[15px] font-semibold text-white">{vcfg.label}</span>
-            {alert.status === "active" && (
-              <span className="text-[11px] font-medium px-2 py-0.5 rounded-full"
-                style={{ background: "rgba(239,68,68,0.15)", color: "#ef4444" }}>
-                Active
-              </span>
-            )}
-          </div>
-
-          {/* Officer assignment */}
-          {alert.officerAssigned && (
-            <div className="flex items-center gap-1.5 mt-1 text-[12px]" style={{ color: "#3b82f6" }}>
-              <Radio size={12} /> 1 officer
-            </div>
-          )}
-
-          {/* Location */}
-          <div className="flex items-center gap-1.5 mt-1 text-[13px]" style={{ color: "var(--muted-foreground)" }}>
-            <span className="w-1 h-1 rounded-full flex-shrink-0" style={{ background: "var(--muted-foreground)" }} />
-            {alert.cameraZone}
+          <div className="text-[13px] font-semibold text-white truncate">{vcfg.label}</div>
+          <div className="flex items-center gap-1.5 text-[10px] mt-0.5" style={{ color: "var(--muted-foreground)" }}>
+            <Clock size={10} className="flex-shrink-0" /> {formatTime(alert.timestamp)}
+            <span className="font-semibold" style={{ color: vcfg.color }}>· {(alert.confidence * 100).toFixed(0)}%</span>
           </div>
         </div>
 
-        {/* Time + confidence */}
-        <div className="flex flex-col items-end gap-2 flex-shrink-0">
-          <div className="flex items-center gap-1.5 text-[13px]" style={{ color: "var(--muted-foreground)" }}>
-            <Clock size={13} /> {formatTime(alert.timestamp)}
-          </div>
-          <div className="text-[15px] font-bold leading-tight text-right" style={{ color: vcfg.color }}>
-            {(alert.confidence * 100).toFixed(0)}%<br />
-            <span className="text-[11px] font-normal">conf</span>
-          </div>
-        </div>
-
-        {/* View button */}
-        <div className="flex-shrink-0 self-center">
-          <button
-            onClick={onView}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-[13px] font-medium transition-all cursor-pointer hover:brightness-125 active:scale-95"
-            style={{ background: `${vcfg.color}18`, color: vcfg.color, border: `1px solid ${vcfg.color}30` }}
-          >
-            View <ArrowRight size={13} />
-          </button>
-        </div>
+        {alert.status === "active" && (
+          <span className="text-[10px] font-medium px-2 py-0.5 rounded-full flex-shrink-0"
+            style={{ background: "rgba(239,68,68,0.15)", color: "#ef4444" }}>
+            Active
+          </span>
+        )}
       </div>
+
+      {/* Location */}
+      <div className="flex items-center gap-1.5 mt-2 text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+        <span className="w-1 h-1 rounded-full flex-shrink-0" style={{ background: "var(--muted-foreground)" }} />
+        <span className="truncate">{alert.cameraZone}</span>
+      </div>
+
+      {/* Officer assignment */}
+      {alert.officerAssigned && (
+        <div className="flex items-center gap-1.5 mt-1 text-[11px]" style={{ color: "#3b82f6" }}>
+          <Radio size={10} className="flex-shrink-0" /> 1 officer
+        </div>
+      )}
+
+      {/* View button */}
+      <button
+        onClick={onView}
+        className="w-full flex items-center justify-center gap-1.5 mt-2.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-all cursor-pointer hover:brightness-125 active:scale-95"
+        style={{ background: `${vcfg.color}18`, color: vcfg.color, border: `1px solid ${vcfg.color}30` }}
+      >
+        View <ArrowRight size={12} />
+      </button>
     </div>
   );
 }

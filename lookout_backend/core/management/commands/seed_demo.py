@@ -61,9 +61,9 @@ HOUSEHOLDS = [
         "zone": "Zone 2", "contact": "+63 917 000 1122", "enrolled_date": "2025-06-10",
         "members": [
             {"code": "MEM-001", "first_name": "Peter", "last_name": "Angeles", "birthdate": "1990-03-12", "barangay_id": "BRG-TET-0101", "status": "verified", "relation": "Head",
-             "image_url": "https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=200&h=200&fit=crop&auto=format"},
+             "image_url": "https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=200&h=200&fit=crop&auto=format", "phone": "+63 917 000 1123"},
             {"code": "MEM-002", "first_name": "Ana", "last_name": "Angeles", "birthdate": "1994-08-21", "barangay_id": "BRG-TET-0102", "status": "verified", "relation": "Spouse",
-             "image_url": "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=200&h=200&fit=crop&auto=format"},
+             "image_url": "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=200&h=200&fit=crop&auto=format", "phone": "+63 917 000 1124"},
             {"code": "MEM-003", "first_name": "Leo", "last_name": "Angeles", "birthdate": "2011-11-30", "barangay_id": "BRG-TET-0103", "status": "pending", "relation": "Son",
              "image_url": "https://images.unsplash.com/photo-1517841905240-472988babdf9?w=200&h=200&fit=crop&auto=format"},
         ],
@@ -172,6 +172,7 @@ class Command(BaseCommand):
                         "household": household, "first_name": m["first_name"], "last_name": m["last_name"],
                         "birthdate": parse_date(m["birthdate"]), "barangay_id": m["barangay_id"],
                         "status": m["status"], "relation": m["relation"], "image_url": m["image_url"],
+                        "phone": m.get("phone", ""),
                     },
                 )
                 members[m["code"]] = member

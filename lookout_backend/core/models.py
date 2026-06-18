@@ -12,9 +12,24 @@ class User(AbstractUser):
 
     role = models.CharField(max_length=20, choices=Role.choices, default=Role.OFFICER)
     display_name = models.CharField(max_length=150, blank=True)
+    must_change_password = models.BooleanField(default=False)
 
     def __str__(self):
         return self.display_name or self.username
+
+
+class EmailVerificationCode(models.Model):
+    email = models.EmailField()
+    code = models.CharField(max_length=6)
+    created_at = models.DateTimeField(auto_now_add=True)
+    verified = models.BooleanField(default=False)
+    used = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.email} - {self.code}"
 
 
 def _next_code(model, prefix, width=2, field="code"):
@@ -122,6 +137,7 @@ class Resident(models.Model):
     gender = models.CharField(max_length=10, choices=Gender.choices, blank=True)
     guardian_name = models.CharField(max_length=150, blank=True)
     image_url = models.URLField(blank=True)
+    phone = models.CharField(max_length=30, blank=True)
 
     class Meta:
         ordering = ["code"]
@@ -207,6 +223,7 @@ class Alert(models.Model):
         Officer, on_delete=models.SET_NULL, null=True, blank=True, related_name="alerts"
     )
     suspect = models.CharField(max_length=150, blank=True)
+    notes = models.TextField(blank=True)
 
     class Meta:
         ordering = ["-timestamp"]
