@@ -106,7 +106,7 @@ export async function login(username: string, password: string): Promise<LoginRe
 
   const data = await response.json();
 
-  if (data.user.role !== "officer") {
+  if (data.user.role !== "officer" && data.user.role !== "both") {
     throw new Error("Only officer accounts can sign in to this app.");
   }
 

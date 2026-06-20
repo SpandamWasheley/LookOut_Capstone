@@ -20,6 +20,12 @@ class UserSerializer(serializers.ModelSerializer):
         fields = ["id", "username", "display_name", "role", "email", "must_change_password"]
 
 
+class DispatcherSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ["id", "username", "display_name", "email", "role"]
+
+
 class ZoneSerializer(serializers.ModelSerializer):
     class Meta:
         model = Zone

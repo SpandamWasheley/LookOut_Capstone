@@ -1,9 +1,7 @@
 import { Feather } from "@expo/vector-icons";
-import * as Haptics from "expo-haptics";
 import React, { useMemo, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   FlatList,
   Platform,
   Pressable,
@@ -30,21 +28,9 @@ const FILTER_MAP: Record<Filter, string[]> = {
 
 export default function AssignmentsScreen() {
   const { activeAssignments, loading, error, refreshAssignments } = useAssignments();
-  const { officer, logout } = useAuth();
+  const { officer } = useAuth();
   const c = useColors();
   const insets = useSafeAreaInsets();
-
-  const handleLogout = () => {
-    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    if (Platform.OS === "web") {
-      logout();
-      return;
-    }
-    Alert.alert("Sign Out", "Are you sure you want to sign out?", [
-      { text: "Cancel", style: "cancel" },
-      { text: "Sign Out", style: "destructive", onPress: logout },
-    ]);
-  };
 
   const [filter, setFilter] = useState<Filter>("All");
   const [refreshing, setRefreshing] = useState(false);
@@ -58,6 +44,7 @@ export default function AssignmentsScreen() {
   const otherAssignments = filtered.filter((a) => a.assignedOfficerName !== officer?.name);
 
   const pendingCount = activeAssignments.filter((a) => a.status === "active").length;
+  const lastName = officer?.name?.trim().split(/\s+/).pop() ?? "Officer";
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -74,8 +61,8 @@ export default function AssignmentsScreen() {
         ]}
       >
         <View style={{ flex: 1 }}>
-          <Text style={[styles.greeting, { color: c.mutedForeground }]}>Welcome back</Text>
-          <Text style={[styles.name, { color: c.foreground }]}>{officer?.name ?? "Officer"}</Text>
+          <Text style={[styles.greeting, { color: c.mutedForeground }]}>Welcome Back!</Text>
+          <Text style={[styles.title, { color: c.foreground }]} numberOfLines={1}>{lastName}</Text>
         </View>
         {pendingCount > 0 && (
           <View style={[styles.alertBadge, { backgroundColor: c.primary }]}>
@@ -83,12 +70,6 @@ export default function AssignmentsScreen() {
             <Text style={styles.alertBadgeText}>{pendingCount} pending</Text>
           </View>
         )}
-        <Pressable
-          onPress={handleLogout}
-          style={({ pressed }) => [styles.logoutBtn, { borderColor: c.border, backgroundColor: c.muted, opacity: pressed ? 0.7 : 1 }]}
-        >
-          <Feather name="log-out" size={16} color={c.mutedForeground} />
-        </Pressable>
       </View>
 
       <View style={[styles.filterRow, { backgroundColor: c.card, borderBottomColor: c.border }]}>
@@ -166,11 +147,10 @@ export default function AssignmentsScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20, paddingBottom: 16, borderBottomWidth: 1 },
+  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20, paddingBottom: 16, borderBottomWidth: 1, gap: 10 },
   greeting: { fontSize: 13, fontFamily: "Inter_400Regular" },
-  name: { fontSize: 20, fontFamily: "Inter_700Bold", marginTop: 2 },
+  title: { fontSize: 20, fontFamily: "Inter_700Bold", marginTop: 2 },
   alertBadge: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
-  logoutBtn: { width: 36, height: 36, borderRadius: 10, borderWidth: 1, alignItems: "center", justifyContent: "center", marginLeft: 6 },
   alertBadgeText: { color: "#fff", fontSize: 13, fontFamily: "Inter_600SemiBold" },
   filterRow: { borderBottomWidth: 1 },
   filterList: { paddingHorizontal: 16, paddingVertical: 10, gap: 8 },

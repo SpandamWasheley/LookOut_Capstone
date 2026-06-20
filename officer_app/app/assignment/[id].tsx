@@ -17,6 +17,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { getViolationIconName } from "@/constants/violationIcons";
 import { Assignment, useAssignments } from "@/context/AssignmentContext";
 import { useAuth } from "@/context/AuthContext";
 import { useColors } from "@/hooks/useColors";
@@ -254,7 +255,7 @@ export default function AssignmentDetailScreen() {
         <View style={[styles.card, { backgroundColor: c.card, borderColor: c.border }]}>
           <View style={styles.violationHeader}>
             <View style={[styles.iconCircle, { backgroundColor: `${assignment.violationType.color}22` }]}>
-              <Text style={styles.iconEmoji}>{assignment.violationType.icon}</Text>
+              <Feather name={getViolationIconName(assignment.violationType.icon)} size={26} color={assignment.violationType.color} />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={[styles.violationType, { color: c.foreground }]}>{assignment.violationType.label}</Text>
@@ -408,7 +409,6 @@ const styles = StyleSheet.create({
   cardLabel: { fontSize: 11, fontFamily: "Inter_600SemiBold", letterSpacing: 0.8 },
   violationHeader: { flexDirection: "row", alignItems: "center", gap: 14 },
   iconCircle: { width: 56, height: 56, borderRadius: 16, alignItems: "center", justifyContent: "center" },
-  iconEmoji: { fontSize: 26 },
   violationType: { fontSize: 20, fontFamily: "Inter_700Bold" },
   codeText: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 2 },
   description: { fontSize: 15, fontFamily: "Inter_400Regular", lineHeight: 22 },

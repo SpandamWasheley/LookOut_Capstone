@@ -14,6 +14,7 @@ export function CameraGrid({ compact = false }) {
     <div className={`grid gap-3 ${compact ? "grid-cols-2" : "grid-cols-2 xl:grid-cols-2"}`}>
       {cameras.map((cam) => {
         const alert = getAlert(cam.id);
+        const vcfg = alert ? VIOLATION_CONFIG[alert.type] : null;
         const isSelected = selected === cam.id;
         return (
           <div
@@ -76,10 +77,8 @@ export function CameraGrid({ compact = false }) {
                   style={{ background: "linear-gradient(to top, rgba(0,0,0,0.85), transparent)" }}
                 >
                   <div className="flex items-center gap-1.5">
-                    <span className="text-xs">{VIOLATION_CONFIG[alert.type].icon}</span>
-                    <span className="text-[11px] font-medium text-white">
-                      {VIOLATION_CONFIG[alert.type].label}
-                    </span>
+                    <vcfg.icon size={12} color={vcfg.color} />
+                    <span className="text-[11px] font-medium text-white">{vcfg.label}</span>
                   </div>
                 </div>
               )}

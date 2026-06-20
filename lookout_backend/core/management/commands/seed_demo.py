@@ -14,12 +14,12 @@ from core.models import (
 )
 
 VIOLATION_TYPES = [
-    {"code": "curfew", "label": "Curfew Violation", "color": "#f59e0b", "icon": "🌙"},
-    {"code": "waste", "label": "Illegal Waste Dumping", "color": "#84cc16", "icon": "🗑️"},
-    {"code": "noise", "label": "Noise Violation", "color": "#a78bfa", "icon": "🔊"},
-    {"code": "indecency", "label": "Indecent Behavior", "color": "#f97316", "icon": "🚫"},
-    {"code": "accident", "label": "Traffic Accident", "color": "#ef4444", "icon": "⚠️"},
-    {"code": "intrusion", "label": "Unauthorized Intrusion", "color": "#38bdf8", "icon": "🛡️"},
+    {"code": "curfew", "label": "Curfew Violation", "color": "#f59e0b", "icon": "moon"},
+    {"code": "waste", "label": "Illegal Waste Dumping", "color": "#84cc16", "icon": "trash"},
+    {"code": "noise", "label": "Noise Violation", "color": "#a78bfa", "icon": "noise"},
+    {"code": "indecency", "label": "Indecent Behavior", "color": "#f97316", "icon": "ban"},
+    {"code": "accident", "label": "Traffic Accident", "color": "#ef4444", "icon": "alert"},
+    {"code": "intrusion", "label": "Unauthorized Intrusion", "color": "#38bdf8", "icon": "shield"},
 ]
 
 USERS = [

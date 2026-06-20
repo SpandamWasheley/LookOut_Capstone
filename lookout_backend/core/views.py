@@ -30,6 +30,7 @@ CODE_EXPIRY_MINUTES = 10
 from .serializers import (
     AlertSerializer,
     CameraSerializer,
+    DispatcherSerializer,
     HouseholdMemberSerializer,
     HouseholdSerializer,
     OfficerSerializer,
@@ -105,37 +106,35 @@ def verify_officer_code(request):
     return Response({"detail": "Code verified."})
 
 
-@api_view(["POST"])
-@permission_classes([permissions.IsAuthenticated])
-def register_officer(request):
-    data = request.data
-    first_name = (data.get("first_name") or "").strip()
-    last_name = (data.get("last_name") or "").strip()
-    username = (data.get("username") or "").strip()
-    email = (data.get("email") or "").strip().lower()
-    phone = (data.get("phone") or "").strip()
-    password = data.get("password") or ""
-    code = (data.get("code") or "").strip()
+def _validate_new_account_fields(data, *, require_phone=False):
+    fields = {
+        "first_name": (data.get("first_name") or "").strip(),
+        "last_name": (data.get("last_name") or "").strip(),
+        "username": (data.get("username") or "").strip(),
+        "email": (data.get("email") or "").strip().lower(),
+        "phone": (data.get("phone") or "").strip(),
+        "password": data.get("password") or "",
+        "code": (data.get("code") or "").strip(),
+    }
 
     errors = {}
-    if not first_name:
-        errors["first_name"] = "Required."
-    if not last_name:
-        errors["last_name"] = "Required."
-    if not username:
-        errors["username"] = "Required."
-    if not email:
-        errors["email"] = "Required."
-    if not password:
-        errors["password"] = "Required."
+    for field in ["first_name", "last_name", "username", "email", "password"]:
+        if not fields[field]:
+            errors[field] = "Required."
+    if require_phone and not fields["phone"]:
+        errors["phone"] = "Required."
     if errors:
-        return Response(errors, status=400)
+        return fields, errors
 
-    if User.objects.filter(username__iexact=username).exists():
-        return Response({"username": "This username is already taken."}, status=400)
-    if User.objects.filter(email__iexact=email).exists():
-        return Response({"email": "An account with this email already exists."}, status=400)
+    if User.objects.filter(username__iexact=fields["username"]).exists():
+        return fields, {"username": "This username is already taken."}
+    if User.objects.filter(email__iexact=fields["email"]).exists():
+        return fields, {"email": "An account with this email already exists."}
 
+    return fields, None
+
+
+def _consume_verified_code(email, code):
     cutoff = timezone.now() - timedelta(minutes=CODE_EXPIRY_MINUTES)
     record = (
         EmailVerificationCode.objects.filter(
@@ -144,26 +143,53 @@ def register_officer(request):
         .order_by("-created_at")
         .first()
     )
+    return record
+
+
+_PERSONNEL_ROLES = {
+    "officer": User.Role.OFFICER,
+    "dispatcher": User.Role.DISPATCHER,
+    "both": User.Role.BOTH,
+}
+
+
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated])
+def register_personnel(request):
+    role_key = (request.data.get("role") or "").strip().lower()
+    if role_key not in _PERSONNEL_ROLES:
+        return Response({"role": "Must be one of officer, dispatcher, both."}, status=400)
+
+    needs_officer_record = role_key in ("officer", "both")
+    fields, errors = _validate_new_account_fields(request.data, require_phone=needs_officer_record)
+    if errors:
+        return Response(errors, status=400)
+
+    record = _consume_verified_code(fields["email"], fields["code"])
     if not record:
         return Response({"code": "Email is not verified. Please verify the email first."}, status=400)
 
-    display_name = f"{first_name} {last_name}".strip()
+    display_name = f"{fields['first_name']} {fields['last_name']}".strip()
     with transaction.atomic():
         user = User.objects.create_user(
-            username=username, email=email, password=password,
-            role=User.Role.OFFICER, display_name=display_name,
+            username=fields["username"], email=fields["email"], password=fields["password"],
+            role=_PERSONNEL_ROLES[role_key], display_name=display_name,
             must_change_password=True,
         )
-        officer = Officer.objects.create(
-            user=user, name=display_name, phone=phone,
-            badge=f"B-{random.randint(100, 999)}",
-            status=Officer.Status.ON_DUTY,
-            joined_date=timezone.now().date(),
-        )
+        officer = None
+        if needs_officer_record:
+            officer = Officer.objects.create(
+                user=user, name=display_name, phone=fields["phone"],
+                badge=f"B-{random.randint(100, 999)}",
+                status=Officer.Status.ON_DUTY,
+                joined_date=timezone.now().date(),
+            )
         record.used = True
         record.save(update_fields=["used"])
 
-    return Response(OfficerSerializer(officer).data, status=201)
+    if officer:
+        return Response(OfficerSerializer(officer).data, status=201)
+    return Response(DispatcherSerializer(user).data, status=201)
 
 
 @api_view(["POST"])
@@ -303,6 +329,16 @@ class OfficerViewSet(viewsets.ModelViewSet):
         instance.delete()
         if user:
             user.delete()
+
+
+class DispatcherViewSet(viewsets.ModelViewSet):
+    queryset = User.objects.filter(role__in=[User.Role.DISPATCHER, User.Role.BOTH])
+    serializer_class = DispatcherSerializer
+    http_method_names = ["get", "delete", "head", "options"]
+
+    def perform_destroy(self, instance):
+        Officer.objects.filter(user=instance).delete()
+        instance.delete()
 
 
 class ResidentViewSet(viewsets.ModelViewSet):

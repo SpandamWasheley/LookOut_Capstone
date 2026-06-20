@@ -1,4 +1,4 @@
-
+import { Moon, Trash2, Volume2, Ban, AlertTriangle, ShieldAlert } from "lucide-react";
 
 export const ZONES = [
   "Zone 1",
@@ -16,12 +16,12 @@ export const mockUsers = [
 ];
 
 export const VIOLATION_CONFIG = {
-  curfew: { label: "Curfew Violation", color: "#f59e0b", icon: "🌙" },
-  waste: { label: "Illegal Waste Dumping", color: "#84cc16", icon: "🗑️" },
-  noise: { label: "Noise Violation", color: "#a78bfa", icon: "🔊" },
-  indecency: { label: "Indecent Behavior", color: "#f97316", icon: "🚫" },
-  accident: { label: "Traffic Accident", color: "#ef4444", icon: "⚠️" },
-  intrusion: { label: "Unauthorized Intrusion", color: "#38bdf8", icon: "🛡️" },
+  curfew: { label: "Curfew Violation", color: "#f59e0b", icon: Moon },
+  waste: { label: "Illegal Waste Dumping", color: "#84cc16", icon: Trash2 },
+  noise: { label: "Noise Violation", color: "#a78bfa", icon: Volume2 },
+  indecency: { label: "Indecent Behavior", color: "#f97316", icon: Ban },
+  accident: { label: "Traffic Accident", color: "#ef4444", icon: AlertTriangle },
+  intrusion: { label: "Unauthorized Intrusion", color: "#38bdf8", icon: ShieldAlert },
 };
 
 export const mockCameras = [

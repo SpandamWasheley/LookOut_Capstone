@@ -1,9 +1,12 @@
 import { useEffect, useState } from "react";
 import {
-  UserPlus, Radio, CheckCircle, Clock, X, Shield, MapPin, Edit2, Trash2,
-  Mail, Lock, Shuffle, Loader2, ChevronRight, ChevronLeft, AlertTriangle,
+  UserPlus, UserCog, Users, Radio, CheckCircle, Clock, X, Shield, MapPin, Edit2, Trash2,
+  Mail, Lock, Shuffle, Loader2, ChevronRight, ChevronLeft, ChevronDown, AlertTriangle,
 } from "lucide-react";
-import { getOfficers, updateOfficer, deleteOfficer, sendOfficerCode, verifyOfficerCode, registerOfficer } from "./api";
+import {
+  getOfficers, updateOfficer, deleteOfficer, sendOfficerCode, verifyOfficerCode, registerPersonnel,
+  getDispatchers, deleteDispatcher,
+} from "./api";
 
 const statusConfig = {
   "on-duty":    { label: "On duty",    color: "#10b981", bg: "rgba(16,185,129,0.1)",  icon: CheckCircle },
@@ -23,6 +26,17 @@ function mapOfficer(raw) {
     email: raw.email,
     username: raw.username,
     joinedDate: raw.joined_date,
+  };
+}
+
+function mapDispatcher(raw) {
+  return {
+    id: `dispatcher-${raw.id}`,
+    dbId: raw.id,
+    name: raw.display_name || raw.username,
+    email: raw.email,
+    username: raw.username,
+    role: raw.role,
   };
 }
 
@@ -51,7 +65,38 @@ const steps = [
   { id: 3, label: "Password" },
 ];
 
-function AddOfficerModal({ onAdd, onClose }) {
+const ROLE_CONFIG = {
+  officer: {
+    title: "Add Officer",
+    subtitle: "Register a new field officer",
+    submitLabel: "Add officer",
+    submittingLabel: "Creating…",
+    requirePhone: true,
+  },
+  dispatcher: {
+    title: "Add Dispatcher",
+    subtitle: "Register a new dispatcher account",
+    submitLabel: "Add dispatcher",
+    submittingLabel: "Creating…",
+    requirePhone: false,
+  },
+  both: {
+    title: "Add Personnel",
+    subtitle: "Register one account with both officer and dispatcher access",
+    submitLabel: "Add personnel",
+    submittingLabel: "Creating…",
+    requirePhone: true,
+  },
+};
+
+const ADD_PERSONNEL_OPTIONS = [
+  { role: "officer", label: "Officer", desc: "Field officer · mobile app access", icon: Shield },
+  { role: "dispatcher", label: "Dispatcher", desc: "Web dispatch board access", icon: UserCog },
+  { role: "both", label: "Both", desc: "Officer + dispatcher in one account", icon: Users },
+];
+
+function AddAccountModal({ role, onAdd, onClose }) {
+  const cfg = ROLE_CONFIG[role];
   const [step, setStep] = useState(1);
   const [form, setForm] = useState(emptyForm);
   const [sendingCode, setSendingCode] = useState(false);
@@ -62,7 +107,7 @@ function AddOfficerModal({ onAdd, onClose }) {
 
   const set = (k, v) => setForm((p) => ({ ...p, [k]: v }));
 
-  const step1Valid = form.firstName.trim() && form.lastName.trim() && form.username.trim() && form.phone.trim();
+  const step1Valid = form.firstName.trim() && form.lastName.trim() && form.username.trim() && (!cfg.requirePhone || form.phone.trim());
   const step2Valid = form.emailVerified;
   const step3Valid = form.password.trim().length >= 8;
 
@@ -103,16 +148,17 @@ function AddOfficerModal({ onAdd, onClose }) {
     setError("");
     setSubmitting(true);
     try {
-      const officer = await registerOfficer({
+      const created = await registerPersonnel({
+        role,
         first_name: form.firstName.trim(),
         last_name: form.lastName.trim(),
         username: form.username.trim(),
         email: form.email.trim(),
-        phone: form.phone.trim(),
         password: form.password,
         code: form.code.trim(),
+        ...(cfg.requirePhone ? { phone: form.phone.trim() } : {}),
       });
-      onAdd(officer);
+      onAdd(created);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -131,8 +177,8 @@ function AddOfficerModal({ onAdd, onClose }) {
         <div className="flex items-center justify-between px-5 py-4 flex-shrink-0"
           style={{ borderBottom: "1px solid var(--border)" }}>
           <div>
-            <div className="text-sm font-semibold text-white">Add Officer</div>
-            <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>Register a new field officer</div>
+            <div className="text-sm font-semibold text-white">{cfg.title}</div>
+            <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>{cfg.subtitle}</div>
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg"
             style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}>
@@ -196,12 +242,14 @@ function AddOfficerModal({ onAdd, onClose }) {
                   </button>
                 </div>
               </div>
-              <div>
-                <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>Phone *</label>
-                <input value={form.phone} onChange={(e) => set("phone", e.target.value)} placeholder="+63 9XX XXX XXXX"
-                  className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
-                  style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "#f1f5f9" }} />
-              </div>
+              {cfg.requirePhone && (
+                <div>
+                  <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>Phone *</label>
+                  <input value={form.phone} onChange={(e) => set("phone", e.target.value)} placeholder="+63 9XX XXX XXXX"
+                    className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
+                    style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "#f1f5f9" }} />
+                </div>
+              )}
             </>
           )}
 
@@ -320,7 +368,7 @@ function AddOfficerModal({ onAdd, onClose }) {
                 cursor: step3Valid && !submitting ? "pointer" : "not-allowed",
               }}>
               {submitting ? <Loader2 size={13} className="animate-spin" /> : <UserPlus size={13} />}
-              {submitting ? "Creating…" : "Add officer"}
+              {submitting ? cfg.submittingLabel : cfg.submitLabel}
             </button>
           )}
         </div>
@@ -331,15 +379,22 @@ function AddOfficerModal({ onAdd, onClose }) {
 
 export function OfficersPage() {
   const [officers, setOfficers] = useState([]);
+  const [dispatchers, setDispatchers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
-  const [showAdd, setShowAdd] = useState(false);
+  const [showAdd, setShowAdd] = useState(null); // "officer" | "dispatcher" | "both" | null
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [filterStatus, setFilterStatus] = useState("all");
-  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null); // { type, id }
 
   const refreshOfficers = async () => {
     const data = await getOfficers();
     setOfficers((data.results ?? data).map(mapOfficer));
+  };
+
+  const refreshDispatchers = async () => {
+    const data = await getDispatchers();
+    setDispatchers((data.results ?? data).map(mapDispatcher));
   };
 
   useEffect(() => {
@@ -348,7 +403,7 @@ export function OfficersPage() {
       setLoading(true);
       setLoadError("");
       try {
-        await refreshOfficers();
+        await Promise.all([refreshOfficers(), refreshDispatchers()]);
       } catch (err) {
         if (!cancelled) setLoadError(err.message);
       } finally {
@@ -358,23 +413,39 @@ export function OfficersPage() {
     return () => { cancelled = true; };
   }, []);
 
+  useEffect(() => {
+    const interval = setInterval(() => {
+      refreshOfficers().catch(() => {});
+      refreshDispatchers().catch(() => {});
+    }, 4000);
+    return () => clearInterval(interval);
+  }, []);
+
   const filtered = officers.filter((o) => filterStatus === "all" || o.status === filterStatus);
 
   const handleAdd = async () => {
     try {
-      await refreshOfficers();
+      if (showAdd === "both") await Promise.all([refreshOfficers(), refreshDispatchers()]);
+      else if (showAdd === "dispatcher") await refreshDispatchers();
+      else await refreshOfficers();
     } finally {
-      setShowAdd(false);
+      setShowAdd(null);
     }
   };
 
-  const handleDelete = async (id) => {
-    const officer = officers.find((o) => o.id === id);
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
     try {
-      await deleteOfficer(officer.dbId);
-      await refreshOfficers();
+      if (deleteTarget.type === "dispatcher") {
+        await deleteDispatcher(deleteTarget.dbId);
+      } else {
+        await deleteOfficer(deleteTarget.dbId);
+      }
+      // A "both"-role account can appear in either list, so refresh both
+      // to avoid leaving a stale entry behind in the other one.
+      await Promise.all([refreshOfficers(), refreshDispatchers()]);
     } catch (err) {
-      alert(`Failed to remove officer: ${err.message}`);
+      alert(`Failed to remove ${deleteTarget.type}: ${err.message}`);
     } finally {
       setDeleteTarget(null);
     }
@@ -402,16 +473,47 @@ export function OfficersPage() {
             {officers.filter((o) => o.status !== "off-duty").length} on duty · {officers.length} total
           </span>
         </div>
-        <button
-          onClick={() => setShowAdd(true)}
-          className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
-          style={{ background: "rgba(245,158,11,0.12)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.2)" }}
-        >
-          <UserPlus size={12} /> Add officer
-        </button>
+        <div className="relative">
+          <button
+            onClick={() => setAddMenuOpen((v) => !v)}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
+            style={{ background: "rgba(245,158,11,0.12)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.2)" }}
+          >
+            <UserPlus size={12} /> Add Personnel
+            <ChevronDown size={12} style={{ transform: addMenuOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
+          </button>
+
+          {addMenuOpen && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setAddMenuOpen(false)} />
+              <div className="absolute right-0 top-full mt-2 w-64 rounded-xl overflow-hidden shadow-2xl z-50"
+                style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
+                {ADD_PERSONNEL_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.role}
+                    onClick={() => { setShowAdd(opt.role); setAddMenuOpen(false); }}
+                    className="w-full flex items-center gap-3 px-3.5 py-3 text-left transition-colors"
+                    style={{ borderBottom: "1px solid var(--border)" }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = "var(--secondary)")}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                  >
+                    <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+                      style={{ background: "rgba(245,158,11,0.12)", color: "#f59e0b" }}>
+                      <opt.icon size={15} />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-[13px] font-medium text-white">{opt.label}</div>
+                      <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>{opt.desc}</div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
       </div>
 
-      <div className="flex-1 overflow-hidden flex flex-col px-6 py-5 gap-4">
+      <div className="flex-1 overflow-y-auto flex flex-col px-6 py-5 gap-4">
         {/* KPIs */}
         <div className="grid grid-cols-4 gap-3 flex-shrink-0">
           {[
@@ -447,7 +549,7 @@ export function OfficersPage() {
         </div>
 
         {/* Table */}
-        <div className="flex-1 overflow-y-auto rounded-xl" style={{ border: "1px solid var(--border)" }}>
+        <div className="rounded-xl flex-shrink-0" style={{ border: "1px solid var(--border)", maxHeight: 420, overflowY: "auto" }}>
           {/* Header */}
           <div
             className="grid px-4 py-2.5 text-[11px] font-semibold sticky top-0"
@@ -533,7 +635,7 @@ export function OfficersPage() {
                       onMouseLeave={(e) => { e.currentTarget.style.color = "var(--muted-foreground)"; e.currentTarget.style.background = "transparent"; }}>
                       <Edit2 size={13} />
                     </button>
-                    <button onClick={() => setDeleteTarget(officer.id)}
+                    <button onClick={() => setDeleteTarget({ type: "officer", dbId: officer.dbId, name: officer.name })}
                       className="p-1.5 rounded-lg transition-all" style={{ color: "var(--muted-foreground)" }}
                       onMouseEnter={(e) => { e.currentTarget.style.color = "#ef4444"; e.currentTarget.style.background = "rgba(239,68,68,0.08)"; }}
                       onMouseLeave={(e) => { e.currentTarget.style.color = "var(--muted-foreground)"; e.currentTarget.style.background = "transparent"; }}>
@@ -553,6 +655,58 @@ export function OfficersPage() {
             </div>
           )}
         </div>
+
+        {/* Dispatchers */}
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <h2 className="text-sm font-semibold text-white">Dispatchers</h2>
+          <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>{dispatchers.length} total</span>
+        </div>
+        <div className="rounded-xl flex-shrink-0" style={{ border: "1px solid var(--border)" }}>
+          <div className="grid px-4 py-2.5 text-[11px] font-semibold"
+            style={{ gridTemplateColumns: "2fr 2fr 0.5fr", color: "var(--muted-foreground)", background: "var(--card)", borderBottom: "1px solid var(--border)" }}>
+            <span>Name</span>
+            <span>Email</span>
+            <span />
+          </div>
+          {!loading && dispatchers.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-10 gap-2" style={{ background: "var(--card)" }}>
+              <UserCog size={22} style={{ color: "var(--muted-foreground)" }} />
+              <div className="text-sm font-medium text-white">No dispatchers found</div>
+            </div>
+          ) : (
+            dispatchers.map((d, idx) => (
+              <div key={d.id} className="grid px-4 py-3 items-center transition-colors hover:bg-white/[0.02] group"
+                style={{ gridTemplateColumns: "2fr 2fr 0.5fr", borderBottom: idx < dispatchers.length - 1 ? "1px solid var(--border)" : "none", background: "var(--card)" }}>
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold flex-shrink-0"
+                    style={{ background: "rgba(245,158,11,0.15)", color: "#f59e0b" }}>
+                    {d.name[0]?.toUpperCase() ?? "D"}
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[13px] font-medium text-white">{d.name}</span>
+                      {d.role === "both" && (
+                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: "rgba(59,130,246,0.15)", color: "#3b82f6" }}>
+                          OFFICER & DISPATCHER
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[10px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>{d.username}</div>
+                  </div>
+                </div>
+                <div className="text-[11px] truncate" style={{ color: "var(--muted-foreground)" }}>{d.email || "—"}</div>
+                <div className="flex items-center gap-1 justify-end">
+                  <button onClick={() => setDeleteTarget({ type: "dispatcher", dbId: d.dbId, name: d.name })}
+                    className="p-1.5 rounded-lg transition-all" style={{ color: "var(--muted-foreground)" }}
+                    onMouseEnter={(e) => { e.currentTarget.style.color = "#ef4444"; e.currentTarget.style.background = "rgba(239,68,68,0.08)"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.color = "var(--muted-foreground)"; e.currentTarget.style.background = "transparent"; }}>
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
       </div>
 
       {/* Confirm delete */}
@@ -566,9 +720,11 @@ export function OfficersPage() {
                 style={{ background: "rgba(239,68,68,0.1)" }}>
                 <Trash2 size={18} style={{ color: "#ef4444" }} />
               </div>
-              <div className="text-sm font-semibold text-white">Remove officer?</div>
+              <div className="text-sm font-semibold text-white">
+                {deleteTarget.type === "dispatcher" ? "Remove dispatcher?" : "Remove officer?"}
+              </div>
               <p className="text-[12px] mt-1" style={{ color: "var(--muted-foreground)" }}>
-                {officers.find((o) => o.id === deleteTarget)?.name} will be removed from the roster.
+                {deleteTarget.name} will lose access and be removed from the {deleteTarget.type === "dispatcher" ? "dispatcher list" : "roster"}.
               </p>
             </div>
             <div className="flex gap-2 px-5 pb-5">
@@ -577,7 +733,7 @@ export function OfficersPage() {
                 style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}>
                 Cancel
               </button>
-              <button onClick={() => handleDelete(deleteTarget)}
+              <button onClick={handleDelete}
                 className="flex-1 py-2 rounded-xl text-sm font-medium"
                 style={{ background: "rgba(239,68,68,0.15)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.25)" }}>
                 Remove
@@ -587,7 +743,7 @@ export function OfficersPage() {
         </div>
       )}
 
-      {showAdd && <AddOfficerModal onAdd={handleAdd} onClose={() => setShowAdd(false)} />}
+      {showAdd && <AddAccountModal role={showAdd} onAdd={handleAdd} onClose={() => setShowAdd(null)} />}
     </div>
   );
 }

@@ -4,6 +4,7 @@ import { useRouter } from "expo-router";
 import React from "react";
 import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
 
+import { getViolationIconName } from "@/constants/violationIcons";
 import { Assignment } from "@/context/AssignmentContext";
 import { useColors } from "@/hooks/useColors";
 
@@ -55,7 +56,7 @@ export default function AssignmentCard({ assignment }: Props) {
       <View style={styles.content}>
         <View style={styles.header}>
           <View style={[styles.iconWrap, { backgroundColor: `${assignment.violationType.color}22` }]}>
-            <Text style={styles.iconEmoji}>{assignment.violationType.icon}</Text>
+            <Feather name={getViolationIconName(assignment.violationType.icon)} size={18} color={assignment.violationType.color} />
           </View>
           <View style={styles.meta}>
             <Text style={[styles.type, { color: c.foreground }]} numberOfLines={1}>
@@ -95,7 +96,6 @@ const styles = StyleSheet.create({
   content: { flex: 1, padding: 14, gap: 6 },
   header: { flexDirection: "row", alignItems: "center", gap: 10 },
   iconWrap: { width: 36, height: 36, borderRadius: 10, alignItems: "center", justifyContent: "center" },
-  iconEmoji: { fontSize: 16 },
   meta: { flex: 1 },
   type: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
   time: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 1 },

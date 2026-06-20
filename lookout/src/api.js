@@ -106,8 +106,12 @@ export const sendOfficerCode = (email) =>
   apiFetch("/officers/send-code/", { method: "POST", body: JSON.stringify({ email }) });
 export const verifyOfficerCode = (email, code) =>
   apiFetch("/officers/verify-code/", { method: "POST", body: JSON.stringify({ email, code }) });
-export const registerOfficer = (payload) =>
-  apiFetch("/officers/register/", { method: "POST", body: JSON.stringify(payload) });
+export const registerPersonnel = (payload) =>
+  apiFetch("/personnel/register/", { method: "POST", body: JSON.stringify(payload) });
+
+export const getDispatchers = () => apiFetch("/dispatchers/");
+export const deleteDispatcher = (id) =>
+  apiFetch(`/dispatchers/${id}/`, { method: "DELETE" });
 
 export const changePassword = (newPassword) =>
   apiFetch("/auth/change-password/", { method: "POST", body: JSON.stringify({ new_password: newPassword }) });

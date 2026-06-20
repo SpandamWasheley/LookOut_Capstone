@@ -1,5 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
 
+import { useAuth } from "@/context/AuthContext";
 import * as api from "@/lib/api";
 
 export interface ViolationTypeMeta {
@@ -26,7 +27,7 @@ export interface Assignment {
   imageUrl: string;
 }
 
-const DEFAULT_TYPE: ViolationTypeMeta = { code: "unknown", label: "Violation", color: "#f59e0b", icon: "⚠️" };
+const DEFAULT_TYPE: ViolationTypeMeta = { code: "unknown", label: "Violation", color: "#f59e0b", icon: "alert" };
 
 function mapAlert(raw: api.ApiAlert, typesByCode: Record<string, ViolationTypeMeta>): Assignment {
   return {
@@ -64,6 +65,7 @@ interface AssignmentContextType {
 const AssignmentContext = createContext<AssignmentContextType | null>(null);
 
 export function AssignmentProvider({ children }: { children: React.ReactNode }) {
+  const { officer } = useAuth();
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -84,9 +86,15 @@ export function AssignmentProvider({ children }: { children: React.ReactNode }) 
   }, []);
 
   useEffect(() => {
+    if (!officer) {
+      setAssignments([]);
+      setError("");
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     refreshAssignments().finally(() => setLoading(false));
-  }, [refreshAssignments]);
+  }, [officer, refreshAssignments]);
 
   const getAssignment = useCallback((id: string) => assignments.find((a) => a.id === id), [assignments]);
 

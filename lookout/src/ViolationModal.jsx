@@ -158,7 +158,7 @@ export function ViolationModal({
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 flex-shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
           <div className="flex items-center gap-3">
-            <span className="text-xl">{vcfg.icon}</span>
+            <span><vcfg.icon size={22} color={vcfg.color} /></span>
             <div>
               <div className="flex items-center gap-2">
                 <span className="text-[15px] font-semibold text-white">{vcfg.label}</span>

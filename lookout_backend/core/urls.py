@@ -13,6 +13,7 @@ router.register("residents", views.ResidentViewSet)
 router.register("households", views.HouseholdViewSet)
 router.register("household-members", views.HouseholdMemberViewSet)
 router.register("alerts", views.AlertViewSet)
+router.register("dispatchers", views.DispatcherViewSet)
 
 urlpatterns = [
     path("auth/login/", views.LoginView.as_view(), name="login"),
@@ -25,6 +26,6 @@ urlpatterns = [
     path("settings/", views.SystemSettingsView.as_view(), name="system_settings"),
     path("officers/send-code/", views.send_officer_code, name="send_officer_code"),
     path("officers/verify-code/", views.verify_officer_code, name="verify_officer_code"),
-    path("officers/register/", views.register_officer, name="register_officer"),
+    path("personnel/register/", views.register_personnel, name="register_personnel"),
     path("", include(router.urls)),
 ]

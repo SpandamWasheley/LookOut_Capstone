@@ -18,7 +18,7 @@ const navGroups = [
     label: "Manage",
     items: [
       { id: "residents", label: "Residents", icon: Users,    roles: ["admin"] },
-      { id: "officers",  label: "Officers",  icon: Shield,   roles: ["admin"] },
+      { id: "officers",  label: "Personnel", icon: Shield,   roles: ["admin"] },
       { id: "config",    label: "Settings",  icon: Settings, roles: ["admin"] },
     ],
   },

@@ -77,7 +77,7 @@ export default function LoginScreen() {
           </View>
           <Text style={[styles.appName, { color: c.foreground }]}>LookOut</Text>
           <Text style={[styles.tagline, { color: c.mutedForeground }]}>
-            Barangay Tetuan Enforcement System
+            Barangay Enforcement System
           </Text>
         </View>
 

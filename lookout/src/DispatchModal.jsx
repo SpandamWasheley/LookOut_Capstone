@@ -46,7 +46,7 @@ export function DispatchModal({ alert, officers, assignments, onAssign, onClose 
         {/* Header */}
         <div className="flex items-start justify-between px-5 py-4" style={{ borderBottom: "1px solid var(--border)" }}>
           <div className="flex items-start gap-3">
-            <span className="text-xl mt-0.5">{vcfg.icon}</span>
+            <span className="mt-0.5"><vcfg.icon size={20} color={vcfg.color} /></span>
             <div>
               <div className="text-sm font-semibold text-white">Assign Officers</div>
               <div className="text-[11px] mt-0.5" style={{ color: "var(--muted-foreground)" }}>

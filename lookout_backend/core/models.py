@@ -9,6 +9,7 @@ class User(AbstractUser):
         ADMIN = "admin", "Administrator"
         DISPATCHER = "dispatcher", "Dispatcher"
         OFFICER = "officer", "Officer"
+        BOTH = "both", "Officer & Dispatcher"
 
     role = models.CharField(max_length=20, choices=Role.choices, default=Role.OFFICER)
     display_name = models.CharField(max_length=150, blank=True)

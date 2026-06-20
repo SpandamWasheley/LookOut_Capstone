@@ -11,15 +11,15 @@ function formatTime(ts) {
 }
 
 function AlertCard({ alert, onView }) {
-  const vcfg = VIOLATION_CONFIG[alert.type] ?? { label: alert.type, color: "#f59e0b", icon: "⚠️" };
+  const vcfg = VIOLATION_CONFIG[alert.type] ?? { label: alert.type, color: "#f59e0b", icon: AlertTriangle };
 
   return (
     <div className="rounded-2xl p-3 mb-3" style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
       {/* Top row: icon, title, time/confidence */}
       <div className="flex items-center gap-2.5">
-        <div className="w-9 h-9 rounded-lg flex items-center justify-center text-base flex-shrink-0"
+        <div className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0"
           style={{ background: `${vcfg.color}22` }}>
-          {vcfg.icon}
+          <vcfg.icon size={18} color={vcfg.color} />
         </div>
 
         <div className="flex-1 min-w-0">

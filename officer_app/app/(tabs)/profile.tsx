@@ -12,7 +12,7 @@ import * as api from "@/lib/api";
 
 const STATUS_OPTIONS: { value: api.ApiOfficer["status"]; label: string; color: string }[] = [
   { value: "on-duty", label: "On Duty", color: "#276749" },
-  { value: "responding", label: "Responding", color: "#b7791f" },
+  { value: "responding", label: "On Call", color: "#b7791f" },
   { value: "off-duty", label: "Off Duty", color: "#718096" },
 ];
 
