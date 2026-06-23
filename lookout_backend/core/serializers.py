@@ -15,9 +15,15 @@ from .models import (
 
 
 class UserSerializer(serializers.ModelSerializer):
+    officer_id = serializers.SerializerMethodField()
+
     class Meta:
         model = User
-        fields = ["id", "username", "display_name", "role", "email", "must_change_password"]
+        fields = ["id", "username", "display_name", "role", "email", "must_change_password", "officer_id"]
+
+    def get_officer_id(self, obj):
+        officer = getattr(obj, "officer_profile", None)
+        return officer.id if officer else None
 
 
 class DispatcherSerializer(serializers.ModelSerializer):
@@ -105,16 +111,26 @@ class AlertSerializer(serializers.ModelSerializer):
     type = serializers.SlugRelatedField(slug_field="code", queryset=ViolationType.objects.all())
     camera = serializers.SlugRelatedField(slug_field="code", queryset=Camera.objects.all(), required=False, allow_null=True)
     camera_zone = serializers.CharField(source="camera.name", read_only=True)
-    officer_assigned = serializers.SlugRelatedField(
-        slug_field="name", queryset=Officer.objects.all(), required=False, allow_null=True
+    # Written/read by stable Officer id, not display name — Officer.name has
+    # no uniqueness constraint, so matching by name risked merging two
+    # different officers that happen to share a name (or silently failing
+    # with MultipleObjectsReturned). officers_assigned_names is a read-only
+    # convenience for clients that just want to display the names.
+    officers_assigned = serializers.PrimaryKeyRelatedField(
+        queryset=Officer.objects.all(), required=False, many=True
     )
+    officers_assigned_names = serializers.SerializerMethodField()
 
     class Meta:
         model = Alert
         fields = [
             "id", "code", "type", "status", "camera", "camera_zone", "timestamp",
-            "confidence", "description", "image_url", "officer_assigned", "suspect", "notes",
+            "confidence", "description", "image_url", "officers_assigned",
+            "officers_assigned_names", "suspect", "notes",
         ]
+
+    def get_officers_assigned_names(self, obj):
+        return [o.name for o in obj.officers_assigned.all()]
 
 
 class SystemSettingsSerializer(serializers.ModelSerializer):

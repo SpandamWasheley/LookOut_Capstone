@@ -40,8 +40,10 @@ export default function AssignmentsScreen() {
     return activeAssignments.filter((a) => statuses.includes(a.status));
   }, [activeAssignments, filter]);
 
-  const myAssignments = filtered.filter((a) => a.assignedOfficerName === officer?.name);
-  const otherAssignments = filtered.filter((a) => a.assignedOfficerName !== officer?.name);
+  const isMine = (a: (typeof filtered)[number]) =>
+    officer?.officerId != null && a.assignedOfficerIds.includes(officer.officerId);
+  const myAssignments = filtered.filter(isMine);
+  const otherAssignments = filtered.filter((a) => !isMine(a));
 
   const pendingCount = activeAssignments.filter((a) => a.status === "active").length;
   const lastName = officer?.name?.trim().split(/\s+/).pop() ?? "Officer";

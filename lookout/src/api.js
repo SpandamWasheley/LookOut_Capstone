@@ -113,6 +113,12 @@ export const getDispatchers = () => apiFetch("/dispatchers/");
 export const deleteDispatcher = (id) =>
   apiFetch(`/dispatchers/${id}/`, { method: "DELETE" });
 
+export const getAlerts = () => apiFetch("/alerts/");
+export const updateAlert = (id, payload) =>
+  apiFetch(`/alerts/${id}/`, { method: "PATCH", body: JSON.stringify(payload) });
+
+export const getCameras = () => apiFetch("/cameras/");
+
 export const changePassword = (newPassword) =>
   apiFetch("/auth/change-password/", { method: "POST", body: JSON.stringify({ new_password: newPassword }) });
 

@@ -1,20 +1,54 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Maximize2, WifiOff, AlertTriangle } from "lucide-react";
-import { mockCameras, mockAlerts, VIOLATION_CONFIG } from "../data/mockData";
+import { VIOLATION_CONFIG } from "../data/mockData";
+import { getAlerts, getCameras } from "./api";
+
+function timeAgo(iso) {
+  if (!iso) return "—";
+  const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (diff < 60) return "just now";
+  if (diff < 3600) return `${Math.floor(diff / 60)} min ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)} hr ago`;
+  return `${Math.floor(diff / 86400)}d ago`;
+}
+
+function mapCamera(raw) {
+  return {
+    id: raw.code,
+    name: raw.name,
+    zone: raw.zone,
+    status: raw.status,
+    fps: raw.fps,
+    lastMotion: timeAgo(raw.last_motion_at),
+    imageUrl: raw.image_url,
+  };
+}
 
 export function CameraGrid({ compact = false }) {
   const [selected, setSelected] = useState(null);
+  const [allCameras, setAllCameras] = useState([]);
+  const [alerts, setAlerts] = useState([]);
+
+  useEffect(() => {
+    const refresh = () => {
+      getCameras().then((res) => setAllCameras((res.results ?? res).map(mapCamera))).catch(() => {});
+      getAlerts().then((res) => setAlerts(res.results ?? res)).catch(() => {});
+    };
+    refresh();
+    const interval = setInterval(refresh, 4000);
+    return () => clearInterval(interval);
+  }, []);
 
   const getAlert = (cameraId) =>
-    mockAlerts.find((a) => a.camera === cameraId && (a.status === "active" || a.status === "acknowledged"));
+    alerts.find((a) => a.camera === cameraId && (a.status === "active" || a.status === "acknowledged"));
 
-  const cameras = compact ? mockCameras.slice(0, 4) : mockCameras;
+  const cameras = compact ? allCameras.slice(0, 4) : allCameras;
 
   return (
     <div className={`grid gap-3 ${compact ? "grid-cols-2" : "grid-cols-2 xl:grid-cols-2"}`}>
       {cameras.map((cam) => {
         const alert = getAlert(cam.id);
-        const vcfg = alert ? VIOLATION_CONFIG[alert.type] : null;
+        const vcfg = alert ? VIOLATION_CONFIG[alert.type] ?? { label: alert.type, color: "#f59e0b", icon: AlertTriangle } : null;
         const isSelected = selected === cam.id;
         return (
           <div

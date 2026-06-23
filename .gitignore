@@ -44,3 +44,6 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+
+# Face recognition cache (insightface model weights cache to ~/.insightface/ instead)
+lookout_backend/core/vision/face_db.json

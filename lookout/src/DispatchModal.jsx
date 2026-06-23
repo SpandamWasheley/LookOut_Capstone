@@ -13,13 +13,10 @@ const loadLabel = (count) =>
 const loadColor = (count) =>
   count === 0 ? "#10b981" : count === 1 ? "#f59e0b" : "#ef4444";
 
-export function DispatchModal({ alert, officers, assignments, onAssign, onClose }) {
-  const vcfg = VIOLATION_CONFIG[alert.type];
+export function DispatchModal({ alert, officers, alerts, onAssign, onClose }) {
+  const vcfg = VIOLATION_CONFIG[alert.type] ?? { label: alert.type, color: "#f59e0b", icon: AlertTriangle };
 
-  const preSelected = assignments
-    .filter((a) => a.alertId === alert.id)
-    .map((a) => a.officerId);
-  const [selected, setSelected] = useState(preSelected);
+  const [selected, setSelected] = useState(alert.officersAssignedIds ?? []);
 
   const toggle = (id) => {
     setSelected((prev) =>
@@ -28,7 +25,12 @@ export function DispatchModal({ alert, officers, assignments, onAssign, onClose 
   };
 
   const assignmentCount = (officerId) =>
-    assignments.filter((a) => a.officerId === officerId && a.alertId !== alert.id).length;
+    alerts.filter(
+      (a) =>
+        a.officersAssignedIds.includes(officerId) &&
+        a.id !== alert.id &&
+        (a.status === "active" || a.status === "dispatched")
+    ).length;
 
   const available = officers.filter((o) => o.status !== "off-duty");
   const offline   = officers.filter((o) => o.status === "off-duty");

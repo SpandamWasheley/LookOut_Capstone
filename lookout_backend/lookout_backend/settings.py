@@ -156,6 +156,15 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 
+# Media files (violation snapshots saved by the curfew detection pipeline)
+MEDIA_URL = 'media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+
+# Used to build absolute Alert.image_url values from the curfew detection
+# management command (it runs outside any HTTP request, so there's no
+# request object to build an absolute URL from).
+SITE_BASE_URL = os.environ.get('SITE_BASE_URL', 'http://localhost:8000')
+
 
 # Email (used for officer account email verification codes)
 

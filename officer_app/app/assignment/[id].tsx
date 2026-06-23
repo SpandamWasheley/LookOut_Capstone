@@ -184,7 +184,7 @@ export default function AssignmentDetailScreen() {
   }
 
   const isUnassigned = assignment.status === "active";
-  const isMine = assignment.assignedOfficerName === officer?.name;
+  const isMine = officer?.officerId != null && assignment.assignedOfficerIds.includes(officer.officerId);
   const canAct = (isUnassigned || isMine) && assignment.status !== "resolved" && assignment.status !== "acknowledged";
   const isClosed = assignment.status === "resolved" || assignment.status === "acknowledged";
 
@@ -196,7 +196,7 @@ export default function AssignmentDetailScreen() {
     setBusy(true);
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     try {
-      await acceptAssignment(assignment.id, officer.name);
+      await acceptAssignment(assignment.id);
     } finally {
       setBusy(false);
     }
@@ -301,7 +301,7 @@ export default function AssignmentDetailScreen() {
           <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>DISPATCH INFO</Text>
           {[
             { icon: "clock" as const, label: "Detected", value: `${formatDate(assignment.dispatchedAt)} · ${timeSince(assignment.dispatchedAt)}` },
-            { icon: "user" as const, label: "Assigned To", value: assignment.assignedOfficerName || "Unassigned" },
+            { icon: "user" as const, label: "Assigned To", value: assignment.assignedOfficerNames.length ? assignment.assignedOfficerNames.join(", ") : "Unassigned" },
           ].map((row) => (
             <View key={row.label} style={[styles.infoRow, { borderBottomColor: c.border }]}>
               <Feather name={row.icon} size={15} color={c.mutedForeground} />

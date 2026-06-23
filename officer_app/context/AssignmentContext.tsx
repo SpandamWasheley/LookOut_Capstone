@@ -20,7 +20,8 @@ export interface Assignment {
   cameraCode: string | null;
   confidence: number;
   dispatchedAt: string;
-  assignedOfficerName: string | null;
+  assignedOfficerIds: number[];
+  assignedOfficerNames: string[];
   status: "active" | "dispatched" | "acknowledged" | "resolved";
   notes: string;
   suspect: string;
@@ -40,7 +41,8 @@ function mapAlert(raw: api.ApiAlert, typesByCode: Record<string, ViolationTypeMe
     cameraCode: raw.camera,
     confidence: Math.round(raw.confidence * 100),
     dispatchedAt: raw.timestamp,
-    assignedOfficerName: raw.officer_assigned,
+    assignedOfficerIds: raw.officers_assigned,
+    assignedOfficerNames: raw.officers_assigned_names,
     status: raw.status,
     notes: raw.notes,
     suspect: raw.suspect,
@@ -56,7 +58,7 @@ interface AssignmentContextType {
   error: string;
   refreshAssignments: () => Promise<void>;
   getAssignment: (id: string) => Assignment | undefined;
-  acceptAssignment: (id: string, officerName: string) => Promise<void>;
+  acceptAssignment: (id: string) => Promise<void>;
   resolveAssignment: (id: string, notes?: string) => Promise<void>;
   dismissAssignment: (id: string, reason: string) => Promise<void>;
   saveNote: (id: string, note: string) => Promise<void>;
@@ -70,8 +72,8 @@ export function AssignmentProvider({ children }: { children: React.ReactNode }) 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  const refreshAssignments = useCallback(async () => {
-    setError("");
+  const fetchAssignments = useCallback(async (silent = false) => {
+    if (!silent) setError("");
     try {
       const [alertsRes, typesRes] = await Promise.all([api.getAlerts(), api.getViolationTypes()]);
       const alerts = Array.isArray(alertsRes) ? alertsRes : alertsRes.results;
@@ -80,10 +82,15 @@ export function AssignmentProvider({ children }: { children: React.ReactNode }) 
         types.map((t) => [t.code, { code: t.code, label: t.label, color: t.color, icon: t.icon }])
       );
       setAssignments(alerts.map((a) => mapAlert(a, typesByCode)));
+      if (silent) setError("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load assignments.");
+      // Background polling fails silently (keeps showing the last good data);
+      // only surface an error for the initial load / explicit manual refresh.
+      if (!silent) setError(err instanceof Error ? err.message : "Failed to load assignments.");
     }
   }, []);
+
+  const refreshAssignments = useCallback(() => fetchAssignments(false), [fetchAssignments]);
 
   useEffect(() => {
     if (!officer) {
@@ -93,16 +100,23 @@ export function AssignmentProvider({ children }: { children: React.ReactNode }) 
       return;
     }
     setLoading(true);
-    refreshAssignments().finally(() => setLoading(false));
-  }, [officer, refreshAssignments]);
+    fetchAssignments(false).finally(() => setLoading(false));
+
+    const interval = setInterval(() => {
+      fetchAssignments(true);
+    }, 4000);
+    return () => clearInterval(interval);
+  }, [officer, fetchAssignments]);
 
   const getAssignment = useCallback((id: string) => assignments.find((a) => a.id === id), [assignments]);
 
   const acceptAssignment = useCallback(
-    async (id: string, officerName: string) => {
+    async (id: string) => {
       const a = assignments.find((x) => x.id === id);
       if (!a) return;
-      await api.updateAlert(a.dbId, { status: "dispatched", officer_assigned: officerName });
+      // Atomic add on the server — safe if another officer accepts the same
+      // alert at the same time, unlike a client-computed read-modify-write.
+      await api.acceptAlert(a.dbId);
       await refreshAssignments();
     },
     [assignments, refreshAssignments]

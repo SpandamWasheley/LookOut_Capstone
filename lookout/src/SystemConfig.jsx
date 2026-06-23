@@ -61,7 +61,7 @@ const sections = [
   { id: "system",  label: "System",     icon: Eye,           color: "#38bdf8" },
 ];
 
-function Slider({ label, value, min, max, unit, onChange }) {
+function Slider({ label, value, min, max, unit, desc, onChange }) {
   return (
     <div className="space-y-2">
       <div className="flex justify-between">
@@ -74,6 +74,7 @@ function Slider({ label, value, min, max, unit, onChange }) {
         className="w-full h-1 rounded-full appearance-none cursor-pointer"
         style={{ accentColor: "#f59e0b" }}
       />
+      {desc && <p className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>{desc}</p>}
     </div>
   );
 }
@@ -239,7 +240,10 @@ export function SystemConfig() {
           <TimeInput label="Curfew end" value={curfewEnd} onChange={setCurfewEnd} />
         </div>
         <Slider label="Minor age threshold" value={curfewAge} min={15} max={20} unit=" yrs" onChange={setCurfewAge} />
-        <Slider label="Detection confidence" value={curfewConf} min={50} max={99} unit="%" onChange={setCurfewConf} />
+        <Slider
+          label="Detection confidence" value={curfewConf} min={20} max={90} unit="%" onChange={setCurfewConf}
+          desc="Face-match similarity score, not a probability — a genuine match typically scores 35-70%. Values above ~75% are rarely reached even for correct matches."
+        />
         <Slider label="Dwell time before alert" value={curfewDwell} min={2} max={30} unit="s" onChange={setCurfewDwell} />
         <div>
           <Toggle label="Guardian co-presence check" desc="Verify adult accompaniment — applies Ordinance No. 636 exemptions" value={guardianCheck} onChange={setGuardianCheck} />

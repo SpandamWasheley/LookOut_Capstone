@@ -7,6 +7,7 @@ export interface Officer {
   role: string;
   name: string;
   mustChangePassword: boolean;
+  officerId: number | null;
 }
 
 interface AuthContextType {
@@ -31,10 +32,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           role: stored.role,
           name: stored.display_name || stored.username,
           mustChangePassword: stored.must_change_password,
+          officerId: stored.officer_id ?? null,
         });
       }
       setIsLoading(false);
     });
+    api.setUnauthorizedHandler(() => setOfficer(null));
+    return () => api.setUnauthorizedHandler(null);
   }, []);
 
   const login = async (username: string, password: string) => {

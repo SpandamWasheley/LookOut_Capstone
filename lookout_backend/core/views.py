@@ -7,7 +7,7 @@ from django.db import transaction
 from django.db.models import Count
 from django.utils import timezone
 from rest_framework import generics, permissions, viewsets
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView
@@ -359,6 +359,27 @@ class HouseholdMemberViewSet(viewsets.ModelViewSet):
 
 
 class AlertViewSet(viewsets.ModelViewSet):
-    queryset = Alert.objects.select_related("type", "camera", "officer_assigned").all()
+    queryset = Alert.objects.select_related("type", "camera").prefetch_related("officers_assigned").all()
     serializer_class = AlertSerializer
     filterset_fields = ["status", "type", "camera"]
+
+    @action(detail=True, methods=["post"])
+    def accept(self, request, pk=None):
+        """Adds the requesting officer to officers_assigned atomically.
+
+        Unlike a PATCH that replaces the whole officers_assigned list, M2M
+        .add() is a safe additive operation under concurrent requests — two
+        officers accepting the same alert at the same time can't overwrite
+        each other the way a client-computed read-modify-write PATCH can.
+        """
+        officer = getattr(request.user, "officer_profile", None)
+        if officer is None:
+            return Response({"detail": "Only officer accounts can accept assignments."}, status=403)
+
+        alert = self.get_object()
+        alert.officers_assigned.add(officer)
+        if alert.status == Alert.Status.ACTIVE:
+            alert.status = Alert.Status.DISPATCHED
+            alert.save(update_fields=["status"])
+
+        return Response(self.get_serializer(alert).data)

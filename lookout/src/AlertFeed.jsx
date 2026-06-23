@@ -1,8 +1,38 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Clock, AlertTriangle, Radio, ArrowRight } from "lucide-react";
-import { mockAlerts, mockOfficers, VIOLATION_CONFIG } from "../data/mockData";
+import { VIOLATION_CONFIG } from "../data/mockData";
 import { ViolationModal } from "./ViolationModal";
 import { DispatchModal } from "./DispatchModal";
+import { getAlerts, getOfficers, updateAlert } from "./api";
+
+function mapAlert(raw) {
+  return {
+    id: raw.code,
+    dbId: raw.id,
+    type: raw.type,
+    status: raw.status,
+    camera: raw.camera,
+    cameraZone: raw.camera_zone,
+    timestamp: raw.timestamp,
+    confidence: raw.confidence,
+    description: raw.description,
+    imageUrl: raw.image_url,
+    officersAssignedIds: raw.officers_assigned ?? [],
+    officersAssignedNames: raw.officers_assigned_names ?? [],
+    suspect: raw.suspect,
+    notes: raw.notes,
+  };
+}
+
+function mapOfficer(raw) {
+  return {
+    id: raw.id,
+    name: raw.name,
+    status: raw.status,
+    location: raw.location,
+    badge: raw.badge,
+  };
+}
 
 function formatTime(ts) {
   return new Date(ts).toLocaleTimeString("en-PH", {
@@ -30,12 +60,26 @@ function AlertCard({ alert, onView }) {
           </div>
         </div>
 
-        {alert.status === "active" && (
-          <span className="text-[10px] font-medium px-2 py-0.5 rounded-full flex-shrink-0"
-            style={{ background: "rgba(239,68,68,0.15)", color: "#ef4444" }}>
-            Active
-          </span>
-        )}
+        <div className="flex flex-col items-end gap-1 flex-shrink-0">
+          {alert.status === "active" && (
+            <span className="text-[10px] font-medium px-2 py-0.5 rounded-full whitespace-nowrap"
+              style={{ background: "rgba(239,68,68,0.15)", color: "#ef4444" }}>
+              Please Assign Agent
+            </span>
+          )}
+          {alert.status === "dispatched" && (
+            <>
+              <span className="text-[10px] font-medium px-2 py-0.5 rounded-full whitespace-nowrap"
+                style={{ background: "rgba(59,130,246,0.15)", color: "#3b82f6" }}>
+                Assigned
+              </span>
+              <span className="text-[10px] font-medium px-2 py-0.5 rounded-full whitespace-nowrap"
+                style={{ background: "rgba(245,158,11,0.15)", color: "#f59e0b" }}>
+                Pending
+              </span>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Location */}
@@ -45,9 +89,9 @@ function AlertCard({ alert, onView }) {
       </div>
 
       {/* Officer assignment */}
-      {alert.officerAssigned && (
+      {alert.officersAssignedNames.length > 0 && (
         <div className="flex items-center gap-1.5 mt-1 text-[11px]" style={{ color: "#3b82f6" }}>
-          <Radio size={10} className="flex-shrink-0" /> 1 officer
+          <Radio size={10} className="flex-shrink-0" /> {alert.officersAssignedNames.join(", ")}
         </div>
       )}
 
@@ -63,30 +107,69 @@ function AlertCard({ alert, onView }) {
   );
 }
 
-export function AlertFeed() {
-  const [alerts, setAlerts] = useState(mockAlerts);
+const ASSIGN_FILTERS = [
+  { id: "all", label: "All" },
+  { id: "unassigned", label: "Needs Agent" },
+  { id: "assigned", label: "Assigned" },
+];
+
+export function AlertFeed({ showFilters = false }) {
+  const [alerts, setAlerts] = useState([]);
+  const [officers, setOfficers] = useState([]);
   const [selectedAlert, setSelectedAlert] = useState(null);
   const [dispatchingAlert, setDispatchingAlert] = useState(null);
-  const [assignments, setAssignments] = useState([]);
-  const active = alerts.filter((a) => a.status === "active");
+  const [typeFilter, setTypeFilter] = useState("all");
+  const [assignFilter, setAssignFilter] = useState("all");
 
-  const updateStatus = (id, status) => {
-    setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, status } : a)));
+  const [actionError, setActionError] = useState("");
+
+  const active = alerts.filter((a) => a.status === "active" || a.status === "dispatched");
+  const visible = active.filter((a) => {
+    const matchType = typeFilter === "all" || a.type === typeFilter;
+    const matchAssign =
+      assignFilter === "all" ||
+      (assignFilter === "unassigned" ? a.officersAssignedIds.length === 0 : a.officersAssignedIds.length > 0);
+    return matchType && matchAssign;
+  });
+
+  const refresh = async () => {
+    const [alertsRes, officersRes] = await Promise.all([getAlerts(), getOfficers()]);
+    setAlerts((alertsRes.results ?? alertsRes).map(mapAlert));
+    setOfficers((officersRes.results ?? officersRes).map(mapOfficer));
   };
 
-  const assignedOfficerNames = (alertId) =>
-    assignments
-      .filter((a) => a.alertId === alertId)
-      .map((a) => mockOfficers.find((o) => o.id === a.officerId)?.name)
-      .filter(Boolean);
+  useEffect(() => {
+    refresh().catch(() => {});
+    const interval = setInterval(() => refresh().catch(() => {}), 4000);
+    return () => clearInterval(interval);
+  }, []);
 
-  const handleAssign = (officerIds) => {
-    setAssignments((prev) => [
-      ...prev.filter((a) => a.alertId !== dispatchingAlert.id),
-      ...officerIds.map((officerId) => ({ alertId: dispatchingAlert.id, officerId })),
-    ]);
-    updateStatus(dispatchingAlert.id, "dispatched");
-    setDispatchingAlert(null);
+  const assignedOfficerNames = (alertId) => {
+    const a = alerts.find((x) => x.id === alertId);
+    return a?.officersAssignedNames ?? [];
+  };
+
+  const updateStatus = async (id, status) => {
+    const a = alerts.find((x) => x.id === id);
+    if (!a) return;
+    setActionError("");
+    try {
+      await updateAlert(a.dbId, { status });
+      await refresh();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Failed to update violation status.");
+    }
+  };
+
+  const handleAssign = async (officerIds) => {
+    setActionError("");
+    try {
+      await updateAlert(dispatchingAlert.dbId, { status: "dispatched", officers_assigned: officerIds });
+      setDispatchingAlert(null);
+      await refresh();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Failed to assign officers.");
+    }
   };
 
   return (
@@ -105,13 +188,55 @@ export function AlertFeed() {
         )}
       </div>
 
+      {actionError && (
+        <div className="mb-4 px-3 py-2 rounded-lg text-[12px] flex items-center justify-between gap-2"
+          style={{ background: "rgba(239,68,68,0.12)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.3)" }}>
+          <span>{actionError}</span>
+          <button onClick={() => setActionError("")} className="font-semibold cursor-pointer flex-shrink-0">✕</button>
+        </div>
+      )}
+
+      {/* Filters */}
+      {showFilters && (
+        <div className="flex flex-wrap items-center gap-2 mb-4">
+          <select
+            value={typeFilter}
+            onChange={(e) => setTypeFilter(e.target.value)}
+            className="text-[12px] font-medium px-3 py-1.5 rounded-lg outline-none"
+            style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "#f1f5f9" }}
+          >
+            <option value="all">All types</option>
+            {Object.entries(VIOLATION_CONFIG).map(([key, cfg]) => (
+              <option key={key} value={key}>{cfg.label}</option>
+            ))}
+          </select>
+
+          <div className="flex gap-1.5">
+            {ASSIGN_FILTERS.map((f) => (
+              <button
+                key={f.id}
+                onClick={() => setAssignFilter(f.id)}
+                className="px-3 py-1.5 text-[12px] font-medium rounded-lg transition-all"
+                style={{
+                  background: assignFilter === f.id ? "rgba(245,158,11,0.15)" : "var(--secondary)",
+                  color: assignFilter === f.id ? "#f59e0b" : "var(--muted-foreground)",
+                  border: `1px solid ${assignFilter === f.id ? "rgba(245,158,11,0.4)" : "var(--border)"}`,
+                }}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Cards */}
-      {active.length === 0 ? (
+      {visible.length === 0 ? (
         <div className="text-center py-10 text-sm" style={{ color: "var(--muted-foreground)" }}>
-          No active violations
+          {active.length === 0 ? "No active violations" : "No violations match this filter"}
         </div>
       ) : (
-        active.map((alert) => (
+        visible.map((alert) => (
           <AlertCard key={alert.id} alert={alert} onView={() => setSelectedAlert(alert)} />
         ))
       )}
@@ -130,8 +255,8 @@ export function AlertFeed() {
       {dispatchingAlert && (
         <DispatchModal
           alert={dispatchingAlert}
-          officers={mockOfficers}
-          assignments={assignments}
+          officers={officers}
+          alerts={alerts}
           onAssign={handleAssign}
           onClose={() => setDispatchingAlert(null)}
         />

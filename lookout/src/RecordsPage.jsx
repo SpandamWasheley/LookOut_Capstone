@@ -1,7 +1,8 @@
-import { useState } from "react";
-import { CheckCircle, X, MapPin, Clock, Shield, Search, FileText } from "lucide-react";
-import { mockAlerts, VIOLATION_CONFIG } from "../data/mockData";
+import { useEffect, useState } from "react";
+import { CheckCircle, X, MapPin, Clock, Shield, Search, FileText, AlertTriangle } from "lucide-react";
+import { VIOLATION_CONFIG } from "../data/mockData";
 import { ViolationModal } from "./ViolationModal";
+import { getAlerts } from "./api";
 
 const outcomeConfig = {
   resolved:     { label: "Resolved",  color: "#10b981", bg: "rgba(16,185,129,0.1)",  icon: CheckCircle },
@@ -15,70 +16,54 @@ function formatFull(ts) {
   });
 }
 
-const finishedAlerts = [
-  ...mockAlerts.filter((a) => a.status === "acknowledged" || a.status === "resolved"),
-  {
-    id: "ALT-0035", type: "curfew", status: "resolved",
-    camera: "CAM-01", cameraZone: "Tetuan Market Entrance",
-    timestamp: "2025-06-11T23:10:00",
-    confidence: 0.88, description: "Minor detained and escorted home by officer.",
-    imageUrl: "https://images.unsplash.com/photo-1549402098-f4d9b419c5f8?w=400&h=300&fit=crop&auto=format",
-    officerAssigned: "PO2 Mangubat, Lisa", suspect: "Reyes, Kristine Joy",
-  },
-  {
-    id: "ALT-0034", type: "noise", status: "acknowledged",
-    camera: "CAM-02", cameraZone: "Barangay Hall Plaza",
-    timestamp: "2025-06-11T21:45:00",
-    confidence: 0.74, description: "Noise complaint verified but source already dispersed.",
-    imageUrl: "https://images.unsplash.com/photo-1512966885769-8207b47677df?w=400&h=300&fit=crop&auto=format",
-    officerAssigned: "PO3 Cabrera, Dante",
-  },
-  {
-    id: "ALT-0033", type: "waste", status: "acknowledged",
-    camera: "CAM-04", cameraZone: "Purok 6 Alley",
-    timestamp: "2025-06-11T18:30:00",
-    confidence: 0.65, description: "Alert dismissed — confirmed not a gathering.",
-    imageUrl: "https://images.unsplash.com/photo-1470420084874-431eb0a8d5b1?w=400&h=300&fit=crop&auto=format",
-    notes: "Confirmed not a gathering.",
-  },
-  {
-    id: "ALT-0032", type: "accident", status: "resolved",
-    camera: "CAM-03", cameraZone: "R.T. Lim Blvd. Junction",
-    timestamp: "2025-06-11T16:00:00",
-    confidence: 0.91, description: "Traffic accident cleared. Vehicles towed.",
-    imageUrl: "https://images.unsplash.com/photo-1525609004556-c46c7d6cf023?w=400&h=300&fit=crop&auto=format",
-    officerAssigned: "PO1 Reyes, Marco",
-  },
-  {
-    id: "ALT-0031", type: "indecency", status: "acknowledged",
-    camera: "CAM-01", cameraZone: "Tetuan Market Entrance",
-    timestamp: "2025-06-10T20:15:00",
-    confidence: 0.60, description: "False positive — vendor unloading goods.",
-    imageUrl: "https://images.unsplash.com/photo-1492724441997-5dc865305da7?w=400&h=300&fit=crop&auto=format",
-    notes: "False positive confirmed.",
-  },
-  {
-    id: "ALT-0030", type: "intrusion", status: "resolved",
-    camera: "CAM-04", cameraZone: "Purok 6 Alley",
-    timestamp: "2025-06-10T02:00:00",
-    confidence: 0.95, description: "Unauthorized entry resolved. Suspect identified.",
-    imageUrl: "https://images.unsplash.com/photo-1515601914948-8493e1a7cf6d?w=400&h=300&fit=crop&auto=format",
-  },
-];
+function mapAlert(raw) {
+  return {
+    id: raw.code,
+    type: raw.type,
+    status: raw.status,
+    camera: raw.camera,
+    cameraZone: raw.camera_zone,
+    timestamp: raw.timestamp,
+    confidence: raw.confidence,
+    description: raw.description,
+    imageUrl: raw.image_url,
+    officersAssignedIds: raw.officers_assigned ?? [],
+    officersAssignedNames: raw.officers_assigned_names ?? [],
+    suspect: raw.suspect,
+    notes: raw.notes,
+  };
+}
 
 export function RecordsPage() {
+  const [finishedAlerts, setFinishedAlerts] = useState([]);
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState(null);
 
+  useEffect(() => {
+    const refresh = () => {
+      getAlerts()
+        .then((res) =>
+          setFinishedAlerts(
+            (res.results ?? res).map(mapAlert).filter((a) => a.status === "acknowledged" || a.status === "resolved")
+          )
+        )
+        .catch(() => {});
+    };
+    refresh();
+    const interval = setInterval(refresh, 4000);
+    return () => clearInterval(interval);
+  }, []);
+
   const records = finishedAlerts.filter((a) => {
     const matchFilter = filter === "all" || a.status === filter;
+    const typeLabel = VIOLATION_CONFIG[a.type]?.label ?? a.type;
     const matchSearch =
       !search ||
-      VIOLATION_CONFIG[a.type].label.toLowerCase().includes(search.toLowerCase()) ||
+      typeLabel.toLowerCase().includes(search.toLowerCase()) ||
       a.cameraZone.toLowerCase().includes(search.toLowerCase()) ||
       a.id.toLowerCase().includes(search.toLowerCase()) ||
-      (a.officerAssigned ?? "").toLowerCase().includes(search.toLowerCase());
+      a.officersAssignedNames.some((name) => name.toLowerCase().includes(search.toLowerCase()));
     return matchFilter && matchSearch;
   });
 
@@ -173,7 +158,7 @@ export function RecordsPage() {
           </div>
 
           {records.map((alert, idx) => {
-            const vcfg = VIOLATION_CONFIG[alert.type];
+            const vcfg = VIOLATION_CONFIG[alert.type] ?? { label: alert.type, color: "#f59e0b", icon: AlertTriangle };
             const oc = outcomeConfig[alert.status] ?? outcomeConfig["acknowledged"];
             const OcIcon = oc.icon;
             return (
@@ -214,8 +199,12 @@ export function RecordsPage() {
 
                 {/* Officer */}
                 <div className="text-[12px] flex items-center gap-1.5" style={{ color: "#cbd5e1" }}>
-                  {alert.officerAssigned
-                    ? <><Shield size={10} style={{ color: "#3b82f6", flexShrink: 0 }} />{alert.officerAssigned.split(",")[0]}</>
+                  {alert.officersAssignedNames.length > 0
+                    ? <>
+                        <Shield size={10} style={{ color: "#3b82f6", flexShrink: 0 }} />
+                        {alert.officersAssignedNames[0].split(",")[0]}
+                        {alert.officersAssignedNames.length > 1 && ` +${alert.officersAssignedNames.length - 1}`}
+                      </>
                     : <span style={{ color: "var(--muted-foreground)" }}>—</span>
                   }
                 </div>
@@ -253,7 +242,7 @@ export function RecordsPage() {
       {selected && (
         <ViolationModal
           alert={selected}
-          assignedOfficerNames={selected.officerAssigned ? [selected.officerAssigned] : []}
+          assignedOfficerNames={selected.officersAssignedNames ?? []}
           onDismiss={() => {}}
           onDispatch={() => {}}
           onResolve={() => {}}

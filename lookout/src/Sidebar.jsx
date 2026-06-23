@@ -8,10 +8,10 @@ const navGroups = [
   {
     label: "Monitor",
     items: [
-      { id: "dashboard", label: "Overview",   icon: LayoutDashboard, roles: ["admin", "dispatcher"] },
-      { id: "cameras",   label: "Live Feeds", icon: Camera,          roles: ["admin", "dispatcher", "officer"] },
-      { id: "alerts",    label: "Violations", icon: Bell,            roles: ["admin", "dispatcher", "officer"] },
-      { id: "records",   label: "Records",    icon: Archive,         roles: ["admin", "dispatcher", "officer"] },
+      { id: "dashboard", label: "Overview",   icon: LayoutDashboard, roles: ["admin", "dispatcher", "both"] },
+      { id: "cameras",   label: "Live Feeds", icon: Camera,          roles: ["admin", "dispatcher", "officer", "both"] },
+      { id: "alerts",    label: "Violations", icon: Bell,            roles: ["admin", "dispatcher", "officer", "both"] },
+      { id: "records",   label: "Records",    icon: Archive,         roles: ["admin", "dispatcher", "officer", "both"] },
     ],
   },
   {
@@ -24,8 +24,13 @@ const navGroups = [
   },
 ];
 
+const ROLE_DISPLAY_LABEL = {
+  both: "Dispatcher",
+};
+
 export function Sidebar({ activeView, onViewChange, activeRole, userName, alertCount, onLogout }) {
   const [collapsed, setCollapsed] = useState(false);
+  const roleLabel = ROLE_DISPLAY_LABEL[activeRole] ?? activeRole;
 
   return (
     <aside
@@ -72,7 +77,7 @@ export function Sidebar({ activeView, onViewChange, activeRole, userName, alertC
               className="flex-1 py-1.5 text-[11px] font-medium text-center capitalize"
               style={{ background: "#f59e0b", color: "#0c0f16" }}
             >
-              {activeRole}
+              {roleLabel}
             </div>
           </div>
           {userName && (

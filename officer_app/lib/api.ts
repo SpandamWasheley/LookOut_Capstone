@@ -30,6 +30,7 @@ export interface ApiUser {
   role: string;
   email: string;
   must_change_password: boolean;
+  officer_id: number | null;
 }
 
 export async function getAccessToken() {
@@ -55,18 +56,29 @@ export class ApiError extends Error {
   }
 }
 
+let onUnauthorized: (() => void) | null = null;
+export function setUnauthorizedHandler(fn: (() => void) | null) {
+  onUnauthorized = fn;
+}
+
 export async function apiFetch<T = unknown>(path: string, options: RequestInit = {}): Promise<T> {
   const token = await getAccessToken();
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...options,
     headers: {
       "Content-Type": "application/json",
+      "ngrok-skip-browser-warning": "true",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options.headers,
     },
   });
 
   if (!response.ok) {
+    if (response.status === 401 && token) {
+      await clearAuth();
+      onUnauthorized?.();
+      throw new ApiError("Your session has expired. Please log in again.", 401, null);
+    }
     const text = await response.text();
     let parsed: Record<string, unknown> | null = null;
     try {
@@ -90,6 +102,7 @@ export interface LoginResult {
     role: string;
     name: string;
     mustChangePassword: boolean;
+    officerId: number | null;
   };
 }
 
@@ -115,11 +128,16 @@ export async function login(username: string, password: string): Promise<LoginRe
     role: data.user.role,
     name: data.user.display_name || data.user.username,
     mustChangePassword: data.user.must_change_password,
+    officerId: data.user.officer_id ?? null,
   };
 
   await AsyncStorage.setItem(ACCESS_KEY, data.access);
   await AsyncStorage.setItem(REFRESH_KEY, data.refresh);
-  await AsyncStorage.setItem(USER_KEY, JSON.stringify(user));
+  // Persist the raw API shape (matches ApiUser / what getStoredUser() reads
+  // back on app restart) — NOT the transformed `user` shape above, which has
+  // different field names (name vs display_name, mustChangePassword vs
+  // must_change_password) and would silently break on next app load.
+  await AsyncStorage.setItem(USER_KEY, JSON.stringify(data.user));
 
   return user;
 }
@@ -165,7 +183,8 @@ export interface ApiAlert {
   confidence: number;
   description: string;
   image_url: string;
-  officer_assigned: string | null;
+  officers_assigned: number[];
+  officers_assigned_names: string[];
   suspect: string;
   notes: string;
 }
@@ -173,6 +192,11 @@ export interface ApiAlert {
 export const getAlerts = () => apiFetch<{ results: ApiAlert[] } | ApiAlert[]>("/alerts/");
 export const updateAlert = (id: number, payload: Partial<ApiAlert>) =>
   apiFetch<ApiAlert>(`/alerts/${id}/`, { method: "PATCH", body: JSON.stringify(payload) });
+// Atomically adds the current officer to officers_assigned (and promotes
+// status to "dispatched" if still "active") — safe under concurrent accepts,
+// unlike a client-computed read-modify-write PATCH of the full list.
+export const acceptAlert = (id: number) =>
+  apiFetch<ApiAlert>(`/alerts/${id}/accept/`, { method: "POST" });
 
 export interface ApiViolationType {
   id: number;

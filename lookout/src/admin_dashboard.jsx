@@ -7,12 +7,33 @@ import { Sidebar } from "./Sidebar";
 import { OfficersPage } from "./OfficersPage";
 import { ResidentDatabase } from "./ResidentDatabase";
 import { SystemConfig } from "./SystemConfig";
-import { mockAlerts, mockCameras, mockOfficers } from "../data/mockData";
+import { SystemStatusCard } from "./SystemStatusCard";
+import { getAlerts, getCameras, getOfficers } from "./api";
+
+function useLiveOverviewData() {
+  const [alerts, setAlerts] = useState([]);
+  const [cameras, setCameras] = useState([]);
+  const [officers, setOfficers] = useState([]);
+
+  useEffect(() => {
+    const refresh = () => {
+      getAlerts().then((res) => setAlerts(res.results ?? res)).catch(() => {});
+      getCameras().then((res) => setCameras(res.results ?? res)).catch(() => {});
+      getOfficers().then((res) => setOfficers(res.results ?? res)).catch(() => {});
+    };
+    refresh();
+    const interval = setInterval(refresh, 4000);
+    return () => clearInterval(interval);
+  }, []);
+
+  return { alerts, cameras, officers };
+}
 
 const ROLE_PAGES = {
   admin:      ["dashboard", "cameras", "alerts", "records", "residents", "officers", "config"],
   dispatcher: ["dashboard", "cameras", "alerts", "records"],
   officer:    ["cameras", "alerts", "records"],
+  both:       ["dashboard", "cameras", "alerts", "records"],
 };
 
 function LiveClock() {
@@ -37,18 +58,20 @@ function AdminDashboard({ user, onLogout }) {
   const [activePage, setActivePage] = useState(allowed[0]);
   const safePage = allowed.includes(activePage) ? activePage : allowed[0];
 
-  const activeAlerts = mockAlerts.filter((a) => a.status === "active");
-  const onlineCount = mockCameras.filter((c) => c.status === "online").length;
-  const degradedCount = mockCameras.filter((c) => c.status === "degraded").length;
-  const officersOnDuty = mockOfficers.filter((o) => o.status !== "off-duty").length;
-  const responding = mockOfficers.filter((o) => o.status === "responding").length;
+  const { alerts, cameras, officers } = useLiveOverviewData();
+
+  const activeAlerts = alerts.filter((a) => a.status === "active");
+  const onlineCount = cameras.filter((c) => c.status === "online").length;
+  const degradedCount = cameras.filter((c) => c.status === "degraded").length;
+  const officersOnDuty = officers.filter((o) => o.status !== "off-duty").length;
+  const responding = officers.filter((o) => o.status === "responding").length;
   const alertCount = activeAlerts.length;
 
   const kpis = [
     { label: "Active Violations", value: alertCount, sub: "Requires review", accent: "#ef4444", icon: AlertTriangle },
-    { label: "Cameras Online", value: `${onlineCount} / ${mockCameras.length}`, sub: `${degradedCount} degraded`, accent: "#f59e0b", icon: Camera },
+    { label: "Cameras Online", value: `${onlineCount} / ${cameras.length}`, sub: `${degradedCount} degraded`, accent: "#f59e0b", icon: Camera },
     { label: "Officers on Duty", value: officersOnDuty, sub: `${responding} responding`, accent: "#3b82f6", icon: Users },
-    { label: "Detections Today", value: "1,284", sub: "46 confirmed violations", accent: "#a855f7", icon: Zap },
+    { label: "Total Alerts", value: alerts.length, sub: `${alerts.filter((a) => a.status === "resolved").length} resolved`, accent: "#a855f7", icon: Zap },
   ];
 
   return (
@@ -143,9 +166,14 @@ function AdminDashboard({ user, onLogout }) {
         )}
 
         {safePage === "alerts" && (
-          <div className="p-6">
-            <h2 className="text-3xl font-bold mb-6">Violations</h2>
-            <AlertFeed />
+          <div className="flex flex-col h-full">
+            <div className="px-6 pt-6 pb-4 flex-shrink-0">
+              <h2 className="text-3xl font-bold mb-6">Violations</h2>
+              <SystemStatusCard alerts={alerts} cameras={cameras} />
+            </div>
+            <div className="flex-1 overflow-y-auto px-6 pb-6">
+              <AlertFeed showFilters />
+            </div>
           </div>
         )}
 

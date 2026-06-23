@@ -1,0 +1,7 @@
+{
+  "enabledPlugins": {
+    "context-mode@context-mode": true,
+    "frontend-design@claude-plugins-official": true,
+    "security-guidance@claude-plugins-official": true
+  }
+}

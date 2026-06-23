@@ -220,9 +220,7 @@ class Alert(models.Model):
     confidence = models.FloatField()
     description = models.TextField(blank=True)
     image_url = models.URLField(blank=True)
-    officer_assigned = models.ForeignKey(
-        Officer, on_delete=models.SET_NULL, null=True, blank=True, related_name="alerts"
-    )
+    officers_assigned = models.ManyToManyField(Officer, blank=True, related_name="alerts")
     suspect = models.CharField(max_length=150, blank=True)
     notes = models.TextField(blank=True)
 
@@ -242,7 +240,11 @@ class SystemSettings(models.Model):
     curfew_start = models.TimeField(default=time(22, 0))
     curfew_end = models.TimeField(default=time(6, 0))
     curfew_age = models.PositiveSmallIntegerField(default=18)
-    curfew_confidence = models.PositiveSmallIntegerField(default=75)
+    # Compared directly against the face-recognition match score (insightface/
+    # ArcFace cosine similarity * 100). A genuine match typically scores
+    # 35-70, not 90+, so this default is calibrated to that scale rather than
+    # a generic "75% confident" percentage.
+    curfew_confidence = models.PositiveSmallIntegerField(default=45)
     curfew_dwell = models.PositiveSmallIntegerField(default=5)
     guardian_check = models.BooleanField(default=True)
     unknown_alert = models.BooleanField(default=True)

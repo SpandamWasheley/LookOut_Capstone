@@ -182,7 +182,7 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(f"Households: {len(HOUSEHOLDS)}"))
 
         for a in ALERTS:
-            Alert.objects.update_or_create(
+            alert, _ = Alert.objects.update_or_create(
                 code=a["code"],
                 defaults={
                     "type": vtypes[a["type"]],
@@ -192,10 +192,11 @@ class Command(BaseCommand):
                     "confidence": a["confidence"],
                     "description": a["description"],
                     "image_url": a["image_url"],
-                    "officer_assigned": officers.get(a["officer_assigned"]),
                     "suspect": a["suspect"],
                 },
             )
+            assigned_officer = officers.get(a["officer_assigned"])
+            alert.officers_assigned.set([assigned_officer] if assigned_officer else [])
         self.stdout.write(self.style.SUCCESS(f"Alerts: {len(ALERTS)}"))
 
         self.stdout.write(self.style.SUCCESS("Demo data seeded successfully."))

@@ -1,7 +1,7 @@
 import { useRef, useEffect, useState } from "react";
 import {
   X, MapPin, Clock, User, Shield, Play, Pause,
-  SkipBack, Volume2, VolumeX, Download, Radio, CheckCircle,
+  SkipBack, Volume2, VolumeX, Download, Radio, CheckCircle, AlertTriangle,
 } from "lucide-react";
 import { VIOLATION_CONFIG } from "../data/mockData";
 
@@ -142,7 +142,7 @@ function RecordingPlayer({ alert }) {
 export function ViolationModal({
   alert, assignedOfficerNames, onDismiss, onDispatch, onResolve, onClose,
 }) {
-  const vcfg = VIOLATION_CONFIG[alert.type];
+  const vcfg = VIOLATION_CONFIG[alert.type] ?? { label: alert.type, color: "#f59e0b", icon: AlertTriangle };
   const scfg = statusConfig[alert.status];
 
   return (

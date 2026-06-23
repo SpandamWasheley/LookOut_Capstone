@@ -71,8 +71,12 @@ class HouseholdMemberAdmin(admin.ModelAdmin):
 
 @admin.register(Alert)
 class AlertAdmin(admin.ModelAdmin):
-    list_display = ("code", "type", "status", "camera", "timestamp", "confidence", "officer_assigned")
+    list_display = ("code", "type", "status", "camera", "timestamp", "confidence", "officers_list")
     list_filter = ("status", "type")
+
+    def officers_list(self, obj):
+        return ", ".join(o.name for o in obj.officers_assigned.all()) or "—"
+    officers_list.short_description = "Officers assigned"
 
 
 @admin.register(SystemSettings)

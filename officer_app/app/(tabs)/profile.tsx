@@ -45,7 +45,9 @@ export default function ProfileScreen() {
     loadProfile();
   }, [loadProfile]);
 
-  const myAssignments = assignments.filter((a) => a.assignedOfficerName === authOfficer?.name);
+  const myAssignments = assignments.filter(
+    (a) => authOfficer?.officerId != null && a.assignedOfficerIds.includes(authOfficer.officerId)
+  );
   const resolvedCount = myAssignments.filter((a) => a.status === "resolved").length;
   const activeCount = myAssignments.filter((a) => a.status === "active" || a.status === "dispatched").length;
 
