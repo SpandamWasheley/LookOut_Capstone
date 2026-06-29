@@ -40,6 +40,14 @@ function mapDispatcher(raw) {
   };
 }
 
+const formatPhone = (raw) => {
+  const d = raw.replace(/\D/g, "").slice(0, 11);
+  if (d.length <= 4) return d;
+  if (d.length <= 7) return `${d.slice(0, 4)}-${d.slice(4)}`;
+  return `${d.slice(0, 4)}-${d.slice(4, 7)}-${d.slice(7)}`;
+};
+const blockNumbers = (v) => v.replace(/[0-9]/g, "");
+
 function generateUsername(firstName, lastName) {
   const base = `${firstName}.${lastName}`.toLowerCase().replace(/[^a-z.]/g, "");
   const suffix = Math.floor(100 + Math.random() * 900);
@@ -218,15 +226,15 @@ function AddAccountModal({ role, onAdd, onClose }) {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>First name *</label>
-                  <input value={form.firstName} onChange={(e) => set("firstName", e.target.value)} placeholder="Juan"
+                  <input value={form.firstName} onChange={(e) => set("firstName", blockNumbers(e.target.value))} placeholder="Juan"
                     className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
-                    style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "#f1f5f9" }} />
+                    style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
                 </div>
                 <div>
                   <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>Last name *</label>
-                  <input value={form.lastName} onChange={(e) => set("lastName", e.target.value)} placeholder="Dela Cruz"
+                  <input value={form.lastName} onChange={(e) => set("lastName", blockNumbers(e.target.value))} placeholder="Dela Cruz"
                     className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
-                    style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "#f1f5f9" }} />
+                    style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
                 </div>
               </div>
               <div>
@@ -234,7 +242,7 @@ function AddAccountModal({ role, onAdd, onClose }) {
                 <div className="flex gap-2">
                   <input value={form.username} onChange={(e) => set("username", e.target.value)} placeholder="juan.delacruz123"
                     className="flex-1 px-3 py-2.5 rounded-xl text-sm outline-none"
-                    style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "#f1f5f9" }} />
+                    style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
                   <button onClick={handleGenerateUsername} type="button"
                     className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-medium flex-shrink-0"
                     style={{ background: "rgba(245,158,11,0.1)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.2)" }}>
@@ -245,9 +253,9 @@ function AddAccountModal({ role, onAdd, onClose }) {
               {cfg.requirePhone && (
                 <div>
                   <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>Phone *</label>
-                  <input value={form.phone} onChange={(e) => set("phone", e.target.value)} placeholder="+63 9XX XXX XXXX"
+                  <input value={form.phone} onChange={(e) => set("phone", formatPhone(e.target.value))} placeholder="0951-853-2146"
                     className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
-                    style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "#f1f5f9" }} />
+                    style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
                 </div>
               )}
             </>
@@ -262,7 +270,7 @@ function AddAccountModal({ role, onAdd, onClose }) {
                     onChange={(e) => { set("email", e.target.value); set("emailVerified", false); setCodeSent(false); }}
                     placeholder="officer@example.com"
                     className="flex-1 px-3 py-2.5 rounded-xl text-sm outline-none disabled:opacity-60"
-                    style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "#f1f5f9" }} />
+                    style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
                   <button onClick={handleSendCode} type="button" disabled={!form.email.trim() || sendingCode || form.emailVerified}
                     className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-medium flex-shrink-0 disabled:opacity-50"
                     style={{ background: "rgba(245,158,11,0.1)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.2)" }}>
@@ -280,7 +288,7 @@ function AddAccountModal({ role, onAdd, onClose }) {
                   <div className="flex gap-2">
                     <input value={form.code} onChange={(e) => set("code", e.target.value)} placeholder="6-digit code" maxLength={6}
                       className="flex-1 px-3 py-2.5 rounded-xl text-sm outline-none tracking-widest"
-                      style={{ background: "var(--card)", border: "1px solid var(--border)", color: "#f1f5f9", fontFamily: "'DM Mono', monospace" }} />
+                      style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--foreground)", fontFamily: "'DM Mono', monospace" }} />
                     <button onClick={handleVerifyCode} type="button" disabled={!form.code.trim() || verifying}
                       className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-medium flex-shrink-0 disabled:opacity-50"
                       style={{ background: "#f59e0b", color: "#0c0f16" }}>
@@ -306,7 +314,7 @@ function AddAccountModal({ role, onAdd, onClose }) {
                 <div className="flex gap-2">
                   <input value={form.password} onChange={(e) => set("password", e.target.value)} placeholder="At least 8 characters"
                     className="flex-1 px-3 py-2.5 rounded-xl text-sm outline-none"
-                    style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "#f1f5f9", fontFamily: "'DM Mono', monospace" }} />
+                    style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)", fontFamily: "'DM Mono', monospace" }} />
                   <button onClick={() => set("password", generatePassword())} type="button"
                     className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-medium flex-shrink-0"
                     style={{ background: "rgba(245,158,11,0.1)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.2)" }}>
@@ -316,8 +324,8 @@ function AddAccountModal({ role, onAdd, onClose }) {
               </div>
               <div className="rounded-xl p-3.5 flex items-start gap-2.5" style={{ background: "rgba(59,130,246,0.06)", border: "1px solid rgba(59,130,246,0.12)" }}>
                 <Lock size={13} style={{ color: "#3b82f6", flexShrink: 0, marginTop: 1 }} />
-                <p className="text-[11px] leading-relaxed" style={{ color: "#94a3b8" }}>
-                  This is a <span style={{ color: "#f1f5f9" }}>temporary password</span>. The officer will be required to set a new password the first time they log in.
+                <p className="text-[11px] leading-relaxed" style={{ color: "var(--muted-foreground)" }}>
+                  This is a <span style={{ color: "var(--foreground)" }}>temporary password</span>. The officer will be required to set a new password the first time they log in.
                 </p>
               </div>
             </>
@@ -618,7 +626,7 @@ export function OfficersPage() {
                   </button>
 
                   {/* Location */}
-                  <div className="text-[12px] flex items-center gap-1" style={{ color: "#cbd5e1" }}>
+                  <div className="text-[12px] flex items-center gap-1" style={{ color: "var(--muted-foreground)" }}>
                     <MapPin size={10} style={{ color: "var(--muted-foreground)", flexShrink: 0 }} />
                     {officer.location || "—"}
                   </div>
@@ -631,7 +639,7 @@ export function OfficersPage() {
                   {/* Actions */}
                   <div className="flex items-center gap-1 justify-end">
                     <button className="p-1.5 rounded-lg transition-all" style={{ color: "var(--muted-foreground)" }}
-                      onMouseEnter={(e) => { e.currentTarget.style.color = "#f1f5f9"; e.currentTarget.style.background = "var(--secondary)"; }}
+                      onMouseEnter={(e) => { e.currentTarget.style.color = "var(--foreground)"; e.currentTarget.style.background = "var(--secondary)"; }}
                       onMouseLeave={(e) => { e.currentTarget.style.color = "var(--muted-foreground)"; e.currentTarget.style.background = "transparent"; }}>
                       <Edit2 size={13} />
                     </button>

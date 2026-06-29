@@ -129,3 +129,5 @@ export const resetForgotPassword = (email, code, newPassword) =>
     method: "POST",
     body: JSON.stringify({ email, code, new_password: newPassword }),
   });
+export const sendSms = (payload) =>
+  apiFetch("/sms/send/", { method: "POST", body: JSON.stringify(payload) });

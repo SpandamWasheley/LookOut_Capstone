@@ -303,6 +303,21 @@ def dashboard_stats(request):
     })
 
 
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated])
+def send_sms(request):
+    recipients = request.data.get("recipients", [])
+    message = request.data.get("message", "")
+    if not recipients:
+        return Response({"detail": "No recipients specified."}, status=400)
+    if not message.strip():
+        return Response({"detail": "Message cannot be empty."}, status=400)
+    # Log each SMS attempt (wire to Semaphore/Twilio in production)
+    for number in recipients:
+        print(f"[SMS] → {number}: {message[:120]}")
+    return Response({"sent": len(recipients), "recipients": recipients})
+
+
 class ZoneViewSet(viewsets.ModelViewSet):
     queryset = Zone.objects.all()
     serializer_class = ZoneSerializer

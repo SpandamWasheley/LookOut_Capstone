@@ -91,7 +91,7 @@ export function CameraGrid({ compact = false }) {
                   <div className="flex items-center gap-1 px-1.5 py-0.5 rounded"
                     style={{ background: "rgba(239,68,68,0.85)" }}>
                     <span className="w-1 h-1 rounded-full bg-white animate-pulse" />
-                    <span className="text-[9px] font-semibold text-white" style={{ fontFamily: "'DM Mono', monospace" }}>LIVE</span>
+                    <span className="text-[9px] font-semibold" style={{ color: "#fff", fontFamily: "'DM Mono', monospace" }}>LIVE</span>
                   </div>
                 )}
               </div>
@@ -112,7 +112,7 @@ export function CameraGrid({ compact = false }) {
                 >
                   <div className="flex items-center gap-1.5">
                     <vcfg.icon size={12} color={vcfg.color} />
-                    <span className="text-[11px] font-medium text-white">{vcfg.label}</span>
+                    <span className="text-[11px] font-medium" style={{ color: "#fff" }}>{vcfg.label}</span>
                   </div>
                 </div>
               )}
@@ -120,7 +120,7 @@ export function CameraGrid({ compact = false }) {
               {/* Expand on hover */}
               <div className="absolute bottom-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
                 <div className="p-1 rounded" style={{ background: "rgba(0,0,0,0.6)" }}>
-                  <Maximize2 size={10} className="text-white" />
+                  <Maximize2 size={10} style={{ color: "#fff" }} />
                 </div>
               </div>
 

@@ -12,6 +12,15 @@ import {
 import { AddHouseholdModal } from "./AddHouseholdModal";
 import { EnrollModal } from "./EnrollModal";
 
+const formatPhone = (raw) => {
+  const d = raw.replace(/\D/g, "").slice(0, 11);
+  if (d.length <= 4) return d;
+  if (d.length <= 7) return `${d.slice(0, 4)}-${d.slice(4)}`;
+  return `${d.slice(0, 4)}-${d.slice(4, 7)}-${d.slice(7)}`;
+};
+const blockNumbers = (v) => v.replace(/[0-9]/g, "");
+const maxToday = () => new Date().toISOString().slice(0, 10);
+
 function mapHousehold(raw) {
   const idToCode = {};
   raw.members.forEach((m) => { idToCode[m.id] = m.code; });
@@ -129,7 +138,7 @@ function ManageHouseholdModal({ household, onSave, onClose }) {
               <Home size={14} style={{ color: "#f59e0b" }} />
             </div>
             <div>
-              <div className="text-sm font-semibold text-white">Manage Household</div>
+              <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Manage Household</div>
               <div className="text-[11px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
                 {household.id}
               </div>
@@ -157,7 +166,7 @@ function ManageHouseholdModal({ household, onSave, onClose }) {
                     value={familyName}
                     onChange={(e) => setFamilyName(e.target.value)}
                     className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
-                    style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "#f1f5f9" }}
+                    style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
                   />
                 </div>
                 <div>
@@ -167,7 +176,7 @@ function ManageHouseholdModal({ household, onSave, onClose }) {
                     onChange={(e) => setPurok(e.target.value)}
                     placeholder="e.g. Purok 3"
                     className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
-                    style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "#f1f5f9" }}
+                    style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
                   />
                 </div>
               </div>
@@ -179,7 +188,7 @@ function ManageHouseholdModal({ household, onSave, onClose }) {
                   value={address}
                   onChange={(e) => setAddress(e.target.value)}
                   className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
-                  style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "#f1f5f9" }}
+                  style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
                 />
               </div>
               <div className="grid grid-cols-2 gap-3">
@@ -189,7 +198,7 @@ function ManageHouseholdModal({ household, onSave, onClose }) {
                     value={zone}
                     onChange={(e) => setZone(e.target.value)}
                     className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
-                    style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "#f1f5f9", colorScheme: "dark" }}
+                    style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
                   >
                     {ZONES.map((z) => <option key={z} value={z}>{z}</option>)}
                   </select>
@@ -200,9 +209,10 @@ function ManageHouseholdModal({ household, onSave, onClose }) {
                   </label>
                   <input
                     value={contact}
-                    onChange={(e) => setContact(e.target.value)}
+                    onChange={(e) => setContact(formatPhone(e.target.value))}
+                    placeholder="0951-853-2146"
                     className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
-                    style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "#f1f5f9" }}
+                    style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
                   />
                 </div>
               </div>
@@ -215,7 +225,7 @@ function ManageHouseholdModal({ household, onSave, onClose }) {
                   <div className="space-y-1">
                     {secondaryContacts.map((c) => (
                       <div key={c.phone} className="flex items-center justify-between text-[12px]">
-                        <span style={{ color: "#94a3b8" }}>{c.name}</span>
+                        <span style={{ color: "var(--muted-foreground)" }}>{c.name}</span>
                         <span style={{ color: "#f59e0b", fontFamily: "'DM Mono', monospace" }}>{c.phone}</span>
                       </div>
                     ))}
@@ -243,13 +253,13 @@ function ManageHouseholdModal({ household, onSave, onClose }) {
                   >
                     <div
                       className="w-7 h-7 rounded-lg flex items-center justify-center text-[10px] font-bold flex-shrink-0"
-                      style={{ background: minor ? "rgba(245,158,11,0.12)" : "rgba(100,116,139,0.12)", color: minor ? "#f59e0b" : "#94a3b8" }}
+                      style={{ background: minor ? "rgba(245,158,11,0.12)" : "rgba(100,116,139,0.12)", color: minor ? "#f59e0b" : "var(--muted-foreground)" }}
                     >
                       {memberInitials(m.firstName, m.lastName)}
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
-                        <span className="text-[12px] font-medium text-white">{m.lastName}, {m.firstName}</span>
+                        <span className="text-[12px] font-medium" style={{ color: "var(--foreground)" }}>{m.lastName}, {m.firstName}</span>
                         {minor && (
                           <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: "rgba(245,158,11,0.12)", color: "#f59e0b" }}>
                             Minor
@@ -279,8 +289,8 @@ function ManageHouseholdModal({ household, onSave, onClose }) {
             onClick={handleSave}
             className="flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-medium transition-all"
             style={{
-              background: saved ? "#10b981" : valid ? "#f59e0b" : "rgba(245,158,11,0.2)",
-              color: saved ? "#fff" : valid ? "#0c0f16" : "rgba(245,158,11,0.4)",
+              background: saved ? "#10b981" : valid ? "var(--primary)" : "rgba(245,158,11,0.2)",
+              color: saved ? "#fff" : valid ? "var(--primary-foreground)" : "rgba(245,158,11,0.4)",
               cursor: valid ? "pointer" : "not-allowed",
             }}
           >
@@ -339,7 +349,7 @@ function HouseholdCard({ household, onManage, filter, onAddMember }) {
           className="flex-1 min-w-0 flex items-center gap-2 flex-wrap cursor-pointer"
           onClick={() => setCollapsed((c) => !c)}
         >
-          <span className="text-[13px] font-semibold text-white">
+          <span className="text-[13px] font-semibold" style={{ color: "var(--foreground)" }}>
             {household.familyName} household
           </span>
           <span className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
@@ -379,7 +389,7 @@ function HouseholdCard({ household, onManage, filter, onAddMember }) {
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2 text-[11px]"
           style={{ borderTop: "1px solid var(--border)", color: "var(--muted-foreground)" }}>
           {household.contact && (
-            <span>Primary: <span style={{ color: "#f1f5f9", fontFamily: "'DM Mono', monospace" }}>{household.contact}</span></span>
+            <span>Primary: <span style={{ color: "var(--foreground)", fontFamily: "'DM Mono', monospace" }}>{household.contact}</span></span>
           )}
           {secondaryContacts.length > 0 && (
             <span>
@@ -424,7 +434,7 @@ function HouseholdCard({ household, onManage, filter, onAddMember }) {
                     className="w-9 h-9 rounded-lg flex items-center justify-center text-xs font-bold flex-shrink-0 overflow-hidden"
                     style={{
                       background: minor ? "rgba(245,158,11,0.15)" : "rgba(100,116,139,0.12)",
-                      color: minor ? "#f59e0b" : "#94a3b8",
+                      color: minor ? "#f59e0b" : "var(--muted-foreground)",
                       border: `1.5px solid ${st.color}30`,
                     }}
                   >
@@ -435,7 +445,7 @@ function HouseholdCard({ household, onManage, filter, onAddMember }) {
 
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-[13px] font-medium text-white">
+                      <span className="text-[13px] font-medium" style={{ color: "var(--foreground)" }}>
                         {member.lastName}, {member.firstName}
                       </span>
                       <span className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>{member.relation}</span>
@@ -486,34 +496,34 @@ function HouseholdCard({ household, onManage, filter, onAddMember }) {
                 <div className="grid grid-cols-2 gap-2.5">
                   <input
                     value={newMember.firstName}
-                    onChange={(e) => setNewMember((p) => ({ ...p, firstName: e.target.value }))}
+                    onChange={(e) => setNewMember((p) => ({ ...p, firstName: blockNumbers(e.target.value) }))}
                     placeholder="First name"
                     className="w-full px-3 py-2 rounded-lg text-xs outline-none"
-                    style={{ background: "var(--card)", border: "1px solid var(--border)", color: "#f1f5f9" }}
+                    style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--foreground)" }}
                   />
                   <input
                     value={newMember.lastName}
-                    onChange={(e) => setNewMember((p) => ({ ...p, lastName: e.target.value }))}
+                    onChange={(e) => setNewMember((p) => ({ ...p, lastName: blockNumbers(e.target.value) }))}
                     placeholder="Last name"
                     className="w-full px-3 py-2 rounded-lg text-xs outline-none"
-                    style={{ background: "var(--card)", border: "1px solid var(--border)", color: "#f1f5f9" }}
+                    style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--foreground)" }}
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-2.5">
                   <input
                     type="date"
                     value={newMember.birthdate}
-                    onChange={(e) => setNewMember((p) => ({ ...p, birthdate: e.target.value }))}
-                    max={new Date().toISOString().slice(0, 10)}
+                    onChange={(e) => { const v = e.target.value; if (v <= maxToday()) setNewMember((p) => ({ ...p, birthdate: v })); }}
+                    max={maxToday()}
                     className="w-full px-3 py-2 rounded-lg text-xs outline-none"
-                    style={{ background: "var(--card)", border: "1px solid var(--border)", color: "#f1f5f9", colorScheme: "dark" }}
+                    style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--foreground)" }}
                   />
                   <input
                     value={newMember.relation}
                     onChange={(e) => setNewMember((p) => ({ ...p, relation: e.target.value }))}
                     placeholder="Relation (e.g. Son)"
                     className="w-full px-3 py-2 rounded-lg text-xs outline-none"
-                    style={{ background: "var(--card)", border: "1px solid var(--border)", color: "#f1f5f9" }}
+                    style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--foreground)" }}
                   />
                 </div>
 
@@ -524,10 +534,10 @@ function HouseholdCard({ household, onManage, filter, onAddMember }) {
                     </label>
                     <input
                       value={newMember.phone}
-                      onChange={(e) => setNewMember((p) => ({ ...p, phone: e.target.value }))}
-                      placeholder="09XXXXXXXXX"
+                      onChange={(e) => setNewMember((p) => ({ ...p, phone: formatPhone(e.target.value) }))}
+                      placeholder="0951-853-2146"
                       className="w-full px-3 py-2 rounded-lg text-xs outline-none"
-                      style={{ background: "var(--card)", border: "1px solid var(--border)", color: "#f1f5f9" }}
+                      style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--foreground)" }}
                     />
                     <p className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>
                       Saved as a secondary contact number for this household.
@@ -588,13 +598,13 @@ function ResidentRow({ r }) {
         <img src={r.imageUrl} alt={r.name} className="w-9 h-9 rounded-lg object-cover"
           style={{ border: `1.5px solid ${scfg.color}40` }} />
         {isMinor && (
-          <span className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full text-[7px] font-bold text-white flex items-center justify-center"
-            style={{ background: "#f59e0b" }}>M</span>
+          <span className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full text-[7px] font-bold flex items-center justify-center"
+            style={{ background: "#f59e0b", color: "#fff" }}>M</span>
         )}
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
-          <span className="text-[13px] font-medium text-white">{r.name}</span>
+          <span className="text-[13px] font-medium" style={{ color: "var(--foreground)" }}>{r.name}</span>
           {isMinor && <span className="text-[10px] px-1.5 py-0.5 rounded font-medium" style={{ background: "rgba(245,158,11,0.1)", color: "#f59e0b" }}>Minor</span>}
         </div>
         <div className="flex items-center gap-3 mt-0.5">
@@ -608,7 +618,7 @@ function ResidentRow({ r }) {
         {r.lastSeen && (
           <div className="text-right">
             <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Last seen</div>
-            <div className="text-[11px] font-medium" style={{ color: "#94a3b8", fontFamily: "'DM Mono', monospace" }}>
+            <div className="text-[11px] font-medium" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
               {new Date(r.lastSeen).toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit", hour12: false })}
             </div>
           </div>
@@ -727,7 +737,7 @@ export function ResidentDatabase() {
 
       for (const link of data.guardianLinks) {
         const minorPk = localToPk[link.minorId];
-        const guardianPks = link.guardianIds.map((gid) => localToPk[gid]).filter(Boolean);
+        const guardianPks = link.guardianIds.map((gid) => typeof gid === "number" ? gid : localToPk[gid]).filter(Boolean);
         if (minorPk && guardianPks.length > 0) {
           await updateHouseholdMember(minorPk, { guardians: guardianPks });
         }
@@ -751,7 +761,6 @@ export function ResidentDatabase() {
         phone: data.phone || "",
       });
       await refreshResidents();
-      setShowEnroll(false);
     } catch (err) {
       alert(`Failed to enroll resident: ${err.message}`);
     }
@@ -783,7 +792,7 @@ export function ResidentDatabase() {
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
             <User size={14} style={{ color: "var(--muted-foreground)" }} />
-            <h1 className="text-[15px] font-semibold text-white">Residents</h1>
+            <h1 className="text-[15px] font-semibold" style={{ color: "var(--foreground)" }}>Residents</h1>
           </div>
           <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>
             ArcFace biometrics ·{" "}
@@ -795,12 +804,12 @@ export function ResidentDatabase() {
         <div className="flex items-center gap-2">
           <button onClick={() => setShowAddHH(true)}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
-            style={{ background: "var(--secondary)", color: "#f1f5f9", border: "1px solid var(--border)" }}>
+            style={{ background: "var(--secondary)", color: "var(--foreground)", border: "1px solid var(--border)" }}>
             <Home size={12} /> Add household
           </button>
           <button onClick={() => setShowEnroll(true)}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium"
-            style={{ background: "#f59e0b", color: "#0c0f16" }}>
+            style={{ background: "var(--primary)", color: "var(--primary-foreground)" }}>
             <UserPlus size={12} /> Enroll resident
           </button>
         </div>
@@ -810,8 +819,8 @@ export function ResidentDatabase() {
         {/* Stats */}
         <div className="grid grid-cols-4 gap-3 flex-shrink-0">
           {[
-            { label: "Households", value: households.length,  color: "#94a3b8" },
-            { label: "Enrolled",   value: totalEnrolled,       color: "#94a3b8" },
+            { label: "Households", value: households.length,  color: "var(--muted-foreground)" },
+            { label: "Enrolled",   value: totalEnrolled,       color: "var(--muted-foreground)" },
             { label: "Minors",     value: totalMinors,         color: "#f59e0b" },
             { label: "Flagged",    value: totalFlagged,        color: "#ef4444" },
           ].map((s) => (
@@ -829,16 +838,16 @@ export function ResidentDatabase() {
             <input value={search} onChange={(e) => setSearch(e.target.value)}
               placeholder="Search by name, household, or BRG ID…"
               className="w-full pl-9 pr-3 py-2 rounded-lg text-sm outline-none"
-              style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "#f1f5f9" }} />
+              style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
           </div>
           <div className="flex gap-1">
             {["all", "minor", "adult", "flagged"].map((f) => (
               <button key={f} onClick={() => setFilter(f)}
                 className="px-3 py-2 text-xs font-medium rounded-lg transition-all capitalize"
                 style={{
-                  background: filter === f ? "#f59e0b" : "var(--secondary)",
-                  color: filter === f ? "#0c0f16" : "var(--muted-foreground)",
-                  border: `1px solid ${filter === f ? "#f59e0b" : "var(--border)"}`,
+                  background: filter === f ? "var(--primary)" : "var(--secondary)",
+                  color: filter === f ? "var(--primary-foreground)" : "var(--muted-foreground)",
+                  border: `1px solid ${filter === f ? "var(--primary)" : "var(--border)"}`,
                 }}>
                 {f === "all" ? "All" : f.charAt(0).toUpperCase() + f.slice(1)}
               </button>
@@ -847,7 +856,7 @@ export function ResidentDatabase() {
           <div className="flex rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
             {[{ mode: "household", icon: Home }, { mode: "list", icon: LayoutList }].map(({ mode, icon: Icon }) => (
               <button key={mode} onClick={() => setViewMode(mode)} className="p-2 transition-all"
-                style={{ background: viewMode === mode ? "#f59e0b" : "var(--secondary)", color: viewMode === mode ? "#0c0f16" : "var(--muted-foreground)" }}>
+                style={{ background: viewMode === mode ? "var(--primary)" : "var(--secondary)", color: viewMode === mode ? "var(--primary-foreground)" : "var(--muted-foreground)" }}>
                 <Icon size={14} />
               </button>
             ))}
@@ -859,17 +868,17 @@ export function ResidentDatabase() {
           {loading ? (
             <div className="flex flex-col items-center justify-center py-16 gap-2">
               <Loader2 size={24} className="animate-spin" style={{ color: "var(--muted-foreground)" }} />
-              <div className="text-sm font-medium text-white">Loading residents…</div>
+              <div className="text-sm font-medium" style={{ color: "var(--foreground)" }}>Loading residents…</div>
             </div>
           ) : loadError ? (
             <div className="flex flex-col items-center justify-center py-16 gap-2">
               <AlertTriangle size={24} style={{ color: "#ef4444" }} />
-              <div className="text-sm font-medium text-white">Failed to load data</div>
+              <div className="text-sm font-medium" style={{ color: "var(--foreground)" }}>Failed to load data</div>
               <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>{loadError}</div>
             </div>
           ) : viewMode === "household" ? (
             filteredHouseholds.length === 0
-              ? <div className="flex flex-col items-center justify-center py-16 gap-2"><Home size={28} style={{ color: "var(--muted-foreground)" }} /><div className="text-sm font-medium text-white">No households found</div></div>
+              ? <div className="flex flex-col items-center justify-center py-16 gap-2"><Home size={28} style={{ color: "var(--muted-foreground)" }} /><div className="text-sm font-medium" style={{ color: "var(--foreground)" }}>No households found</div></div>
               : filteredHouseholds.map((h) => (
                   <HouseholdCard
                     key={h.id}
@@ -879,13 +888,14 @@ export function ResidentDatabase() {
                     onAddMember={(member) => handleAddMember(h.dbId, member)}
                   />
                 ))
+
           ) : (
             <div className="space-y-2">
               {filteredResidents.map((r) => <ResidentRow key={r.id} r={r} />)}
               {filteredResidents.length === 0 && (
                 <div className="flex flex-col items-center justify-center py-16 gap-2">
                   <User size={28} style={{ color: "var(--muted-foreground)" }} />
-                  <div className="text-sm font-medium text-white">No residents found</div>
+                  <div className="text-sm font-medium" style={{ color: "var(--foreground)" }}>No residents found</div>
                 </div>
               )}
             </div>

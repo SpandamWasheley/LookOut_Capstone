@@ -1,6 +1,16 @@
-import { useState } from "react";
-import { X, Home, Users, Shield, FileText, Plus, CheckCircle, ChevronRight, Info } from "lucide-react";
+import { useState, useEffect } from "react";
+import { X, Home, Users, Shield, FileText, Plus, CheckCircle, ChevronRight, Info, ChevronDown } from "lucide-react";
 import { ZONES } from "../data/mockData";
+import { getResidents } from "./api";
+
+const formatPhone = (raw) => {
+  const d = raw.replace(/\D/g, "").slice(0, 11);
+  if (d.length <= 4) return d;
+  if (d.length <= 7) return `${d.slice(0, 4)}-${d.slice(4)}`;
+  return `${d.slice(0, 4)}-${d.slice(4, 7)}-${d.slice(7)}`;
+};
+const blockNumbers = (v) => v.replace(/[0-9]/g, "");
+const maxToday = () => new Date().toISOString().slice(0, 10);
 
 function computeAge(birthdate) {
   if (!birthdate) return 0;
@@ -78,10 +88,10 @@ function StepHousehold({ form, onChange }) {
         </label>
         <input
           value={form.familyName}
-          onChange={(e) => set("familyName", e.target.value)}
+          onChange={(e) => set("familyName", blockNumbers(e.target.value))}
           placeholder="e.g. Angeles"
           className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
-          style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "#f1f5f9" }}
+          style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
         />
       </div>
 
@@ -94,7 +104,7 @@ function StepHousehold({ form, onChange }) {
           onChange={(e) => set("address", e.target.value)}
           placeholder="e.g. 142 Don Maria Drive"
           className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
-          style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "#f1f5f9" }}
+          style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
         />
       </div>
 
@@ -105,7 +115,7 @@ function StepHousehold({ form, onChange }) {
             value={form.zone}
             onChange={(e) => set("zone", e.target.value)}
             className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
-            style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "#f1f5f9", colorScheme: "dark" }}
+            style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
           >
             <option value="">Select zone…</option>
             {ZONES.map((z) => <option key={z} value={z}>{z}</option>)}
@@ -117,10 +127,10 @@ function StepHousehold({ form, onChange }) {
           </label>
           <input
             value={form.contact}
-            onChange={(e) => set("contact", e.target.value)}
-            placeholder="09XXXXXXXXX"
+            onChange={(e) => set("contact", formatPhone(e.target.value))}
+            placeholder="0951-853-2146"
             className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
-            style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "#f1f5f9" }}
+            style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
           />
         </div>
       </div>
@@ -130,7 +140,7 @@ function StepHousehold({ form, onChange }) {
         style={{ background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.15)" }}
       >
         <Info size={13} style={{ color: "#f59e0b", flexShrink: 0, marginTop: 1 }} />
-        <p className="text-[11px] leading-relaxed" style={{ color: "#94a3b8" }}>
+        <p className="text-[11px] leading-relaxed" style={{ color: "var(--muted-foreground)" }}>
           A household ID will be auto-generated (e.g. HH-TET-004). All members enrolled under this household will be linked together for guardian relationship detection.
         </p>
       </div>
@@ -181,7 +191,7 @@ function StepMembers({ familyName, members, onChange }) {
             >
               <div
                 className="w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold flex-shrink-0"
-                style={{ background: minor ? "rgba(245,158,11,0.15)" : "rgba(100,116,139,0.15)", color: minor ? "#f59e0b" : "#94a3b8" }}
+                style={{ background: minor ? "rgba(245,158,11,0.15)" : "rgba(100,116,139,0.15)", color: minor ? "#f59e0b" : "var(--muted-foreground)" }}
               >
                 {init}
               </div>
@@ -217,30 +227,30 @@ function StepMembers({ familyName, members, onChange }) {
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>First name *</label>
-              <input value={adding.firstName} onChange={(e) => setField("firstName", e.target.value)} placeholder="Peter"
+              <input value={adding.firstName} onChange={(e) => setField("firstName", blockNumbers(e.target.value))} placeholder="Peter"
                 className="w-full px-3 py-2 rounded-lg text-sm outline-none"
-                style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "#f1f5f9" }} />
+                style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
             </div>
             <div>
               <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>Last name *</label>
-              <input value={adding.lastName} onChange={(e) => setField("lastName", e.target.value)} placeholder="Angeles"
+              <input value={adding.lastName} onChange={(e) => setField("lastName", blockNumbers(e.target.value))} placeholder="Angeles"
                 className="w-full px-3 py-2 rounded-lg text-sm outline-none"
-                style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "#f1f5f9" }} />
+                style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
             </div>
           </div>
           <div>
               <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>
                 Date of birth *
                 {adding.birthdate && (
-                  <span className="ml-2 font-normal" style={{ color: isMinor(adding.birthdate) ? "#f59e0b" : "#94a3b8" }}>
+                  <span className="ml-2 font-normal" style={{ color: isMinor(adding.birthdate) ? "#f59e0b" : "var(--muted-foreground)" }}>
                     — Age {computeAge(adding.birthdate)} {isMinor(adding.birthdate) ? "(minor)" : ""}
                   </span>
                 )}
               </label>
-              <input type="date" value={adding.birthdate} onChange={(e) => setField("birthdate", e.target.value)}
-                max={new Date().toISOString().slice(0, 10)}
+              <input type="date" value={adding.birthdate} onChange={(e) => { const v = e.target.value; if (v <= maxToday()) setField("birthdate", v); }}
+                max={maxToday()}
                 className="w-full px-3 py-2 rounded-lg text-sm outline-none"
-                style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "#f1f5f9", colorScheme: "dark" }} />
+                style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
             </div>
 
           {adding.birthdate && !isMinor(adding.birthdate) && (
@@ -248,9 +258,9 @@ function StepMembers({ familyName, members, onChange }) {
               <label className="block text-xs font-medium" style={{ color: "#f59e0b" }}>
                 Mobile number <span className="font-normal" style={{ color: "var(--muted-foreground)" }}>(optional · adult member)</span>
               </label>
-              <input value={adding.phone} onChange={(e) => setField("phone", e.target.value)} placeholder="09XXXXXXXXX"
+              <input value={adding.phone} onChange={(e) => setField("phone", formatPhone(e.target.value))} placeholder="0951-853-2146"
                 className="w-full px-3 py-2 rounded-lg text-sm outline-none"
-                style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "#f1f5f9" }} />
+                style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
               <p className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>
                 Saved as a secondary contact number for this household.
               </p>
@@ -286,7 +296,7 @@ function StepMembers({ familyName, members, onChange }) {
 
       <div className="flex items-start gap-2.5 rounded-xl p-3" style={{ background: "rgba(59,130,246,0.06)", border: "1px solid rgba(59,130,246,0.12)" }}>
         <Info size={12} style={{ color: "#3b82f6", flexShrink: 0, marginTop: 1 }} />
-        <p className="text-[11px] leading-relaxed" style={{ color: "#94a3b8" }}>
+        <p className="text-[11px] leading-relaxed" style={{ color: "var(--muted-foreground)" }}>
           Face photos will be captured for each member in a separate step after saving. Members marked as minor are auto-detected from date of birth.
         </p>
       </div>
@@ -294,10 +304,77 @@ function StepMembers({ familyName, members, onChange }) {
   );
 }
 
+// ── Custom scrollable dropdown ────────────────────────────────────────────────
+function CustomSelect({ options, placeholder, onSelect }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="w-full">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-[12px]"
+        style={{
+          background: "var(--secondary)",
+          border: "1px solid var(--border)",
+          color: "var(--muted-foreground)",
+          borderRadius: open ? "8px 8px 0 0" : "8px",
+        }}
+      >
+        <span>{placeholder}</span>
+        <ChevronDown
+          size={12}
+          style={{ color: "var(--muted-foreground)", flexShrink: 0, transform: open ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}
+        />
+      </button>
+      {open && (
+        <div
+          style={{
+            maxHeight: "150px",
+            overflowY: "scroll",
+            border: "1px solid var(--border)",
+            borderTop: "none",
+            borderRadius: "0 0 8px 8px",
+            background: "var(--card)",
+          }}
+        >
+          {options.length === 0 ? (
+            <div className="px-3 py-2 text-[11px]" style={{ color: "var(--muted-foreground)" }}>No options available</div>
+          ) : (
+            options.map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => { onSelect(opt.value, opt.label); setOpen(false); }}
+                className="w-full text-left px-3 py-2 text-[12px] transition-colors"
+                style={{ color: "var(--foreground)", borderBottom: "1px solid var(--border)" }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "var(--secondary)")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+              >
+                {opt.label}
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Step 3: Guardian relationships ────────────────────────────────────────────
-function StepGuardians({ members, links, onChange }) {
+function StepGuardians({ members, links, onChange, extLinks, onExtChange }) {
   const minors = members.filter((m) => isMinor(m.birthdate));
   const adults = members.filter((m) => !isMinor(m.birthdate));
+  const [allResidents, setAllResidents] = useState([]);
+
+  useEffect(() => {
+    getResidents()
+      .then((data) => {
+        const list = data.results ?? data;
+        setAllResidents(list.filter((r) => (r.age ?? 0) >= 18));
+      })
+      .catch(() => {});
+  }, []);
 
   const toggle = (minorId, guardianId) => {
     const current = links[minorId] ?? [];
@@ -305,6 +382,18 @@ function StepGuardians({ members, links, onChange }) {
       ? current.filter((id) => id !== guardianId)
       : [...current, guardianId];
     onChange({ ...links, [minorId]: updated });
+  };
+
+  const addExternal = (minorTempId, residentId, residentName) => {
+    if (!residentId) return;
+    const current = extLinks[minorTempId] ?? [];
+    if (current.some((g) => g.id === Number(residentId))) return;
+    onExtChange({ ...extLinks, [minorTempId]: [...current, { id: Number(residentId), name: residentName }] });
+  };
+
+  const removeExternal = (minorTempId, residentId) => {
+    const current = extLinks[minorTempId] ?? [];
+    onExtChange({ ...extLinks, [minorTempId]: current.filter((g) => g.id !== residentId) });
   };
 
   return (
@@ -317,7 +406,7 @@ function StepGuardians({ members, links, onChange }) {
 
       <div className="flex items-start gap-2.5 rounded-xl p-3.5" style={{ background: "rgba(59,130,246,0.06)", border: "1px solid rgba(59,130,246,0.12)" }}>
         <Info size={12} style={{ color: "#3b82f6", flexShrink: 0, marginTop: 1 }} />
-        <p className="text-[11px] leading-relaxed" style={{ color: "#94a3b8" }}>
+        <p className="text-[11px] leading-relaxed" style={{ color: "var(--muted-foreground)" }}>
           When the system detects a minor with their registered guardian past curfew hours, the violation is automatically suppressed. Select all adults who are permitted to accompany each minor.
         </p>
       </div>
@@ -333,6 +422,7 @@ function StepGuardians({ members, links, onChange }) {
       {minors.map((minor) => {
         const age = computeAge(minor.birthdate);
         const selected = links[minor.tempId] ?? [];
+        const extSelected = extLinks[minor.tempId] ?? [];
         return (
           <div key={minor.tempId} className="rounded-xl overflow-hidden" style={{ border: "1px solid var(--border)" }}>
             <div className="px-4 py-2.5" style={{ background: "rgba(245,158,11,0.06)", borderBottom: "1px solid var(--border)" }}>
@@ -347,57 +437,83 @@ function StepGuardians({ members, links, onChange }) {
                 <span className="text-[12px] font-medium text-white">{minor.firstName}</span>
               </div>
               <span className="text-[11px] pt-2.5 flex-shrink-0" style={{ color: "var(--muted-foreground)" }}>is accompanied by</span>
-              <div className="flex-1 rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
-                {adults.length === 0 ? (
-                  <div className="px-3 py-2 text-[11px]" style={{ color: "#4a5568" }}>No adult members to link</div>
-                ) : (
-                  adults.map((adult) => {
-                    const isChecked = selected.includes(adult.tempId);
-                    return (
-                      <label
-                        key={adult.tempId}
-                        className="flex items-center gap-2.5 px-3 py-2.5 cursor-pointer transition-all"
-                        style={{
-                          background: isChecked ? "rgba(245,158,11,0.07)" : "transparent",
-                          borderBottom: "1px solid var(--border)",
-                        }}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={isChecked}
-                          onChange={() => toggle(minor.tempId, adult.tempId)}
-                          style={{ accentColor: "#f59e0b" }}
-                        />
-                        <span className="text-[12px]" style={{ color: isChecked ? "#f1f5f9" : "#94a3b8" }}>
-                          {adult.firstName} {adult.lastName}
+              <div className="flex-1 space-y-2">
+                {/* In-household adults */}
+                <div>
+                  <div className="text-[10px] font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>
+                    Guardian from this household
+                  </div>
+                  {adults.length === 0 ? (
+                    <div className="px-3 py-2 rounded-lg text-[11px]" style={{ color: "#4a5568", border: "1px solid var(--border)" }}>
+                      No adult members to link
+                    </div>
+                  ) : (
+                    <>
+                      <CustomSelect
+                        placeholder="Choose a household member…"
+                        options={adults
+                          .filter((a) => !selected.includes(a.tempId))
+                          .map((a) => ({ value: a.tempId, label: `${a.firstName} ${a.lastName}` }))}
+                        onSelect={(val) => toggle(minor.tempId, val)}
+                      />
+                      {selected.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 mt-2">
+                          {selected.map((tid) => {
+                            const adult = adults.find((a) => a.tempId === tid);
+                            if (!adult) return null;
+                            return (
+                              <span
+                                key={tid}
+                                className="flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium"
+                                style={{ background: "rgba(245,158,11,0.12)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.2)" }}
+                              >
+                                {adult.firstName} {adult.lastName}
+                                <button type="button" onClick={() => toggle(minor.tempId, tid)} className="ml-0.5 hover:opacity-70">×</button>
+                              </span>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+
+                {/* External guardian dropdown */}
+                <div>
+                  <div className="text-[10px] font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>
+                    Add guardian from outside this household
+                  </div>
+                  <CustomSelect
+                    placeholder="Choose a registered guardian…"
+                    options={allResidents
+                      .filter((r) => !extSelected.some((g) => g.id === r.id))
+                      .map((r) => ({ value: String(r.id), label: r.name }))}
+                    onSelect={(val, label) => addExternal(minor.tempId, val, label)}
+                  />
+                  {extSelected.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 mt-2">
+                      {extSelected.map((g) => (
+                        <span
+                          key={g.id}
+                          className="flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium"
+                          style={{ background: "rgba(59,130,246,0.12)", color: "#3b82f6", border: "1px solid rgba(59,130,246,0.2)" }}
+                        >
+                          {g.name}
+                          <button
+                            type="button"
+                            onClick={() => removeExternal(minor.tempId, g.id)}
+                            className="ml-0.5 hover:opacity-70"
+                          >×</button>
                         </span>
-                        <span className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>({isMinor(adult.birthdate) ? "Minor" : "Adult"})</span>
-                      </label>
-                    );
-                  })
-                )}
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>
         );
       })}
-
-      {/* External guardian search */}
-      <div>
-        <div className="text-xs font-medium mb-2" style={{ color: "var(--muted-foreground)" }}>
-          Add guardian from outside this household (optional)
-        </div>
-        <div className="flex gap-2">
-          <input
-            placeholder="Search by name or BRG ID…"
-            className="flex-1 px-3 py-2.5 rounded-xl text-sm outline-none"
-            style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "#f1f5f9" }}
-          />
-          <button className="px-4 py-2.5 rounded-xl text-sm font-medium" style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}>
-            Search
-          </button>
-        </div>
-      </div>
     </div>
   );
 }
@@ -456,7 +572,7 @@ function StepReview({ form, members, links, nextId }) {
             return (
               <div key={m.tempId} className="flex items-center justify-between px-4 py-2.5">
                 <span className="text-[12px] text-white">{m.firstName} {m.lastName}</span>
-                <span className="text-[12px] font-medium" style={{ color: minor ? "#f59e0b" : "#94a3b8" }}>
+                <span className="text-[12px] font-medium" style={{ color: minor ? "#f59e0b" : "var(--muted-foreground)" }}>
                   {minor ? `Minor · Age ${age}` : `Adult · Age ${age}`}
                 </span>
               </div>
@@ -492,7 +608,7 @@ function StepReview({ form, members, links, nextId }) {
 
       <div className="flex items-start gap-2.5 rounded-xl p-3.5" style={{ background: "rgba(59,130,246,0.06)", border: "1px solid rgba(59,130,246,0.12)" }}>
         <Info size={12} style={{ color: "#3b82f6", flexShrink: 0, marginTop: 1 }} />
-        <p className="text-[11px] leading-relaxed" style={{ color: "#94a3b8" }}>
+        <p className="text-[11px] leading-relaxed" style={{ color: "var(--muted-foreground)" }}>
           After saving, you will be taken to each member's profile to capture their face photos for ArcFace biometric enrollment. The household will remain inactive until all face photos are captured and processed.
         </p>
       </div>
@@ -506,6 +622,7 @@ export function AddHouseholdModal({ nextHouseholdId, onSave, onClose }) {
   const [form, setForm] = useState({ familyName: "", address: "", zone: "", contact: "" });
   const [members, setMembers] = useState([]);
   const [guardianLinks, setGuardianLinks] = useState({});
+  const [extLinks, setExtLinks] = useState({});
 
   const step1Valid = form.familyName.trim() && form.address.trim() && form.contact.trim();
   const step2Valid = members.length > 0;
@@ -522,16 +639,23 @@ export function AddHouseholdModal({ nextHouseholdId, onSave, onClose }) {
       phone: m.phone || "",
     }));
 
-    const builtLinks = Object.entries(guardianLinks)
-      .map(([minorTempId, guardianTempIds]) => {
+    const allMinorTempIds = [...new Set([
+      ...Object.keys(guardianLinks),
+      ...Object.keys(extLinks),
+    ])];
+    const builtLinks = allMinorTempIds
+      .map((minorTempId) => {
         const minorIdx = members.findIndex((m) => m.tempId === minorTempId);
+        const guardianTempIds = guardianLinks[minorTempId] ?? [];
         const guardianIdxs = guardianTempIds.map((gid) => members.findIndex((m) => m.tempId === gid));
+        const internalIds = guardianIdxs.map((idx) => builtMembers[idx]?.id ?? "").filter(Boolean);
+        const externalIds = (extLinks[minorTempId] ?? []).map((g) => g.id);
         return {
           minorId: builtMembers[minorIdx]?.id ?? "",
-          guardianIds: guardianIdxs.map((idx) => builtMembers[idx]?.id ?? "").filter(Boolean),
+          guardianIds: [...internalIds, ...externalIds],
         };
       })
-      .filter((l) => l.minorId);
+      .filter((l) => l.minorId && l.guardianIds.length > 0);
 
     onSave({
       familyName: form.familyName,
@@ -571,7 +695,7 @@ export function AddHouseholdModal({ nextHouseholdId, onSave, onClose }) {
         <div className="flex-1 overflow-y-auto px-6 py-5">
           {step === 1 && <StepHousehold form={form} onChange={setForm} />}
           {step === 2 && <StepMembers familyName={form.familyName} members={members} onChange={setMembers} />}
-          {step === 3 && <StepGuardians members={members} links={guardianLinks} onChange={setGuardianLinks} />}
+          {step === 3 && <StepGuardians members={members} links={guardianLinks} onChange={setGuardianLinks} extLinks={extLinks} onExtChange={setExtLinks} />}
           {step === 4 && <StepReview form={form} members={members} links={guardianLinks} nextId={nextHouseholdId} />}
         </div>
 

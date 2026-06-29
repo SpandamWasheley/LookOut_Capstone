@@ -7,7 +7,7 @@ import { Sidebar } from "./Sidebar";
 import { OfficersPage } from "./OfficersPage";
 import { ResidentDatabase } from "./ResidentDatabase";
 import { SystemConfig } from "./SystemConfig";
-import { SystemStatusCard } from "./SystemStatusCard";
+import { ResidentLog } from "./ResidentLog";
 import { getAlerts, getCameras, getOfficers } from "./api";
 
 function useLiveOverviewData() {
@@ -30,8 +30,8 @@ function useLiveOverviewData() {
 }
 
 const ROLE_PAGES = {
-  admin:      ["dashboard", "cameras", "alerts", "records", "residents", "officers", "config"],
-  dispatcher: ["dashboard", "cameras", "alerts", "records"],
+  admin:      ["dashboard", "cameras", "alerts", "records", "residentlog", "residents", "officers", "config"],
+  dispatcher: ["dashboard", "cameras", "alerts", "records", "residentlog"],
   officer:    ["cameras", "alerts", "records"],
   both:       ["dashboard", "cameras", "alerts", "records"],
 };
@@ -46,11 +46,18 @@ function LiveClock() {
   const date = time.toLocaleDateString("en-PH", { weekday: "short", month: "short", day: "numeric" });
   return (
     <div className="text-right">
-      <div className="text-base font-semibold text-white tabular-nums" style={{ fontFamily: "'DM Mono', monospace" }}>{formatted}</div>
+      <div className="text-base font-semibold tabular-nums" style={{ fontFamily: "'DM Mono', monospace", color: "var(--foreground)" }}>{formatted}</div>
       <div className="text-xs" style={{ color: "var(--muted-foreground)" }}>{date}</div>
     </div>
   );
 }
+
+const statusDot = (color, pulse = false) => (
+  <span
+    className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${pulse ? "animate-pulse" : ""}`}
+    style={{ background: color }}
+  />
+);
 
 function AdminDashboard({ user, onLogout }) {
   const role = user?.role ?? "officer";
@@ -75,12 +82,11 @@ function AdminDashboard({ user, onLogout }) {
   ];
 
   return (
-    <div className="flex h-screen overflow-hidden bg-slate-950 text-white">
+    <div className="flex h-screen overflow-hidden" style={{ background: "var(--background)", color: "var(--foreground)" }}>
       <Sidebar
         activeView={safePage}
         onViewChange={setActivePage}
         activeRole={role}
-        userName={user?.name}
         alertCount={alertCount}
         onLogout={onLogout}
       />
@@ -88,24 +94,28 @@ function AdminDashboard({ user, onLogout }) {
       <main className="flex-1 overflow-auto">
 
         {safePage === "dashboard" && (
-          <div className="flex flex-col h-full">
+          <div className="flex flex-col h-full overflow-hidden">
             {/* Topbar */}
-            <div className="flex items-center justify-between px-6 h-16 flex-shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
+            <div
+              className="flex items-center justify-between px-6 h-14 flex-shrink-0"
+              style={{ borderBottom: "1px solid var(--border)" }}
+            >
               <div className="flex items-center gap-3">
-                <h1 className="text-[20px] font-bold text-white">Overview</h1>
-                <div className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs"
+                <h1 className="text-[15px] font-semibold" style={{ color: "var(--foreground)" }}>Overview</h1>
+                <div
+                  className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs"
                   style={{
                     background: alertCount > 0 ? "rgba(239,68,68,0.1)" : "rgba(16,185,129,0.1)",
                     color: alertCount > 0 ? "#ef4444" : "#10b981",
-                  }}>
-                  <span className={`w-1.5 h-1.5 rounded-full ${alertCount > 0 ? "animate-pulse" : ""}`}
-                    style={{ background: alertCount > 0 ? "#ef4444" : "#10b981" }} />
+                  }}
+                >
+                  {statusDot(alertCount > 0 ? "#ef4444" : "#10b981", alertCount > 0)}
                   <span className="font-medium">{alertCount > 0 ? `${alertCount} alerts` : "All clear"}</span>
                 </div>
               </div>
               <div className="flex items-center gap-6">
                 <div className="flex items-center gap-1.5 text-xs" style={{ color: "var(--muted-foreground)" }}>
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                  {statusDot("#10b981")}
                   <span>AI running · YOLOv8 + ArcFace</span>
                 </div>
                 <LiveClock />
@@ -117,16 +127,21 @@ function AdminDashboard({ user, onLogout }) {
               {kpis.map((kpi) => {
                 const Icon = kpi.icon;
                 return (
-                  <div key={kpi.label} className="rounded-2xl p-5 flex items-start gap-3"
-                    style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
-                    <div className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5"
-                      style={{ background: `${kpi.accent}22` }}>
-                      <Icon size={16} style={{ color: kpi.accent }} />
+                  <div
+                    key={kpi.label}
+                    className="rounded-xl p-4 flex items-start gap-3"
+                    style={{ background: "var(--card)", border: "1px solid var(--border)" }}
+                  >
+                    <div
+                      className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5"
+                      style={{ background: `${kpi.accent}14` }}
+                    >
+                      <Icon size={15} style={{ color: kpi.accent }} />
                     </div>
                     <div className="min-w-0">
-                      <div className="text-2xl font-bold text-white leading-none">{kpi.value}</div>
-                      <div className="text-sm font-medium mt-1.5 text-white">{kpi.label}</div>
-                      <div className="text-[12px] mt-0.5" style={{ color: kpi.accent }}>{kpi.sub}</div>
+                      <div className="text-xl font-semibold leading-none" style={{ color: "var(--foreground)" }}>{kpi.value}</div>
+                      <div className="text-xs font-medium mt-1" style={{ color: "var(--muted-foreground)" }}>{kpi.label}</div>
+                      <div className="text-[11px] mt-0.5" style={{ color: kpi.accent, opacity: 0.85 }}>{kpi.sub}</div>
                     </div>
                   </div>
                 );
@@ -134,20 +149,30 @@ function AdminDashboard({ user, onLogout }) {
             </div>
 
             {/* Main content */}
-            <div className="flex-1 overflow-hidden grid gap-4 px-6 pb-6" style={{ gridTemplateColumns: "1.7fr 1fr" }}>
-              {/* Live feeds */}
-              <div className="flex flex-col min-h-0 rounded-2xl overflow-hidden"
-                style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
-                <div className="flex items-center justify-between px-5 py-3 flex-shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
+            <div className="flex-1 overflow-hidden grid gap-4 px-6 pb-6" style={{ gridTemplateColumns: "1fr 340px" }}>
+              {/* Camera feeds */}
+              <div
+                className="flex flex-col min-h-0 rounded-xl overflow-hidden"
+                style={{ background: "var(--card)", border: "1px solid var(--border)" }}
+              >
+                <div
+                  className="flex items-center justify-between px-5 py-3 flex-shrink-0"
+                  style={{ borderBottom: "1px solid var(--border)" }}
+                >
                   <div className="flex items-center gap-2">
-                    <Camera size={16} style={{ color: "var(--muted-foreground)" }} />
-                    <span className="text-base font-semibold text-white">Live Feeds</span>
+                    <Camera size={14} style={{ color: "var(--muted-foreground)" }} />
+                    <span className="text-sm font-medium" style={{ color: "var(--foreground)" }}>Live Feeds</span>
                   </div>
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2">
                     <div className="flex items-center gap-1.5 text-[11px]" style={{ color: "#ef4444" }}>
-                      <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" /> REC
+                      <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse inline-block" />
+                      REC
                     </div>
-                    <button className="flex items-center gap-1 text-xs" style={{ color: "var(--muted-foreground)" }}>
+                    <button
+                      className="flex items-center gap-1 text-xs"
+                      style={{ color: "var(--muted-foreground)" }}
+                      onClick={() => setActivePage("cameras")}
+                    >
                       View all <ArrowUpRight size={11} />
                     </button>
                   </div>
@@ -157,25 +182,37 @@ function AdminDashboard({ user, onLogout }) {
                 </div>
               </div>
 
-              {/* Recent violations */}
-              <div className="flex flex-col min-h-0 overflow-y-auto">
-                <AlertFeed />
+              {/* Alert feed */}
+              <div
+                className="flex flex-col min-h-0 rounded-xl overflow-hidden"
+                style={{ background: "var(--card)", border: "1px solid var(--border)" }}
+              >
+                <div
+                  className="flex items-center justify-between px-5 py-3 flex-shrink-0"
+                  style={{ borderBottom: "1px solid var(--border)" }}
+                >
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle size={14} style={{ color: "var(--muted-foreground)" }} />
+                    <span className="text-sm font-medium" style={{ color: "var(--foreground)" }}>Recent Violations</span>
+                  </div>
+                  {alertCount > 0 && (
+                    <span
+                      className="text-[11px] font-medium px-2 py-0.5 rounded-full"
+                      style={{ background: "rgba(239,68,68,0.12)", color: "#ef4444" }}
+                    >
+                      {alertCount} active
+                    </span>
+                  )}
+                </div>
+                <div className="flex-1 overflow-y-auto p-4">
+                  <AlertFeed compact />
+                </div>
               </div>
             </div>
           </div>
         )}
 
-        {safePage === "alerts" && (
-          <div className="flex flex-col h-full">
-            <div className="px-6 pt-6 pb-4 flex-shrink-0">
-              <h2 className="text-3xl font-bold mb-6">Violations</h2>
-              <SystemStatusCard alerts={alerts} cameras={cameras} />
-            </div>
-            <div className="flex-1 overflow-y-auto px-6 pb-6">
-              <AlertFeed showFilters />
-            </div>
-          </div>
-        )}
+        {safePage === "alerts" && <div className="h-full"><AlertFeed showFilters /></div>}
 
         {safePage === "records" && <div className="h-full"><RecordsPage /></div>}
 
@@ -189,6 +226,7 @@ function AdminDashboard({ user, onLogout }) {
         {safePage === "residents" && <div className="h-full"><ResidentDatabase /></div>}
         {safePage === "officers" && <div className="h-full"><OfficersPage /></div>}
         {safePage === "config" && <div className="h-full"><SystemConfig /></div>}
+        {safePage === "residentlog" && <div className="h-full"><ResidentLog /></div>}
 
       </main>
     </div>

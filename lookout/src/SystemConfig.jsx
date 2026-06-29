@@ -1,8 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import { Save, RotateCcw, Moon, Volume2, Trash2, Eye, AlertTriangle, Clock, Loader2 } from "lucide-react";
+import { Save, RotateCcw, Moon, Volume2, Trash2, Clock, AlertTriangle, Loader2 } from "lucide-react";
 import { getSettings, saveSettings } from "./api";
 
 const trimSeconds = (t) => (t ? t.slice(0, 5) : t);
+
+// Map noise dB ↔ sensitivity index (0=Very Low … 4=Very High)
+const SENSITIVITY_DB = [80, 70, 65, 55, 45];
+const dbToSensitivity = (db) => {
+  let best = 0, bestDiff = Infinity;
+  SENSITIVITY_DB.forEach((v, i) => { const d = Math.abs(v - db); if (d < bestDiff) { bestDiff = d; best = i; } });
+  return best;
+};
 
 function fromApi(s) {
   return {
@@ -15,6 +23,7 @@ function fromApi(s) {
     unknownAlert: s.unknown_alert,
     noiseEnabled: s.noise_enabled,
     noiseDb: s.noise_threshold_db,
+    noiseSensitivity: dbToSensitivity(s.noise_threshold_db),
     noiseDur: s.noise_duration,
     wasteEnabled: s.waste_enabled,
     wasteConf: s.waste_confidence,
@@ -39,7 +48,7 @@ function toApi(f) {
     guardian_check: f.guardianCheck,
     unknown_alert: f.unknownAlert,
     noise_enabled: f.noiseEnabled,
-    noise_threshold_db: f.noiseDb,
+    noise_threshold_db: SENSITIVITY_DB[f.noiseSensitivity],
     noise_duration: f.noiseDur,
     waste_enabled: f.wasteEnabled,
     waste_confidence: f.wasteConf,
@@ -55,51 +64,105 @@ function toApi(f) {
 }
 
 const sections = [
-  { id: "curfew",  label: "Curfew",     icon: Moon,          color: "#f59e0b" },
-  { id: "noise",   label: "Noise",      icon: Volume2,       color: "#a78bfa" },
-  { id: "waste",   label: "Waste",      icon: Trash2,        color: "#84cc16" },
-  { id: "system",  label: "System",     icon: Eye,           color: "#38bdf8" },
+  { id: "curfew", label: "Curfew", icon: Moon,    color: "#f59e0b" },
+  { id: "noise",  label: "Noise",  icon: Volume2, color: "#a78bfa" },
+  { id: "waste",  label: "Waste",  icon: Trash2,  color: "#84cc16" },
+  { id: "system", label: "System", icon: Clock,   color: "#3b82f6" },
 ];
 
+// ── Slider ────────────────────────────────────────────────────────────────────
 function Slider({ label, value, min, max, unit, desc, onChange }) {
+  const pct = ((value - min) / (max - min)) * 100;
   return (
-    <div className="space-y-2">
-      <div className="flex justify-between">
+    <div className="space-y-2.5">
+      <div className="flex justify-between items-center">
         <span className="text-xs font-medium" style={{ color: "var(--muted-foreground)" }}>{label}</span>
-        <span className="text-xs font-semibold" style={{ color: "#f1f5f9", fontFamily: "'DM Mono', monospace" }}>{value}{unit}</span>
+        <span className="text-xs font-semibold px-2 py-0.5 rounded-md"
+          style={{ color: "var(--primary)", background: "var(--secondary)", fontFamily: "'DM Mono', monospace" }}>
+          {value}{unit}
+        </span>
       </div>
-      <input
-        type="range" min={min} max={max} value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
-        className="w-full h-1 rounded-full appearance-none cursor-pointer"
-        style={{ accentColor: "#f59e0b" }}
-      />
+      <div className="relative h-5 flex items-center">
+        <div className="absolute inset-x-0 h-1.5 rounded-full" style={{ background: "var(--secondary)" }} />
+        <div className="absolute left-0 h-1.5 rounded-full transition-all"
+          style={{ width: `${pct}%`, background: "var(--primary)" }} />
+        <input
+          type="range" min={min} max={max} value={value}
+          onChange={(e) => onChange(Number(e.target.value))}
+          className="absolute inset-0 w-full opacity-0 cursor-pointer"
+          style={{ height: "100%" }}
+        />
+        <div
+          className="absolute w-5 h-5 rounded-full pointer-events-none transition-all"
+          style={{
+            left: `calc(${pct}% - ${pct * 0.2}px)`,
+            background: "var(--card)",
+            border: "2px solid var(--primary)",
+            boxShadow: "0 1px 4px rgba(0,0,0,0.18)",
+          }}
+        />
+      </div>
       {desc && <p className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>{desc}</p>}
     </div>
   );
 }
 
+// ── SensitivitySelector ───────────────────────────────────────────────────────
+const SENSITIVITY_LEVELS = ["Very Low", "Low", "Medium", "High", "Very High"];
+
+function SensitivitySelector({ label, value, onChange }) {
+  return (
+    <div className="space-y-2.5">
+      <div className="flex justify-between items-center">
+        <span className="text-xs font-medium" style={{ color: "var(--muted-foreground)" }}>{label}</span>
+        <span className="text-xs font-semibold px-2 py-0.5 rounded-md"
+          style={{ color: "var(--primary)", background: "var(--secondary)" }}>
+          {SENSITIVITY_LEVELS[value]}
+        </span>
+      </div>
+      <div className="flex gap-1.5">
+        {SENSITIVITY_LEVELS.map((lvl, i) => (
+          <button
+            key={lvl}
+            onClick={() => onChange(i)}
+            className="flex-1 py-2 rounded-lg text-[11px] font-medium transition-all"
+            style={{
+              background: value === i ? "var(--primary)" : "var(--secondary)",
+              color: value === i ? "var(--primary-foreground)" : "var(--muted-foreground)",
+              border: `1px solid ${value === i ? "var(--primary)" : "var(--border)"}`,
+            }}
+          >
+            {lvl}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Toggle ────────────────────────────────────────────────────────────────────
 function Toggle({ label, desc, value, onChange }) {
   return (
     <div className="flex items-center justify-between py-3" style={{ borderBottom: "1px solid var(--border)" }}>
       <div>
-        <div className="text-[13px] font-medium text-white">{label}</div>
+        <div className="text-[13px] font-medium" style={{ color: "var(--foreground)" }}>{label}</div>
         <div className="text-[11px] mt-0.5" style={{ color: "var(--muted-foreground)" }}>{desc}</div>
       </div>
       <button
         onClick={() => onChange(!value)}
         className="relative w-9 h-5 rounded-full transition-all duration-200 flex-shrink-0 ml-4"
-        style={{ background: value ? "#f59e0b" : "var(--secondary)", border: `1px solid ${value ? "#f59e0b" : "var(--border)"}` }}
+        style={{ background: value ? "var(--primary)" : "var(--secondary)", border: "1px solid var(--border)" }}
       >
         <div
           className="absolute top-0.5 w-4 h-4 rounded-full transition-all duration-200"
-          style={{ background: value ? "#0c0f16" : "#64748b", left: value ? "18px" : "2px" }}
+          style={{ background: value ? "#0c0f16" : "var(--muted-foreground)", left: value ? "calc(100% - 18px)" : "2px" }}
         />
       </button>
     </div>
   );
 }
 
+// ── TimeInput ─────────────────────────────────────────────────────────────────
 function TimeInput({ label, value, onChange }) {
   const inputRef = useRef(null);
   const [focused, setFocused] = useState(false);
@@ -122,16 +185,13 @@ function TimeInput({ label, value, onChange }) {
         onMouseLeave={() => setHovered(false)}
         className="flex items-center gap-2 w-full px-3 py-2 rounded-lg cursor-pointer transition-all"
         style={{
-          background: active ? "rgba(245,158,11,0.07)" : "var(--secondary)",
-          border: `1px solid ${active ? "#f59e0b" : "var(--border)"}`,
-          boxShadow: focused ? "0 0 0 3px rgba(245,158,11,0.15)" : "none",
+          background: active ? "var(--secondary)" : "var(--secondary)",
+          border: `1px solid ${active ? "var(--primary)" : "var(--border)"}`,
+          boxShadow: focused ? "0 0 0 3px rgba(var(--primary-rgb, 11 84 113) / 0.15)" : "none",
         }}
       >
-        <Clock
-          size={14}
-          className="flex-shrink-0 transition-colors"
-          style={{ color: active ? "#f59e0b" : "#64748b" }}
-        />
+        <Clock size={14} className="flex-shrink-0 transition-colors"
+          style={{ color: active ? "var(--primary)" : "var(--muted-foreground)" }} />
         <input
           ref={inputRef}
           type="time" value={value}
@@ -139,13 +199,14 @@ function TimeInput({ label, value, onChange }) {
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}
           className="flex-1 bg-transparent text-sm outline-none cursor-pointer"
-          style={{ color: "#f1f5f9", fontFamily: "'DM Mono', monospace", colorScheme: "dark" }}
+          style={{ color: "var(--primary)", fontFamily: "'DM Mono', monospace" }}
         />
       </div>
     </div>
   );
 }
 
+// ── Main ──────────────────────────────────────────────────────────────────────
 export function SystemConfig() {
   const [active, setActive] = useState("curfew");
   const [saving, setSaving] = useState(false);
@@ -161,7 +222,7 @@ export function SystemConfig() {
   const [guardianCheck, setGuardianCheck] = useState(true);
   const [unknownAlert, setUnknownAlert] = useState(true);
   const [noiseEnabled, setNoiseEnabled] = useState(true);
-  const [noiseDb, setNoiseDb] = useState(65);
+  const [noiseSensitivity, setNoiseSensitivity] = useState(2);
   const [noiseDur, setNoiseDur] = useState(10);
   const [wasteEnabled, setWasteEnabled] = useState(true);
   const [wasteConf, setWasteConf] = useState(70);
@@ -183,7 +244,7 @@ export function SystemConfig() {
     setGuardianCheck(f.guardianCheck);
     setUnknownAlert(f.unknownAlert);
     setNoiseEnabled(f.noiseEnabled);
-    setNoiseDb(f.noiseDb);
+    setNoiseSensitivity(f.noiseSensitivity);
     setNoiseDur(f.noiseDur);
     setWasteEnabled(f.wasteEnabled);
     setWasteConf(f.wasteConf);
@@ -216,7 +277,7 @@ export function SystemConfig() {
     try {
       const updated = await saveSettings(toApi({
         curfewStart, curfewEnd, curfewAge, curfewConf, curfewDwell,
-        guardianCheck, unknownAlert, noiseEnabled, noiseDb, noiseDur,
+        guardianCheck, unknownAlert, noiseEnabled, noiseSensitivity, noiseDur,
         wasteEnabled, wasteConf, wasteDwell, wasteCollectionStart, wasteCollectionEnd,
         cooldown, retention, autoDispatch, emailAlerts, smsAlerts,
       }));
@@ -230,8 +291,6 @@ export function SystemConfig() {
     }
   };
 
-  const reset = () => { load(); };
-
   const content = {
     curfew: (
       <div className="space-y-6">
@@ -241,8 +300,9 @@ export function SystemConfig() {
         </div>
         <Slider label="Minor age threshold" value={curfewAge} min={15} max={20} unit=" yrs" onChange={setCurfewAge} />
         <Slider
-          label="Detection confidence" value={curfewConf} min={20} max={90} unit="%" onChange={setCurfewConf}
-          desc="Face-match similarity score, not a probability — a genuine match typically scores 35-70%. Values above ~75% are rarely reached even for correct matches."
+          label="Detection confidence" value={curfewConf} min={20} max={90} unit="%"
+          desc="Face-match similarity score — a genuine match typically scores 35–70%. Values above ~75% are rarely reached."
+          onChange={setCurfewConf}
         />
         <Slider label="Dwell time before alert" value={curfewDwell} min={2} max={30} unit="s" onChange={setCurfewDwell} />
         <div>
@@ -254,11 +314,11 @@ export function SystemConfig() {
     noise: (
       <div className="space-y-6">
         <Toggle label="Noise detection enabled" desc="Monitor ambient audio levels via camera microphones" value={noiseEnabled} onChange={setNoiseEnabled} />
-        <Slider label="Noise threshold" value={noiseDb} min={40} max={90} unit=" dB" onChange={setNoiseDb} />
+        <SensitivitySelector label="Detection sensitivity" value={noiseSensitivity} onChange={setNoiseSensitivity} />
         <Slider label="Sustained duration before alert" value={noiseDur} min={5} max={60} unit="s" onChange={setNoiseDur} />
         <div className="rounded-xl p-4 text-xs leading-relaxed"
-          style={{ background: "rgba(167,139,250,0.06)", border: "1px solid rgba(167,139,250,0.15)", color: "#a78bfa" }}>
-          Quiet hours run <strong style={{ color: "#f1f5f9" }}>10:00 PM – 6:00 AM</strong> per Barangay Ordinance.
+          style={{ background: "rgba(167,139,250,0.06)", border: "1px solid rgba(167,139,250,0.15)", color: "var(--muted-foreground)" }}>
+          Quiet hours run <strong style={{ color: "#a78bfa" }}>22:00 – 06:00</strong>. Noise sustained above the threshold during these hours triggers a violation alert.
         </div>
       </div>
     ),
@@ -283,17 +343,17 @@ export function SystemConfig() {
           <Toggle label="SMS notifications" desc="Send SMS to dispatchers and officers" value={smsAlerts} onChange={setSmsAlerts} />
         </div>
         <div className="rounded-xl p-4 space-y-2" style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-          <div className="text-xs font-medium text-white mb-3">System info</div>
+          <div className="text-xs font-medium mb-3" style={{ color: "var(--foreground)" }}>System info</div>
           {[
-            ["Model",        "YOLOv8n — fine-tuned v2.4.1"],
-            ["Face backend", "ArcFace · DeepFace 0.0.93"],
-            ["RTSP streams", "4 active"],
+            ["Model",         "YOLOv8n — fine-tuned v2.4.1"],
+            ["Face backend",  "ArcFace · DeepFace 0.0.93"],
+            ["RTSP streams",  "4 active"],
             ["Data residency","Local · RA 10173"],
             ["Last retrain",  "2025-05-18"],
           ].map(([k, v]) => (
             <div key={k} className="flex justify-between text-xs">
               <span style={{ color: "var(--muted-foreground)" }}>{k}</span>
-              <span style={{ color: "#f1f5f9", fontFamily: "'DM Mono', monospace" }}>{v}</span>
+              <span style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>{v}</span>
             </div>
           ))}
         </div>
@@ -303,21 +363,28 @@ export function SystemConfig() {
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
+      {/* Header */}
       <div className="flex items-center justify-between px-6 h-14 flex-shrink-0"
         style={{ borderBottom: "1px solid var(--border)" }}>
         <div className="flex items-center gap-3">
-          <h1 className="text-[15px] font-semibold text-white">Settings</h1>
+          <h1 className="text-[15px] font-semibold" style={{ color: "var(--foreground)" }}>Settings</h1>
           <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>Admin only · changes apply immediately</span>
         </div>
         <div className="flex gap-2">
-          <button onClick={reset} disabled={loading || saving}
+          <button
+            onClick={load}
+            disabled={loading || saving}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50"
-            style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}>
+            style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}
+          >
             <RotateCcw size={11} /> Reset
           </button>
-          <button onClick={save} disabled={loading || saving}
+          <button
+            onClick={save}
+            disabled={loading || saving}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
-            style={{ background: saved ? "rgba(16,185,129,0.2)" : "rgba(245,158,11,0.2)", color: saved ? "#10b981" : "#f59e0b" }}>
+            style={{ background: saved ? "#10b981" : "var(--primary)", color: saved ? "#fff" : "var(--primary-foreground)" }}
+          >
             <Save size={11} /> {saved ? "Saved!" : saving ? "Saving…" : "Save changes"}
           </button>
         </div>
@@ -336,9 +403,9 @@ export function SystemConfig() {
                 onClick={() => setActive(s.id)}
                 className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left transition-all text-[13px] font-medium"
                 style={{
-                  background: isActive ? `${s.color}18` : "transparent",
+                  background: isActive ? `${s.color}12` : "transparent",
                   color: isActive ? s.color : "var(--muted-foreground)",
-                  border: `1px solid ${isActive ? s.color + "30" : "transparent"}`,
+                  border: `1px solid ${isActive ? s.color + "20" : "transparent"}`,
                 }}
               >
                 <Icon size={14} /> {s.label}
@@ -353,12 +420,12 @@ export function SystemConfig() {
             {loading ? (
               <div className="flex flex-col items-center justify-center py-16 gap-2">
                 <Loader2 size={24} className="animate-spin" style={{ color: "var(--muted-foreground)" }} />
-                <div className="text-sm font-medium text-white">Loading settings…</div>
+                <div className="text-sm font-medium" style={{ color: "var(--foreground)" }}>Loading settings…</div>
               </div>
             ) : loadError ? (
               <div className="flex flex-col items-center justify-center py-16 gap-2">
                 <AlertTriangle size={24} style={{ color: "#ef4444" }} />
-                <div className="text-sm font-medium text-white">Failed to load settings</div>
+                <div className="text-sm font-medium" style={{ color: "var(--foreground)" }}>Failed to load settings</div>
                 <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>{loadError}</div>
               </div>
             ) : (

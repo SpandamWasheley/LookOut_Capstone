@@ -1,17 +1,19 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   LayoutDashboard, Camera, Bell, Users, Settings,
-  ChevronLeft, ChevronRight, Eye, LogOut, Shield, Archive,
+  ChevronLeft, ChevronRight, Eye, LogOut, Shield,
+  Archive, TrendingUp, Sun, Moon,
 } from "lucide-react";
 
 const navGroups = [
   {
     label: "Monitor",
     items: [
-      { id: "dashboard", label: "Overview",   icon: LayoutDashboard, roles: ["admin", "dispatcher", "both"] },
-      { id: "cameras",   label: "Live Feeds", icon: Camera,          roles: ["admin", "dispatcher", "officer", "both"] },
-      { id: "alerts",    label: "Violations", icon: Bell,            roles: ["admin", "dispatcher", "officer", "both"] },
-      { id: "records",   label: "Records",    icon: Archive,         roles: ["admin", "dispatcher", "officer", "both"] },
+      { id: "dashboard",  label: "Overview",     icon: LayoutDashboard, roles: ["admin", "dispatcher", "both"] },
+      { id: "cameras",    label: "Live Feeds",   icon: Camera,          roles: ["admin", "dispatcher", "both"] },
+      { id: "alerts",     label: "Violations",   icon: Bell,            roles: ["admin", "dispatcher", "both"] },
+      { id: "records",    label: "Records",      icon: Archive,         roles: ["admin", "dispatcher", "both"] },
+      { id: "residentlog",label: "Resident Log", icon: TrendingUp,      roles: ["admin", "dispatcher"] },
     ],
   },
   {
@@ -24,67 +26,105 @@ const navGroups = [
   },
 ];
 
-const ROLE_DISPLAY_LABEL = {
-  both: "Dispatcher",
-};
-
-export function Sidebar({ activeView, onViewChange, activeRole, userName, alertCount, onLogout }) {
+export function Sidebar({ activeView, onViewChange, activeRole, onRoleChange, alertCount, onLogout }) {
   const [collapsed, setCollapsed] = useState(false);
-  const roleLabel = ROLE_DISPLAY_LABEL[activeRole] ?? activeRole;
+
+  const [isLight, setIsLight] = useState(() => {
+    const saved = localStorage.getItem("lookout-theme");
+    return saved !== "dark";
+  });
+
+  useEffect(() => {
+    if (isLight) {
+      document.documentElement.classList.remove("dark");
+      localStorage.setItem("lookout-theme", "light");
+    } else {
+      document.documentElement.classList.add("dark");
+      localStorage.setItem("lookout-theme", "dark");
+    }
+  }, [isLight]);
+
+  const sidebarBg     = "var(--sidebar)";
+  const sidebarBorder = "var(--sidebar-border)";
+  const activeBg      = "rgba(234,243,242,0.14)";
+  const activeColor   = "var(--sidebar-primary)";
+  const mutedColor    = "var(--sidebar-foreground)";
 
   return (
     <aside
-      className="flex flex-col h-screen transition-all duration-300 flex-shrink-0"
+      className="flex flex-col h-screen transition-all duration-300 flex-shrink-0 relative"
       style={{
-        width: collapsed ? 60 : 216,
-        background: "var(--sidebar)",
-        borderRight: "1px solid var(--sidebar-border)",
+        width: collapsed ? 60 : 220,
+        background: sidebarBg,
+        borderRight: `1px solid ${sidebarBorder}`,
+        overflow: "visible",
       }}
     >
+      {/* ── Collapse handle — sits on the right edge, half outside ── */}
+      <button
+        onClick={() => setCollapsed(!collapsed)}
+        title={collapsed ? "Expand" : "Collapse"}
+        className="absolute z-20 flex items-center justify-center transition-all duration-150"
+        style={{
+          top: "14px",
+          right: "-13px",
+          width: 26,
+          height: 26,
+          background: sidebarBg,
+          border: `1px solid ${sidebarBorder}`,
+          borderLeft: "none",
+          borderRadius: "0 8px 8px 0",
+          color: mutedColor,
+          cursor: "pointer",
+        }}
+        onMouseEnter={(e) => { e.currentTarget.style.color = activeColor; }}
+        onMouseLeave={(e) => { e.currentTarget.style.color = mutedColor; }}
+      >
+        {collapsed ? <ChevronRight size={12} /> : <ChevronLeft size={12} />}
+      </button>
+
       {/* Header */}
-      <div className="flex items-center h-14 flex-shrink-0 px-3 gap-2"
-        style={{ borderBottom: "1px solid var(--sidebar-border)" }}>
-        <button
-          onClick={() => setCollapsed(!collapsed)}
-          className="w-7 h-7 flex items-center justify-center rounded-md flex-shrink-0 transition-colors"
-          style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}
-          title={collapsed ? "Expand" : "Collapse"}
+      <div
+        className="flex items-center h-14 flex-shrink-0 px-3 gap-2.5"
+        style={{ borderBottom: `1px solid ${sidebarBorder}` }}
+      >
+        <div
+          className="w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0"
+          style={{ background: "var(--sidebar-primary)" }}
         >
-          {collapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
-        </button>
-
-        <div className="w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0"
-          style={{ background: "#f59e0b" }}>
-          <Eye size={14} color="#0c0f16" strokeWidth={2.5} />
+          <Eye size={14} color="var(--sidebar-primary-foreground)" strokeWidth={2.5} />
         </div>
-
         {!collapsed && (
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-semibold text-white tracking-tight leading-none">LookOut</div>
+            <div className="text-sm font-semibold leading-none" style={{ color: "var(--sidebar-primary)" }}>
+              LookOut
+            </div>
             <div className="text-[11px] mt-0.5 truncate"
-              style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+              style={{ color: mutedColor, fontFamily: "'DM Mono', monospace" }}>
               Barangay Tetuan
             </div>
           </div>
         )}
       </div>
 
-      {/* Logged-in role — single pill, same style as the old toggle */}
-      {!collapsed && (
-        <div className="px-3 py-3" style={{ borderBottom: "1px solid var(--sidebar-border)" }}>
-          <div className="flex rounded-md overflow-hidden" style={{ background: "var(--secondary)" }}>
-            <div
-              className="flex-1 py-1.5 text-[11px] font-medium text-center capitalize"
-              style={{ background: "#f59e0b", color: "#0c0f16" }}
-            >
-              {roleLabel}
-            </div>
+      {/* Role tabs */}
+      {!collapsed && onRoleChange && (
+        <div className="px-3 py-3" style={{ borderBottom: `1px solid ${sidebarBorder}` }}>
+          <div className="flex rounded-md overflow-hidden" style={{ background: "rgba(0,0,0,0.18)" }}>
+            {["admin", "dispatcher"].map((role) => (
+              <button
+                key={role}
+                onClick={() => onRoleChange(role)}
+                className="flex-1 py-1.5 text-[11px] font-medium transition-all duration-150 capitalize"
+                style={{
+                  background: activeRole === role ? "var(--sidebar-primary)" : "transparent",
+                  color: activeRole === role ? "var(--sidebar-primary-foreground)" : mutedColor,
+                }}
+              >
+                {role === "dispatcher" ? "Dispatcher" : "Admin"}
+              </button>
+            ))}
           </div>
-          {userName && (
-            <div className="text-[11px] text-center mt-2 truncate" style={{ color: "var(--muted-foreground)" }}>
-              {userName}
-            </div>
-          )}
         </div>
       )}
 
@@ -97,8 +137,8 @@ export function Sidebar({ activeView, onViewChange, activeRole, userName, alertC
             <div key={group.label} className="mb-1">
               {!collapsed && (
                 <div
-                  className="px-4 py-1.5 text-[10px] font-semibold uppercase tracking-widest"
-                  style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace", letterSpacing: "0.08em" }}
+                  className="px-4 py-1.5 text-[10px] font-semibold uppercase"
+                  style={{ color: mutedColor, fontFamily: "'DM Mono', monospace", letterSpacing: "0.08em", opacity: 0.6 }}
                 >
                   {group.label}
                 </div>
@@ -108,30 +148,42 @@ export function Sidebar({ activeView, onViewChange, activeRole, userName, alertC
                 const isActive = activeView === item.id;
                 const showBadge = item.id === "alerts" && alertCount > 0;
                 return (
-                  <button
-                    key={item.id}
-                    onClick={() => onViewChange(item.id)}
-                    title={collapsed ? item.label : undefined}
-                    className="w-full flex items-center gap-2.5 transition-all duration-150"
-                    style={{
-                      padding: collapsed ? "9px 0" : "9px 12px",
-                      justifyContent: collapsed ? "center" : "flex-start",
-                      color: isActive ? "#f59e0b" : "var(--sidebar-foreground)",
-                      background: isActive ? "rgba(245,158,11,0.08)" : "transparent",
-                      borderLeft: isActive ? "2px solid #f59e0b" : "2px solid transparent",
-                    }}
-                  >
-                    <div className="relative flex-shrink-0">
-                      <Icon size={15} />
-                      {showBadge && (
-                        <span className="absolute -top-1 -right-1 w-3 h-3 rounded-full flex items-center justify-center text-[8px] font-bold text-white"
-                          style={{ background: "#ef4444" }}>
-                          {alertCount > 9 ? "9" : alertCount}
+                  <div key={item.id} className="px-2 py-0.5">
+                    <button
+                      onClick={() => onViewChange(item.id)}
+                      title={collapsed ? item.label : undefined}
+                      className="w-full flex items-center gap-2.5 transition-all duration-150 rounded-lg"
+                      style={{
+                        padding: collapsed ? "8px 0" : "8px 12px",
+                        justifyContent: collapsed ? "center" : "flex-start",
+                        color: isActive ? activeColor : mutedColor,
+                        background: isActive ? activeBg : "transparent",
+                      }}
+                    >
+                      <div className="relative flex-shrink-0 flex items-center">
+                        <Icon size={15} />
+                        {showBadge && collapsed && (
+                          <span
+                            className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full text-[9px] font-bold flex items-center justify-center"
+                            style={{ background: "#0E7C86", color: "#fff" }}
+                          >
+                            {alertCount > 9 ? "9+" : alertCount}
+                          </span>
+                        )}
+                      </div>
+                      {!collapsed && (
+                        <span className="text-[13px] font-medium flex-1 text-left">{item.label}</span>
+                      )}
+                      {showBadge && !collapsed && (
+                        <span
+                          className="ml-auto text-[10px] font-bold w-5 h-5 rounded-full flex items-center justify-center"
+                          style={{ background: "#0E7C86", color: "#fff" }}
+                        >
+                          {alertCount > 9 ? "9+" : alertCount}
                         </span>
                       )}
-                    </div>
-                    {!collapsed && <span className="text-[13px] font-medium">{item.label}</span>}
-                  </button>
+                    </button>
+                  </div>
                 );
               })}
             </div>
@@ -139,28 +191,42 @@ export function Sidebar({ activeView, onViewChange, activeRole, userName, alertC
         })}
       </nav>
 
-      {/* Bottom */}
-      <div className="flex-shrink-0 p-3 space-y-2" style={{ borderTop: "1px solid var(--sidebar-border)" }}>
+      {/* Bottom: AI status + theme toggle + sign out */}
+      <div className="flex-shrink-0 p-3 space-y-1.5" style={{ borderTop: `1px solid ${sidebarBorder}` }}>
         {!collapsed && (
           <div className="flex items-center gap-2 px-2 py-2 rounded-md"
-            style={{ background: "rgba(16,185,129,0.08)" }}>
-            <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 flex-shrink-0 animate-pulse" />
+            style={{ background: "rgba(46,139,115,0.18)" }}>
+            <div className="w-1.5 h-1.5 rounded-full flex-shrink-0 animate-pulse"
+              style={{ background: "#2ECC71" }} />
             <div className="min-w-0 flex-1">
-              <div className="text-[11px] font-medium text-emerald-400 leading-none">AI Active</div>
+              <div className="text-[11px] font-medium leading-none" style={{ color: "#2ECC71" }}>AI Active</div>
               <div className="text-[10px] mt-0.5"
-                style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+                style={{ color: mutedColor, fontFamily: "'DM Mono', monospace" }}>
                 4 cams · YOLOv8
               </div>
             </div>
           </div>
         )}
+
+        <button
+          onClick={() => setIsLight((v) => !v)}
+          title={isLight ? "Switch to dark mode" : "Switch to light mode"}
+          className="w-full flex items-center gap-2 rounded-md py-2 px-2 transition-all duration-150"
+          style={{ justifyContent: collapsed ? "center" : "flex-start", color: mutedColor, background: "transparent" }}
+          onMouseEnter={(e) => { e.currentTarget.style.background = activeBg; e.currentTarget.style.color = activeColor; }}
+          onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = mutedColor; }}
+        >
+          {isLight ? <Moon size={14} className="flex-shrink-0" /> : <Sun size={14} className="flex-shrink-0" />}
+          {!collapsed && <span className="text-[13px] font-medium">{isLight ? "Dark mode" : "Light mode"}</span>}
+        </button>
+
         <button
           onClick={onLogout}
           title="Sign out"
           className="w-full flex items-center gap-2 rounded-md py-2 px-2 transition-all duration-150"
-          style={{ justifyContent: collapsed ? "center" : "flex-start", color: "var(--muted-foreground)" }}
-          onMouseEnter={(e) => { e.currentTarget.style.color = "#ef4444"; e.currentTarget.style.background = "rgba(239,68,68,0.08)"; }}
-          onMouseLeave={(e) => { e.currentTarget.style.color = "var(--muted-foreground)"; e.currentTarget.style.background = "transparent"; }}
+          style={{ justifyContent: collapsed ? "center" : "flex-start", color: mutedColor }}
+          onMouseEnter={(e) => { e.currentTarget.style.color = "#ef4444"; e.currentTarget.style.background = "rgba(239,68,68,0.12)"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.color = mutedColor; e.currentTarget.style.background = "transparent"; }}
         >
           <LogOut size={14} className="flex-shrink-0" />
           {!collapsed && <span className="text-[13px] font-medium">Sign out</span>}

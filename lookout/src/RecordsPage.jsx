@@ -111,7 +111,7 @@ export function RecordsPage() {
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search by type, zone, officer, or ID…"
               className="w-full pl-9 pr-3 py-2 rounded-lg text-sm outline-none"
-              style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "#f1f5f9" }}
+              style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
             />
           </div>
           <div className="flex gap-1.5">
@@ -198,7 +198,7 @@ export function RecordsPage() {
                 </div>
 
                 {/* Officer */}
-                <div className="text-[12px] flex items-center gap-1.5" style={{ color: "#cbd5e1" }}>
+                <div className="text-[12px] flex items-center gap-1.5" style={{ color: "var(--muted-foreground)" }}>
                   {alert.officersAssignedNames.length > 0
                     ? <>
                         <Shield size={10} style={{ color: "#3b82f6", flexShrink: 0 }} />

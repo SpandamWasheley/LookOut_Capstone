@@ -27,5 +27,6 @@ urlpatterns = [
     path("officers/send-code/", views.send_officer_code, name="send_officer_code"),
     path("officers/verify-code/", views.verify_officer_code, name="verify_officer_code"),
     path("personnel/register/", views.register_personnel, name="register_personnel"),
+    path("sms/send/", views.send_sms, name="send_sms"),
     path("", include(router.urls)),
 ]

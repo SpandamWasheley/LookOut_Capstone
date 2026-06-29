@@ -69,7 +69,7 @@ export function DispatchModal({ alert, officers, alerts, onAssign, onClose }) {
               className="w-20 h-14 rounded-lg object-cover flex-shrink-0"
               style={{ border: "1px solid var(--border)" }} />
             <div>
-              <p className="text-[11px] leading-relaxed" style={{ color: "#cbd5e1" }}>
+              <p className="text-[11px] leading-relaxed" style={{ color: "var(--muted-foreground)" }}>
                 {alert.description}
               </p>
               <div className="flex items-center gap-2 mt-1.5">
