@@ -208,3 +208,24 @@ export interface ApiViolationType {
 
 export const getViolationTypes = () =>
   apiFetch<{ results: ApiViolationType[] } | ApiViolationType[]>("/violation-types/");
+
+export interface ApiHouseholdMember {
+  code: string;
+  first_name: string;
+  last_name: string;
+  barangay_id?: string;
+  birthdate?: string | null;
+  image_url?: string;
+  phone?: string;
+  relation?: string;
+}
+
+export interface ApiHousehold {
+  code: string;
+  family_name: string;
+  address?: string;
+  members: ApiHouseholdMember[];
+}
+
+export const getHouseholds = () =>
+  apiFetch<{ results: ApiHousehold[] } | ApiHousehold[]>("/households/");

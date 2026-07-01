@@ -158,34 +158,52 @@ function DismissModal({ alert, onConfirm, onClose }) {
 // ── Alert card ────────────────────────────────────────────────────────────────
 function AlertCard({ alert, onView }) {
   const vcfg = VIOLATION_CONFIG[alert.type] ?? { label: alert.type, color: "#f59e0b", icon: AlertTriangle };
-  const officerLabel = alert.officersAssignedNames.length > 0
-    ? alert.officersAssignedNames[0]
-    : "Unassigned";
+  const VIcon = vcfg.icon;
+  const scfg = statusConfig[alert.status] ?? statusConfig.acknowledged;
+  const officerCount = alert.officersAssignedNames.length;
 
   return (
     <div
       onClick={onView}
-      className="rounded-xl overflow-hidden cursor-pointer transition-all duration-150 mb-2"
-      style={{
-        background: "var(--secondary)",
-        border: "1px solid rgba(239,68,68,0.2)",
-        borderLeft: `3px solid ${vcfg.color}`,
-      }}
-      onMouseEnter={(e) => (e.currentTarget.style.borderColor = "rgba(239,68,68,0.4)")}
-      onMouseLeave={(e) => (e.currentTarget.style.borderColor = "rgba(239,68,68,0.2)")}
+      className="rounded-2xl cursor-pointer transition-all duration-150 mb-3"
+      style={{ background: "var(--card)", border: "1px solid var(--border)" }}
+      onMouseEnter={(e) => { e.currentTarget.style.borderColor = `${vcfg.color}40`; }}
+      onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border)"; }}
     >
-      <div className="flex items-center gap-3 px-3.5 py-2.5">
-        <span className="text-[12px] font-semibold flex-shrink-0"
-          style={{ color: "var(--foreground)", fontFamily: "'DM Mono', monospace" }}>
-          {formatTime(alert.timestamp)}
-        </span>
-        <span className="text-[11px] font-medium flex-shrink-0" style={{ color: vcfg.color }}>
-          {(alert.confidence * 100).toFixed(0)}% conf
-        </span>
-        <span className="text-[11px] ml-auto truncate text-right"
-          style={{ color: alert.officersAssignedNames.length > 0 ? "#3b82f6" : "var(--muted-foreground)" }}>
-          {officerLabel}
-        </span>
+      <div className="flex items-center gap-3.5 px-4 py-3.5">
+        {/* Icon box */}
+        <div className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0"
+          style={{ background: `${vcfg.color}18` }}>
+          <VIcon size={20} color={vcfg.color} />
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 min-w-0">
+          {/* Row 1: title + status + officer badge */}
+          <div className="flex items-center gap-2 flex-wrap mb-1">
+            <span className="text-[14px] font-semibold" style={{ color: "var(--foreground)" }}>
+              {vcfg.label}
+            </span>
+            <span className="text-[11px] font-medium px-2 py-0.5 rounded-full"
+              style={{ background: scfg.bg, color: scfg.color }}>
+              {scfg.label}
+            </span>
+            {officerCount > 0 && (
+              <span className="flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full"
+                style={{ background: "rgba(59,130,246,0.1)", color: "#3b82f6" }}>
+                <Radio size={9} /> {officerCount} officer{officerCount !== 1 ? "s" : ""}
+              </span>
+            )}
+          </div>
+          {/* Row 2: location + time + confidence */}
+          <div className="flex items-center gap-3 text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+            <span className="flex items-center gap-1"><MapPin size={9} /> {alert.cameraZone}</span>
+            <span className="flex items-center gap-1"><Clock size={9} /> {formatTime(alert.timestamp)}</span>
+            <span className="font-medium" style={{ color: vcfg.color }}>
+              {(alert.confidence * 100).toFixed(0)}% conf
+            </span>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -351,7 +369,7 @@ export function AlertFeed({ showFilters = false }) {
     setTimeout(() => setToast(null), 3000);
   };
 
-  const ongoing = alerts.filter((a) => a.status === "active");
+  const ongoing = alerts.filter((a) => a.status === "active" || a.status === "dispatched");
   const visible = ongoing.filter((a) => {
     if (statusFilter === "active")     return a.status === "active";
     if (statusFilter === "dispatched") return a.status === "dispatched";
@@ -359,23 +377,20 @@ export function AlertFeed({ showFilters = false }) {
   });
 
   const refresh = async () => {
-    const [alertsRes, officersRes, camerasRes] = await Promise.all([
-      getAlerts(), getOfficers(), getCameras(),
+    const [alertsRes, officersRes, camerasRes, householdsRes, residentsRes] = await Promise.all([
+      getAlerts(), getOfficers(), getCameras(), getHouseholds(), getResidents(),
     ]);
     setAlerts((alertsRes.results ?? alertsRes).map(mapAlert));
     setOfficers((officersRes.results ?? officersRes).map(mapOfficer));
     setCameras(camerasRes.results ?? camerasRes);
+    setHouseholds(householdsRes.results ?? householdsRes);
+    setResidents(residentsRes.results ?? residentsRes);
   };
 
   useEffect(() => {
     refresh().catch(() => {});
     const id = setInterval(() => refresh().catch(() => {}), 4000);
     return () => clearInterval(id);
-  }, []);
-
-  useEffect(() => {
-    getHouseholds().then((data) => setHouseholds(data.results ?? data)).catch(() => {});
-    getResidents().then((data) => setResidents(data.results ?? data)).catch(() => {});
   }, []);
 
   const assignedOfficerNames = (alertId) =>

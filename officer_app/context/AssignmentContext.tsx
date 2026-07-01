@@ -59,7 +59,7 @@ interface AssignmentContextType {
   refreshAssignments: () => Promise<void>;
   getAssignment: (id: string) => Assignment | undefined;
   acceptAssignment: (id: string) => Promise<void>;
-  resolveAssignment: (id: string, notes?: string) => Promise<void>;
+  resolveAssignment: (id: string, notes?: string, suspect?: string) => Promise<void>;
   dismissAssignment: (id: string, reason: string) => Promise<void>;
   saveNote: (id: string, note: string) => Promise<void>;
 }
@@ -123,10 +123,14 @@ export function AssignmentProvider({ children }: { children: React.ReactNode }) 
   );
 
   const resolveAssignment = useCallback(
-    async (id: string, notes?: string) => {
+    async (id: string, notes?: string, suspect?: string) => {
       const a = assignments.find((x) => x.id === id);
       if (!a) return;
-      await api.updateAlert(a.dbId, { status: "resolved", ...(notes !== undefined ? { notes } : {}) });
+      await api.updateAlert(a.dbId, {
+        status: "resolved",
+        ...(notes !== undefined ? { notes } : {}),
+        ...(suspect !== undefined ? { suspect } : {}),
+      });
       await refreshAssignments();
     },
     [assignments, refreshAssignments]

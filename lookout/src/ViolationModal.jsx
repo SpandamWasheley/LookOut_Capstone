@@ -382,7 +382,7 @@ function ResolveChecklistModal({ alert, vcfg, households: rawHH, residents: rawR
                     )}
                     {isIdentified && (
                       <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full"
-                        style={{ background: "rgba(245,158,11,0.15)", color: "#f59e0b" }}>Identified</span>
+                        style={{ background: "rgba(245,158,11,0.15)", color: "#f59e0b" }}>Possible candidate</span>
                     )}
                   </div>
                   <div className="flex items-center gap-1.5 mt-0.5 text-[10px]" style={{ color: "var(--muted-foreground)" }}>
@@ -796,7 +796,6 @@ export function ViolationModal({
   const VIcon = vcfg.icon;
   const [showContact, setShowContact] = useState(false);
   const [showResolveChecklist, setShowResolveChecklist] = useState(false);
-  const needsChecklist = alert.type === "curfew" || alert.type === "waste";
 
   return (
     <>
@@ -919,13 +918,15 @@ export function ViolationModal({
           {(alert.status === "active" || alert.status === "dispatched") && (
             <div className="flex items-center gap-2 px-6 py-4 flex-shrink-0"
               style={{ borderTop: "1px solid var(--border)" }}>
-              {/* Contact Guardian — always shown for actionable alerts */}
-              <button
-                onClick={() => setShowContact(true)}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium transition-all"
-                style={{ background: "rgba(16,185,129,0.1)", color: "#10b981", border: "1px solid rgba(16,185,129,0.25)" }}>
-                <MessageSquare size={13} /> Contact guardian
-              </button>
+              {/* Contact Guardian — curfew involves minors, so a guardian to notify always exists */}
+              {alert.type === "curfew" && (
+                <button
+                  onClick={() => setShowContact(true)}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium transition-all"
+                  style={{ background: "rgba(16,185,129,0.1)", color: "#10b981", border: "1px solid rgba(16,185,129,0.25)" }}>
+                  <MessageSquare size={13} /> Contact guardian
+                </button>
+              )}
 
               <div className="flex-1" />
 
@@ -955,7 +956,7 @@ export function ViolationModal({
                     <Radio size={13} /> Reassign officers
                   </button>
                   <button
-                    onClick={() => needsChecklist ? setShowResolveChecklist(true) : onResolve(null)}
+                    onClick={() => setShowResolveChecklist(true)}
                     className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium transition-all"
                     style={{ background: "rgba(16,185,129,0.12)", color: "#10b981", border: "1px solid rgba(16,185,129,0.2)" }}>
                     <CheckCircle size={13} /> Mark resolved
