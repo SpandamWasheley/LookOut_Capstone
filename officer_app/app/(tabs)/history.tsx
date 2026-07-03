@@ -27,21 +27,20 @@ export default function HistoryScreen() {
   const newestFirst = (a: typeof historyAssignments[0], b: typeof historyAssignments[0]) =>
     new Date(b.dispatchedAt).getTime() - new Date(a.dispatchedAt).getTime();
 
+  const myId = officer?.officerId;
+
   const allHistory = useMemo(() => {
-    // All: flat list of every closed violation, newest first — no officer filter so
-    // dismissed items (which may have no assignedOfficerIds) always appear here.
-    if (filter === "all") return [...historyAssignments].sort(newestFirst);
+    const mine = historyAssignments.filter(
+      (a) => myId != null && a.assignedOfficerIds.includes(myId)
+    );
 
-    if (filter === "resolved") {
-      return historyAssignments
-        .filter((a) => a.status === "resolved" && officer?.officerId != null && a.assignedOfficerIds.includes(officer.officerId))
-        .sort(newestFirst);
-    }
+    if (filter === "all") return [...mine].sort(newestFirst);
 
-    return historyAssignments
-      .filter((a) => a.status === "acknowledged")
-      .sort(newestFirst);
-  }, [historyAssignments, officer, filter]);
+    if (filter === "resolved")
+      return mine.filter((a) => a.status === "resolved").sort(newestFirst);
+
+    return mine.filter((a) => a.status === "acknowledged").sort(newestFirst);
+  }, [historyAssignments, myId, filter]);
 
   return (
     <View style={[styles.root, { backgroundColor: c.background }]}>
