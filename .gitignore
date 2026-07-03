@@ -3,9 +3,7 @@ __pycache__/
 *.py[cod]
 *.pyc
 *.egg-info/
-# db.sqlite3
 staticfiles/
-media/
 
 # Virtual environments
 venv/
@@ -39,11 +37,3 @@ Thumbs.db
 *.njsproj
 *.sln
 *.sw?
-
-# Env / secrets
-.env
-.env.*
-!.env.example
-
-# Face recognition cache (insightface model weights cache to ~/.insightface/ instead)
-lookout_backend/core/vision/face_db.json
