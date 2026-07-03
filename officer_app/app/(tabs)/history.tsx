@@ -1,19 +1,47 @@
 import { Feather } from "@expo/vector-icons";
-import React from "react";
-import { ActivityIndicator, FlatList, Platform, StyleSheet, Text, View } from "react-native";
+import React, { useMemo, useState } from "react";
+import { ActivityIndicator, FlatList, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import AssignmentCard from "@/components/AssignmentCard";
 import { useAssignments } from "@/context/AssignmentContext";
+import { useAuth } from "@/context/AuthContext";
 import { useColors } from "@/hooks/useColors";
+
+type Filter = "all" | "resolved" | "dismissed";
+
+const FILTERS: { key: Filter; label: string }[] = [
+  { key: "all",      label: "All" },
+  { key: "resolved", label: "Resolved" },
+  { key: "dismissed", label: "Dismissed" },
+];
 
 export default function HistoryScreen() {
   const { historyAssignments, loading, error } = useAssignments();
+  const { officer } = useAuth();
   const c = useColors();
   const insets = useSafeAreaInsets();
 
-  const resolved = historyAssignments.filter((a) => a.status === "resolved");
-  const dismissed = historyAssignments.filter((a) => a.status === "acknowledged");
+  const [filter, setFilter] = useState<Filter>("all");
+
+  const newestFirst = (a: typeof historyAssignments[0], b: typeof historyAssignments[0]) =>
+    new Date(b.dispatchedAt).getTime() - new Date(a.dispatchedAt).getTime();
+
+  const allHistory = useMemo(() => {
+    // All: flat list of every closed violation, newest first — no officer filter so
+    // dismissed items (which may have no assignedOfficerIds) always appear here.
+    if (filter === "all") return [...historyAssignments].sort(newestFirst);
+
+    if (filter === "resolved") {
+      return historyAssignments
+        .filter((a) => a.status === "resolved" && officer?.officerId != null && a.assignedOfficerIds.includes(officer.officerId))
+        .sort(newestFirst);
+    }
+
+    return historyAssignments
+      .filter((a) => a.status === "acknowledged")
+      .sort(newestFirst);
+  }, [historyAssignments, officer, filter]);
 
   return (
     <View style={[styles.root, { backgroundColor: c.background }]}>
@@ -25,8 +53,29 @@ export default function HistoryScreen() {
       >
         <Text style={[styles.title, { color: c.foreground }]}>History</Text>
         <View style={[styles.countBadge, { backgroundColor: c.muted }]}>
-          <Text style={[styles.countText, { color: c.mutedForeground }]}>{historyAssignments.length} closed</Text>
+          <Text style={[styles.countText, { color: c.mutedForeground }]}>{allHistory.length} closed</Text>
         </View>
+      </View>
+
+      {/* Filter bar */}
+      <View style={[styles.filterRow, { backgroundColor: c.card, borderBottomColor: c.border }]}>
+        {FILTERS.map((opt) => (
+          <Pressable
+            key={opt.key}
+            onPress={() => setFilter(opt.key)}
+            style={[
+              styles.filterChip,
+              {
+                backgroundColor: filter === opt.key ? c.primary : c.muted,
+                borderColor: filter === opt.key ? c.primary : c.border,
+              },
+            ]}
+          >
+            <Text style={[styles.filterChipText, { color: filter === opt.key ? "#fff" : c.mutedForeground }]}>
+              {opt.label}
+            </Text>
+          </Pressable>
+        ))}
       </View>
 
       <FlatList
@@ -43,33 +92,16 @@ export default function HistoryScreen() {
                 <Feather name="alert-triangle" size={40} color={c.destructive} />
                 <Text style={[styles.emptyText, { color: c.mutedForeground }]}>{error}</Text>
               </View>
-            ) : historyAssignments.length === 0 ? (
+            ) : allHistory.length === 0 ? (
               <View style={styles.empty}>
                 <Feather name="clock" size={48} color={c.mutedForeground} />
                 <Text style={[styles.emptyTitle, { color: c.foreground }]}>No history yet</Text>
-                <Text style={[styles.emptyText, { color: c.mutedForeground }]}>Resolved assignments will appear here</Text>
+                <Text style={[styles.emptyText, { color: c.mutedForeground }]}>
+                  {filter === "all" ? "Resolved and dismissed violations will appear here" : `No ${filter} violations`}
+                </Text>
               </View>
             ) : (
-              <>
-                {resolved.length > 0 && (
-                  <>
-                    <Text style={[styles.sectionLabel, { color: c.mutedForeground }]}>RESOLVED ({resolved.length})</Text>
-                    {resolved.map((a) => (
-                      <AssignmentCard key={a.id} assignment={a} />
-                    ))}
-                  </>
-                )}
-                {dismissed.length > 0 && (
-                  <>
-                    <Text style={[styles.sectionLabel, { color: c.mutedForeground, marginTop: 8 }]}>
-                      DISMISSED ({dismissed.length})
-                    </Text>
-                    {dismissed.map((a) => (
-                      <AssignmentCard key={a.id} assignment={a} />
-                    ))}
-                  </>
-                )}
-              </>
+              allHistory.map((a) => <AssignmentCard key={a.id} assignment={a} />)
             )}
           </View>
         }
@@ -86,8 +118,10 @@ const styles = StyleSheet.create({
   title: { fontSize: 22, fontFamily: "Inter_700Bold" },
   countBadge: { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 20 },
   countText: { fontSize: 13, fontFamily: "Inter_500Medium" },
-  listContent: { paddingHorizontal: 16, paddingTop: 16 },
-  sectionLabel: { fontSize: 11, fontFamily: "Inter_600SemiBold", letterSpacing: 0.8, marginBottom: 10 },
+  filterRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1 },
+  filterChip: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 20, borderWidth: 1 },
+  filterChipText: { fontSize: 13, fontFamily: "Inter_500Medium" },
+  listContent: { paddingHorizontal: 16, paddingTop: 16, gap: 0 },
   empty: { alignItems: "center", justifyContent: "center", paddingVertical: 80, gap: 12 },
   emptyTitle: { fontSize: 18, fontFamily: "Inter_600SemiBold" },
   emptyText: { fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center" },

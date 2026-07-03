@@ -62,7 +62,7 @@ export default function ProfileScreen() {
     ]);
   };
 
-  const handleStatusChange = async (status: api.ApiOfficer["status"]) => {
+  const doStatusChange = async (status: api.ApiOfficer["status"]) => {
     if (!profile) return;
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setUpdating(true);
@@ -73,6 +73,29 @@ export default function ProfileScreen() {
       Alert.alert("Couldn't update status", err instanceof Error ? err.message : "Try again.");
     } finally {
       setUpdating(false);
+    }
+  };
+
+  const handleStatusChange = (status: api.ApiOfficer["status"]) => {
+    if (!profile || profile.status === status) return;
+    const labels: Record<string, string> = {
+      "on-duty": "On Duty",
+      "responding": "On Call",
+      "off-duty": "Off Duty",
+    };
+    if (Platform.OS === "web") {
+      if (window.confirm(`Switch status to ${labels[status]}?`)) {
+        doStatusChange(status);
+      }
+    } else {
+      Alert.alert(
+        "Change Duty Status",
+        `Switch to ${labels[status]}?`,
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Confirm", onPress: () => doStatusChange(status) },
+        ]
+      );
     }
   };
 

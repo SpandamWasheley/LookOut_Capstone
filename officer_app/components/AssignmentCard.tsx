@@ -19,7 +19,7 @@ function timeAgo(isoString: string): string {
 
 const STATUS_LABELS: Record<Assignment["status"], string> = {
   active: "Pending",
-  dispatched: "Accepted",
+  dispatched: "Assigned",
   resolved: "Resolved",
   acknowledged: "Dismissed",
 };
@@ -33,11 +33,10 @@ export default function AssignmentCard({ assignment }: Props) {
   const c = useColors();
 
   const statusColor =
-    assignment.status === "active"
-      ? c.danger
-      : assignment.status === "resolved" || assignment.status === "acknowledged"
-        ? c.mutedForeground
-        : c.accent;
+    assignment.status === "active"      ? c.danger
+    : assignment.status === "resolved"  ? "#10b981"
+    : assignment.status === "acknowledged" ? "#ef4444"
+    : c.accent;
 
   return (
     <Pressable

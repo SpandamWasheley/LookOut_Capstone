@@ -165,21 +165,23 @@ function AlertCard({ alert, onView }) {
   return (
     <div
       onClick={onView}
-      className="rounded-2xl cursor-pointer transition-all duration-150 mb-3"
+      className="rounded-2xl cursor-pointer transition-all duration-150 mb-3 overflow-hidden flex"
       style={{ background: "var(--card)", border: "1px solid var(--border)" }}
-      onMouseEnter={(e) => { e.currentTarget.style.borderColor = `${vcfg.color}40`; }}
+      onMouseEnter={(e) => { e.currentTarget.style.borderColor = `${vcfg.color}50`; }}
       onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border)"; }}
     >
-      <div className="flex items-center gap-3.5 px-4 py-3.5">
+      {/* Left color stripe */}
+      <div className="w-1 flex-shrink-0 rounded-l-2xl" style={{ background: vcfg.color }} />
+      <div className="flex items-center gap-3.5 px-4 py-3.5 flex-1 min-w-0">
         {/* Icon box */}
         <div className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0"
           style={{ background: `${vcfg.color}18` }}>
           <VIcon size={20} color={vcfg.color} />
         </div>
 
-        {/* Content */}
+        {/* Left content */}
         <div className="flex-1 min-w-0">
-          {/* Row 1: title + status + officer badge */}
+          {/* Row 1: title + status */}
           <div className="flex items-center gap-2 flex-wrap mb-1">
             <span className="text-[14px] font-semibold" style={{ color: "var(--foreground)" }}>
               {vcfg.label}
@@ -188,21 +190,25 @@ function AlertCard({ alert, onView }) {
               style={{ background: scfg.bg, color: scfg.color }}>
               {scfg.label}
             </span>
-            {officerCount > 0 && (
-              <span className="flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full"
-                style={{ background: "rgba(59,130,246,0.1)", color: "#3b82f6" }}>
-                <Radio size={9} /> {officerCount} officer{officerCount !== 1 ? "s" : ""}
-              </span>
-            )}
           </div>
-          {/* Row 2: location + time + confidence */}
+          {/* Row 2: location + time */}
           <div className="flex items-center gap-3 text-[11px]" style={{ color: "var(--muted-foreground)" }}>
             <span className="flex items-center gap-1"><MapPin size={9} /> {alert.cameraZone}</span>
             <span className="flex items-center gap-1"><Clock size={9} /> {formatTime(alert.timestamp)}</span>
-            <span className="font-medium" style={{ color: vcfg.color }}>
-              {(alert.confidence * 100).toFixed(0)}% conf
-            </span>
           </div>
+        </div>
+
+        {/* Right: confidence + officer count */}
+        <div className="flex flex-col items-end gap-1 flex-shrink-0">
+          <span className="text-[11px] font-medium" style={{ color: vcfg.color }}>
+            {(alert.confidence * 100).toFixed(0)}% conf
+          </span>
+          {officerCount > 0 && (
+            <span className="flex items-center gap-1 text-[11px] font-medium" style={{ color: "#3b82f6" }}>
+              <Radio size={9} />
+              {`${officerCount} officer${officerCount !== 1 ? "s" : ""}`}
+            </span>
+          )}
         </div>
       </div>
     </div>
@@ -258,8 +264,10 @@ function RightPanel({ alerts, cameras }) {
   const onlineCount = cameras.filter((c) => c.status === "online").length;
   const activeCount = alerts.filter((a) => a.status === "active").length;
   const dispatchedCount = alerts.filter((a) => a.status === "dispatched").length;
-  const pendingReview = alerts.filter((a) => a.status === "active" && a.officersAssignedIds.length === 0).length;
-  const totalToday = alerts.length;
+  const todayStr = new Date().toDateString();
+  const todayAlerts = alerts.filter((a) => new Date(a.timestamp).toDateString() === todayStr);
+  const todayTotal = todayAlerts.length;
+  const todayResolved = todayAlerts.filter((a) => a.status === "resolved").length;
 
   const latestAlert = [...alerts]
     .filter((a) => a.status === "active" || a.status === "dispatched")
@@ -306,10 +314,10 @@ function RightPanel({ alerts, cameras }) {
         {sectionLabel("Today's Violations")}
         <div className="grid grid-cols-2 gap-2">
           {[
-            { label: "Total today",    value: totalToday,      color: "#f97316" },
-            { label: "Pending review", value: pendingReview,   color: "#f59e0b" },
-            { label: "Dispatched",     value: dispatchedCount, color: "#f97316" },
-            { label: "Active",         value: activeCount,     color: "#ef4444" },
+            { label: "Total today",   value: todayTotal,      color: "#f59e0b" },
+            { label: "Resolve today", value: todayResolved,   color: "#10b981" },
+            { label: "Dispatched",    value: dispatchedCount, color: "#3b82f6" },
+            { label: "Active",        value: activeCount,     color: "#ef4444" },
           ].map((s) => (
             <div key={s.label} className="rounded-lg p-2.5"
               style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
@@ -415,11 +423,15 @@ export function AlertFeed({ showFilters = false }) {
 
   const handleAssign = async (officerIds) => {
     setActionError("");
+    const removing = officerIds.length === 0;
     try {
-      await updateAlert(dispatchingAlert.dbId, { status: "dispatched", officers_assigned: officerIds });
+      await updateAlert(dispatchingAlert.dbId, {
+        status: removing ? "active" : "dispatched",
+        officers_assigned: officerIds,
+      });
       setDispatchingAlert(null);
       await refresh();
-      showToast(`Officers dispatched to ${dispatchingAlert.cameraZone}`);
+      if (!removing) showToast(`Officers dispatched to ${dispatchingAlert.cameraZone}`);
     } catch (err) {
       setActionError(err.message || "Failed to assign officers.");
     }
@@ -549,8 +561,7 @@ export function AlertFeed({ showFilters = false }) {
       })()}
 
       {/* Filter row */}
-      <div className="flex items-center justify-between px-6 py-3 flex-shrink-0"
-        style={{ borderBottom: "1px solid var(--border)" }}>
+      <div className="flex items-center justify-between px-6 py-3 flex-shrink-0">
         <div className="flex items-center gap-1.5">
           {(["all", "active", "dispatched"]).map((s) => {
             const isActive = statusFilter === s;

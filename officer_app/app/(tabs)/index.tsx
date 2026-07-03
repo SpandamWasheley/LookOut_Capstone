@@ -8,6 +8,7 @@ import {
   RefreshControl,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -17,13 +18,13 @@ import { useAssignments } from "@/context/AssignmentContext";
 import { useAuth } from "@/context/AuthContext";
 import { useColors } from "@/hooks/useColors";
 
-const FILTERS = ["All", "Pending", "Accepted"] as const;
+const FILTERS = ["All", "Pending", "Assigned"] as const;
 type Filter = (typeof FILTERS)[number];
 
 const FILTER_MAP: Record<Filter, string[]> = {
   All: ["active", "dispatched"],
   Pending: ["active"],
-  Accepted: ["dispatched"],
+  Assigned: ["dispatched"],
 };
 
 export default function AssignmentsScreen() {
@@ -33,19 +34,38 @@ export default function AssignmentsScreen() {
   const insets = useSafeAreaInsets();
 
   const [filter, setFilter] = useState<Filter>("All");
+  const [search, setSearch] = useState("");
   const [refreshing, setRefreshing] = useState(false);
 
-  const filtered = useMemo(() => {
+  // Only show assignments dispatched to this officer
+  const myAssignments = useMemo(() => {
     const statuses = FILTER_MAP[filter];
-    return activeAssignments.filter((a) => statuses.includes(a.status));
-  }, [activeAssignments, filter]);
+    return activeAssignments.filter(
+      (a) =>
+        statuses.includes(a.status) &&
+        officer?.officerId != null &&
+        a.assignedOfficerIds.includes(officer.officerId)
+    );
+  }, [activeAssignments, filter, officer]);
 
-  const isMine = (a: (typeof filtered)[number]) =>
-    officer?.officerId != null && a.assignedOfficerIds.includes(officer.officerId);
-  const myAssignments = filtered.filter(isMine);
-  const otherAssignments = filtered.filter((a) => !isMine(a));
+  const searched = useMemo(() => {
+    if (!search.trim()) return myAssignments;
+    const q = search.toLowerCase();
+    return myAssignments.filter(
+      (a) =>
+        a.violationType.label.toLowerCase().includes(q) ||
+        a.location.toLowerCase().includes(q) ||
+        a.description?.toLowerCase().includes(q)
+    );
+  }, [myAssignments, search]);
 
-  const pendingCount = activeAssignments.filter((a) => a.status === "active").length;
+  const pendingCount = activeAssignments.filter(
+    (a) =>
+      a.status === "active" &&
+      officer?.officerId != null &&
+      a.assignedOfficerIds.includes(officer.officerId)
+  ).length;
+
   const lastName = officer?.name?.trim().split(/\s+/).pop() ?? "Officer";
 
   const handleRefresh = async () => {
@@ -72,6 +92,25 @@ export default function AssignmentsScreen() {
             <Text style={styles.alertBadgeText}>{pendingCount} pending</Text>
           </View>
         )}
+      </View>
+
+      {/* Search bar */}
+      <View style={[styles.searchRow, { backgroundColor: c.card, borderBottomColor: c.border }]}>
+        <View style={[styles.searchBox, { backgroundColor: c.secondary, borderColor: c.border }]}>
+          <Feather name="search" size={14} color={c.mutedForeground} />
+          <TextInput
+            value={search}
+            onChangeText={setSearch}
+            placeholder="Search violations…"
+            placeholderTextColor={c.mutedForeground}
+            style={[styles.searchInput, { color: c.foreground }]}
+          />
+          {search.length > 0 && (
+            <Pressable onPress={() => setSearch("")}>
+              <Feather name="x" size={14} color={c.mutedForeground} />
+            </Pressable>
+          )}
+        </View>
       </View>
 
       <View style={[styles.filterRow, { backgroundColor: c.card, borderBottomColor: c.border }]}>
@@ -111,30 +150,26 @@ export default function AssignmentsScreen() {
                 <Text style={[styles.emptyTitle, { color: c.foreground }]}>Couldn't load assignments</Text>
                 <Text style={[styles.emptyText, { color: c.mutedForeground }]}>{error}</Text>
               </View>
-            ) : filtered.length === 0 ? (
+            ) : searched.length === 0 ? (
               <View style={styles.empty}>
                 <Feather name="check-circle" size={48} color={c.mutedForeground} />
-                <Text style={[styles.emptyTitle, { color: c.foreground }]}>All clear</Text>
-                <Text style={[styles.emptyText, { color: c.mutedForeground }]}>No active assignments in this category</Text>
+                <Text style={[styles.emptyTitle, { color: c.foreground }]}>
+                  {myAssignments.length === 0 ? "No assignments yet" : "No results"}
+                </Text>
+                <Text style={[styles.emptyText, { color: c.mutedForeground }]}>
+                  {myAssignments.length === 0
+                    ? "Waiting for dispatch from command"
+                    : "Try a different search term"}
+                </Text>
               </View>
             ) : (
               <>
-                {myAssignments.length > 0 && (
-                  <>
-                    <Text style={[styles.sectionLabel, { color: c.mutedForeground }]}>YOUR ASSIGNMENTS</Text>
-                    {myAssignments.map((a) => (
-                      <AssignmentCard key={a.id} assignment={a} />
-                    ))}
-                  </>
-                )}
-                {otherAssignments.length > 0 && (
-                  <>
-                    <Text style={[styles.sectionLabel, { color: c.mutedForeground }]}>UNIT ASSIGNMENTS</Text>
-                    {otherAssignments.map((a) => (
-                      <AssignmentCard key={a.id} assignment={a} />
-                    ))}
-                  </>
-                )}
+                <Text style={[styles.sectionLabel, { color: c.mutedForeground }]}>
+                  YOUR ASSIGNED VIOLATIONS · {searched.length}
+                </Text>
+                {searched.map((a) => (
+                  <AssignmentCard key={a.id} assignment={a} />
+                ))}
               </>
             )}
           </View>
@@ -154,6 +189,9 @@ const styles = StyleSheet.create({
   title: { fontSize: 20, fontFamily: "Inter_700Bold", marginTop: 2 },
   alertBadge: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
   alertBadgeText: { color: "#fff", fontSize: 13, fontFamily: "Inter_600SemiBold" },
+  searchRow: { paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1 },
+  searchBox: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 9, borderRadius: 12, borderWidth: 1 },
+  searchInput: { flex: 1, fontSize: 14, fontFamily: "Inter_400Regular", padding: 0 },
   filterRow: { borderBottomWidth: 1 },
   filterList: { paddingHorizontal: 16, paddingVertical: 10, gap: 8 },
   filterChip: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 20, borderWidth: 1 },

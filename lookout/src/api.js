@@ -110,6 +110,8 @@ export const registerPersonnel = (payload) =>
   apiFetch("/personnel/register/", { method: "POST", body: JSON.stringify(payload) });
 
 export const getDispatchers = () => apiFetch("/dispatchers/");
+export const updateDispatcher = (id, payload) =>
+  apiFetch(`/dispatchers/${id}/`, { method: "PATCH", body: JSON.stringify(payload) });
 export const deleteDispatcher = (id) =>
   apiFetch(`/dispatchers/${id}/`, { method: "DELETE" });
 

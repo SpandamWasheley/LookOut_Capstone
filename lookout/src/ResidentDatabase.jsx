@@ -191,30 +191,17 @@ function ManageHouseholdModal({ household, onSave, onClose }) {
                   style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
                 />
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>Zone</label>
-                  <select
-                    value={zone}
-                    onChange={(e) => setZone(e.target.value)}
-                    className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
-                    style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
-                  >
-                    {ZONES.map((z) => <option key={z} value={z}>{z}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>
-                    Contact (primary) <span style={{ color: "#ef4444" }}>*</span>
-                  </label>
-                  <input
-                    value={contact}
-                    onChange={(e) => setContact(formatPhone(e.target.value))}
-                    placeholder="0951-853-2146"
-                    className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
-                    style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
-                  />
-                </div>
+              <div>
+                <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>
+                  Contact (primary) <span style={{ color: "#ef4444" }}>*</span>
+                </label>
+                <input
+                  value={contact}
+                  onChange={(e) => setContact(formatPhone(e.target.value))}
+                  placeholder="0951-853-2146"
+                  className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
+                  style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
+                />
               </div>
 
               {secondaryContacts.length > 0 && (
@@ -803,12 +790,12 @@ export function ResidentDatabase() {
         </div>
         <div className="flex items-center gap-2">
           <button onClick={() => setShowAddHH(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
+            className="flex items-center gap-2.5 px-4 py-1.5 rounded-lg text-xs font-medium transition-all"
             style={{ background: "var(--secondary)", color: "var(--foreground)", border: "1px solid var(--border)" }}>
             <Home size={12} /> Add household
           </button>
           <button onClick={() => setShowEnroll(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium"
+            className="flex items-center gap-2.5 px-4 py-1.5 rounded-lg text-xs font-medium"
             style={{ background: "var(--primary)", color: "var(--primary-foreground)" }}>
             <UserPlus size={12} /> Enroll resident
           </button>

@@ -5,7 +5,7 @@ import {
 } from "lucide-react";
 import {
   getOfficers, updateOfficer, deleteOfficer, sendOfficerCode, verifyOfficerCode, registerPersonnel,
-  getDispatchers, deleteDispatcher,
+  getDispatchers, updateDispatcher, deleteDispatcher,
 } from "./api";
 
 const statusConfig = {
@@ -385,6 +385,92 @@ function AddAccountModal({ role, onAdd, onClose }) {
   );
 }
 
+function EditCredentialsModal({ target, onSaved, onClose }) {
+  // target: { type: "officer" | "dispatcher", dbId, name, email }
+  const [email, setEmail] = useState(target.email || "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleSave = async () => {
+    if (!email.trim()) return;
+    setError("");
+    setSaving(true);
+    try {
+      if (target.type === "officer") {
+        await updateOfficer(target.dbId, { email: email.trim() });
+      } else {
+        await updateDispatcher(target.dbId, { email: email.trim() });
+      }
+      onSaved();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: "rgba(0,0,0,0.75)", backdropFilter: "blur(6px)" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="w-full max-w-sm rounded-2xl overflow-hidden shadow-2xl"
+        style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
+        <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: "1px solid var(--border)" }}>
+          <div>
+            <div className="text-sm font-semibold text-white">Edit Credentials</div>
+            <div className="text-[11px] mt-0.5" style={{ color: "var(--muted-foreground)" }}>{target.name}</div>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg"
+            style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}>
+            <X size={14} />
+          </button>
+        </div>
+
+        <div className="px-5 py-4 space-y-3">
+          <div>
+            <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>
+              Email address
+            </label>
+            <div className="flex gap-2 items-center px-3 py-2.5 rounded-xl"
+              style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
+              <Mail size={13} style={{ color: "var(--muted-foreground)", flexShrink: 0 }} />
+              <input
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="email@example.com"
+                className="flex-1 bg-transparent text-sm outline-none"
+                style={{ color: "var(--foreground)" }}
+              />
+            </div>
+          </div>
+
+          {error && (
+            <div className="text-[11px] px-3 py-2 rounded-lg" style={{ background: "rgba(239,68,68,0.08)", color: "#ef4444" }}>
+              {error}
+            </div>
+          )}
+        </div>
+
+        <div className="flex gap-2 px-5 pb-5">
+          <button onClick={onClose}
+            className="flex-1 py-2 rounded-xl text-sm font-medium"
+            style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}>
+            Cancel
+          </button>
+          <button onClick={handleSave} disabled={!email.trim() || saving}
+            className="flex-1 py-2 rounded-xl text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50"
+            style={{ background: "rgba(245,158,11,0.15)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.25)" }}>
+            {saving ? <Loader2 size={13} className="animate-spin" /> : <Mail size={13} />}
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function OfficersPage() {
   const [officers, setOfficers] = useState([]);
   const [dispatchers, setDispatchers] = useState([]);
@@ -394,6 +480,8 @@ export function OfficersPage() {
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [filterStatus, setFilterStatus] = useState("all");
   const [deleteTarget, setDeleteTarget] = useState(null); // { type, id }
+  const [editTarget, setEditTarget] = useState(null); // { type, dbId, name, email }
+  const [statusConfirm, setStatusConfirm] = useState(null); // { id, name, next }
 
   const refreshOfficers = async () => {
     const data = await getOfficers();
@@ -459,14 +547,21 @@ export function OfficersPage() {
     }
   };
 
-  const toggleStatus = async (id) => {
+  const toggleStatus = (id) => {
     const officer = officers.find((o) => o.id === id);
     const next = officer.status === "off-duty" ? "on-duty" : "off-duty";
+    setStatusConfirm({ id: officer.dbId, name: officer.name, next });
+  };
+
+  const confirmToggle = async () => {
+    if (!statusConfirm) return;
     try {
-      await updateOfficer(officer.dbId, { status: next });
+      await updateOfficer(statusConfirm.id, { status: statusConfirm.next });
       await refreshOfficers();
     } catch (err) {
       alert(`Failed to update status: ${err.message}`);
+    } finally {
+      setStatusConfirm(null);
     }
   };
 
@@ -610,7 +705,7 @@ export function OfficersPage() {
                     <div>
                       <div className="text-[13px] font-medium text-white">{officer.name}</div>
                       <div className="text-[10px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
-                        {officer.badge} · {officer.phone}
+                        {officer.badge} · {formatPhone(officer.phone ?? "")}
                       </div>
                     </div>
                   </div>
@@ -638,9 +733,12 @@ export function OfficersPage() {
 
                   {/* Actions */}
                   <div className="flex items-center gap-1 justify-end">
-                    <button className="p-1.5 rounded-lg transition-all" style={{ color: "var(--muted-foreground)" }}
+                    <button
+                      onClick={() => setEditTarget({ type: "officer", dbId: officer.dbId, name: officer.name, email: officer.email })}
+                      className="p-1.5 rounded-lg transition-all" style={{ color: "var(--muted-foreground)" }}
                       onMouseEnter={(e) => { e.currentTarget.style.color = "var(--foreground)"; e.currentTarget.style.background = "var(--secondary)"; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.color = "var(--muted-foreground)"; e.currentTarget.style.background = "transparent"; }}>
+                      onMouseLeave={(e) => { e.currentTarget.style.color = "var(--muted-foreground)"; e.currentTarget.style.background = "transparent"; }}
+                      title="Edit credentials">
                       <Edit2 size={13} />
                     </button>
                     <button onClick={() => setDeleteTarget({ type: "officer", dbId: officer.dbId, name: officer.name })}
@@ -671,7 +769,7 @@ export function OfficersPage() {
         </div>
         <div className="rounded-xl flex-shrink-0" style={{ border: "1px solid var(--border)" }}>
           <div className="grid px-4 py-2.5 text-[11px] font-semibold"
-            style={{ gridTemplateColumns: "2fr 2fr 0.5fr", color: "var(--muted-foreground)", background: "var(--card)", borderBottom: "1px solid var(--border)" }}>
+            style={{ gridTemplateColumns: "2fr 2fr 1fr", color: "var(--muted-foreground)", background: "var(--card)", borderBottom: "1px solid var(--border)" }}>
             <span>Name</span>
             <span>Email</span>
             <span />
@@ -684,7 +782,7 @@ export function OfficersPage() {
           ) : (
             dispatchers.map((d, idx) => (
               <div key={d.id} className="grid px-4 py-3 items-center transition-colors hover:bg-white/[0.02] group"
-                style={{ gridTemplateColumns: "2fr 2fr 0.5fr", borderBottom: idx < dispatchers.length - 1 ? "1px solid var(--border)" : "none", background: "var(--card)" }}>
+                style={{ gridTemplateColumns: "2fr 2fr 1fr", borderBottom: idx < dispatchers.length - 1 ? "1px solid var(--border)" : "none", background: "var(--card)" }}>
                 <div className="flex items-center gap-3">
                   <div className="w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold flex-shrink-0"
                     style={{ background: "rgba(245,158,11,0.15)", color: "#f59e0b" }}>
@@ -704,6 +802,14 @@ export function OfficersPage() {
                 </div>
                 <div className="text-[11px] truncate" style={{ color: "var(--muted-foreground)" }}>{d.email || "—"}</div>
                 <div className="flex items-center gap-1 justify-end">
+                  <button
+                    onClick={() => setEditTarget({ type: "dispatcher", dbId: d.dbId, name: d.name, email: d.email })}
+                    className="p-1.5 rounded-lg transition-all" style={{ color: "var(--muted-foreground)" }}
+                    onMouseEnter={(e) => { e.currentTarget.style.color = "var(--foreground)"; e.currentTarget.style.background = "var(--secondary)"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.color = "var(--muted-foreground)"; e.currentTarget.style.background = "transparent"; }}
+                    title="Edit credentials">
+                    <Edit2 size={13} />
+                  </button>
                   <button onClick={() => setDeleteTarget({ type: "dispatcher", dbId: d.dbId, name: d.name })}
                     className="p-1.5 rounded-lg transition-all" style={{ color: "var(--muted-foreground)" }}
                     onMouseEnter={(e) => { e.currentTarget.style.color = "#ef4444"; e.currentTarget.style.background = "rgba(239,68,68,0.08)"; }}
@@ -716,6 +822,47 @@ export function OfficersPage() {
           )}
         </div>
       </div>
+
+      {/* Confirm status change */}
+      {statusConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: "rgba(0,0,0,0.75)", backdropFilter: "blur(6px)" }}>
+          <div className="w-full max-w-xs rounded-2xl overflow-hidden"
+            style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
+            <div className="px-5 py-5 text-center">
+              <div className="w-10 h-10 rounded-full flex items-center justify-center mx-auto mb-3"
+                style={{ background: statusConfirm.next === "on-duty" ? "rgba(16,185,129,0.1)" : "rgba(100,116,139,0.1)" }}>
+                {statusConfirm.next === "on-duty"
+                  ? <CheckCircle size={18} style={{ color: "#10b981" }} />
+                  : <Clock size={18} style={{ color: "#64748b" }} />}
+              </div>
+              <div className="text-sm font-semibold text-white">Change duty status?</div>
+              <p className="text-[12px] mt-1" style={{ color: "var(--muted-foreground)" }}>
+                Set <span className="text-white">{statusConfirm.name}</span> to{" "}
+                <span style={{ color: statusConfirm.next === "on-duty" ? "#10b981" : "#64748b", fontWeight: 600 }}>
+                  {statusConfirm.next === "on-duty" ? "On Duty" : "Off Duty"}
+                </span>?
+              </p>
+            </div>
+            <div className="flex gap-2 px-5 pb-5">
+              <button onClick={() => setStatusConfirm(null)}
+                className="flex-1 py-2 rounded-xl text-sm font-medium"
+                style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}>
+                Cancel
+              </button>
+              <button onClick={confirmToggle}
+                className="flex-1 py-2 rounded-xl text-sm font-medium"
+                style={{
+                  background: statusConfirm.next === "on-duty" ? "rgba(16,185,129,0.15)" : "rgba(100,116,139,0.15)",
+                  color: statusConfirm.next === "on-duty" ? "#10b981" : "#94a3b8",
+                  border: `1px solid ${statusConfirm.next === "on-duty" ? "rgba(16,185,129,0.25)" : "rgba(100,116,139,0.25)"}`,
+                }}>
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Confirm delete */}
       {deleteTarget && (
@@ -752,6 +899,17 @@ export function OfficersPage() {
       )}
 
       {showAdd && <AddAccountModal role={showAdd} onAdd={handleAdd} onClose={() => setShowAdd(null)} />}
+
+      {editTarget && (
+        <EditCredentialsModal
+          target={editTarget}
+          onSaved={async () => {
+            await Promise.all([refreshOfficers(), refreshDispatchers()]);
+            setEditTarget(null);
+          }}
+          onClose={() => setEditTarget(null)}
+        />
+      )}
     </div>
   );
 }

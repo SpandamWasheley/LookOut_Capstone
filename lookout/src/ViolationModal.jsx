@@ -796,6 +796,7 @@ export function ViolationModal({
   const VIcon = vcfg.icon;
   const [showContact, setShowContact] = useState(false);
   const [showResolveChecklist, setShowResolveChecklist] = useState(false);
+  const [showAllOfficers, setShowAllOfficers] = useState(false);
 
   return (
     <>
@@ -838,23 +839,23 @@ export function ViolationModal({
           <div className="overflow-y-auto flex-1 p-6 space-y-5">
             <RecordingPlayer alert={alert} />
 
-            <div className="grid grid-cols-2 gap-4">
-              {/* Left: alert details */}
-              <div className="space-y-3">
-                <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-2 gap-4" style={{ alignItems: "stretch" }}>
+              {/* Left: detail grid */}
+              <div className="flex flex-col gap-3">
+                <div className="grid grid-cols-2 gap-2 flex-1" style={{ gridTemplateRows: "1fr 1fr" }}>
                   {[
                     ["Camera",     alert.camera],
                     ["Alert ID",   alert.id],
-                    ["Confidence", `${(alert.confidence * 100).toFixed(0)}%`],
+                    ["Confidence", `${(alert.confidence * 100).toFixed(0)}% conf`],
                     ["Status",     scfg.label],
                   ].map(([k, v]) => (
-                    <div key={k} className="rounded-lg px-3 py-2"
+                    <div key={k} className="rounded-lg px-3 py-3 flex flex-col justify-center"
                       style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
                       <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>{k}</div>
                       <div
                         className="text-[12px] font-medium mt-0.5"
                         style={{
-                          color: "var(--foreground)",
+                          color: k === "Confidence" ? vcfg.color : "var(--foreground)",
                           fontFamily: k === "Camera" || k === "Alert ID" ? "'DM Mono', monospace" : undefined,
                         }}>
                         {v}
@@ -863,17 +864,6 @@ export function ViolationModal({
                   ))}
                 </div>
 
-                <div className="rounded-lg px-3 py-3"
-                  style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-                  <div className="text-[10px] mb-1" style={{ color: "var(--muted-foreground)" }}>Description</div>
-                  <p className="text-[12px] leading-relaxed" style={{ color: "var(--muted-foreground)" }}>
-                    {alert.description}
-                  </p>
-                </div>
-              </div>
-
-              {/* Right: subject + officers */}
-              <div className="space-y-3">
                 {alert.suspect && (
                   <div className="rounded-lg px-3 py-3"
                     style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
@@ -884,25 +874,6 @@ export function ViolationModal({
                   </div>
                 )}
 
-                <div className="rounded-lg px-3 py-3"
-                  style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-                  <div className="text-[10px] mb-1.5" style={{ color: "var(--muted-foreground)" }}>
-                    Assigned officers {assignedOfficerNames.length > 0 && `(${assignedOfficerNames.length})`}
-                  </div>
-                  {assignedOfficerNames.length === 0 ? (
-                    <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>None assigned</div>
-                  ) : (
-                    <div className="space-y-1.5">
-                      {assignedOfficerNames.map((name) => (
-                        <div key={name} className="flex items-center gap-2 text-[12px]"
-                          style={{ color: "var(--muted-foreground)" }}>
-                          <Shield size={10} style={{ color: "#10b981", flexShrink: 0 }} /> {name}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
                 {alert.notes && (
                   <div className="rounded-lg px-3 py-3"
                     style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
@@ -910,6 +881,58 @@ export function ViolationModal({
                     <p className="text-[12px] italic" style={{ color: "var(--muted-foreground)" }}>"{alert.notes}"</p>
                   </div>
                 )}
+              </div>
+
+              {/* Right: officers + description */}
+              <div className="flex flex-col gap-3">
+                {/* Officers — compact with expandable */}
+                <div className="rounded-lg px-3 py-2.5"
+                  style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
+                  <div className="text-[10px] mb-1" style={{ color: "var(--muted-foreground)" }}>
+                    Assigned officers {assignedOfficerNames.length > 0 && `(${assignedOfficerNames.length})`}
+                  </div>
+                  {assignedOfficerNames.length === 0 ? (
+                    <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>None assigned</div>
+                  ) : showAllOfficers ? (
+                    <div className="space-y-1.5">
+                      {assignedOfficerNames.map((name) => (
+                        <div key={name} className="flex items-center gap-2 text-[12px]"
+                          style={{ color: "var(--foreground)" }}>
+                          <Shield size={10} style={{ color: "#10b981", flexShrink: 0 }} /> {name}
+                        </div>
+                      ))}
+                      <button onClick={() => setShowAllOfficers(false)}
+                        className="text-[11px] mt-0.5"
+                        style={{ color: "var(--muted-foreground)" }}>
+                        Show less
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1.5 text-[12px]">
+                      <Shield size={10} style={{ color: "#10b981", flexShrink: 0 }} />
+                      <span style={{ color: "var(--foreground)" }}>
+                        {assignedOfficerNames[0].split(" ")[0]}
+                      </span>
+                      {assignedOfficerNames.length > 1 && (
+                        <button
+                          onClick={() => setShowAllOfficers(true)}
+                          className="text-[11px] font-medium"
+                          style={{ color: "#3b82f6" }}>
+                          …more
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Description — compact */}
+                <div className="rounded-lg px-3 py-2.5"
+                  style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
+                  <div className="text-[10px] mb-1" style={{ color: "var(--muted-foreground)" }}>Description</div>
+                  <p className="text-[12px] leading-relaxed line-clamp-2" style={{ color: "var(--muted-foreground)" }}>
+                    {alert.description || "—"}
+                  </p>
+                </div>
               </div>
             </div>
           </div>
@@ -934,15 +957,15 @@ export function ViolationModal({
                 <>
                   <button
                     onClick={onDismiss}
-                    className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium transition-all"
-                    style={{ background: "rgba(100,116,139,0.1)", color: "var(--muted-foreground)", border: "1px solid rgba(100,116,139,0.2)" }}>
-                    <X size={13} /> Dismiss
+                    className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all"
+                    style={{ background: "rgba(100,116,139,0.22)", color: "#94a3b8", border: "1px solid rgba(100,116,139,0.45)" }}>
+                    <X size={14} /> Dismiss
                   </button>
                   <button
                     onClick={onDispatch}
-                    className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium transition-all"
-                    style={{ background: "rgba(245,158,11,0.12)", color: "var(--primary)", border: "1px solid rgba(245,158,11,0.2)" }}>
-                    <Radio size={13} />
+                    className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all"
+                    style={{ background: "rgba(245,158,11,0.22)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.5)" }}>
+                    <Radio size={14} />
                     {assignedOfficerNames.length > 0 ? "Reassign officers" : "Dispatch officers"}
                   </button>
                 </>
@@ -951,15 +974,15 @@ export function ViolationModal({
                 <>
                   <button
                     onClick={onDispatch}
-                    className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium transition-all"
-                    style={{ background: "rgba(59,130,246,0.1)", color: "#3b82f6", border: "1px solid rgba(59,130,246,0.2)" }}>
-                    <Radio size={13} /> Reassign officers
+                    className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all"
+                    style={{ background: "rgba(59,130,246,0.22)", color: "#3b82f6", border: "1px solid rgba(59,130,246,0.45)" }}>
+                    <Radio size={14} /> Reassign officers
                   </button>
                   <button
                     onClick={() => setShowResolveChecklist(true)}
-                    className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium transition-all"
-                    style={{ background: "rgba(16,185,129,0.12)", color: "#10b981", border: "1px solid rgba(16,185,129,0.2)" }}>
-                    <CheckCircle size={13} /> Mark resolved
+                    className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all"
+                    style={{ background: "rgba(16,185,129,0.22)", color: "#10b981", border: "1px solid rgba(16,185,129,0.45)" }}>
+                    <CheckCircle size={14} /> Mark resolved
                   </button>
                 </>
               )}

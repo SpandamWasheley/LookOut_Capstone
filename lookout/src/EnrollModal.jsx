@@ -187,7 +187,7 @@ export function EnrollModal({ onClose, onEnroll }) {
         </div>
 
         {/* Step indicator */}
-        <div className="flex items-center px-5 py-3 flex-shrink-0"
+        <div className="flex items-center justify-center px-5 py-3 flex-shrink-0"
           style={{ borderBottom: "1px solid var(--border)" }}>
           {steps.map((s, i) => {
             const current = stepOrder.indexOf(step);

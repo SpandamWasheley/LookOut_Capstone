@@ -37,7 +37,7 @@ function StepBar({ step }) {
     { n: 4, label: "Review" },
   ];
   return (
-    <div className="flex items-center gap-0 px-6 py-4 flex-shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
+    <div className="flex items-center justify-center gap-0 px-6 py-4 flex-shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
       {steps.map((s, i) => {
         const done   = step > s.n;
         const active = step === s.n;
@@ -108,31 +108,17 @@ function StepHousehold({ form, onChange }) {
         />
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>Zone</label>
-          <select
-            value={form.zone}
-            onChange={(e) => set("zone", e.target.value)}
-            className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
-            style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
-          >
-            <option value="">Select zone…</option>
-            {ZONES.map((z) => <option key={z} value={z}>{z}</option>)}
-          </select>
-        </div>
-        <div>
-          <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>
-            Contact number <span style={{ color: "#ef4444" }}>*</span>
-          </label>
-          <input
-            value={form.contact}
-            onChange={(e) => set("contact", formatPhone(e.target.value))}
-            placeholder="0951-853-2146"
-            className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
-            style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
-          />
-        </div>
+      <div>
+        <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>
+          Contact number <span style={{ color: "#ef4444" }}>*</span>
+        </label>
+        <input
+          value={form.contact}
+          onChange={(e) => set("contact", formatPhone(e.target.value))}
+          placeholder="0951-853-2146"
+          className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
+          style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
+        />
       </div>
 
       <div
@@ -540,7 +526,6 @@ function StepReview({ form, members, links, nextId }) {
           {[
             ["Family name", form.familyName],
             ["Address", form.address],
-            ["Zone", form.zone],
             ["Contact (primary)", form.contact],
             ["ID", nextId],
           ].map(([k, v]) => (

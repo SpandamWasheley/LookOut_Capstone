@@ -129,11 +129,11 @@ function AdminDashboard({ user, onLogout }) {
                 return (
                   <div
                     key={kpi.label}
-                    className="rounded-xl p-4 flex items-start gap-3"
+                    className="rounded-xl p-4 flex items-center gap-3"
                     style={{ background: "var(--card)", border: "1px solid var(--border)" }}
                   >
                     <div
-                      className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5"
+                      className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
                       style={{ background: `${kpi.accent}14` }}
                     >
                       <Icon size={15} style={{ color: kpi.accent }} />
