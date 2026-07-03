@@ -193,9 +193,10 @@ interface ResolveModalProps {
   suspect: string;
   onClose: () => void;
   onConfirm: (selectedNames: string | null) => void;
+  saveLabel?: string;
 }
 
-function ResolveModal({ visible, suspect, onClose, onConfirm }: ResolveModalProps) {
+function ResolveModal({ visible, suspect, onClose, onConfirm, saveLabel }: ResolveModalProps) {
   const c = useColors();
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -336,7 +337,7 @@ function ResolveModal({ visible, suspect, onClose, onConfirm }: ResolveModalProp
               </Pressable>
               <Pressable onPress={handleConfirm} style={rStyles.confirmBtn}>
                 <Feather name="check-circle" size={16} color="#fff" />
-                <Text style={rStyles.confirmText}>Confirm & Resolve</Text>
+                <Text style={rStyles.confirmText}>{saveLabel ?? "Confirm & Resolve"}</Text>
               </Pressable>
             </View>
           </View>
@@ -359,6 +360,7 @@ export default function AssignmentDetailScreen() {
   const [editingNote, setEditingNote] = useState(false);
   const [dismissModalVisible, setDismissModalVisible] = useState(false);
   const [resolveModalVisible, setResolveModalVisible] = useState(false);
+  const [setCandidateVisible, setSetCandidateVisible] = useState(false);
   const [busy, setBusy] = useState(false);
 
   if (!assignment) {
@@ -423,6 +425,13 @@ export default function AssignmentDetailScreen() {
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
 
+  const handleUpdateSuspect = async (names: string | null) => {
+    try {
+      await api.updateAlert(assignment.dbId, { suspect: names ?? "" });
+      setSetCandidateVisible(false);
+    } catch {}
+  };
+
   return (
     <View style={[styles.root, { backgroundColor: c.background }]}>
       <View
@@ -455,12 +464,31 @@ export default function AssignmentDetailScreen() {
             </View>
           </View>
           <Text style={[styles.description, { color: c.foreground }]}>{assignment.description}</Text>
-          {!!assignment.suspect && (
-            <View style={[styles.suspectRow, { backgroundColor: c.muted }]}>
-              <Feather name="user" size={13} color={c.primary} />
-              <Text style={[styles.suspectText, { color: c.primary }]}>{assignment.suspect}</Text>
+          {/* Potential Candidates */}
+          <View style={[styles.candidateBox, { backgroundColor: c.muted, borderColor: c.border }]}>
+            <View style={styles.candidateHeader}>
+              <Text style={[styles.candidateLabel, { color: c.mutedForeground }]}>Potential Candidates</Text>
+              <Pressable
+                onPress={() => setSetCandidateVisible(true)}
+                style={[styles.candidateEditBtn, { backgroundColor: "rgba(59,130,246,0.12)", borderColor: "rgba(59,130,246,0.25)" }]}
+              >
+                <Feather name="edit-2" size={10} color="#3b82f6" />
+                <Text style={styles.candidateEditText}>{assignment.suspect ? "Edit" : "+ Add"}</Text>
+              </Pressable>
             </View>
-          )}
+            {assignment.suspect ? (
+              <View style={styles.chipRow}>
+                {assignment.suspect.split(";").map((n) => n.trim()).filter(Boolean).map((name) => (
+                  <View key={name} style={[styles.chip, { backgroundColor: "rgba(59,130,246,0.1)", borderColor: "rgba(59,130,246,0.25)" }]}>
+                    <Feather name="user" size={10} color="#3b82f6" />
+                    <Text style={[styles.chipText, { color: "#3b82f6" }]}>{name}</Text>
+                  </View>
+                ))}
+              </View>
+            ) : (
+              <Text style={[styles.candidateEmpty, { color: c.mutedForeground }]}>None set</Text>
+            )}
+          </View>
         </View>
 
         {!!assignment.imageUrl && (
@@ -591,6 +619,13 @@ export default function AssignmentDetailScreen() {
         onClose={() => setResolveModalVisible(false)}
         onConfirm={handleResolve}
       />
+      <ResolveModal
+        visible={setCandidateVisible}
+        suspect={assignment.suspect}
+        onClose={() => setSetCandidateVisible(false)}
+        onConfirm={handleUpdateSuspect}
+        saveLabel="Save Candidates"
+      />
     </View>
   );
 }
@@ -642,6 +677,15 @@ const styles = StyleSheet.create({
   description: { fontSize: 15, fontFamily: "Inter_400Regular", lineHeight: 22 },
   suspectRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10 },
   suspectText: { fontSize: 13, fontFamily: "Inter_500Medium" },
+  candidateBox: { borderRadius: 10, borderWidth: 1, padding: 12, gap: 8 },
+  candidateHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  candidateLabel: { fontSize: 11, fontFamily: "Inter_600SemiBold", textTransform: "uppercase", letterSpacing: 0.5 },
+  candidateEditBtn: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 20, borderWidth: 1 },
+  candidateEditText: { fontSize: 11, fontFamily: "Inter_600SemiBold", color: "#3b82f6" },
+  chipRow: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  chip: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 20, borderWidth: 1 },
+  chipText: { fontSize: 12, fontFamily: "Inter_500Medium" },
+  candidateEmpty: { fontSize: 12, fontFamily: "Inter_400Regular" },
   evidenceCard: { borderRadius: 14, borderWidth: 1, overflow: "hidden" },
   evidenceImage: { width: "100%", aspectRatio: 16 / 9, backgroundColor: "#000" },
   evidenceFooter: { flexDirection: "row", alignItems: "center", gap: 6, padding: 12 },

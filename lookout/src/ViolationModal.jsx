@@ -2,7 +2,7 @@ import { useRef, useEffect, useState, useMemo } from "react";
 import {
   X, MapPin, Clock, User, Shield, Play, Pause,
   SkipBack, Volume2, VolumeX, Download, Radio, CheckCircle, AlertTriangle,
-  MessageSquare, Phone, ChevronDown, ChevronRight, Home, Loader2, Search, Send,
+  MessageSquare, Phone, ChevronDown, ChevronRight, Home, Loader2, Search, Send, Info,
 } from "lucide-react";
 import { VIOLATION_CONFIG } from "../data/mockData";
 import { sendSms } from "./api";
@@ -787,9 +787,160 @@ function ContactGuardianModal({ alert, violationType, households: rawHouseholds,
   );
 }
 
+// ── Set Candidate Modal ───────────────────────────────────────────────────────
+function SetCandidateModal({ alert, households: rawHH, residents: rawRes, onSave, onClose }) {
+  const [search, setSearch] = useState("");
+  const [checkedIds, setCheckedIds] = useState(new Set());
+  const [saving, setSaving] = useState(false);
+  const candidates = useMemo(() => buildCandidates(rawHH, rawRes), [rawHH, rawRes]);
+
+  useEffect(() => {
+    if (!alert.suspect || candidates.length === 0) return;
+    const existing = alert.suspect.split(";").map((s) => s.trim().toLowerCase());
+    setCheckedIds(new Set(
+      candidates.filter((c) => existing.some((e) => e && c.fullName.toLowerCase().includes(e))).map((c) => c.id)
+    ));
+  }, [candidates, alert.suspect]);
+
+  const filtered = candidates.filter((c) => {
+    if (!search) return true;
+    const q = search.toLowerCase();
+    return c.name.toLowerCase().includes(q) || c.barangayId.toLowerCase().includes(q) || (c.household ?? "").toLowerCase().includes(q);
+  });
+
+  const sorted = [...filtered].sort((a, b) => {
+    const ac = checkedIds.has(a.id) ? 0 : 1, bc = checkedIds.has(b.id) ? 0 : 1;
+    if (ac !== bc) return ac - bc;
+    return a.name.localeCompare(b.name);
+  });
+
+  const toggle = (id) => setCheckedIds((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+
+  const handleSave = async () => {
+    setSaving(true);
+    const names = candidates.filter((c) => checkedIds.has(c.id)).map((c) => c.fullName).join("; ");
+    await onSave(names || null);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[75] flex items-center justify-center p-4"
+      style={{ background: "rgba(0,0,0,0.72)", backdropFilter: "blur(6px)" }}>
+      <div className="w-full max-w-md rounded-2xl overflow-hidden shadow-2xl flex flex-col"
+        style={{ background: "var(--card)", border: "1px solid var(--border)", maxHeight: "90vh" }}>
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 flex-shrink-0"
+          style={{ borderBottom: "1px solid var(--border)" }}>
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: "rgba(59,130,246,0.12)" }}>
+              <User size={14} style={{ color: "#3b82f6" }} />
+            </div>
+            <div>
+              <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Set Potential Candidates</div>
+              <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>Select one or more residents involved</div>
+            </div>
+          </div>
+          {!saving && (
+            <button onClick={onClose} className="p-1.5 rounded-lg"
+              style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}>
+              <X size={14} />
+            </button>
+          )}
+        </div>
+
+        {/* Search */}
+        <div className="px-5 py-3 flex-shrink-0">
+          <div className="relative">
+            <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "var(--muted-foreground)" }} />
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search residents…"
+              className="w-full pl-9 pr-3 py-2.5 rounded-xl text-sm outline-none"
+              style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
+          </div>
+        </div>
+
+        {/* Count */}
+        <div className="px-5 pb-1 flex items-center justify-between flex-shrink-0">
+          <span className="text-[10px] font-semibold uppercase tracking-wide"
+            style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+            Residents · {sorted.length}
+          </span>
+          {checkedIds.size > 0 && (
+            <span className="text-[10px] font-semibold" style={{ color: "#3b82f6" }}>{checkedIds.size} selected</span>
+          )}
+        </div>
+
+        {/* List */}
+        <div className="flex-1 overflow-y-auto px-5 pb-3 pt-1 space-y-1.5" style={{ minHeight: 0 }}>
+          {sorted.length === 0 ? (
+            <div className="py-10 text-center text-sm" style={{ color: "var(--muted-foreground)" }}>
+              {candidates.length === 0 ? "Loading residents…" : "No matches found"}
+            </div>
+          ) : sorted.map((c) => {
+            const isChecked = checkedIds.has(c.id);
+            const isPossible = suspectMatches(alert.suspect, c.fullName);
+            return (
+              <button key={c.id} onClick={() => toggle(c.id)}
+                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-all"
+                style={{
+                  background: isChecked ? "rgba(59,130,246,0.07)" : "var(--secondary)",
+                  border: `1px solid ${isChecked ? "rgba(59,130,246,0.3)" : "var(--border)"}`,
+                }}>
+                <div className="flex-shrink-0 w-4 h-4 rounded flex items-center justify-center transition-all"
+                  style={{ background: isChecked ? "#3b82f6" : "transparent", border: `1.5px solid ${isChecked ? "#3b82f6" : "var(--muted-foreground)"}` }}>
+                  {isChecked && <CheckCircle size={10} color="#fff" strokeWidth={3} />}
+                </div>
+                <div className="w-8 h-8 rounded-lg flex-shrink-0 flex items-center justify-center text-xs font-bold overflow-hidden"
+                  style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}>
+                  {c.imageUrl
+                    ? <img src={c.imageUrl} alt={c.name} className="w-full h-full object-cover" onError={(e) => { e.currentTarget.style.display = "none"; }} />
+                    : (c.name[0] ?? "?")}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-[12px] font-medium" style={{ color: "var(--foreground)" }}>{c.name}</span>
+                    {c.isMinor && <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: "rgba(224,151,42,0.15)", color: "#e0972a" }}>Minor</span>}
+                    {isPossible && <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: "rgba(59,130,246,0.15)", color: "#3b82f6" }}>AI match</span>}
+                  </div>
+                  <div className="flex items-center gap-1.5 mt-0.5 text-[10px]" style={{ color: "var(--muted-foreground)" }}>
+                    <span style={{ fontFamily: "'DM Mono', monospace" }}>{c.barangayId}</span>
+                    {c.age != null && <><span>·</span><span>Age {c.age}</span></>}
+                    {c.household && <><span>·</span><span className="truncate">{c.household}</span></>}
+                  </div>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Footer */}
+        <div className="px-5 py-4 flex items-center justify-between gap-3 flex-shrink-0"
+          style={{ borderTop: "1px solid var(--border)" }}>
+          <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+            {checkedIds.size === 0 ? "None selected — clears current candidate" : `${checkedIds.size} candidate${checkedIds.size !== 1 ? "s" : ""} will be set`}
+          </div>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {!saving && (
+              <button onClick={onClose} className="px-4 py-2 rounded-xl text-sm font-medium"
+                style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}>
+                Cancel
+              </button>
+            )}
+            <button disabled={saving} onClick={handleSave}
+              className="flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-medium"
+              style={{ background: "rgba(59,130,246,0.2)", color: "#3b82f6", border: "1px solid rgba(59,130,246,0.35)", cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.7 : 1 }}>
+              {saving ? <Loader2 size={13} className="animate-spin" /> : <CheckCircle size={13} />}
+              {saving ? "Saving…" : "Save"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main modal ─────────────────────────────────────────────────────────────────
 export function ViolationModal({
-  alert, assignedOfficerNames, households, residents, onDismiss, onDispatch, onResolve, onClose,
+  alert, assignedOfficerNames, households, residents, onDismiss, onDispatch, onResolve, onClose, onUpdateSuspect,
 }) {
   const vcfg = VIOLATION_CONFIG[alert.type] ?? { label: alert.type, color: "#f59e0b", icon: AlertTriangle };
   const scfg = statusConfig[alert.status] ?? statusConfig.acknowledged;
@@ -797,6 +948,7 @@ export function ViolationModal({
   const [showContact, setShowContact] = useState(false);
   const [showResolveChecklist, setShowResolveChecklist] = useState(false);
   const [showAllOfficers, setShowAllOfficers] = useState(false);
+  const [showSetCandidate, setShowSetCandidate] = useState(false);
 
   return (
     <>
@@ -843,25 +995,62 @@ export function ViolationModal({
               {/* Left: detail grid */}
               <div className="flex flex-col gap-3">
                 <div className="grid grid-cols-2 gap-2 flex-1" style={{ gridTemplateRows: "1fr 1fr" }}>
-                  {[
-                    ["Camera",     alert.camera],
-                    ["Alert ID",   alert.id],
-                    ["Confidence", `${(alert.confidence * 100).toFixed(0)}% conf`],
-                    ["Status",     scfg.label],
-                  ].map(([k, v]) => (
-                    <div key={k} className="rounded-lg px-3 py-3 flex flex-col justify-center"
-                      style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-                      <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>{k}</div>
-                      <div
-                        className="text-[12px] font-medium mt-0.5"
-                        style={{
-                          color: k === "Confidence" ? vcfg.color : "var(--foreground)",
-                          fontFamily: k === "Camera" || k === "Alert ID" ? "'DM Mono', monospace" : undefined,
-                        }}>
-                        {v}
+                  {/* Camera */}
+                  <div className="rounded-lg px-3 py-3 flex flex-col justify-center"
+                    style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
+                    <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Camera</div>
+                    <div className="text-[12px] font-medium mt-0.5"
+                      style={{ color: "var(--foreground)", fontFamily: "'DM Mono', monospace" }}>
+                      {alert.camera}
+                    </div>
+                  </div>
+
+                  {/* Confidence */}
+                  <div className="rounded-lg px-3 py-3 flex flex-col justify-center"
+                    style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
+                    <div className="flex items-center gap-1">
+                      <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Confidence</div>
+                      <div className="relative group flex items-center">
+                        <Info size={10} style={{ color: "var(--muted-foreground)", cursor: "pointer" }} />
+                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-52 rounded-xl px-3 py-2.5 text-[11px] leading-relaxed pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity z-50 shadow-xl"
+                          style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--muted-foreground)" }}>
+                          <div className="font-semibold mb-1" style={{ color: "var(--foreground)" }}>AI Confidence Score</div>
+                          How certain the YOLOv8 model is that a violation was detected. A higher score means the AI is more confident in its detection.
+                          <div className="absolute top-full left-1/2 -translate-x-1/2 w-0 h-0"
+                            style={{ borderLeft: "5px solid transparent", borderRight: "5px solid transparent", borderTop: "5px solid var(--border)" }} />
+                        </div>
                       </div>
                     </div>
-                  ))}
+                    <div className="text-[12px] font-medium mt-0.5" style={{ color: vcfg.color }}>
+                      {(alert.confidence * 100).toFixed(0)}% conf
+                    </div>
+                  </div>
+
+                  {/* Potential Candidate — spans full width */}
+                  <div className="col-span-2 rounded-lg px-3 py-2.5"
+                    style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Potential Candidate</div>
+                      <button
+                        onClick={() => setShowSetCandidate(true)}
+                        className="flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full transition-all"
+                        style={{ background: "rgba(59,130,246,0.1)", color: "#3b82f6", border: "1px solid rgba(59,130,246,0.2)" }}>
+                        <User size={9} /> {alert.suspect ? "Edit" : "+ Add"}
+                      </button>
+                    </div>
+                    {alert.suspect ? (
+                      <div className="flex flex-wrap gap-1">
+                        {alert.suspect.split(";").map((n) => n.trim()).filter(Boolean).map((name) => (
+                          <span key={name} className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium"
+                            style={{ background: "rgba(59,130,246,0.1)", color: "#3b82f6", border: "1px solid rgba(59,130,246,0.2)" }}>
+                            <User size={9} /> {name}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>—</div>
+                    )}
+                  </div>
                 </div>
 
                 {alert.suspect && (
@@ -893,20 +1082,6 @@ export function ViolationModal({
                   </div>
                   {assignedOfficerNames.length === 0 ? (
                     <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>None assigned</div>
-                  ) : showAllOfficers ? (
-                    <div className="space-y-1.5">
-                      {assignedOfficerNames.map((name) => (
-                        <div key={name} className="flex items-center gap-2 text-[12px]"
-                          style={{ color: "var(--foreground)" }}>
-                          <Shield size={10} style={{ color: "#10b981", flexShrink: 0 }} /> {name}
-                        </div>
-                      ))}
-                      <button onClick={() => setShowAllOfficers(false)}
-                        className="text-[11px] mt-0.5"
-                        style={{ color: "var(--muted-foreground)" }}>
-                        Show less
-                      </button>
-                    </div>
                   ) : (
                     <div className="flex items-center gap-1.5 text-[12px]">
                       <Shield size={10} style={{ color: "#10b981", flexShrink: 0 }} />
@@ -921,6 +1096,48 @@ export function ViolationModal({
                           …more
                         </button>
                       )}
+                    </div>
+                  )}
+
+                  {/* Officers popup modal */}
+                  {showAllOfficers && (
+                    <div
+                      className="fixed inset-0 z-[80] flex items-center justify-center p-4"
+                      style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)" }}
+                      onClick={() => setShowAllOfficers(false)}
+                    >
+                      <div
+                        className="w-full max-w-xs rounded-2xl overflow-hidden shadow-2xl"
+                        style={{ background: "var(--card)", border: "1px solid var(--border)" }}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <div className="flex items-center justify-between px-4 py-3"
+                          style={{ borderBottom: "1px solid var(--border)" }}>
+                          <div className="flex items-center gap-2">
+                            <Shield size={13} style={{ color: "#10b981" }} />
+                            <span className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>
+                              Assigned Officers ({assignedOfficerNames.length})
+                            </span>
+                          </div>
+                          <button onClick={() => setShowAllOfficers(false)}
+                            className="p-1 rounded-lg"
+                            style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}>
+                            <X size={13} />
+                          </button>
+                        </div>
+                        <div className="px-4 py-3 space-y-2">
+                          {assignedOfficerNames.map((name) => (
+                            <div key={name} className="flex items-center gap-2.5 px-3 py-2 rounded-lg"
+                              style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
+                              <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0"
+                                style={{ background: "rgba(16,185,129,0.15)", color: "#10b981" }}>
+                                {name[0]}
+                              </div>
+                              <span className="text-[12px] font-medium" style={{ color: "var(--foreground)" }}>{name}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -1011,6 +1228,19 @@ export function ViolationModal({
             onResolve(suspectNames);
           }}
           onClose={() => setShowResolveChecklist(false)}
+        />
+      )}
+
+      {showSetCandidate && (
+        <SetCandidateModal
+          alert={alert}
+          households={households}
+          residents={residents}
+          onSave={async (names) => {
+            if (onUpdateSuspect) await onUpdateSuspect(names);
+            setShowSetCandidate(false);
+          }}
+          onClose={() => setShowSetCandidate(false)}
         />
       )}
     </>

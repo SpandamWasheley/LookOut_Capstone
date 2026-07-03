@@ -17,7 +17,7 @@ export const mockUsers = [
 
 export const VIOLATION_CONFIG = {
   curfew: { label: "Curfew Violation", color: "#f59e0b", icon: Moon },
-  waste: { label: "Illegal Waste Dumping", color: "#84cc16", icon: Trash2 },
+  waste: { label: "Waste Violation", color: "#84cc16", icon: Trash2 },
   noise: { label: "Noise Violation", color: "#a78bfa", icon: Volume2 },
   indecency: { label: "Indecent Behavior", color: "#f97316", icon: Ban },
   accident: { label: "Traffic Accident", color: "#ef4444", icon: AlertTriangle },

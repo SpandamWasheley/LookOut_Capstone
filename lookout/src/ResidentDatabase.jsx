@@ -182,7 +182,7 @@ function ManageHouseholdModal({ household, onSave, onClose }) {
               </div>
               <div>
                 <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>
-                  Street address <span style={{ color: "#ef4444" }}>*</span>
+                  Address <span style={{ color: "#ef4444" }}>*</span>
                 </label>
                 <input
                   value={address}

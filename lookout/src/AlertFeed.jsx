@@ -379,6 +379,7 @@ export function AlertFeed({ showFilters = false }) {
 
   const ongoing = alerts.filter((a) => a.status === "active" || a.status === "dispatched");
   const visible = ongoing.filter((a) => {
+    if (!showFilters) return a.status === "active";
     if (statusFilter === "active")     return a.status === "active";
     if (statusFilter === "dispatched") return a.status === "dispatched";
     return true;
@@ -437,6 +438,17 @@ export function AlertFeed({ showFilters = false }) {
     }
   };
 
+  const handleUpdateSuspect = async (alertId, names) => {
+    const a = alerts.find((x) => x.id === alertId);
+    if (!a) return;
+    try {
+      await updateAlert(a.dbId, { suspect: names ?? "" });
+      await refresh();
+    } catch (err) {
+      setActionError(err.message || "Failed to update candidate.");
+    }
+  };
+
   const handleResolve = async (alertId, suspectNames) => {
     const a = alerts.find((x) => x.id === alertId);
     if (!a) return;
@@ -472,6 +484,7 @@ export function AlertFeed({ showFilters = false }) {
           onClose={() => setSelectedAlert(null)}
           onDismiss={() => setDismissTarget(selectedAlert)}
           onResolve={(suspectNames) => handleResolve(selectedAlert.id, suspectNames)}
+          onUpdateSuspect={(names) => handleUpdateSuspect(selectedAlert.id, names)}
           onDispatch={() => { setDispatchingAlert(selectedAlert); setSelectedAlert(null); }}
         />
       )}
@@ -582,7 +595,7 @@ export function AlertFeed({ showFilters = false }) {
             );
           })}
         </div>
-        <span className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>
+        <span className="text-[12px] pr-[296px]" style={{ color: "var(--muted-foreground)" }}>
           {visible.length} record{visible.length !== 1 ? "s" : ""}
         </span>
       </div>

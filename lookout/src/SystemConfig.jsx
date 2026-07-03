@@ -67,7 +67,7 @@ const sections = [
   { id: "curfew", label: "Curfew", icon: Moon,    color: "#f59e0b" },
   { id: "noise",  label: "Noise",  icon: Volume2, color: "#a78bfa" },
   { id: "waste",  label: "Waste",  icon: Trash2,  color: "#84cc16" },
-  { id: "system", label: "System", icon: Clock,   color: "#3b82f6" },
+  // { id: "system", label: "System", icon: Clock,   color: "#3b82f6" },
 ];
 
 // ── Slider ────────────────────────────────────────────────────────────────────

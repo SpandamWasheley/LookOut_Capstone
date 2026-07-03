@@ -195,7 +195,7 @@ function AddAccountModal({ role, onAdd, onClose }) {
         </div>
 
         {/* Step bar */}
-        <div className="flex items-center gap-0 px-5 py-3 flex-shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
+        <div className="flex items-center justify-center gap-0 px-5 py-3 flex-shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
           {steps.map((s, i) => {
             const done = step > s.id;
             const active = step === s.id;
@@ -666,7 +666,7 @@ export function OfficersPage() {
           >
             <span>Officer</span>
             <span>Status</span>
-            <span>Location</span>
+            <span>Username</span>
             <span>Email</span>
             <span />
           </div>
@@ -720,10 +720,9 @@ export function OfficersPage() {
                     <StatusIcon size={10} /> {scfg.label}
                   </button>
 
-                  {/* Location */}
-                  <div className="text-[12px] flex items-center gap-1" style={{ color: "var(--muted-foreground)" }}>
-                    <MapPin size={10} style={{ color: "var(--muted-foreground)", flexShrink: 0 }} />
-                    {officer.location || "—"}
+                  {/* Username */}
+                  <div className="text-[12px] flex items-center gap-1" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+                    {officer.username || "—"}
                   </div>
 
                   {/* Email */}

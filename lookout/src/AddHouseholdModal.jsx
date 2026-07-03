@@ -97,7 +97,7 @@ function StepHousehold({ form, onChange }) {
 
       <div>
         <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>
-          Street address <span style={{ color: "#ef4444" }}>*</span>
+          Address <span style={{ color: "#ef4444" }}>*</span>
         </label>
         <input
           value={form.address}
@@ -273,7 +273,7 @@ function StepMembers({ familyName, members, onChange }) {
       ) : (
         <button
           onClick={() => { setAdding(emptyMember()); setShowForm(true); }}
-          className="w-full flex items-center gap-2 py-2.5 rounded-xl text-sm font-medium transition-all"
+          className="w-full flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all"
           style={{ background: "transparent", color: "var(--muted-foreground)", border: "1px dashed var(--border)" }}
         >
           <Plus size={13} /> Add another member
@@ -352,6 +352,7 @@ function StepGuardians({ members, links, onChange, extLinks, onExtChange }) {
   const minors = members.filter((m) => isMinor(m.birthdate));
   const adults = members.filter((m) => !isMinor(m.birthdate));
   const [allResidents, setAllResidents] = useState([]);
+  const [expandedGuardians, setExpandedGuardians] = useState(new Set());
 
   useEffect(() => {
     getResidents()
@@ -442,29 +443,54 @@ function StepGuardians({ members, links, onChange, extLinks, onExtChange }) {
                           .map((a) => ({ value: a.tempId, label: `${a.firstName} ${a.lastName}` }))}
                         onSelect={(val) => toggle(minor.tempId, val)}
                       />
-                      {selected.length > 0 && (
-                        <div className="flex flex-wrap gap-1.5 mt-2">
-                          {selected.map((tid) => {
-                            const adult = adults.find((a) => a.tempId === tid);
-                            if (!adult) return null;
-                            return (
-                              <span
-                                key={tid}
-                                className="flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium"
-                                style={{ background: "rgba(245,158,11,0.12)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.2)" }}
+                      {selected.length > 0 && (() => {
+                        const isExpanded = expandedGuardians.has(minor.tempId);
+                        const visible = selected.length > 1 && !isExpanded ? selected.slice(0, 1) : selected;
+                        const hiddenCount = selected.length - 1;
+                        return (
+                          <div className="flex flex-wrap gap-1.5 mt-2">
+                            {visible.map((tid) => {
+                              const adult = adults.find((a) => a.tempId === tid);
+                              if (!adult) return null;
+                              return (
+                                <span
+                                  key={tid}
+                                  className="flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium"
+                                  style={{ background: "rgba(245,158,11,0.12)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.2)" }}
+                                >
+                                  {adult.firstName} {adult.lastName}
+                                  <button type="button" onClick={() => toggle(minor.tempId, tid)} className="ml-0.5 hover:opacity-70">×</button>
+                                </span>
+                              );
+                            })}
+                            {selected.length > 1 && !isExpanded && (
+                              <button
+                                type="button"
+                                onClick={() => setExpandedGuardians((prev) => { const next = new Set(prev); next.add(minor.tempId); return next; })}
+                                className="flex items-center px-2 py-1 rounded-full text-[11px] font-medium"
+                                style={{ background: "rgba(245,158,11,0.08)", color: "#f59e0b", border: "1px dashed rgba(245,158,11,0.3)" }}
                               >
-                                {adult.firstName} {adult.lastName}
-                                <button type="button" onClick={() => toggle(minor.tempId, tid)} className="ml-0.5 hover:opacity-70">×</button>
-                              </span>
-                            );
-                          })}
-                        </div>
-                      )}
+                                +{hiddenCount} more
+                              </button>
+                            )}
+                            {selected.length > 1 && isExpanded && (
+                              <button
+                                type="button"
+                                onClick={() => setExpandedGuardians((prev) => { const next = new Set(prev); next.delete(minor.tempId); return next; })}
+                                className="flex items-center px-2 py-1 rounded-full text-[11px] font-medium"
+                                style={{ background: "rgba(245,158,11,0.08)", color: "#f59e0b", border: "1px dashed rgba(245,158,11,0.3)" }}
+                              >
+                                show less
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </>
                   )}
                 </div>
 
-                {/* External guardian dropdown */}
+                {/* External guardian dropdown — temporarily disabled
                 <div>
                   <div className="text-[10px] font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>
                     Add guardian from outside this household
@@ -495,6 +521,7 @@ function StepGuardians({ members, links, onChange, extLinks, onExtChange }) {
                     </div>
                   )}
                 </div>
+                */}
               </div>
             </div>
           </div>
