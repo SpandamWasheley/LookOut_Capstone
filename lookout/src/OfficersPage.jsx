@@ -49,7 +49,7 @@ const formatPhone = (raw) => {
 const blockNumbers = (v) => v.replace(/[0-9]/g, "");
 
 function generateUsername(firstName, lastName) {
-  const base = `${firstName}.${lastName}`.toLowerCase().replace(/[^a-z.]/g, "");
+  const base = `${firstName}.${lastName}`.replace(/[^a-zA-Z.]/g, "");
   const suffix = Math.floor(100 + Math.random() * 900);
   return `${base}${suffix}`;
 }

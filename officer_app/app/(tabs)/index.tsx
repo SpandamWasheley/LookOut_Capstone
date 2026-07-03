@@ -18,35 +18,24 @@ import { useAssignments } from "@/context/AssignmentContext";
 import { useAuth } from "@/context/AuthContext";
 import { useColors } from "@/hooks/useColors";
 
-const FILTERS = ["All", "Pending", "Assigned"] as const;
-type Filter = (typeof FILTERS)[number];
-
-const FILTER_MAP: Record<Filter, string[]> = {
-  All: ["active", "dispatched"],
-  Pending: ["active"],
-  Assigned: ["dispatched"],
-};
-
 export default function AssignmentsScreen() {
   const { activeAssignments, loading, error, refreshAssignments } = useAssignments();
   const { officer } = useAuth();
   const c = useColors();
   const insets = useSafeAreaInsets();
 
-  const [filter, setFilter] = useState<Filter>("All");
   const [search, setSearch] = useState("");
   const [refreshing, setRefreshing] = useState(false);
 
-  // Only show assignments dispatched to this officer
-  const myAssignments = useMemo(() => {
-    const statuses = FILTER_MAP[filter];
-    return activeAssignments.filter(
+  const myAssignments = useMemo(() =>
+    activeAssignments.filter(
       (a) =>
-        statuses.includes(a.status) &&
+        ["active", "dispatched"].includes(a.status) &&
         officer?.officerId != null &&
         a.assignedOfficerIds.includes(officer.officerId)
-    );
-  }, [activeAssignments, filter, officer]);
+    ),
+    [activeAssignments, officer]
+  );
 
   const searched = useMemo(() => {
     if (!search.trim()) return myAssignments;
@@ -113,27 +102,6 @@ export default function AssignmentsScreen() {
         </View>
       </View>
 
-      <View style={[styles.filterRow, { backgroundColor: c.card, borderBottomColor: c.border }]}>
-        <FlatList
-          horizontal
-          data={FILTERS as unknown as Filter[]}
-          keyExtractor={(item) => item}
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.filterList}
-          renderItem={({ item }) => (
-            <Pressable
-              onPress={() => setFilter(item)}
-              style={[
-                styles.filterChip,
-                { backgroundColor: filter === item ? c.primary : c.muted, borderColor: filter === item ? c.primary : c.border },
-              ]}
-            >
-              <Text style={[styles.filterText, { color: filter === item ? "#fff" : c.mutedForeground }]}>{item}</Text>
-            </Pressable>
-          )}
-        />
-      </View>
-
       <FlatList
         data={[]}
         renderItem={null}
@@ -192,10 +160,6 @@ const styles = StyleSheet.create({
   searchRow: { paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1 },
   searchBox: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 9, borderRadius: 12, borderWidth: 1 },
   searchInput: { flex: 1, fontSize: 14, fontFamily: "Inter_400Regular", padding: 0 },
-  filterRow: { borderBottomWidth: 1 },
-  filterList: { paddingHorizontal: 16, paddingVertical: 10, gap: 8 },
-  filterChip: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 20, borderWidth: 1 },
-  filterText: { fontSize: 13, fontFamily: "Inter_500Medium" },
   listContent: { paddingHorizontal: 16, paddingTop: 16 },
   sectionLabel: { fontSize: 11, fontFamily: "Inter_600SemiBold", letterSpacing: 0.8, marginBottom: 10, marginTop: 6 },
   empty: { alignItems: "center", justifyContent: "center", paddingVertical: 80, gap: 12 },

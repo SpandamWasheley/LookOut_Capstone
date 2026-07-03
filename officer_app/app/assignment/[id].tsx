@@ -347,6 +347,244 @@ function ResolveModal({ visible, suspect, onClose, onConfirm, saveLabel }: Resol
   );
 }
 
+function NoiseViolationCard({
+  camera,
+  confidence,
+  confirmed,
+  onConfirm,
+  onNotViolation,
+}: {
+  camera: string | null;
+  confidence: number;
+  confirmed: boolean;
+  onConfirm: () => void;
+  onNotViolation: () => void;
+}) {
+  const c = useColors();
+  const loudnessPct = Math.round(confidence * 100);
+  const dBFS = Math.round(-30 + confidence * 30);
+  const accentColor = confirmed ? "#10b981" : "#f59e0b";
+
+  return (
+    <View style={[nvStyles.card, { backgroundColor: c.secondary, borderColor: c.border, borderLeftColor: accentColor }]}>
+      <Text style={[nvStyles.typeLabel, { color: c.mutedForeground }]}>
+        Noise violation — no facial recognition, loudness only
+      </Text>
+
+      {/* Source + Duration */}
+      <View style={[nvStyles.topRow, { borderBottomColor: c.border }]}>
+        <View style={nvStyles.topCell}>
+          <Text style={[nvStyles.topLabel, { color: c.mutedForeground }]}>Source</Text>
+          <Text style={[nvStyles.topValue, { color: c.foreground }]}>{camera ?? "—"} · mic</Text>
+        </View>
+        <View style={[nvStyles.vDivider, { backgroundColor: c.border }]} />
+        <View style={nvStyles.topCell}>
+          <Text style={[nvStyles.topLabel, { color: c.mutedForeground }]}>Duration above threshold</Text>
+          <Text style={[nvStyles.topValue, { color: accentColor }]}>— s</Text>
+        </View>
+      </View>
+
+      {/* Loudness */}
+      <View style={nvStyles.loudnessSection}>
+        <View style={nvStyles.loudnessHeader}>
+          <Text style={[nvStyles.loudnessLabel, { color: c.mutedForeground }]}>Relative loudness</Text>
+          <View style={[nvStyles.badge, { backgroundColor: confirmed ? "rgba(16,185,129,0.15)" : "rgba(245,158,11,0.15)" }]}>
+            <Text style={[nvStyles.badgeText, { color: accentColor }]}>
+              {confirmed ? "Confirmed" : "Pending verification"}
+            </Text>
+          </View>
+        </View>
+
+        {/* Bar */}
+        <View style={[nvStyles.barTrack, { backgroundColor: c.muted }]}>
+          <View style={[nvStyles.barFill, { width: `${loudnessPct}%` as any, backgroundColor: accentColor }]} />
+          <View style={[nvStyles.thresholdLine, { backgroundColor: c.foreground }]} />
+        </View>
+        <View style={nvStyles.barLabels}>
+          <Text style={[nvStyles.thresholdLabel, { color: c.mutedForeground }]}>threshold</Text>
+          <Text style={[nvStyles.dBFS, { color: accentColor }]}>{dBFS} dBFS</Text>
+        </View>
+
+        {!confirmed && (
+          <View style={nvStyles.actionRow}>
+            <Pressable onPress={onNotViolation} style={[nvStyles.notBtn, { borderColor: c.border, backgroundColor: c.muted }]}>
+              <Text style={[nvStyles.notBtnText, { color: c.foreground }]}>Not a violation</Text>
+            </Pressable>
+            <Pressable onPress={onConfirm} style={nvStyles.confirmBtn}>
+              <Feather name="check" size={14} color="#fff" />
+              <Text style={nvStyles.confirmBtnText}>Confirm</Text>
+            </Pressable>
+          </View>
+        )}
+      </View>
+    </View>
+  );
+}
+
+const nvStyles = StyleSheet.create({
+  card: { borderRadius: 12, borderWidth: 1, borderLeftWidth: 3, overflow: "hidden" },
+  typeLabel: { fontSize: 10, fontFamily: "Inter_400Regular", paddingHorizontal: 14, paddingTop: 10, paddingBottom: 6 },
+  topRow: { flexDirection: "row", borderBottomWidth: 1, paddingHorizontal: 14, paddingBottom: 12 },
+  topCell: { flex: 1 },
+  topLabel: { fontSize: 10, fontFamily: "Inter_400Regular", marginBottom: 3 },
+  topValue: { fontSize: 14, fontFamily: "Inter_700Bold" },
+  vDivider: { width: 1, marginHorizontal: 12, marginVertical: 2 },
+  loudnessSection: { padding: 14 },
+  loudnessHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
+  loudnessLabel: { fontSize: 10, fontFamily: "Inter_400Regular" },
+  badge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 20 },
+  badgeText: { fontSize: 10, fontFamily: "Inter_600SemiBold" },
+  barTrack: { height: 8, borderRadius: 4, overflow: "visible", position: "relative" },
+  barFill: { position: "absolute", left: 0, top: 0, height: "100%", borderRadius: 4 },
+  thresholdLine: { position: "absolute", left: "75%", top: -4, width: 2, height: 16, borderRadius: 1 },
+  barLabels: { flexDirection: "row", justifyContent: "space-between", marginTop: 6 },
+  thresholdLabel: { fontSize: 9, fontFamily: "Inter_400Regular", marginLeft: "55%" as any },
+  dBFS: { fontSize: 10, fontFamily: "Inter_600SemiBold" },
+  actionRow: { flexDirection: "row", gap: 10, marginTop: 12 },
+  notBtn: { flex: 1, paddingVertical: 12, borderRadius: 10, borderWidth: 1, alignItems: "center", justifyContent: "center" },
+  notBtnText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
+  confirmBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 12, borderRadius: 10, backgroundColor: "#f59e0b" },
+  confirmBtnText: { color: "#fff", fontSize: 14, fontFamily: "Inter_600SemiBold" },
+});
+
+function formatHHMM(iso: string) {
+  return new Date(iso).toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" });
+}
+
+function CandidateMatchCard({
+  suspect,
+  cameraCode,
+  confidence,
+  officerName,
+  confirmed,
+  confirmedAt,
+  onSelect,
+  onNotMatch,
+  onConfirm,
+}: {
+  suspect: string;
+  cameraCode?: string;
+  confidence: number;
+  officerName: string;
+  confirmed: boolean;
+  confirmedAt: string | null;
+  onSelect: () => void;
+  onNotMatch: () => void;
+  onConfirm: () => void;
+}) {
+  const c = useColors();
+  const candidateName = suspect ? suspect.split(";")[0].trim() : null;
+  const initials = candidateName
+    ? candidateName.split(" ").slice(0, 2).map((w: string) => w[0]).join("").toUpperCase()
+    : "";
+  const accentColor = confirmed ? "#10b981" : candidateName ? "#f59e0b" : c.border;
+
+  return (
+    <View style={[cmStyles.card, { backgroundColor: c.secondary, borderColor: c.border, borderLeftColor: accentColor }]}>
+      {/* Camera + Confidence row */}
+      <View style={[cmStyles.topRow, { borderBottomColor: c.border }]}>
+        <View style={cmStyles.topCell}>
+          <Text style={[cmStyles.topLabel, { color: c.mutedForeground }]}>Camera</Text>
+          <Text style={[cmStyles.topValue, { color: c.foreground }]}>{cameraCode ?? "—"}</Text>
+        </View>
+        <View style={[cmStyles.vDivider, { backgroundColor: c.border }]} />
+        <View style={cmStyles.topCell}>
+          <Text style={[cmStyles.topLabel, { color: c.mutedForeground }]}>Confidence</Text>
+          <Text style={[cmStyles.topValue, { color: accentColor }]}>
+            {confidence ? `${confidence}%` : "—"}
+          </Text>
+        </View>
+      </View>
+
+      {/* Candidate section */}
+      <View style={cmStyles.bottom}>
+        {!candidateName ? (
+          // State 1 — no candidate
+          <View style={cmStyles.noMatchRow}>
+            <View>
+              <Text style={[cmStyles.matchLabel, { color: c.mutedForeground }]}>Candidate match</Text>
+              <Text style={[cmStyles.noMatchVal, { color: c.foreground }]}>No match found</Text>
+            </View>
+            <Pressable onPress={onSelect} style={[cmStyles.selectBtn, { borderColor: c.border, backgroundColor: c.muted }]}>
+              <Feather name="search" size={11} color={c.foreground} />
+              <Text style={[cmStyles.selectText, { color: c.foreground }]}>Select</Text>
+            </Pressable>
+          </View>
+        ) : confirmed ? (
+          // State 3 — confirmed
+          <View style={cmStyles.personRow}>
+            <View style={[cmStyles.avatar, { backgroundColor: "rgba(16,185,129,0.18)" }]}>
+              <Text style={[cmStyles.avatarText, { color: "#10b981" }]}>{initials}</Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[cmStyles.personName, { color: c.foreground }]}>{candidateName}</Text>
+              <Text style={[cmStyles.personSub, { color: c.mutedForeground }]}>
+                Verified by {officerName}{confirmedAt ? ` · ${formatHHMM(confirmedAt)}` : ""}
+              </Text>
+            </View>
+            <View style={[cmStyles.badge, { backgroundColor: "rgba(16,185,129,0.15)" }]}>
+              <Feather name="check-circle" size={10} color="#10b981" />
+              <Text style={[cmStyles.badgeText, { color: "#10b981" }]}>Confirmed</Text>
+            </View>
+          </View>
+        ) : (
+          // State 2 — pending verification
+          <View style={{ gap: 12 }}>
+            <View style={cmStyles.personRow}>
+              <View style={[cmStyles.avatar, { backgroundColor: "rgba(245,158,11,0.18)" }]}>
+                <Text style={[cmStyles.avatarText, { color: "#f59e0b" }]}>{initials}</Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[cmStyles.personName, { color: c.foreground }]}>{candidateName}</Text>
+                <Text style={[cmStyles.personSub, { color: c.mutedForeground }]}>Potential match</Text>
+              </View>
+              <View style={[cmStyles.badge, { backgroundColor: "rgba(245,158,11,0.15)" }]}>
+                <Text style={[cmStyles.badgeText, { color: "#f59e0b" }]}>Pending verification</Text>
+              </View>
+            </View>
+            <View style={cmStyles.actionRow}>
+              <Pressable onPress={onNotMatch} style={[cmStyles.notMatchBtn, { borderColor: c.border, backgroundColor: c.muted }]}>
+                <Text style={[cmStyles.notMatchText, { color: c.foreground }]}>Not a match</Text>
+              </Pressable>
+              <Pressable onPress={onConfirm} style={cmStyles.confirmBtn}>
+                <Feather name="check" size={14} color="#fff" />
+                <Text style={cmStyles.confirmBtnText}>Confirm</Text>
+              </Pressable>
+            </View>
+          </View>
+        )}
+      </View>
+    </View>
+  );
+}
+
+const cmStyles = StyleSheet.create({
+  card: { borderRadius: 12, borderWidth: 1, borderLeftWidth: 3, overflow: "hidden" },
+  topRow: { flexDirection: "row", borderBottomWidth: 1, paddingHorizontal: 14, paddingVertical: 12 },
+  topCell: { flex: 1 },
+  topLabel: { fontSize: 11, fontFamily: "Inter_400Regular", marginBottom: 4 },
+  topValue: { fontSize: 16, fontFamily: "Inter_700Bold" },
+  vDivider: { width: 1, marginHorizontal: 12, marginVertical: 2 },
+  bottom: { padding: 14 },
+  noMatchRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  matchLabel: { fontSize: 11, fontFamily: "Inter_400Regular", marginBottom: 3 },
+  noMatchVal: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
+  selectBtn: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1 },
+  selectText: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
+  personRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  avatar: { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center" },
+  avatarText: { fontSize: 13, fontFamily: "Inter_700Bold" },
+  personName: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
+  personSub: { fontSize: 11, fontFamily: "Inter_400Regular", marginTop: 2 },
+  badge: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 20 },
+  badgeText: { fontSize: 10, fontFamily: "Inter_600SemiBold" },
+  actionRow: { flexDirection: "row", gap: 10 },
+  notMatchBtn: { flex: 1, paddingVertical: 12, borderRadius: 10, borderWidth: 1, alignItems: "center", justifyContent: "center" },
+  notMatchText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
+  confirmBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 12, borderRadius: 10, backgroundColor: "#f59e0b" },
+  confirmBtnText: { color: "#fff", fontSize: 14, fontFamily: "Inter_600SemiBold" },
+});
+
 export default function AssignmentDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { getAssignment, acceptAssignment, resolveAssignment, dismissAssignment, saveNote } = useAssignments();
@@ -361,7 +599,15 @@ export default function AssignmentDetailScreen() {
   const [dismissModalVisible, setDismissModalVisible] = useState(false);
   const [resolveModalVisible, setResolveModalVisible] = useState(false);
   const [setCandidateVisible, setSetCandidateVisible] = useState(false);
+  const [candidateConfirmed, setCandidateConfirmed] = useState(false);
+  const [confirmedAt, setConfirmedAt] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  const isCandidateViolation =
+    assignment?.violationType.code === "curfew" ||
+    assignment?.violationType.code === "waste";
+  const isNoiseViolation = assignment?.violationType.code === "noise";
+  const [noiseConfirmed, setNoiseConfirmed] = useState(false);
 
   if (!assignment) {
     return (
@@ -464,32 +710,67 @@ export default function AssignmentDetailScreen() {
             </View>
           </View>
           <Text style={[styles.description, { color: c.foreground }]}>{assignment.description}</Text>
-          {/* Potential Candidates */}
-          <View style={[styles.candidateBox, { backgroundColor: c.muted, borderColor: c.border }]}>
-            <View style={styles.candidateHeader}>
-              <Text style={[styles.candidateLabel, { color: c.mutedForeground }]}>Potential Candidates</Text>
-              <Pressable
-                onPress={() => setSetCandidateVisible(true)}
-                style={[styles.candidateEditBtn, { backgroundColor: "rgba(59,130,246,0.12)", borderColor: "rgba(59,130,246,0.25)" }]}
-              >
-                <Feather name="edit-2" size={10} color="#3b82f6" />
-                <Text style={styles.candidateEditText}>{assignment.suspect ? "Edit" : "+ Add"}</Text>
-              </Pressable>
-            </View>
-            {assignment.suspect ? (
-              <View style={styles.chipRow}>
-                {assignment.suspect.split(";").map((n) => n.trim()).filter(Boolean).map((name) => (
-                  <View key={name} style={[styles.chip, { backgroundColor: "rgba(59,130,246,0.1)", borderColor: "rgba(59,130,246,0.25)" }]}>
-                    <Feather name="user" size={10} color="#3b82f6" />
-                    <Text style={[styles.chipText, { color: "#3b82f6" }]}>{name}</Text>
-                  </View>
-                ))}
+          {/* Potential Candidates — chip style for non-candidate violations */}
+          {!isCandidateViolation && (
+            <View style={[styles.candidateBox, { backgroundColor: c.muted, borderColor: c.border }]}>
+              <View style={styles.candidateHeader}>
+                <Text style={[styles.candidateLabel, { color: c.mutedForeground }]}>Potential Candidates</Text>
+                <Pressable
+                  onPress={() => setSetCandidateVisible(true)}
+                  style={[styles.candidateEditBtn, { backgroundColor: "rgba(59,130,246,0.12)", borderColor: "rgba(59,130,246,0.25)" }]}
+                >
+                  <Feather name="edit-2" size={10} color="#3b82f6" />
+                  <Text style={styles.candidateEditText}>{assignment.suspect ? "Edit" : "+ Add"}</Text>
+                </Pressable>
               </View>
-            ) : (
-              <Text style={[styles.candidateEmpty, { color: c.mutedForeground }]}>None set</Text>
-            )}
-          </View>
+              {assignment.suspect ? (
+                <View style={styles.chipRow}>
+                  {assignment.suspect.split(";").map((n) => n.trim()).filter(Boolean).map((name) => (
+                    <View key={name} style={[styles.chip, { backgroundColor: "rgba(59,130,246,0.1)", borderColor: "rgba(59,130,246,0.25)" }]}>
+                      <Feather name="user" size={10} color="#3b82f6" />
+                      <Text style={[styles.chipText, { color: "#3b82f6" }]}>{name}</Text>
+                    </View>
+                  ))}
+                </View>
+              ) : (
+                <Text style={[styles.candidateEmpty, { color: c.mutedForeground }]}>None set</Text>
+              )}
+            </View>
+          )}
         </View>
+
+        {/* Noise violation card */}
+        {isNoiseViolation && (
+          <NoiseViolationCard
+            camera={assignment.cameraCode}
+            confidence={assignment.confidence / 100}
+            confirmed={noiseConfirmed}
+            onConfirm={() => setNoiseConfirmed(true)}
+            onNotViolation={() => setNoiseConfirmed(false)}
+          />
+        )}
+
+        {/* Candidate match card — curfew & waste violations only */}
+        {isCandidateViolation && (
+          <CandidateMatchCard
+            suspect={assignment.suspect}
+            cameraCode={assignment.cameraCode}
+            confidence={assignment.confidence}
+            officerName={officer?.name ?? "Officer"}
+            confirmed={candidateConfirmed}
+            confirmedAt={confirmedAt}
+            onSelect={() => setSetCandidateVisible(true)}
+            onNotMatch={async () => {
+              await handleUpdateSuspect(null);
+              setCandidateConfirmed(false);
+              setConfirmedAt(null);
+            }}
+            onConfirm={() => {
+              setCandidateConfirmed(true);
+              setConfirmedAt(new Date().toISOString());
+            }}
+          />
+        )}
 
         {!!assignment.imageUrl && (
           <View style={[styles.evidenceCard, { backgroundColor: c.card, borderColor: c.border }]}>

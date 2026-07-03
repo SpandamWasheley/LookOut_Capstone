@@ -836,7 +836,7 @@ function SetCandidateModal({ alert, households: rawHH, residents: rawRes, onSave
               <User size={14} style={{ color: "#3b82f6" }} />
             </div>
             <div>
-              <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Set Potential Candidates</div>
+              <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Select Match</div>
               <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>Select one or more residents involved</div>
             </div>
           </div>
@@ -949,6 +949,12 @@ export function ViolationModal({
   const [showResolveChecklist, setShowResolveChecklist] = useState(false);
   const [showAllOfficers, setShowAllOfficers] = useState(false);
   const [showSetCandidate, setShowSetCandidate] = useState(false);
+  const [candidateConfirmed, setCandidateConfirmed] = useState(false);
+  const [confirmedAt, setConfirmedAt] = useState(null);
+
+  const isCandidateViolation = alert.type === "curfew" || alert.type === "waste";
+  const isNoiseViolation = alert.type === "noise";
+  const [noiseConfirmed, setNoiseConfirmed] = useState(false);
 
   return (
     <>
@@ -994,74 +1000,241 @@ export function ViolationModal({
             <div className="grid grid-cols-2 gap-4" style={{ alignItems: "stretch" }}>
               {/* Left: detail grid */}
               <div className="flex flex-col gap-3">
-                <div className="grid grid-cols-2 gap-2 flex-1" style={{ gridTemplateRows: "1fr 1fr" }}>
-                  {/* Camera */}
-                  <div className="rounded-lg px-3 py-3 flex flex-col justify-center"
-                    style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-                    <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Camera</div>
-                    <div className="text-[12px] font-medium mt-0.5"
-                      style={{ color: "var(--foreground)", fontFamily: "'DM Mono', monospace" }}>
-                      {alert.camera}
+                <div className={`gap-2 flex-1 ${isCandidateViolation || isNoiseViolation ? "flex flex-col" : "grid grid-cols-2"}`} style={isCandidateViolation || isNoiseViolation ? {} : { gridTemplateRows: "1fr 1fr" }}>
+                  {/* Camera — hidden for curfew/waste/noise */}
+                  {!isCandidateViolation && !isNoiseViolation && (
+                    <div className="rounded-lg px-3 py-3 flex flex-col justify-center"
+                      style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
+                      <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Camera</div>
+                      <div className="text-[12px] font-medium mt-0.5"
+                        style={{ color: "var(--foreground)", fontFamily: "'DM Mono', monospace" }}>
+                        {alert.camera}
+                      </div>
                     </div>
-                  </div>
+                  )}
 
-                  {/* Confidence */}
-                  <div className="rounded-lg px-3 py-3 flex flex-col justify-center"
-                    style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-                    <div className="flex items-center gap-1">
-                      <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Confidence</div>
-                      <div className="relative group flex items-center">
-                        <Info size={10} style={{ color: "var(--muted-foreground)", cursor: "pointer" }} />
-                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-52 rounded-xl px-3 py-2.5 text-[11px] leading-relaxed pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity z-50 shadow-xl"
-                          style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--muted-foreground)" }}>
-                          <div className="font-semibold mb-1" style={{ color: "var(--foreground)" }}>AI Confidence Score</div>
-                          How certain the YOLOv8 model is that a violation was detected. A higher score means the AI is more confident in its detection.
-                          <div className="absolute top-full left-1/2 -translate-x-1/2 w-0 h-0"
-                            style={{ borderLeft: "5px solid transparent", borderRight: "5px solid transparent", borderTop: "5px solid var(--border)" }} />
+                  {/* Confidence — hidden for curfew/waste/noise */}
+                  {!isCandidateViolation && !isNoiseViolation && (
+                    <div className="rounded-lg px-3 py-3 flex flex-col justify-center"
+                      style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
+                      <div className="flex items-center gap-1">
+                        <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Confidence</div>
+                        <div className="relative group flex items-center">
+                          <Info size={10} style={{ color: "var(--muted-foreground)", cursor: "pointer" }} />
+                          <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-52 rounded-xl px-3 py-2.5 text-[11px] leading-relaxed pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity z-50 shadow-xl"
+                            style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--muted-foreground)" }}>
+                            <div className="font-semibold mb-1" style={{ color: "var(--foreground)" }}>AI Confidence Score</div>
+                            How certain the YOLOv8 model is that a violation was detected. A higher score means the AI is more confident in its detection.
+                            <div className="absolute top-full left-1/2 -translate-x-1/2 w-0 h-0"
+                              style={{ borderLeft: "5px solid transparent", borderRight: "5px solid transparent", borderTop: "5px solid var(--border)" }} />
+                          </div>
                         </div>
                       </div>
-                    </div>
-                    <div className="text-[12px] font-medium mt-0.5" style={{ color: vcfg.color }}>
-                      {(alert.confidence * 100).toFixed(0)}% conf
-                    </div>
-                  </div>
-
-                  {/* Potential Candidate — spans full width */}
-                  <div className="col-span-2 rounded-lg px-3 py-2.5"
-                    style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-                    <div className="flex items-center justify-between mb-1.5">
-                      <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Potential Candidate</div>
-                      <button
-                        onClick={() => setShowSetCandidate(true)}
-                        className="flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full transition-all"
-                        style={{ background: "rgba(59,130,246,0.1)", color: "#3b82f6", border: "1px solid rgba(59,130,246,0.2)" }}>
-                        <User size={9} /> {alert.suspect ? "Edit" : "+ Add"}
-                      </button>
-                    </div>
-                    {alert.suspect ? (
-                      <div className="flex flex-wrap gap-1">
-                        {alert.suspect.split(";").map((n) => n.trim()).filter(Boolean).map((name) => (
-                          <span key={name} className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium"
-                            style={{ background: "rgba(59,130,246,0.1)", color: "#3b82f6", border: "1px solid rgba(59,130,246,0.2)" }}>
-                            <User size={9} /> {name}
-                          </span>
-                        ))}
+                      <div className="text-[12px] font-medium mt-0.5" style={{ color: vcfg.color }}>
+                        {(alert.confidence * 100).toFixed(0)}% conf
                       </div>
-                    ) : (
-                      <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>—</div>
-                    )}
-                  </div>
+                    </div>
+                  )}
+
+                  {/* Potential Candidate / Noise card */}
+                  {isNoiseViolation ? (
+                    /* Noise violation card */
+                    (() => {
+                      const loudnessPct = Math.round((alert.confidence ?? 0) * 100);
+                      const dBFS = Math.round(-30 + (alert.confidence ?? 0) * 30);
+                      const accentColor = noiseConfirmed ? "#10b981" : "#f59e0b";
+                      return (
+                        <div className="rounded-lg overflow-hidden"
+                          style={{ border: "1px solid var(--border)", borderLeft: `3px solid ${accentColor}`, background: "var(--secondary)" }}>
+                          {/* Label */}
+                          <div className="px-3 pt-2.5 pb-1 text-[10px]" style={{ color: "var(--muted-foreground)" }}>
+                            Noise violation — no facial recognition, loudness only
+                          </div>
+                          {/* Source + Duration */}
+                          <div className="flex px-3 pb-2.5" style={{ borderBottom: "1px solid var(--border)" }}>
+                            <div className="flex-1">
+                              <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Source</div>
+                              <div className="text-[12px] font-bold mt-0.5" style={{ color: "var(--foreground)", fontFamily: "'DM Mono', monospace" }}>
+                                {alert.camera} · mic
+                              </div>
+                            </div>
+                            <div style={{ width: 1, background: "var(--border)", margin: "0 12px" }} />
+                            <div className="flex-1">
+                              <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Duration above threshold</div>
+                              <div className="text-[12px] font-bold mt-0.5" style={{ color: accentColor }}>— s</div>
+                            </div>
+                          </div>
+                          {/* Loudness section */}
+                          <div className="px-3 py-2.5">
+                            <div className="flex items-center justify-between mb-2">
+                              <div className="flex items-center gap-1">
+                                <span className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Relative loudness</span>
+                                <div className="relative group flex items-center">
+                                  <Info size={10} style={{ color: "var(--muted-foreground)", cursor: "pointer" }} />
+                                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 rounded-xl px-3 py-2 text-[11px] leading-relaxed pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity z-50 shadow-xl"
+                                    style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--muted-foreground)" }}>
+                                    How loud the detected sound is relative to the noise threshold. Values above 0 dBFS indicate clipping.
+                                  </div>
+                                </div>
+                              </div>
+                              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
+                                style={{ background: noiseConfirmed ? "rgba(16,185,129,0.15)" : "rgba(245,158,11,0.15)", color: accentColor }}>
+                                {noiseConfirmed ? "Confirmed" : "Pending verification"}
+                              </span>
+                            </div>
+                            {/* Bar */}
+                            <div className="relative h-2 rounded-full" style={{ background: "var(--muted)" }}>
+                              <div className="absolute left-0 top-0 h-full rounded-full transition-all"
+                                style={{ width: `${loudnessPct}%`, background: accentColor }} />
+                              <div className="absolute top-1/2 -translate-y-1/2 w-[2px] h-4 rounded-full"
+                                style={{ left: "75%", background: "var(--foreground)" }} />
+                            </div>
+                            <div className="flex justify-end mt-1 relative">
+                              <span className="absolute text-[9px]" style={{ left: "73%", color: "var(--muted-foreground)" }}>threshold</span>
+                              <span className="text-[10px] font-semibold" style={{ color: accentColor }}>{dBFS} dBFS</span>
+                            </div>
+                            {/* Action buttons */}
+                            {!noiseConfirmed && (
+                              <div className="flex gap-2 mt-2.5">
+                                <button
+                                  onClick={() => setNoiseConfirmed(false)}
+                                  className="flex-1 text-[11px] font-semibold py-1.5 rounded-lg"
+                                  style={{ background: "var(--muted)", border: "1px solid var(--border)", color: "var(--foreground)" }}>
+                                  Not a violation
+                                </button>
+                                <button
+                                  onClick={() => setNoiseConfirmed(true)}
+                                  className="flex-1 flex items-center justify-center gap-1 text-[11px] font-semibold py-1.5 rounded-lg"
+                                  style={{ background: "#f59e0b", color: "#fff" }}>
+                                  <CheckCircle size={10} /> Confirm
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()
+                  ) : isCandidateViolation ? (
+                    /* 3-state candidate match card for curfew / waste */
+                    (() => {
+                      const candidateName = alert.suspect ? alert.suspect.split(";")[0].trim() : null;
+                      const initials = candidateName
+                        ? candidateName.split(" ").slice(0, 2).map((w) => w[0]).join("").toUpperCase()
+                        : "";
+                      const accentColor = candidateConfirmed ? "#10b981" : candidateName ? "#f59e0b" : "var(--border)";
+                      const formatHHMM = (iso) => new Date(iso).toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" });
+
+                      return (
+                        <div className="rounded-lg overflow-hidden"
+                          style={{ border: "1px solid var(--border)", borderLeft: `3px solid ${accentColor}`, background: "var(--secondary)" }}>
+                          {/* Camera + Confidence row */}
+                          <div className="flex items-stretch" style={{ borderBottom: "1px solid var(--border)" }}>
+                            <div className="flex-1 px-3 py-2.5">
+                              <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Camera</div>
+                              <div className="text-[12px] font-bold mt-0.5" style={{ color: "var(--foreground)", fontFamily: "'DM Mono', monospace" }}>{alert.camera}</div>
+                            </div>
+                            <div style={{ width: 1, background: "var(--border)" }} />
+                            <div className="flex-1 px-3 py-2.5">
+                              <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Confidence</div>
+                              <div className="text-[12px] font-bold mt-0.5" style={{ color: accentColor, fontFamily: "'DM Mono', monospace" }}>
+                                {alert.confidence ? `${(alert.confidence * 100).toFixed(0)}%` : "—"}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Candidate section */}
+                          <div className="px-3 py-2.5">
+                            {!candidateName ? (
+                              /* State 1 — no candidate */
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Candidate match</div>
+                                  <div className="text-[12px] font-semibold mt-0.5" style={{ color: "var(--foreground)" }}>No match found</div>
+                                </div>
+                                <button onClick={() => setShowSetCandidate(true)}
+                                  className="flex items-center gap-1 text-[11px] font-semibold px-3 py-1.5 rounded-lg"
+                                  style={{ background: "var(--muted)", border: "1px solid var(--border)", color: "var(--foreground)" }}>
+                                  <User size={10} /> Select
+                                </button>
+                              </div>
+                            ) : candidateConfirmed ? (
+                              /* State 3 — confirmed */
+                              <div className="flex items-center gap-2">
+                                <div className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold flex-shrink-0"
+                                  style={{ background: "rgba(16,185,129,0.18)", color: "#10b981" }}>{initials}</div>
+                                <div className="flex-1 min-w-0">
+                                  <div className="text-[12px] font-semibold truncate" style={{ color: "var(--foreground)" }}>{candidateName}</div>
+                                  <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>
+                                    Verified · {confirmedAt ? formatHHMM(confirmedAt) : ""}
+                                  </div>
+                                </div>
+                                <span className="flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0"
+                                  style={{ background: "rgba(16,185,129,0.15)", color: "#10b981" }}>
+                                  <CheckCircle size={9} /> Confirmed
+                                </span>
+                              </div>
+                            ) : (
+                              /* State 2 — pending verification */
+                              <div className="flex flex-col gap-2">
+                                <div className="flex items-center gap-2">
+                                  <div className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold flex-shrink-0"
+                                    style={{ background: "rgba(245,158,11,0.18)", color: "#f59e0b" }}>{initials}</div>
+                                  <div className="flex-1 min-w-0">
+                                    <div className="text-[12px] font-semibold truncate" style={{ color: "var(--foreground)" }}>{candidateName}</div>
+                                    <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Potential match</div>
+                                  </div>
+                                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0"
+                                    style={{ background: "rgba(245,158,11,0.15)", color: "#f59e0b" }}>Pending verification</span>
+                                </div>
+                                <div className="flex gap-2">
+                                  <button
+                                    onClick={() => { setCandidateConfirmed(false); setConfirmedAt(null); setShowSetCandidate(true); }}
+                                    className="flex-1 text-[11px] font-semibold py-1.5 rounded-lg"
+                                    style={{ background: "var(--muted)", border: "1px solid var(--border)", color: "var(--foreground)" }}>
+                                    Not a match
+                                  </button>
+                                  <button
+                                    onClick={() => { setCandidateConfirmed(true); setConfirmedAt(new Date().toISOString()); }}
+                                    className="flex-1 flex items-center justify-center gap-1 text-[11px] font-semibold py-1.5 rounded-lg"
+                                    style={{ background: "#f59e0b", color: "#fff" }}>
+                                    <CheckCircle size={10} /> Confirm
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()
+                  ) : (
+                    /* Default chip style for other violations */
+                    <div className="col-span-2 rounded-lg px-3 py-2.5"
+                      style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Potential Candidate</div>
+                        <button
+                          onClick={() => setShowSetCandidate(true)}
+                          className="flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full transition-all"
+                          style={{ background: "rgba(59,130,246,0.1)", color: "#3b82f6", border: "1px solid rgba(59,130,246,0.2)" }}>
+                          <User size={9} /> {alert.suspect ? "Edit" : "+ Add"}
+                        </button>
+                      </div>
+                      {alert.suspect ? (
+                        <div className="flex flex-wrap gap-1">
+                          {alert.suspect.split(";").map((n) => n.trim()).filter(Boolean).map((name) => (
+                            <span key={name} className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium"
+                              style={{ background: "rgba(59,130,246,0.1)", color: "#3b82f6", border: "1px solid rgba(59,130,246,0.2)" }}>
+                              <User size={9} /> {name}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>—</div>
+                      )}
+                    </div>
+                  )}
                 </div>
 
-                {alert.suspect && (
-                  <div className="rounded-lg px-3 py-3"
-                    style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-                    <div className="text-[10px] mb-1.5" style={{ color: "var(--muted-foreground)" }}>Identified subject</div>
-                    <div className="flex items-center gap-2 text-[12px]" style={{ color: "var(--primary)" }}>
-                      <User size={11} /> {alert.suspect}
-                    </div>
-                  </div>
-                )}
 
                 {alert.notes && (
                   <div className="rounded-lg px-3 py-3"

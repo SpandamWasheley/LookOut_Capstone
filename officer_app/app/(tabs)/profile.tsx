@@ -50,6 +50,7 @@ export default function ProfileScreen() {
   );
   const resolvedCount = myAssignments.filter((a) => a.status === "resolved").length;
   const activeCount = myAssignments.filter((a) => a.status === "active" || a.status === "dispatched").length;
+  const dismissedCount = myAssignments.filter((a) => a.status === "acknowledged").length;
 
   const handleLogout = () => {
     if (Platform.OS === "web") {
@@ -157,8 +158,8 @@ export default function ProfileScreen() {
             <Text style={[styles.statLabel, { color: c.mutedForeground }]}>Resolved</Text>
           </View>
           <View style={[styles.statCard, { backgroundColor: c.card, borderColor: c.border }]}>
-            <Text style={[styles.statNum, { color: c.foreground }]}>{myAssignments.length}</Text>
-            <Text style={[styles.statLabel, { color: c.mutedForeground }]}>Total</Text>
+            <Text style={[styles.statNum, { color: c.foreground }]}>{dismissedCount}</Text>
+            <Text style={[styles.statLabel, { color: c.mutedForeground }]}>Dismissed</Text>
           </View>
         </View>
 

@@ -269,9 +269,9 @@ function RightPanel({ alerts, cameras }) {
   const todayTotal = todayAlerts.length;
   const todayResolved = todayAlerts.filter((a) => a.status === "resolved").length;
 
-  const latestAlert = [...alerts]
+  const recentAlerts = [...alerts]
     .filter((a) => a.status === "active" || a.status === "dispatched")
-    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0];
+    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
   const lastDetected = alerts.length > 0
     ? formatTime([...alerts].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0].timestamp)
@@ -285,9 +285,9 @@ function RightPanel({ alerts, cameras }) {
   );
 
   return (
-    <div className="rounded-xl overflow-hidden" style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
+    <div className="flex-1 min-h-0 overflow-hidden flex flex-col" style={{ background: "var(--card)" }}>
       {/* System Status */}
-      <div className="px-4 pt-4 pb-4" style={{ borderBottom: "1px solid var(--border)" }}>
+      <div className="px-4 pt-4 pb-4 flex-shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
         {sectionLabel("System Status")}
         <div className="space-y-3">
           <div className="flex items-center justify-between text-[12px]">
@@ -310,7 +310,7 @@ function RightPanel({ alerts, cameras }) {
       </div>
 
       {/* Today's Violations */}
-      <div className="px-4 py-4" style={{ borderBottom: "1px solid var(--border)" }}>
+      <div className="px-4 py-4 flex-shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
         {sectionLabel("Today's Violations")}
         <div className="grid grid-cols-2 gap-2">
           {[
@@ -328,29 +328,39 @@ function RightPanel({ alerts, cameras }) {
         </div>
       </div>
 
-      {/* Latest Alert */}
-      {latestAlert && (() => {
-        const vcfg = VIOLATION_CONFIG[latestAlert.type] ?? { label: latestAlert.type, color: "#ef4444", icon: AlertTriangle };
-        return (
-          <div className="px-4 py-4" style={{ borderBottom: "1px solid var(--border)" }}>
-            {sectionLabel("Latest Alert")}
-            <div className="rounded-lg p-3"
-              style={{ background: "var(--secondary)", borderLeft: `3px solid ${vcfg.color}`, border: "1px solid var(--border)" }}>
-              <div className="flex items-center justify-between mb-1.5">
-                <span className="text-[13px] font-semibold" style={{ color: "var(--foreground)" }}>{vcfg.label}</span>
-                <span className="text-[10px] font-medium px-2 py-0.5 rounded"
-                  style={{ background: "rgba(239,68,68,0.2)", color: "#ef4444" }}>
-                  {(latestAlert.confidence * 100).toFixed(0)}% conf
-                </span>
-              </div>
-              <div className="flex items-center gap-3 text-[11px]" style={{ color: "var(--muted-foreground)" }}>
-                <span className="flex items-center gap-1"><AlertTriangle size={9} /> {latestAlert.cameraZone}</span>
-                <span className="flex items-center gap-1"><Clock size={9} /> {formatTime(latestAlert.timestamp)}</span>
-              </div>
-            </div>
+      {/* Recent Alerts — fills remaining height */}
+      <div className="px-4 py-4 flex flex-col flex-1 min-h-0">
+        {sectionLabel(`Recent Alerts${recentAlerts.length > 0 ? ` · ${recentAlerts.length}` : ""}`)}
+        {recentAlerts.length === 0 ? (
+          <div className="flex flex-col items-center justify-center flex-1 gap-1.5">
+            <Bell size={22} style={{ color: "var(--muted-foreground)", opacity: 0.4 }} />
+            <span className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>No active violations</span>
           </div>
-        );
-      })()}
+        ) : (
+          <div className="flex flex-col gap-2 overflow-hidden flex-1 min-h-0">
+            {recentAlerts.map((a) => {
+              const vcfg = VIOLATION_CONFIG[a.type] ?? { label: a.type, color: "#ef4444", icon: AlertTriangle };
+              const scfg = statusConfig[a.status] ?? statusConfig.active;
+              return (
+                <div key={a.id} className="rounded-lg p-2.5 flex-shrink-0"
+                  style={{ background: "var(--secondary)", borderLeft: `3px solid ${vcfg.color}`, border: "1px solid var(--border)" }}>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[12px] font-semibold truncate pr-1" style={{ color: "var(--foreground)" }}>{vcfg.label}</span>
+                    <span className="text-[10px] font-medium px-1.5 py-0.5 rounded flex-shrink-0"
+                      style={{ background: scfg.bg, color: scfg.color }}>
+                      {scfg.label}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 text-[10px]" style={{ color: "var(--muted-foreground)" }}>
+                    <span className="flex items-center gap-1"><Clock size={9} /> {formatTime(a.timestamp)}</span>
+                    <span className="ml-auto font-medium" style={{ color: vcfg.color }}>{(a.confidence * 100).toFixed(0)}%</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
 
       {/* Shift Info */}
       <ShiftInfo />
@@ -573,56 +583,63 @@ export function AlertFeed({ showFilters = false }) {
         );
       })()}
 
-      {/* Filter row */}
-      <div className="flex items-center justify-between px-6 py-3 flex-shrink-0">
-        <div className="flex items-center gap-1.5">
-          {(["all", "active", "dispatched"]).map((s) => {
-            const isActive = statusFilter === s;
-            const scfg = statusConfig[s];
-            return (
-              <button
-                key={s}
-                onClick={() => setStatusFilter(s)}
-                className="px-3 py-1 text-xs font-medium rounded-full transition-all capitalize"
-                style={{
-                  background: isActive ? (s === "all" ? "var(--primary)" : scfg.bg) : "var(--secondary)",
-                  color: isActive ? (s === "all" ? "var(--primary-foreground)" : scfg.color) : "var(--muted-foreground)",
-                  border: `1px solid ${isActive ? (s === "all" ? "var(--primary)" : scfg.color + "40") : "var(--border)"}`,
-                }}
-              >
-                {s === "all" ? "All active" : scfg?.label ?? s}
-              </button>
-            );
-          })}
-        </div>
-        <span className="text-[12px] pr-[296px]" style={{ color: "var(--muted-foreground)" }}>
-          {visible.length} record{visible.length !== 1 ? "s" : ""}
-        </span>
-      </div>
+      {/* Two-column split starts right after header */}
+      <div className="flex-1 min-h-0 flex overflow-hidden">
 
-      {/* Content grid */}
-      <div className="flex-1 overflow-hidden grid gap-4 px-6 py-4"
-        style={{ gridTemplateColumns: "1fr 280px" }}>
-        {/* Alert list */}
-        <div className="overflow-y-auto">
-          {errorBanner}
-          {visible.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-12 gap-2">
-              <CheckCircle size={28} style={{ color: "#10b981" }} />
-              <div className="text-sm font-medium" style={{ color: "var(--foreground)" }}>
-                {ongoing.length === 0 ? "No active violations" : "No violations match this filter"}
-              </div>
-              <div className="text-xs" style={{ color: "var(--muted-foreground)" }}>All zones clear</div>
+        {/* Left column: filter bar + alert list */}
+        <div className="flex-1 min-w-0 flex flex-col overflow-hidden px-6">
+          {/* Filter row */}
+          <div className="flex items-center justify-between py-3 flex-shrink-0">
+            <div className="flex items-center gap-1.5">
+              {(["all", "active", "dispatched"]).map((s) => {
+                const isActive = statusFilter === s;
+                const scfg = statusConfig[s];
+                return (
+                  <button
+                    key={s}
+                    onClick={() => setStatusFilter(s)}
+                    className="px-3 py-1 text-xs font-medium rounded-full transition-all capitalize"
+                    style={{
+                      background: isActive ? (s === "all" ? "var(--primary)" : scfg.bg) : "var(--secondary)",
+                      color: isActive ? (s === "all" ? "var(--primary-foreground)" : scfg.color) : "var(--muted-foreground)",
+                      border: `1px solid ${isActive ? (s === "all" ? "var(--primary)" : scfg.color + "40") : "var(--border)"}`,
+                    }}
+                  >
+                    {s === "all" ? "All active" : scfg?.label ?? s}
+                  </button>
+                );
+              })}
             </div>
-          ) : (
-            visible.map((a) => <AlertCard key={a.id} alert={a} onView={() => setSelectedAlert(a)} />)
-          )}
+            <span className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>
+              {visible.length} record{visible.length !== 1 ? "s" : ""}
+            </span>
+          </div>
+
+          {/* Alert list */}
+          <div className="flex-1 min-h-0 overflow-y-auto pb-4">
+            {errorBanner}
+            {visible.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-12 gap-2">
+                <CheckCircle size={28} style={{ color: "#10b981" }} />
+                <div className="text-sm font-medium" style={{ color: "var(--foreground)" }}>
+                  {ongoing.length === 0 ? "No active violations" : "No violations match this filter"}
+                </div>
+                <div className="text-xs" style={{ color: "var(--muted-foreground)" }}>All zones clear</div>
+              </div>
+            ) : (
+              visible.map((a) => <AlertCard key={a.id} alert={a} onView={() => setSelectedAlert(a)} />)
+            )}
+          </div>
         </div>
 
-        {/* Right panel */}
-        <div className="overflow-y-auto">
-          <RightPanel alerts={alerts} cameras={cameras} />
+        {/* Right panel — top border aligns with filter row top */}
+        <div className="w-[280px] flex-shrink-0 flex flex-col pt-3">
+          <div className="flex-1 min-h-0 flex flex-col overflow-hidden"
+            style={{ border: "1px solid var(--border)", background: "var(--card)" }}>
+            <RightPanel alerts={alerts} cameras={cameras} />
+          </div>
         </div>
+
       </div>
 
       {modals}
