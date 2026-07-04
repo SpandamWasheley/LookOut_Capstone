@@ -42,7 +42,7 @@ function LiveClock() {
     const id = window.setInterval(() => setTime(new Date()), 1000);
     return () => window.clearInterval(id);
   }, []);
-  const formatted = time.toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+  const formatted = time.toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true });
   const date = time.toLocaleDateString("en-PH", { weekday: "short", month: "short", day: "numeric" });
   return (
     <div className="text-right">
@@ -205,14 +205,14 @@ function AdminDashboard({ user, onLogout }) {
                   )}
                 </div>
                 <div className="flex-1 overflow-y-auto p-4">
-                  <AlertFeed compact />
+                  <AlertFeed compact user={user} />
                 </div>
               </div>
             </div>
           </div>
         )}
 
-        {safePage === "alerts" && <div className="h-full"><AlertFeed showFilters /></div>}
+        {safePage === "alerts" && <div className="h-full"><AlertFeed showFilters user={user} /></div>}
 
         {safePage === "records" && <div className="h-full"><RecordsPage /></div>}
 

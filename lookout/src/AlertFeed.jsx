@@ -264,10 +264,12 @@ function RightPanel({ alerts, cameras }) {
   const onlineCount = cameras.filter((c) => c.status === "online").length;
   const activeCount = alerts.filter((a) => a.status === "active").length;
   const dispatchedCount = alerts.filter((a) => a.status === "dispatched").length;
+  const allTimeTotal = alerts.length;
   const todayStr = new Date().toDateString();
   const todayAlerts = alerts.filter((a) => new Date(a.timestamp).toDateString() === todayStr);
   const todayTotal = todayAlerts.length;
   const todayResolved = todayAlerts.filter((a) => a.status === "resolved").length;
+  const todayDismissed = todayAlerts.filter((a) => a.status === "acknowledged").length;
 
   const recentAlerts = [...alerts]
     .filter((a) => a.status === "active" || a.status === "dispatched")
@@ -314,10 +316,12 @@ function RightPanel({ alerts, cameras }) {
         {sectionLabel("Today's Violations")}
         <div className="grid grid-cols-2 gap-2">
           {[
-            { label: "Total today",   value: todayTotal,      color: "#f59e0b" },
-            { label: "Resolve today", value: todayResolved,   color: "#10b981" },
-            { label: "Dispatched",    value: dispatchedCount, color: "#3b82f6" },
-            { label: "Active",        value: activeCount,     color: "#ef4444" },
+            { label: "Total",           value: allTimeTotal,    color: "#a855f7" },
+            { label: "Total today",     value: todayTotal,      color: "#f59e0b" },
+            { label: "Dispatched",      value: dispatchedCount, color: "#3b82f6" },
+            { label: "Active",          value: activeCount,     color: "#ef4444" },
+            { label: "Resolve today",   value: todayResolved,   color: "#10b981" },
+            { label: "Dismissed today", value: todayDismissed,  color: "#64748b" },
           ].map((s) => (
             <div key={s.label} className="rounded-lg p-2.5"
               style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
@@ -337,8 +341,8 @@ function RightPanel({ alerts, cameras }) {
             <span className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>No active violations</span>
           </div>
         ) : (
-          <div className="flex flex-col gap-2 overflow-hidden flex-1 min-h-0">
-            {recentAlerts.map((a) => {
+          <div className="scrollbar-visible flex flex-col gap-2 overflow-y-auto flex-1 min-h-0">
+            {recentAlerts.slice(0, 5).map((a) => {
               const vcfg = VIOLATION_CONFIG[a.type] ?? { label: a.type, color: "#ef4444", icon: AlertTriangle };
               const scfg = statusConfig[a.status] ?? statusConfig.active;
               return (
@@ -369,7 +373,7 @@ function RightPanel({ alerts, cameras }) {
 }
 
 // ── Main export ───────────────────────────────────────────────────────────────
-export function AlertFeed({ showFilters = false }) {
+export function AlertFeed({ showFilters = false, user }) {
   const [alerts, setAlerts] = useState([]);
   const [officers, setOfficers] = useState([]);
   const [cameras, setCameras] = useState([]);
@@ -491,6 +495,7 @@ export function AlertFeed({ showFilters = false }) {
           assignedOfficerNames={assignedOfficerNames(selectedAlert.id)}
           households={households}
           residents={residents}
+          verifierName={user?.name}
           onClose={() => setSelectedAlert(null)}
           onDismiss={() => setDismissTarget(selectedAlert)}
           onResolve={(suspectNames) => handleResolve(selectedAlert.id, suspectNames)}
@@ -634,7 +639,7 @@ export function AlertFeed({ showFilters = false }) {
 
         {/* Right panel — top border aligns with filter row top */}
         <div className="w-[280px] flex-shrink-0 flex flex-col pt-3">
-          <div className="flex-1 min-h-0 flex flex-col overflow-hidden"
+          <div className="flex-1 min-h-0 flex flex-col overflow-hidden rounded-2xl"
             style={{ border: "1px solid var(--border)", background: "var(--card)" }}>
             <RightPanel alerts={alerts} cameras={cameras} />
           </div>

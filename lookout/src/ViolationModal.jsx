@@ -940,7 +940,7 @@ function SetCandidateModal({ alert, households: rawHH, residents: rawRes, onSave
 
 // ── Main modal ─────────────────────────────────────────────────────────────────
 export function ViolationModal({
-  alert, assignedOfficerNames, households, residents, onDismiss, onDispatch, onResolve, onClose, onUpdateSuspect,
+  alert, assignedOfficerNames, households, residents, onDismiss, onDispatch, onResolve, onClose, onUpdateSuspect, verifierName,
 }) {
   const vcfg = VIOLATION_CONFIG[alert.type] ?? { label: alert.type, color: "#f59e0b", icon: AlertTriangle };
   const scfg = statusConfig[alert.status] ?? statusConfig.acknowledged;
@@ -955,6 +955,7 @@ export function ViolationModal({
   const isCandidateViolation = alert.type === "curfew" || alert.type === "waste";
   const isNoiseViolation = alert.type === "noise";
   const [noiseConfirmed, setNoiseConfirmed] = useState(false);
+  const candidates = useMemo(() => buildCandidates(households, residents), [households, residents]);
 
   return (
     <>
@@ -1122,7 +1123,11 @@ export function ViolationModal({
                         ? candidateName.split(" ").slice(0, 2).map((w) => w[0]).join("").toUpperCase()
                         : "";
                       const accentColor = candidateConfirmed ? "#10b981" : candidateName ? "#f59e0b" : "var(--border)";
-                      const formatHHMM = (iso) => new Date(iso).toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" });
+                      const formatHHMM = (iso) => new Date(iso).toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit", hour12: true });
+                      const matchedCandidate = candidateName
+                        ? candidates.find((c) => c.fullName.trim() === candidateName)
+                          ?? candidates.find((c) => suspectMatches(alert.suspect, c.fullName))
+                        : null;
 
                       return (
                         <div className="rounded-lg overflow-hidden"
@@ -1164,8 +1169,8 @@ export function ViolationModal({
                                   style={{ background: "rgba(16,185,129,0.18)", color: "#10b981" }}>{initials}</div>
                                 <div className="flex-1 min-w-0">
                                   <div className="text-[12px] font-semibold truncate" style={{ color: "var(--foreground)" }}>{candidateName}</div>
-                                  <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>
-                                    Verified · {confirmedAt ? formatHHMM(confirmedAt) : ""}
+                                  <div className="text-[10px] truncate" style={{ color: "var(--muted-foreground)" }}>
+                                    Verified by {verifierName || "officer"}{confirmedAt ? ` · ${formatHHMM(confirmedAt)}` : ""}
                                   </div>
                                 </div>
                                 <span className="flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0"
@@ -1181,7 +1186,9 @@ export function ViolationModal({
                                     style={{ background: "rgba(245,158,11,0.18)", color: "#f59e0b" }}>{initials}</div>
                                   <div className="flex-1 min-w-0">
                                     <div className="text-[12px] font-semibold truncate" style={{ color: "var(--foreground)" }}>{candidateName}</div>
-                                    <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Potential match</div>
+                                    <div className="text-[10px] truncate" style={{ color: "var(--muted-foreground)" }}>
+                                      {matchedCandidate ? `Resident ID · ${matchedCandidate.barangayId}` : "Potential match"}
+                                    </div>
                                   </div>
                                   <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0"
                                     style={{ background: "rgba(245,158,11,0.15)", color: "#f59e0b" }}>Pending verification</span>
