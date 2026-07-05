@@ -7,7 +7,7 @@ from django.db import transaction
 from django.db.models import Count
 from django.utils import timezone
 from rest_framework import generics, permissions, viewsets
-from rest_framework.decorators import action, api_view, permission_classes
+from rest_framework.decorators import action, api_view, permission_classes, throttle_classes
 from rest_framework.response import Response
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView
@@ -24,6 +24,14 @@ from .models import (
     User,
     ViolationType,
     Zone,
+)
+from .permissions import IsAdmin, IsAdminOrReadOnly
+from .throttling import (
+    LoginThrottle,
+    OtpSendThrottle,
+    OtpVerifyThrottle,
+    PasswordResetConfirmThrottle,
+    PasswordResetSendThrottle,
 )
 
 CODE_EXPIRY_MINUTES = 10
@@ -58,6 +66,7 @@ class LookoutTokenObtainPairSerializer(TokenObtainPairSerializer):
 
 class LoginView(TokenObtainPairView):
     serializer_class = LookoutTokenObtainPairSerializer
+    throttle_classes = [LoginThrottle]
 
 
 @api_view(["GET"])
@@ -68,6 +77,7 @@ def me(request):
 
 @api_view(["POST"])
 @permission_classes([permissions.IsAuthenticated])
+@throttle_classes([OtpSendThrottle])
 def send_officer_code(request):
     email = (request.data.get("email") or "").strip().lower()
     if not email:
@@ -90,6 +100,7 @@ def send_officer_code(request):
 
 @api_view(["POST"])
 @permission_classes([permissions.IsAuthenticated])
+@throttle_classes([OtpVerifyThrottle])
 def verify_officer_code(request):
     email = (request.data.get("email") or "").strip().lower()
     code = (request.data.get("code") or "").strip()
@@ -154,7 +165,7 @@ _PERSONNEL_ROLES = {
 
 
 @api_view(["POST"])
-@permission_classes([permissions.IsAuthenticated])
+@permission_classes([permissions.IsAuthenticated, IsAdmin])
 def register_personnel(request):
     role_key = (request.data.get("role") or "").strip().lower()
     if role_key not in _PERSONNEL_ROLES:
@@ -206,6 +217,7 @@ def change_password(request):
 
 @api_view(["POST"])
 @permission_classes([permissions.AllowAny])
+@throttle_classes([PasswordResetSendThrottle])
 def forgot_password_send_code(request):
     email = (request.data.get("email") or "").strip().lower()
     if not email:
@@ -229,6 +241,7 @@ def forgot_password_send_code(request):
 
 @api_view(["POST"])
 @permission_classes([permissions.AllowAny])
+@throttle_classes([PasswordResetConfirmThrottle])
 def forgot_password_reset(request):
     email = (request.data.get("email") or "").strip().lower()
     code = (request.data.get("code") or "").strip()
@@ -262,7 +275,7 @@ def forgot_password_reset(request):
 
 class SystemSettingsView(generics.RetrieveUpdateAPIView):
     serializer_class = SystemSettingsSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
 
     def get_object(self):
         return SystemSettings.load()
@@ -352,23 +365,27 @@ def send_sms(request):
 class ZoneViewSet(viewsets.ModelViewSet):
     queryset = Zone.objects.all()
     serializer_class = ZoneSerializer
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
 
 
 class ViolationTypeViewSet(viewsets.ModelViewSet):
     queryset = ViolationType.objects.all()
     serializer_class = ViolationTypeSerializer
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
 
 
 class CameraViewSet(viewsets.ModelViewSet):
     queryset = Camera.objects.select_related("zone").all()
     serializer_class = CameraSerializer
     filterset_fields = ["zone", "status"]
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
 
 
 class OfficerViewSet(viewsets.ModelViewSet):
     queryset = Officer.objects.all()
     serializer_class = OfficerSerializer
     filterset_fields = ["status"]
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
 
     def perform_destroy(self, instance):
         user = instance.user
@@ -381,6 +398,7 @@ class DispatcherViewSet(viewsets.ModelViewSet):
     queryset = User.objects.filter(role__in=[User.Role.DISPATCHER, User.Role.BOTH])
     serializer_class = DispatcherSerializer
     http_method_names = ["get", "delete", "head", "options"]
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
 
     def perform_destroy(self, instance):
         Officer.objects.filter(user=instance).delete()
@@ -391,17 +409,20 @@ class ResidentViewSet(viewsets.ModelViewSet):
     queryset = Resident.objects.all()
     serializer_class = ResidentSerializer
     filterset_fields = ["status"]
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
 
 
 class HouseholdViewSet(viewsets.ModelViewSet):
     queryset = Household.objects.select_related("zone").prefetch_related("members").all()
     serializer_class = HouseholdSerializer
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
 
 
 class HouseholdMemberViewSet(viewsets.ModelViewSet):
     queryset = HouseholdMember.objects.all()
     serializer_class = HouseholdMemberSerializer
     filterset_fields = ["household", "status"]
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
 
 
 class AlertViewSet(viewsets.ModelViewSet):

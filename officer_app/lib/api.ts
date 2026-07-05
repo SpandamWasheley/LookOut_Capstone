@@ -1,6 +1,20 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import Constants from "expo-constants";
+import * as SecureStore from "expo-secure-store";
 import { Platform } from "react-native";
+
+// SecureStore backs onto the OS Keychain (iOS) / Keystore (Android), so tokens
+// are encrypted at rest instead of sitting in plaintext AsyncStorage. It has no
+// native implementation on web, so fall back to AsyncStorage there — the Expo
+// web preview is a dev convenience, not this app's real deployment target.
+const authStorage = {
+  getItem: (key: string) =>
+    Platform.OS === "web" ? AsyncStorage.getItem(key) : SecureStore.getItemAsync(key),
+  setItem: (key: string, value: string) =>
+    Platform.OS === "web" ? AsyncStorage.setItem(key, value) : SecureStore.setItemAsync(key, value),
+  removeItem: (key: string) =>
+    Platform.OS === "web" ? AsyncStorage.removeItem(key) : SecureStore.deleteItemAsync(key),
+};
 
 function resolveApiBaseUrl(): string {
   const fromEnv = process.env.EXPO_PUBLIC_API_URL;
@@ -34,16 +48,16 @@ export interface ApiUser {
 }
 
 export async function getAccessToken() {
-  return AsyncStorage.getItem(ACCESS_KEY);
+  return authStorage.getItem(ACCESS_KEY);
 }
 
 export async function getStoredUser(): Promise<ApiUser | null> {
-  const raw = await AsyncStorage.getItem(USER_KEY);
+  const raw = await authStorage.getItem(USER_KEY);
   return raw ? JSON.parse(raw) : null;
 }
 
 export async function clearAuth() {
-  await AsyncStorage.multiRemove([ACCESS_KEY, REFRESH_KEY, USER_KEY]);
+  await Promise.all([ACCESS_KEY, REFRESH_KEY, USER_KEY].map((key) => authStorage.removeItem(key)));
 }
 
 export class ApiError extends Error {
@@ -131,13 +145,13 @@ export async function login(username: string, password: string): Promise<LoginRe
     officerId: data.user.officer_id ?? null,
   };
 
-  await AsyncStorage.setItem(ACCESS_KEY, data.access);
-  await AsyncStorage.setItem(REFRESH_KEY, data.refresh);
+  await authStorage.setItem(ACCESS_KEY, data.access);
+  await authStorage.setItem(REFRESH_KEY, data.refresh);
   // Persist the raw API shape (matches ApiUser / what getStoredUser() reads
   // back on app restart) — NOT the transformed `user` shape above, which has
   // different field names (name vs display_name, mustChangePassword vs
   // must_change_password) and would silently break on next app load.
-  await AsyncStorage.setItem(USER_KEY, JSON.stringify(data.user));
+  await authStorage.setItem(USER_KEY, JSON.stringify(data.user));
 
   return user;
 }

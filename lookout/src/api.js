@@ -1,22 +1,18 @@
 const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000/api";
 
-const ACCESS_KEY = "lookout_access";
-const REFRESH_KEY = "lookout_refresh";
-const USER_KEY = "lookout_user";
+// Access token lives only in memory for the life of the tab — never written to
+// localStorage/sessionStorage, so it can't be read from DevTools storage panels
+// or exfiltrated by a stored-XSS payload scanning storage. This matches the
+// app's existing design (see App.jsx) where every fresh page load requires
+// logging in again, so there's nothing to persist across reloads anyway.
+let accessToken = null;
 
 export function getAccessToken() {
-  return localStorage.getItem(ACCESS_KEY);
-}
-
-export function getStoredUser() {
-  const raw = localStorage.getItem(USER_KEY);
-  return raw ? JSON.parse(raw) : null;
+  return accessToken;
 }
 
 export function clearAuth() {
-  localStorage.removeItem(ACCESS_KEY);
-  localStorage.removeItem(REFRESH_KEY);
-  localStorage.removeItem(USER_KEY);
+  accessToken = null;
 }
 
 export async function login(username, password) {
@@ -43,9 +39,7 @@ export async function login(username, password) {
     mustChangePassword: data.user.must_change_password,
   };
 
-  localStorage.setItem(ACCESS_KEY, data.access);
-  localStorage.setItem(REFRESH_KEY, data.refresh);
-  localStorage.setItem(USER_KEY, JSON.stringify(user));
+  accessToken = data.access;
 
   return user;
 }

@@ -235,6 +235,7 @@ export function SystemConfig() {
   const [autoDispatch, setAutoDispatch] = useState(false);
   const [emailAlerts, setEmailAlerts] = useState(true);
   const [smsAlerts, setSmsAlerts] = useState(true);
+  const [savedSnapshot, setSavedSnapshot] = useState(null);
 
   const applySettings = (f) => {
     setCurfewStart(f.curfewStart);
@@ -257,7 +258,31 @@ export function SystemConfig() {
     setAutoDispatch(f.autoDispatch);
     setEmailAlerts(f.emailAlerts);
     setSmsAlerts(f.smsAlerts);
+    setSavedSnapshot(f);
   };
+
+  const isDirty = !!savedSnapshot && (
+    curfewStart !== savedSnapshot.curfewStart ||
+    curfewEnd !== savedSnapshot.curfewEnd ||
+    curfewAge !== savedSnapshot.curfewAge ||
+    curfewConf !== savedSnapshot.curfewConf ||
+    curfewDwell !== savedSnapshot.curfewDwell ||
+    guardianCheck !== savedSnapshot.guardianCheck ||
+    unknownAlert !== savedSnapshot.unknownAlert ||
+    noiseEnabled !== savedSnapshot.noiseEnabled ||
+    noiseSensitivity !== savedSnapshot.noiseSensitivity ||
+    noiseDur !== savedSnapshot.noiseDur ||
+    wasteEnabled !== savedSnapshot.wasteEnabled ||
+    wasteConf !== savedSnapshot.wasteConf ||
+    wasteDwell !== savedSnapshot.wasteDwell ||
+    wasteCollectionStart !== savedSnapshot.wasteCollectionStart ||
+    wasteCollectionEnd !== savedSnapshot.wasteCollectionEnd ||
+    cooldown !== savedSnapshot.cooldown ||
+    retention !== savedSnapshot.retention ||
+    autoDispatch !== savedSnapshot.autoDispatch ||
+    emailAlerts !== savedSnapshot.emailAlerts ||
+    smsAlerts !== savedSnapshot.smsAlerts
+  );
 
   const load = async () => {
     setLoading(true);
@@ -374,7 +399,7 @@ export function SystemConfig() {
         <div className="flex gap-2">
           <button
             onClick={() => setPendingAction("reset")}
-            disabled={loading || saving}
+            disabled={loading || saving || !isDirty}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50"
             style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}
           >
@@ -382,7 +407,7 @@ export function SystemConfig() {
           </button>
           <button
             onClick={() => setPendingAction("save")}
-            disabled={loading || saving}
+            disabled={loading || saving || !isDirty}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
             style={{ background: saved ? "#10b981" : "var(--primary)", color: saved ? "#fff" : "var(--primary-foreground)" }}
           >

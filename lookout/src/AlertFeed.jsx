@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Bell, MapPin, Clock, AlertTriangle, Radio, CheckCircle, X, Camera as CameraIcon, Moon, Sun, Sunset } from "lucide-react";
+import { Bell, Clock, AlertTriangle, Radio, CheckCircle, X, Camera as CameraIcon, Moon, Sun, Sunset, Filter, ChevronDown } from "lucide-react";
 import { VIOLATION_CONFIG } from "../data/mockData";
 import { ViolationModal } from "./ViolationModal";
 import { DispatchModal } from "./DispatchModal";
@@ -191,9 +191,8 @@ function AlertCard({ alert, onView }) {
               {scfg.label}
             </span>
           </div>
-          {/* Row 2: location + time */}
+          {/* Row 2: time */}
           <div className="flex items-center gap-3 text-[11px]" style={{ color: "var(--muted-foreground)" }}>
-            <span className="flex items-center gap-1"><MapPin size={9} /> {alert.cameraZone}</span>
             <span className="flex items-center gap-1"><Clock size={9} /> {formatTime(alert.timestamp)}</span>
           </div>
         </div>
@@ -383,6 +382,8 @@ export function AlertFeed({ showFilters = false, user }) {
   const [dispatchingAlert, setDispatchingAlert] = useState(null);
   const [dismissTarget, setDismissTarget] = useState(null);
   const [statusFilter, setStatusFilter] = useState("all");
+  const [typeFilter, setTypeFilter] = useState(new Set());
+  const [typeMenuOpen, setTypeMenuOpen] = useState(false);
   const [actionError, setActionError] = useState("");
   const [toast, setToast] = useState(null);
 
@@ -393,11 +394,21 @@ export function AlertFeed({ showFilters = false, user }) {
 
   const ongoing = alerts.filter((a) => a.status === "active" || a.status === "dispatched");
   const visible = ongoing.filter((a) => {
+    if (typeFilter.size > 0 && !typeFilter.has(a.type)) return false;
     if (!showFilters) return a.status === "active";
     if (statusFilter === "active")     return a.status === "active";
     if (statusFilter === "dispatched") return a.status === "dispatched";
     return true;
   });
+
+  const toggleType = (type) => {
+    setTypeFilter((prev) => {
+      const next = new Set(prev);
+      if (next.has(type)) next.delete(type);
+      else if (next.size < 2) next.add(type);
+      return next;
+    });
+  };
 
   const refresh = async () => {
     const [alertsRes, officersRes, camerasRes, householdsRes, residentsRes] = await Promise.all([
@@ -622,6 +633,72 @@ export function AlertFeed({ showFilters = false, user }) {
                   </button>
                 );
               })}
+
+              {/* Type filter */}
+              <div className="relative ml-1">
+                <button
+                  onClick={() => setTypeMenuOpen((v) => !v)}
+                  className="flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-full transition-all"
+                  style={{
+                    background: typeFilter.size > 0 ? "var(--primary)" : "var(--secondary)",
+                    color: typeFilter.size > 0 ? "var(--primary-foreground)" : "var(--muted-foreground)",
+                    border: `1px solid ${typeFilter.size > 0 ? "var(--primary)" : "var(--border)"}`,
+                  }}
+                >
+                  <Filter size={11} /> Type
+                  {typeFilter.size > 0 && (
+                    <span className="w-4 h-4 flex items-center justify-center rounded-full text-[10px] font-semibold"
+                      style={{ background: "var(--primary-foreground)", color: "var(--primary)" }}>
+                      {typeFilter.size}
+                    </span>
+                  )}
+                  <ChevronDown size={11} style={{ transform: typeMenuOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
+                </button>
+
+                {typeMenuOpen && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setTypeMenuOpen(false)} />
+                    <div className="absolute left-0 top-full mt-2 w-fit rounded-xl overflow-hidden shadow-2xl z-50 py-1"
+                      style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
+                      {Object.entries(VIOLATION_CONFIG).map(([type, cfg]) => {
+                        const checked = typeFilter.has(type);
+                        const disabled = !checked && typeFilter.size >= 2;
+                        const TypeIcon = cfg.icon;
+                        return (
+                          <label
+                            key={type}
+                            className="flex items-center gap-2.5 px-3.5 py-1 transition-colors"
+                            style={{ cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.4 : 1 }}
+                            onMouseEnter={(e) => { if (!disabled) e.currentTarget.style.background = "var(--secondary)"; }}
+                            onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={disabled}
+                              onChange={() => toggleType(type)}
+                              className="w-3.5 h-3.5 rounded"
+                              style={{ accentColor: cfg.color }}
+                            />
+                            <TypeIcon size={13} style={{ color: cfg.color }} />
+                            <span className="text-[13px] font-medium" style={{ color: "var(--foreground)" }}>
+                              {cfg.label.split(" ")[0]}
+                            </span>
+                          </label>
+                        );
+                      })}
+                      <button
+                        onClick={() => setTypeFilter(new Set())}
+                        disabled={typeFilter.size === 0}
+                        className="w-full text-left px-3.5 py-1 text-[12px] font-medium transition-colors disabled:opacity-40 disabled:cursor-default"
+                        style={{ color: "var(--primary)", borderTop: "1px solid var(--border)" }}
+                      >
+                        Clear all
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
             <span className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>
               {visible.length} record{visible.length !== 1 ? "s" : ""}
