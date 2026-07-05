@@ -18,7 +18,6 @@ export function DispatchModal({ alert, officers, alerts, onAssign, onClose }) {
 
   const [selected, setSelected] = useState(alert.officersAssignedIds ?? []);
   const [confirming, setConfirming] = useState(false);
-  const [confirmRemove, setConfirmRemove] = useState(false);
 
   const toggle = (id) => {
     setSelected((prev) =>
@@ -207,29 +206,6 @@ export function DispatchModal({ alert, officers, alerts, onAssign, onClose }) {
           </div>
         )}
 
-        {confirmRemove && (
-          <div className="absolute inset-0 z-10 flex items-end rounded-2xl overflow-hidden"
-            style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)" }}>
-            <div className="w-full px-5 py-5 space-y-3"
-              style={{ background: "var(--card)", borderTop: "1px solid var(--border)" }}>
-              <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Remove all officers?</div>
-              <p className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>
-                This will unassign all officers from this violation and set status back to <span style={{ color: "#ef4444" }}>Active</span>.
-              </p>
-              <div className="flex gap-2 justify-end">
-                <button onClick={() => setConfirmRemove(false)} className="px-4 py-2 rounded-xl text-sm font-medium"
-                  style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}>
-                  Cancel
-                </button>
-                <button onClick={() => onAssign([])} className="px-5 py-2 rounded-xl text-sm font-medium"
-                  style={{ background: "rgba(239,68,68,0.15)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.3)" }}>
-                  Remove all officers
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* Footer */}
         <div className="flex items-center justify-between gap-3 px-5 py-4" style={{ borderTop: "1px solid var(--border)" }}>
           <div className="flex items-center gap-2">
@@ -237,12 +213,6 @@ export function DispatchModal({ alert, officers, alerts, onAssign, onClose }) {
               style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}>
               Cancel
             </button>
-            {alert.officersAssignedIds?.length > 0 && (
-              <button onClick={() => setConfirmRemove(true)} className="px-4 py-2 rounded-xl text-sm font-medium"
-                style={{ background: "rgba(239,68,68,0.08)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.2)" }}>
-                Remove officers
-              </button>
-            )}
           </div>
 
           <div className="flex items-center gap-3">

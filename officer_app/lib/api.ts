@@ -229,3 +229,15 @@ export interface ApiHousehold {
 
 export const getHouseholds = () =>
   apiFetch<{ results: ApiHousehold[] } | ApiHousehold[]>("/households/");
+
+export interface ApiResident {
+  code: string;
+  name: string;
+  barangay_id?: string;
+  age?: number | null;
+  image_url?: string;
+  status?: string;
+}
+
+export const getResidents = () =>
+  apiFetch<{ results: ApiResident[] } | ApiResident[]>("/residents/");

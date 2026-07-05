@@ -2,7 +2,6 @@ import { Feather } from "@expo/vector-icons";
 import React, { useMemo, useState } from "react";
 import {
   ActivityIndicator,
-  FlatList,
   Platform,
   Pressable,
   RefreshControl,
@@ -13,6 +12,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { AutoScrollView } from "@/components/AutoScrollView";
 import AssignmentCard from "@/components/AssignmentCard";
 import { useAssignments } from "@/context/AssignmentContext";
 import { useAuth } from "@/context/AuthContext";
@@ -68,7 +68,7 @@ export default function AssignmentsScreen() {
       <View
         style={[
           styles.header,
-          { backgroundColor: c.card, borderBottomColor: c.border, paddingTop: insets.top + (Platform.OS === "web" ? 12 : 0) },
+          { backgroundColor: c.card, borderBottomColor: c.border, paddingTop: insets.top + (Platform.OS === "web" ? 20 : 10) },
         ]}
       >
         <View style={{ flex: 1 }}>
@@ -84,7 +84,7 @@ export default function AssignmentsScreen() {
       </View>
 
       {/* Search bar */}
-      <View style={[styles.searchRow, { backgroundColor: c.card, borderBottomColor: c.border }]}>
+      <View style={[styles.searchRow, { backgroundColor: c.card }]}>
         <View style={[styles.searchBox, { backgroundColor: c.secondary, borderColor: c.border }]}>
           <Feather name="search" size={14} color={c.mutedForeground} />
           <TextInput
@@ -102,50 +102,48 @@ export default function AssignmentsScreen() {
         </View>
       </View>
 
-      <FlatList
-        data={[]}
-        renderItem={null}
-        ListHeaderComponent={
-          <View style={styles.listContent}>
-            {loading ? (
-              <View style={styles.empty}>
-                <ActivityIndicator color={c.primary} />
-                <Text style={[styles.emptyText, { color: c.mutedForeground }]}>Loading assignments…</Text>
-              </View>
-            ) : error ? (
-              <View style={styles.empty}>
-                <Feather name="alert-triangle" size={40} color={c.destructive} />
-                <Text style={[styles.emptyTitle, { color: c.foreground }]}>Couldn't load assignments</Text>
-                <Text style={[styles.emptyText, { color: c.mutedForeground }]}>{error}</Text>
-              </View>
-            ) : searched.length === 0 ? (
-              <View style={styles.empty}>
-                <Feather name="check-circle" size={48} color={c.mutedForeground} />
-                <Text style={[styles.emptyTitle, { color: c.foreground }]}>
-                  {myAssignments.length === 0 ? "No assignments yet" : "No results"}
-                </Text>
-                <Text style={[styles.emptyText, { color: c.mutedForeground }]}>
-                  {myAssignments.length === 0
-                    ? "Waiting for dispatch from command"
-                    : "Try a different search term"}
-                </Text>
-              </View>
-            ) : (
-              <>
-                <Text style={[styles.sectionLabel, { color: c.mutedForeground }]}>
-                  YOUR ASSIGNED VIOLATIONS · {searched.length}
-                </Text>
-                {searched.map((a) => (
-                  <AssignmentCard key={a.id} assignment={a} />
-                ))}
-              </>
-            )}
-          </View>
-        }
+      <AutoScrollView
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={c.primary} />}
-        style={{ flex: 1 }}
-        contentContainerStyle={{ paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 100) }}
-      />
+        style={{ backgroundColor: c.card }}
+        contentContainerStyle={{ paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 32) }}
+        overScrollMode="never"
+      >
+        <View style={styles.listContent}>
+          {loading ? (
+            <View style={styles.empty}>
+              <ActivityIndicator color={c.primary} />
+              <Text style={[styles.emptyText, { color: c.mutedForeground }]}>Loading assignments…</Text>
+            </View>
+          ) : error ? (
+            <View style={styles.empty}>
+              <Feather name="alert-triangle" size={40} color={c.destructive} />
+              <Text style={[styles.emptyTitle, { color: c.foreground }]}>Couldn't load assignments</Text>
+              <Text style={[styles.emptyText, { color: c.mutedForeground }]}>{error}</Text>
+            </View>
+          ) : searched.length === 0 ? (
+            <View style={styles.empty}>
+              <Feather name="check-circle" size={48} color={c.mutedForeground} />
+              <Text style={[styles.emptyTitle, { color: c.foreground }]}>
+                {myAssignments.length === 0 ? "No assignments yet" : "No results"}
+              </Text>
+              <Text style={[styles.emptyText, { color: c.mutedForeground }]}>
+                {myAssignments.length === 0
+                  ? "Waiting for dispatch from command"
+                  : "Try a different search term"}
+              </Text>
+            </View>
+          ) : (
+            <>
+              <Text style={[styles.sectionLabel, { color: c.mutedForeground }]}>
+                YOUR ASSIGNED VIOLATIONS · {searched.length}
+              </Text>
+              {searched.map((a) => (
+                <AssignmentCard key={a.id} assignment={a} />
+              ))}
+            </>
+          )}
+        </View>
+      </AutoScrollView>
     </View>
   );
 }
@@ -157,7 +155,7 @@ const styles = StyleSheet.create({
   title: { fontSize: 20, fontFamily: "Inter_700Bold", marginTop: 2 },
   alertBadge: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
   alertBadgeText: { color: "#fff", fontSize: 13, fontFamily: "Inter_600SemiBold" },
-  searchRow: { paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1 },
+  searchRow: { paddingHorizontal: 16, paddingVertical: 10 },
   searchBox: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 9, borderRadius: 12, borderWidth: 1 },
   searchInput: { flex: 1, fontSize: 14, fontFamily: "Inter_400Regular", padding: 0 },
   listContent: { paddingHorizontal: 16, paddingTop: 16 },

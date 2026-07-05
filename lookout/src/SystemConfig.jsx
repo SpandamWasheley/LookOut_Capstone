@@ -213,6 +213,7 @@ export function SystemConfig() {
   const [saved, setSaved] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
+  const [pendingAction, setPendingAction] = useState(null); // null | "reset" | "save"
 
   const [curfewStart, setCurfewStart] = useState("22:00");
   const [curfewEnd, setCurfewEnd] = useState("06:00");
@@ -372,7 +373,7 @@ export function SystemConfig() {
         </div>
         <div className="flex gap-2">
           <button
-            onClick={load}
+            onClick={() => setPendingAction("reset")}
             disabled={loading || saving}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50"
             style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}
@@ -380,7 +381,7 @@ export function SystemConfig() {
             <RotateCcw size={11} /> Reset
           </button>
           <button
-            onClick={save}
+            onClick={() => setPendingAction("save")}
             disabled={loading || saving}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
             style={{ background: saved ? "#10b981" : "var(--primary)", color: saved ? "#fff" : "var(--primary-foreground)" }}
@@ -438,6 +439,61 @@ export function SystemConfig() {
           </div>
         </div>
       </div>
+
+      {pendingAction && (() => {
+        const config = pendingAction === "reset"
+          ? {
+              iconColor: "#ef4444", iconBg: "rgba(239,68,68,0.12)", Icon: RotateCcw,
+              title: "Discard unsaved changes?",
+              message: "This reloads the last saved settings from the server — any edits you haven't saved will be lost.",
+              confirmLabel: "Yes, reset", confirmColor: "#ef4444",
+              run: load,
+            }
+          : {
+              iconColor: "#10b981", iconBg: "rgba(16,185,129,0.12)", Icon: Save,
+              title: "Save these settings?",
+              message: "Changes apply immediately across the system — curfew, waste, and noise detection will use these values right away.",
+              confirmLabel: "Yes, save", confirmColor: "#10b981",
+              run: save,
+            };
+        const Icon = config.Icon;
+        return (
+          <div
+            className="fixed inset-0 z-[80] flex items-center justify-center p-4"
+            style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)" }}
+            onClick={() => setPendingAction(null)}
+          >
+            <div
+              className="w-full max-w-xs rounded-2xl overflow-hidden shadow-2xl"
+              style={{ background: "var(--card)", border: "1px solid var(--border)" }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="px-5 pt-5 pb-4 flex flex-col items-center text-center gap-3">
+                <div className="w-10 h-10 rounded-full flex items-center justify-center"
+                  style={{ background: config.iconBg }}>
+                  <Icon size={18} style={{ color: config.iconColor }} />
+                </div>
+                <div>
+                  <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>{config.title}</div>
+                  <div className="text-[12px] mt-1" style={{ color: "var(--muted-foreground)" }}>{config.message}</div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 px-5 pb-5">
+                <button onClick={() => setPendingAction(null)}
+                  className="flex-1 px-4 py-2 rounded-xl text-sm font-medium"
+                  style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}>
+                  Cancel
+                </button>
+                <button onClick={() => { setPendingAction(null); config.run(); }}
+                  className="flex-1 flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium"
+                  style={{ background: config.confirmColor, color: "#fff" }}>
+                  <Icon size={13} /> {config.confirmLabel}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

@@ -416,6 +416,14 @@ export function AlertFeed({ showFilters = false, user }) {
     return () => clearInterval(id);
   }, []);
 
+  // Keep the open modal's alert in sync with the latest fetch — otherwise
+  // saves (candidate, dispatch, etc.) only show up after closing/reopening.
+  useEffect(() => {
+    if (!selectedAlert) return;
+    const updated = alerts.find((a) => a.id === selectedAlert.id);
+    if (updated && updated !== selectedAlert) setSelectedAlert(updated);
+  }, [alerts, selectedAlert]);
+
   const assignedOfficerNames = (alertId) =>
     alerts.find((x) => x.id === alertId)?.officersAssignedNames ?? [];
 
@@ -638,7 +646,7 @@ export function AlertFeed({ showFilters = false, user }) {
         </div>
 
         {/* Right panel — top border aligns with filter row top */}
-        <div className="w-[280px] flex-shrink-0 flex flex-col pt-3">
+        <div className="w-[280px] flex-shrink-0 flex flex-col pt-3 pr-3 pb-3">
           <div className="flex-1 min-h-0 flex flex-col overflow-hidden rounded-2xl"
             style={{ border: "1px solid var(--border)", background: "var(--card)" }}>
             <RightPanel alerts={alerts} cameras={cameras} />

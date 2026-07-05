@@ -110,6 +110,7 @@
 
 /* ── Scrollbar — hidden until hover ──────────────────────────────────────── */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: transparent; border-radius: 999px; transition: background 0.2s; }
 *:hover::-webkit-scrollbar-thumb { background: rgba(133, 183, 214, 0.18); }
@@ -118,6 +119,7 @@
 
 /* ── Scrollbar — always visible (opt-in via .scrollbar-visible) ───────────── */
 .scrollbar-visible::-webkit-scrollbar { width: 7px; height: 7px; }
+.scrollbar-visible::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
 .scrollbar-visible::-webkit-scrollbar-thumb { background: rgba(133, 183, 214, 0.45); border-radius: 999px; }
 .scrollbar-visible:hover::-webkit-scrollbar-thumb,
 .scrollbar-visible::-webkit-scrollbar-thumb:hover { background: rgba(133, 183, 214, 0.7); }

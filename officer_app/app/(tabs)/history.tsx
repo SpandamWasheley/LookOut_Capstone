@@ -1,8 +1,9 @@
 import { Feather } from "@expo/vector-icons";
 import React, { useMemo, useState } from "react";
-import { ActivityIndicator, FlatList, Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { AutoScrollView } from "@/components/AutoScrollView";
 import AssignmentCard from "@/components/AssignmentCard";
 import { useAssignments } from "@/context/AssignmentContext";
 import { useAuth } from "@/context/AuthContext";
@@ -47,7 +48,7 @@ export default function HistoryScreen() {
       <View
         style={[
           styles.header,
-          { backgroundColor: c.card, borderBottomColor: c.border, paddingTop: insets.top + (Platform.OS === "web" ? 12 : 0) },
+          { backgroundColor: c.card, borderBottomColor: c.border, paddingTop: insets.top + (Platform.OS === "web" ? 20 : 10) },
         ]}
       >
         <Text style={[styles.title, { color: c.foreground }]}>History</Text>
@@ -57,7 +58,7 @@ export default function HistoryScreen() {
       </View>
 
       {/* Filter bar */}
-      <View style={[styles.filterRow, { backgroundColor: c.card, borderBottomColor: c.border }]}>
+      <View style={[styles.filterRow, { backgroundColor: c.card }]}>
         {FILTERS.map((opt) => (
           <Pressable
             key={opt.key}
@@ -77,36 +78,35 @@ export default function HistoryScreen() {
         ))}
       </View>
 
-      <FlatList
-        data={[]}
-        renderItem={null}
-        ListHeaderComponent={
-          <View style={styles.listContent}>
-            {loading ? (
-              <View style={styles.empty}>
-                <ActivityIndicator color={c.primary} />
-              </View>
-            ) : error ? (
-              <View style={styles.empty}>
-                <Feather name="alert-triangle" size={40} color={c.destructive} />
-                <Text style={[styles.emptyText, { color: c.mutedForeground }]}>{error}</Text>
-              </View>
-            ) : allHistory.length === 0 ? (
-              <View style={styles.empty}>
-                <Feather name="clock" size={48} color={c.mutedForeground} />
-                <Text style={[styles.emptyTitle, { color: c.foreground }]}>No history yet</Text>
-                <Text style={[styles.emptyText, { color: c.mutedForeground }]}>
-                  {filter === "all" ? "Resolved and dismissed violations will appear here" : `No ${filter} violations`}
-                </Text>
-              </View>
-            ) : (
-              allHistory.map((a) => <AssignmentCard key={a.id} assignment={a} />)
-            )}
-          </View>
-        }
-        style={{ flex: 1 }}
-        contentContainerStyle={{ paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 100) }}
-      />
+      <AutoScrollView
+        style={{ backgroundColor: c.card }}
+        contentContainerStyle={{ paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 32) }}
+        bounces={false}
+        overScrollMode="never"
+      >
+        <View style={styles.listContent}>
+          {loading ? (
+            <View style={styles.empty}>
+              <ActivityIndicator color={c.primary} />
+            </View>
+          ) : error ? (
+            <View style={styles.empty}>
+              <Feather name="alert-triangle" size={40} color={c.destructive} />
+              <Text style={[styles.emptyText, { color: c.mutedForeground }]}>{error}</Text>
+            </View>
+          ) : allHistory.length === 0 ? (
+            <View style={styles.empty}>
+              <Feather name="clock" size={48} color={c.mutedForeground} />
+              <Text style={[styles.emptyTitle, { color: c.foreground }]}>No history yet</Text>
+              <Text style={[styles.emptyText, { color: c.mutedForeground }]}>
+                {filter === "all" ? "Resolved and dismissed violations will appear here" : `No ${filter} violations`}
+              </Text>
+            </View>
+          ) : (
+            allHistory.map((a) => <AssignmentCard key={a.id} assignment={a} />)
+          )}
+        </View>
+      </AutoScrollView>
     </View>
   );
 }
@@ -117,7 +117,7 @@ const styles = StyleSheet.create({
   title: { fontSize: 22, fontFamily: "Inter_700Bold" },
   countBadge: { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 20 },
   countText: { fontSize: 13, fontFamily: "Inter_500Medium" },
-  filterRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1 },
+  filterRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 16, paddingVertical: 10 },
   filterChip: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 20, borderWidth: 1 },
   filterChipText: { fontSize: 13, fontFamily: "Inter_500Medium" },
   listContent: { paddingHorizontal: 16, paddingTop: 16, gap: 0 },

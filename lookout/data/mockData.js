@@ -1,4 +1,4 @@
-import { Moon, Trash2, Volume2, Ban, AlertTriangle, ShieldAlert } from "lucide-react";
+import { Moon, Trash2, Volume2 } from "lucide-react";
 
 export const ZONES = [
   "Zone 1",
@@ -19,9 +19,6 @@ export const VIOLATION_CONFIG = {
   curfew: { label: "Curfew Violation", color: "#f59e0b", icon: Moon },
   waste: { label: "Waste Violation", color: "#84cc16", icon: Trash2 },
   noise: { label: "Noise Violation", color: "#a78bfa", icon: Volume2 },
-  indecency: { label: "Indecent Behavior", color: "#f97316", icon: Ban },
-  accident: { label: "Traffic Accident", color: "#ef4444", icon: AlertTriangle },
-  intrusion: { label: "Unauthorized Intrusion", color: "#38bdf8", icon: ShieldAlert },
 };
 
 export const mockCameras = [
@@ -102,29 +99,6 @@ export const mockAlerts = [
     imageUrl: "https://images.unsplash.com/photo-1470420084874-431eb0a8d5b1?w=800&h=450&fit=crop&auto=format",
     officerAssigned: "PO1 Reyes, Marco",
   },
-  {
-    id: "ALT-0037",
-    type: "accident",
-    status: "resolved",
-    camera: "CAM-03",
-    cameraZone: "R.T. Lim Blvd. Junction",
-    timestamp: "2025-06-12T18:28:00",
-    confidence: 0.96,
-    description: "Minor road collision managed by traffic officers. Victim assisted and taken to clinic.",
-    imageUrl: "https://images.unsplash.com/photo-1525609004556-c46c7d6cf023?w=800&h=450&fit=crop&auto=format",
-    officerAssigned: "PO2 Mangubat, Lisa",
-  },
-  {
-    id: "ALT-0036",
-    type: "indecency",
-    status: "active",
-    camera: "CAM-01",
-    cameraZone: "Tetuan Market Entrance",
-    timestamp: "2025-06-12T17:55:00",
-    confidence: 0.71,
-    description: "Potential privacy violation observed near market entrance. Officer verifying before response.",
-    imageUrl: "https://images.unsplash.com/photo-1492724441997-5dc865305da7?w=800&h=450&fit=crop&auto=format",
-  },
 ];
 
 export const mockOfficers = [
@@ -162,14 +136,14 @@ export const mockHouseholds = [
 ];
 
 export const hourlyViolations = [
-  { hour: "00:00", curfew: 2, waste: 0, noise: 1, indecency: 0, accident: 0 },
-  { hour: "03:00", curfew: 1, waste: 1, noise: 0, indecency: 0, accident: 0 },
-  { hour: "06:00", curfew: 0, waste: 1, noise: 0, indecency: 0, accident: 0 },
-  { hour: "09:00", curfew: 0, waste: 0, noise: 1, indecency: 0, accident: 0 },
-  { hour: "12:00", curfew: 0, waste: 0, noise: 1, indecency: 0, accident: 0 },
-  { hour: "15:00", curfew: 0, waste: 1, noise: 0, indecency: 0, accident: 0 },
-  { hour: "18:00", curfew: 1, waste: 0, noise: 0, indecency: 1, accident: 1 },
-  { hour: "21:00", curfew: 1, waste: 0, noise: 1, indecency: 0, accident: 0 },
+  { hour: "00:00", curfew: 2, waste: 0, noise: 1 },
+  { hour: "03:00", curfew: 1, waste: 1, noise: 0 },
+  { hour: "06:00", curfew: 0, waste: 1, noise: 0 },
+  { hour: "09:00", curfew: 0, waste: 0, noise: 1 },
+  { hour: "12:00", curfew: 0, waste: 0, noise: 1 },
+  { hour: "15:00", curfew: 0, waste: 1, noise: 0 },
+  { hour: "18:00", curfew: 1, waste: 0, noise: 0 },
+  { hour: "21:00", curfew: 1, waste: 0, noise: 1 },
 ];
 
 export const weeklyTrend = [

@@ -61,7 +61,6 @@ interface AssignmentContextType {
   acceptAssignment: (id: string) => Promise<void>;
   resolveAssignment: (id: string, notes?: string, suspect?: string) => Promise<void>;
   dismissAssignment: (id: string, reason: string) => Promise<void>;
-  saveNote: (id: string, note: string) => Promise<void>;
 }
 
 const AssignmentContext = createContext<AssignmentContextType | null>(null);
@@ -146,16 +145,6 @@ export function AssignmentProvider({ children }: { children: React.ReactNode }) 
     [assignments, refreshAssignments]
   );
 
-  const saveNote = useCallback(
-    async (id: string, note: string) => {
-      const a = assignments.find((x) => x.id === id);
-      if (!a) return;
-      await api.updateAlert(a.dbId, { notes: note });
-      await refreshAssignments();
-    },
-    [assignments, refreshAssignments]
-  );
-
   const activeAssignments = assignments.filter((a) => a.status === "active" || a.status === "dispatched");
   const historyAssignments = assignments.filter((a) => a.status === "acknowledged" || a.status === "resolved");
 
@@ -172,7 +161,6 @@ export function AssignmentProvider({ children }: { children: React.ReactNode }) 
         acceptAssignment,
         resolveAssignment,
         dismissAssignment,
-        saveNote,
       }}
     >
       {children}

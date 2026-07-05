@@ -17,9 +17,6 @@ VIOLATION_TYPES = [
     {"code": "curfew", "label": "Curfew Violation", "color": "#f59e0b", "icon": "moon"},
     {"code": "waste", "label": "Waste Violation", "color": "#84cc16", "icon": "trash"},
     {"code": "noise", "label": "Noise Violation", "color": "#a78bfa", "icon": "noise"},
-    {"code": "indecency", "label": "Indecent Behavior", "color": "#f97316", "icon": "ban"},
-    {"code": "accident", "label": "Traffic Accident", "color": "#ef4444", "icon": "alert"},
-    {"code": "intrusion", "label": "Unauthorized Intrusion", "color": "#38bdf8", "icon": "shield"},
 ]
 
 USERS = [
@@ -84,14 +81,6 @@ ALERTS = [
      "confidence": 0.84, "description": "Illegal dumping detected near residential row. Barangay sanitation team notified.",
      "image_url": "https://images.unsplash.com/photo-1470420084874-431eb0a8d5b1?w=800&h=450&fit=crop&auto=format",
      "officer_assigned": "PO1 Reyes, Marco", "suspect": ""},
-    {"code": "ALT-0037", "type": "accident", "status": "resolved", "camera": "CAM-03", "timestamp": "2025-06-12T18:28:00Z",
-     "confidence": 0.96, "description": "Minor road collision managed by traffic officers. Victim assisted and taken to clinic.",
-     "image_url": "https://images.unsplash.com/photo-1525609004556-c46c7d6cf023?w=800&h=450&fit=crop&auto=format",
-     "officer_assigned": "PO2 Mangubat, Lisa", "suspect": ""},
-    {"code": "ALT-0036", "type": "indecency", "status": "active", "camera": "CAM-01", "timestamp": "2025-06-12T17:55:00Z",
-     "confidence": 0.71, "description": "Potential privacy violation observed near market entrance. Officer verifying before response.",
-     "image_url": "https://images.unsplash.com/photo-1492724441997-5dc865305da7?w=800&h=450&fit=crop&auto=format",
-     "officer_assigned": "", "suspect": ""},
 ]
 
 

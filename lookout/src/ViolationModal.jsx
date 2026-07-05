@@ -202,8 +202,16 @@ function calcAge(birthdate) {
 
 function suspectMatches(suspect, fullName) {
   if (!suspect || !fullName) return false;
-  const s = suspect.toLowerCase();
-  return fullName.toLowerCase().split(/[\s,]+/).filter((p) => p.length > 2).some((p) => s.includes(p));
+  const nameParts = fullName.toLowerCase().split(/[\s,]+/).filter((p) => p.length > 2);
+  if (nameParts.length === 0) return false;
+  // Suspect can be several "; "-joined names — match against each one
+  // individually and require ALL of a candidate's name parts to be present,
+  // otherwise a shared surname (e.g. everyone in the same household) makes
+  // every relative look like a match instead of just the tagged person(s).
+  return suspect.split(";").some((entry) => {
+    const e = entry.trim().toLowerCase();
+    return e.length > 0 && nameParts.every((p) => e.includes(p));
+  });
 }
 
 function buildCandidates(rawHouseholds, rawResidents) {
@@ -244,11 +252,18 @@ function ResolveChecklistModal({ alert, vcfg, households: rawHH, residents: rawR
   const [search, setSearch] = useState("");
   const [checkedIds, setCheckedIds] = useState(new Set());
   const [resolving, setResolving] = useState(false);
+  const [confirming, setConfirming] = useState(false);
 
   const candidates = useMemo(() => buildCandidates(rawHH, rawRes), [rawHH, rawRes]);
+  const initializedRef = useRef(false);
 
   useEffect(() => {
-    if (!alert.suspect || candidates.length === 0) return;
+    // Background polling refreshes households/residents every few seconds,
+    // producing a new `candidates` array each time — only seed the checked
+    // set once, otherwise it stomps on the user's in-progress selection.
+    if (initializedRef.current || candidates.length === 0) return;
+    initializedRef.current = true;
+    if (!alert.suspect) return;
     setCheckedIds(new Set(candidates.filter((c) => suspectMatches(alert.suspect, c.fullName)).map((c) => c.id)));
   }, [candidates, alert.suspect]);
 
@@ -411,7 +426,7 @@ function ResolveChecklistModal({ alert, vcfg, households: rawHH, residents: rawR
                 Cancel
               </button>
             )}
-            <button disabled={resolving} onClick={handleConfirm}
+            <button disabled={resolving} onClick={() => setConfirming(true)}
               className="flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-medium"
               style={{ background: "#10b981", color: "#fff", cursor: resolving ? "not-allowed" : "pointer", opacity: resolving ? 0.7 : 1 }}>
               {resolving ? <Loader2 size={13} className="animate-spin" /> : <CheckCircle size={13} />}
@@ -420,6 +435,48 @@ function ResolveChecklistModal({ alert, vcfg, households: rawHH, residents: rawR
           </div>
         </div>
       </div>
+
+      {confirming && (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center p-4"
+          style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)" }}
+          onClick={() => setConfirming(false)}
+        >
+          <div
+            className="w-full max-w-xs rounded-2xl overflow-hidden shadow-2xl"
+            style={{ background: "var(--card)", border: "1px solid var(--border)" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 pt-5 pb-4 flex flex-col items-center text-center gap-3">
+              <div className="w-10 h-10 rounded-full flex items-center justify-center"
+                style={{ background: "rgba(16,185,129,0.12)" }}>
+                <CheckCircle size={18} style={{ color: "#10b981" }} />
+              </div>
+              <div>
+                <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Resolve this violation?</div>
+                <div className="text-[12px] mt-1" style={{ color: "var(--muted-foreground)" }}>
+                  {checkedIds.size === 0
+                    ? "No residents will be linked to this record."
+                    : `${checkedIds.size} resident${checkedIds.size !== 1 ? "s" : ""} will be linked to this record.`}
+                  {" "}This action cannot be undone.
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 px-5 pb-5">
+              <button onClick={() => setConfirming(false)}
+                className="flex-1 px-4 py-2 rounded-xl text-sm font-medium"
+                style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}>
+                Cancel
+              </button>
+              <button onClick={() => { setConfirming(false); handleConfirm(); }}
+                className="flex-1 flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium"
+                style={{ background: "#10b981", color: "#fff" }}>
+                <CheckCircle size={13} /> Yes, resolve
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -792,10 +849,17 @@ function SetCandidateModal({ alert, households: rawHH, residents: rawRes, onSave
   const [search, setSearch] = useState("");
   const [checkedIds, setCheckedIds] = useState(new Set());
   const [saving, setSaving] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const candidates = useMemo(() => buildCandidates(rawHH, rawRes), [rawHH, rawRes]);
+  const initializedRef = useRef(false);
 
   useEffect(() => {
-    if (!alert.suspect || candidates.length === 0) return;
+    // Background polling refreshes households/residents every few seconds,
+    // producing a new `candidates` array each time — only seed the checked
+    // set once, otherwise it stomps on the user's in-progress selection.
+    if (initializedRef.current || candidates.length === 0) return;
+    initializedRef.current = true;
+    if (!alert.suspect) return;
     const existing = alert.suspect.split(";").map((s) => s.trim().toLowerCase());
     setCheckedIds(new Set(
       candidates.filter((c) => existing.some((e) => e && c.fullName.toLowerCase().includes(e))).map((c) => c.id)
@@ -916,7 +980,7 @@ function SetCandidateModal({ alert, households: rawHH, residents: rawRes, onSave
         <div className="px-5 py-4 flex items-center justify-between gap-3 flex-shrink-0"
           style={{ borderTop: "1px solid var(--border)" }}>
           <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
-            {checkedIds.size === 0 ? "None selected — clears current candidate" : `${checkedIds.size} candidate${checkedIds.size !== 1 ? "s" : ""} will be set`}
+            {checkedIds.size === 0 ? "Select at least one resident to continue" : `${checkedIds.size} candidate${checkedIds.size !== 1 ? "s" : ""} will be set`}
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
             {!saving && (
@@ -925,15 +989,57 @@ function SetCandidateModal({ alert, households: rawHH, residents: rawRes, onSave
                 Cancel
               </button>
             )}
-            <button disabled={saving} onClick={handleSave}
+            <button disabled={saving || checkedIds.size === 0} onClick={() => setConfirming(true)}
               className="flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-medium"
-              style={{ background: "rgba(59,130,246,0.2)", color: "#3b82f6", border: "1px solid rgba(59,130,246,0.35)", cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.7 : 1 }}>
+              style={{
+                background: "rgba(59,130,246,0.2)", color: "#3b82f6", border: "1px solid rgba(59,130,246,0.35)",
+                cursor: (saving || checkedIds.size === 0) ? "not-allowed" : "pointer", opacity: (saving || checkedIds.size === 0) ? 0.5 : 1,
+              }}>
               {saving ? <Loader2 size={13} className="animate-spin" /> : <CheckCircle size={13} />}
               {saving ? "Saving…" : "Save"}
             </button>
           </div>
         </div>
       </div>
+
+      {confirming && (
+        <div
+          className="fixed inset-0 z-[85] flex items-center justify-center p-4"
+          style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)" }}
+          onClick={() => setConfirming(false)}
+        >
+          <div
+            className="w-full max-w-xs rounded-2xl overflow-hidden shadow-2xl"
+            style={{ background: "var(--card)", border: "1px solid var(--border)" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 pt-5 pb-4 flex flex-col items-center text-center gap-3">
+              <div className="w-10 h-10 rounded-full flex items-center justify-center"
+                style={{ background: "rgba(59,130,246,0.12)" }}>
+                <User size={18} style={{ color: "#3b82f6" }} />
+              </div>
+              <div>
+                <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Set this candidate match?</div>
+                <div className="text-[12px] mt-1" style={{ color: "var(--muted-foreground)" }}>
+                  {checkedIds.size} resident{checkedIds.size !== 1 ? "s" : ""} will be linked to this violation.
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 px-5 pb-5">
+              <button onClick={() => setConfirming(false)}
+                className="flex-1 px-4 py-2 rounded-xl text-sm font-medium"
+                style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}>
+                Cancel
+              </button>
+              <button onClick={() => { setConfirming(false); handleSave(); }}
+                className="flex-1 flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium"
+                style={{ background: "#3b82f6", color: "#fff" }}>
+                <CheckCircle size={13} /> Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -951,10 +1057,10 @@ export function ViolationModal({
   const [showSetCandidate, setShowSetCandidate] = useState(false);
   const [candidateConfirmed, setCandidateConfirmed] = useState(false);
   const [confirmedAt, setConfirmedAt] = useState(null);
+  const [pendingAction, setPendingAction] = useState(null); // null | "noiseUndo" | "candidateConfirm" | "candidateUndo"
 
   const isCandidateViolation = alert.type === "curfew" || alert.type === "waste";
   const isNoiseViolation = alert.type === "noise";
-  const [noiseConfirmed, setNoiseConfirmed] = useState(false);
   const candidates = useMemo(() => buildCandidates(households, residents), [households, residents]);
 
   return (
@@ -1043,9 +1149,9 @@ export function ViolationModal({
                     (() => {
                       const loudnessPct = Math.round((alert.confidence ?? 0) * 100);
                       const dBFS = Math.round(-30 + (alert.confidence ?? 0) * 30);
-                      const accentColor = noiseConfirmed ? "#10b981" : "#f59e0b";
+                      const accentColor = "#f59e0b";
                       return (
-                        <div className="rounded-lg overflow-hidden"
+                        <div className="rounded-lg overflow-hidden flex-1 flex flex-col"
                           style={{ border: "1px solid var(--border)", borderLeft: `3px solid ${accentColor}`, background: "var(--secondary)" }}>
                           {/* Label */}
                           <div className="px-3 pt-2.5 pb-1 text-[10px]" style={{ color: "var(--muted-foreground)" }}>
@@ -1066,7 +1172,7 @@ export function ViolationModal({
                             </div>
                           </div>
                           {/* Loudness section */}
-                          <div className="px-3 py-2.5">
+                          <div className="px-3 py-2.5 flex-1 flex flex-col justify-center">
                             <div className="flex items-center justify-between mb-2">
                               <div className="flex items-center gap-1">
                                 <span className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Relative loudness</span>
@@ -1078,10 +1184,6 @@ export function ViolationModal({
                                   </div>
                                 </div>
                               </div>
-                              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
-                                style={{ background: noiseConfirmed ? "rgba(16,185,129,0.15)" : "rgba(245,158,11,0.15)", color: accentColor }}>
-                                {noiseConfirmed ? "Confirmed" : "Pending verification"}
-                              </span>
                             </div>
                             {/* Bar */}
                             <div className="relative h-2 rounded-full" style={{ background: "var(--muted)" }}>
@@ -1094,23 +1196,6 @@ export function ViolationModal({
                               <span className="absolute text-[9px]" style={{ left: "73%", color: "var(--muted-foreground)" }}>threshold</span>
                               <span className="text-[10px] font-semibold" style={{ color: accentColor }}>{dBFS} dBFS</span>
                             </div>
-                            {/* Action buttons */}
-                            {!noiseConfirmed && (
-                              <div className="flex gap-2 mt-2.5">
-                                <button
-                                  onClick={() => setNoiseConfirmed(false)}
-                                  className="flex-1 text-[11px] font-semibold py-1.5 rounded-lg"
-                                  style={{ background: "var(--muted)", border: "1px solid var(--border)", color: "var(--foreground)" }}>
-                                  Not a violation
-                                </button>
-                                <button
-                                  onClick={() => setNoiseConfirmed(true)}
-                                  className="flex-1 flex items-center justify-center gap-1 text-[11px] font-semibold py-1.5 rounded-lg"
-                                  style={{ background: "#f59e0b", color: "#fff" }}>
-                                  <CheckCircle size={10} /> Confirm
-                                </button>
-                              </div>
-                            )}
                           </div>
                         </div>
                       );
@@ -1123,32 +1208,45 @@ export function ViolationModal({
                         ? candidateName.split(" ").slice(0, 2).map((w) => w[0]).join("").toUpperCase()
                         : "";
                       const accentColor = candidateConfirmed ? "#10b981" : candidateName ? "#f59e0b" : "var(--border)";
-                      const formatHHMM = (iso) => new Date(iso).toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit", hour12: true });
+                      const formatConfirmedAt = (iso) => new Date(iso).toLocaleString("en-PH", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: true });
                       const matchedCandidate = candidateName
                         ? candidates.find((c) => c.fullName.trim() === candidateName)
                           ?? candidates.find((c) => suspectMatches(alert.suspect, c.fullName))
                         : null;
 
                       return (
-                        <div className="rounded-lg overflow-hidden"
-                          style={{ border: "1px solid var(--border)", borderLeft: `3px solid ${accentColor}`, background: "var(--secondary)" }}>
+                        <div className="flex flex-col gap-3 flex-1">
                           {/* Camera + Confidence row */}
-                          <div className="flex items-stretch" style={{ borderBottom: "1px solid var(--border)" }}>
+                          <div className="rounded-lg flex items-stretch flex-shrink-0"
+                            style={{ border: "1px solid var(--border)", background: "var(--secondary)" }}>
                             <div className="flex-1 px-3 py-2.5">
                               <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Camera</div>
-                              <div className="text-[12px] font-bold mt-0.5" style={{ color: "var(--foreground)", fontFamily: "'DM Mono', monospace" }}>{alert.camera}</div>
+                              <div className="text-[12px] font-bold mt-1" style={{ color: "var(--foreground)", fontFamily: "'DM Mono', monospace" }}>{alert.camera}</div>
                             </div>
                             <div style={{ width: 1, background: "var(--border)" }} />
                             <div className="flex-1 px-3 py-2.5">
-                              <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Confidence</div>
-                              <div className="text-[12px] font-bold mt-0.5" style={{ color: accentColor, fontFamily: "'DM Mono', monospace" }}>
+                              <div className="flex items-center gap-1">
+                                <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Confidence</div>
+                                <div className="relative group flex items-center">
+                                  <Info size={10} style={{ color: "var(--muted-foreground)", cursor: "pointer" }} />
+                                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-52 rounded-xl px-3 py-2.5 text-[11px] leading-relaxed pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity z-50 shadow-xl"
+                                    style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--muted-foreground)" }}>
+                                    <div className="font-semibold mb-1" style={{ color: "var(--foreground)" }}>AI Confidence Score</div>
+                                    How certain the YOLOv8 model is that a violation was detected. A higher score means the AI is more confident in its detection.
+                                    <div className="absolute top-full left-1/2 -translate-x-1/2 w-0 h-0"
+                                      style={{ borderLeft: "5px solid transparent", borderRight: "5px solid transparent", borderTop: "5px solid var(--border)" }} />
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="text-[12px] font-bold mt-1" style={{ color: vcfg.color, fontFamily: "'DM Mono', monospace" }}>
                                 {alert.confidence ? `${(alert.confidence * 100).toFixed(0)}%` : "—"}
                               </div>
                             </div>
                           </div>
 
                           {/* Candidate section */}
-                          <div className="px-3 py-2.5">
+                          <div className="rounded-lg overflow-hidden px-3 py-2.5 flex-1 flex flex-col justify-center"
+                            style={{ border: "1px solid var(--border)", borderLeft: `3px solid ${accentColor}`, background: "var(--secondary)" }}>
                             {!candidateName ? (
                               /* State 1 — no candidate */
                               <div className="flex items-center justify-between">
@@ -1164,19 +1262,40 @@ export function ViolationModal({
                               </div>
                             ) : candidateConfirmed ? (
                               /* State 3 — confirmed */
-                              <div className="flex items-center gap-2">
-                                <div className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold flex-shrink-0"
-                                  style={{ background: "rgba(16,185,129,0.18)", color: "#10b981" }}>{initials}</div>
-                                <div className="flex-1 min-w-0">
-                                  <div className="text-[12px] font-semibold truncate" style={{ color: "var(--foreground)" }}>{candidateName}</div>
-                                  <div className="text-[10px] truncate" style={{ color: "var(--muted-foreground)" }}>
-                                    Verified by {verifierName || "officer"}{confirmedAt ? ` · ${formatHHMM(confirmedAt)}` : ""}
+                              <div className="flex flex-col gap-2 flex-1">
+                                <div className="flex items-center gap-2 flex-shrink-0">
+                                  <div className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold flex-shrink-0"
+                                    style={{ background: "rgba(16,185,129,0.18)", color: "#10b981" }}>{initials}</div>
+                                  <div className="flex-1 min-w-0">
+                                    <div className="text-[12px] font-semibold truncate" style={{ color: "var(--foreground)" }}>{candidateName}</div>
+                                    <div className="text-[10px] truncate" style={{ color: "var(--muted-foreground)" }}>
+                                      {matchedCandidate ? `Resident ID · ${matchedCandidate.barangayId}` : "Confirmed match"}
+                                    </div>
                                   </div>
+                                  <span className="flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0"
+                                    style={{ background: "rgba(16,185,129,0.15)", color: "#10b981" }}>
+                                    <CheckCircle size={9} /> Confirmed
+                                  </span>
                                 </div>
-                                <span className="flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0"
-                                  style={{ background: "rgba(16,185,129,0.15)", color: "#10b981" }}>
-                                  <CheckCircle size={9} /> Confirmed
-                                </span>
+                                <div className="flex items-center gap-2 px-2.5 py-2 rounded-lg flex-1"
+                                  style={{ background: "rgba(16,185,129,0.08)", border: "1px solid rgba(16,185,129,0.2)" }}>
+                                  <div className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0"
+                                    style={{ background: "#10b981" }}>
+                                    <CheckCircle size={11} color="#fff" strokeWidth={3} />
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <div className="text-[11px] font-semibold" style={{ color: "var(--foreground)" }}>Match confirmed</div>
+                                    <div className="text-[10px] truncate" style={{ color: "var(--muted-foreground)" }}>
+                                      by {verifierName || "officer"}{confirmedAt ? ` · ${formatConfirmedAt(confirmedAt)}` : ""}
+                                    </div>
+                                  </div>
+                                  <button
+                                    onClick={() => setPendingAction("candidateUndo")}
+                                    className="text-[10px] font-semibold px-2.5 py-1 rounded-lg flex-shrink-0"
+                                    style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--foreground)" }}>
+                                    Undo
+                                  </button>
+                                </div>
                               </div>
                             ) : (
                               /* State 2 — pending verification */
@@ -1201,7 +1320,7 @@ export function ViolationModal({
                                     Not a match
                                   </button>
                                   <button
-                                    onClick={() => { setCandidateConfirmed(true); setConfirmedAt(new Date().toISOString()); }}
+                                    onClick={() => setPendingAction("candidateConfirm")}
                                     className="flex-1 flex items-center justify-center gap-1 text-[11px] font-semibold py-1.5 rounded-lg"
                                     style={{ background: "#f59e0b", color: "#fff" }}>
                                     <CheckCircle size={10} /> Confirm
@@ -1241,21 +1360,12 @@ export function ViolationModal({
                     </div>
                   )}
                 </div>
-
-
-                {alert.notes && (
-                  <div className="rounded-lg px-3 py-3"
-                    style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-                    <div className="text-[10px] mb-1" style={{ color: "var(--muted-foreground)" }}>Notes</div>
-                    <p className="text-[12px] italic" style={{ color: "var(--muted-foreground)" }}>"{alert.notes}"</p>
-                  </div>
-                )}
               </div>
 
               {/* Right: officers + description */}
               <div className="flex flex-col gap-3">
                 {/* Officers — compact with expandable */}
-                <div className="rounded-lg px-3 py-2.5"
+                <div className="rounded-lg px-3 py-2.5 flex-shrink-0"
                   style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
                   <div className="text-[10px] mb-1" style={{ color: "var(--muted-foreground)" }}>
                     Assigned officers {assignedOfficerNames.length > 0 && `(${assignedOfficerNames.length})`}
@@ -1322,11 +1432,11 @@ export function ViolationModal({
                   )}
                 </div>
 
-                {/* Description — compact */}
-                <div className="rounded-lg px-3 py-2.5"
+                {/* Description */}
+                <div className="rounded-lg px-3 py-2.5 flex-1"
                   style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
                   <div className="text-[10px] mb-1" style={{ color: "var(--muted-foreground)" }}>Description</div>
-                  <p className="text-[12px] leading-relaxed line-clamp-2" style={{ color: "var(--muted-foreground)" }}>
+                  <p className="text-[12px] leading-relaxed" style={{ color: "var(--muted-foreground)" }}>
                     {alert.description || "—"}
                   </p>
                 </div>
@@ -1345,6 +1455,18 @@ export function ViolationModal({
                   className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium transition-all"
                   style={{ background: "rgba(16,185,129,0.1)", color: "#10b981", border: "1px solid rgba(16,185,129,0.25)" }}>
                   <MessageSquare size={13} /> Contact guardian
+                </button>
+              )}
+
+              {/* Add Violator — noise has no facial recognition, so the suspect must be tagged manually */}
+              {alert.type === "noise" && (
+                <button
+                  onClick={() => alert.suspect ? setPendingAction("noiseUndo") : setShowSetCandidate(true)}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium transition-all"
+                  style={alert.suspect
+                    ? { background: "rgba(16,185,129,0.1)", color: "#10b981", border: "1px solid rgba(16,185,129,0.25)" }
+                    : { background: "rgba(245,158,11,0.1)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.25)" }}>
+                  {alert.suspect ? <><CheckCircle size={13} /> Undo</> : <><User size={13} /> Select violator</>}
                 </button>
               )}
 
@@ -1423,6 +1545,69 @@ export function ViolationModal({
           onClose={() => setShowSetCandidate(false)}
         />
       )}
+
+      {pendingAction && (() => {
+        const configs = {
+          noiseUndo: {
+            iconColor: "#10b981", iconBg: "rgba(16,185,129,0.12)",
+            title: "Remove this violator?",
+            message: "This clears the tagged violator for this noise complaint.",
+            confirmLabel: "Yes, undo", confirmColor: "#10b981",
+            run: () => { if (onUpdateSuspect) onUpdateSuspect(null); },
+          },
+          candidateConfirm: {
+            iconColor: "#f59e0b", iconBg: "rgba(245,158,11,0.12)",
+            title: "Confirm this match?",
+            message: "This marks the candidate as a verified match for this violation.",
+            confirmLabel: "Yes, confirm", confirmColor: "#f59e0b",
+            run: () => { setCandidateConfirmed(true); setConfirmedAt(new Date().toISOString()); },
+          },
+          candidateUndo: {
+            iconColor: "#10b981", iconBg: "rgba(16,185,129,0.12)",
+            title: "Undo this confirmation?",
+            message: "This reverts the match back to pending verification.",
+            confirmLabel: "Yes, undo", confirmColor: "#10b981",
+            run: () => { setCandidateConfirmed(false); setConfirmedAt(null); },
+          },
+        };
+        const cfg = configs[pendingAction];
+        return (
+          <div
+            className="fixed inset-0 z-[90] flex items-center justify-center p-4"
+            style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)" }}
+            onClick={() => setPendingAction(null)}
+          >
+            <div
+              className="w-full max-w-xs rounded-2xl overflow-hidden shadow-2xl"
+              style={{ background: "var(--card)", border: "1px solid var(--border)" }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="px-5 pt-5 pb-4 flex flex-col items-center text-center gap-3">
+                <div className="w-10 h-10 rounded-full flex items-center justify-center"
+                  style={{ background: cfg.iconBg }}>
+                  <CheckCircle size={18} style={{ color: cfg.iconColor }} />
+                </div>
+                <div>
+                  <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>{cfg.title}</div>
+                  <div className="text-[12px] mt-1" style={{ color: "var(--muted-foreground)" }}>{cfg.message}</div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 px-5 pb-5">
+                <button onClick={() => setPendingAction(null)}
+                  className="flex-1 px-4 py-2 rounded-xl text-sm font-medium"
+                  style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}>
+                  Cancel
+                </button>
+                <button onClick={() => { cfg.run(); setPendingAction(null); }}
+                  className="flex-1 flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium"
+                  style={{ background: cfg.confirmColor, color: "#fff" }}>
+                  <CheckCircle size={13} /> {cfg.confirmLabel}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </>
   );
 }

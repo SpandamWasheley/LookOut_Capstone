@@ -2,9 +2,10 @@ import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import React, { useCallback, useEffect, useState } from "react";
-import { ActivityIndicator, Alert, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Alert, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { AutoScrollView } from "@/components/AutoScrollView";
 import { useAssignments } from "@/context/AssignmentContext";
 import { useAuth } from "@/context/AuthContext";
 import { useColors } from "@/hooks/useColors";
@@ -124,15 +125,16 @@ export default function ProfileScreen() {
       <View
         style={[
           styles.header,
-          { backgroundColor: c.card, borderBottomColor: c.border, paddingTop: insets.top + (Platform.OS === "web" ? 12 : 0) },
+          { backgroundColor: c.card, borderBottomColor: c.border, paddingTop: insets.top + (Platform.OS === "web" ? 20 : 10) },
         ]}
       >
         <Text style={[styles.title, { color: c.foreground }]}>Profile</Text>
       </View>
 
-      <ScrollView
-        contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 100) }]}
-        showsVerticalScrollIndicator={false}
+      <AutoScrollView
+        contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 32) }]}
+        bounces={false}
+        overScrollMode="never"
       >
         <View style={[styles.profileCard, { backgroundColor: c.card, borderColor: c.border }]}>
           <View style={[styles.avatar, { backgroundColor: c.primary }]}>
@@ -223,7 +225,7 @@ export default function ProfileScreen() {
           <Feather name="log-out" size={16} color={c.destructive} />
           <Text style={[styles.logoutText, { color: c.destructive }]}>Sign Out</Text>
         </Pressable>
-      </ScrollView>
+      </AutoScrollView>
     </View>
   );
 }
