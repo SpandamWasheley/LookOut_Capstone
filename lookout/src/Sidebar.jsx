@@ -193,21 +193,6 @@ export function Sidebar({ activeView, onViewChange, activeRole, onRoleChange, al
 
       {/* Bottom: AI status + theme toggle + sign out */}
       <div className="flex-shrink-0 p-3 space-y-1.5" style={{ borderTop: `1px solid ${sidebarBorder}` }}>
-        {!collapsed && (
-          <div className="flex items-center gap-2 px-2 py-2 rounded-md"
-            style={{ background: "rgba(46,139,115,0.18)" }}>
-            <div className="w-1.5 h-1.5 rounded-full flex-shrink-0 animate-pulse"
-              style={{ background: "#2ECC71" }} />
-            <div className="min-w-0 flex-1">
-              <div className="text-[11px] font-medium leading-none" style={{ color: "#2ECC71" }}>AI Active</div>
-              <div className="text-[10px] mt-0.5"
-                style={{ color: mutedColor, fontFamily: "'DM Mono', monospace" }}>
-                4 cams · YOLOv8
-              </div>
-            </div>
-          </div>
-        )}
-
         <button
           onClick={() => setIsLight((v) => !v)}
           title={isLight ? "Switch to dark mode" : "Switch to light mode"}

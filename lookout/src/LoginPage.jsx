@@ -156,8 +156,10 @@ export default function LoginPage({ onLogin, onForgotPassword }) {
                   <button
                     type="button"
                     onClick={onForgotPassword}
-                    className="text-xs font-medium transition-colors"
+                    className="text-xs font-medium transition-all"
                     style={{ color: "var(--primary)" }}
+                    onMouseEnter={(e) => { e.currentTarget.style.textDecoration = "underline"; e.currentTarget.style.opacity = "0.8"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.textDecoration = "none"; e.currentTarget.style.opacity = "1"; }}
                   >
                     Forgot password?
                   </button>
@@ -186,6 +188,8 @@ export default function LoginPage({ onLogin, onForgotPassword }) {
                 color: "var(--primary-foreground)",
                 cursor: loading ? "not-allowed" : "pointer",
               }}
+              onMouseEnter={(e) => { if (!loading) { e.currentTarget.style.filter = "brightness(1.1)"; e.currentTarget.style.transform = "translateY(-1px)"; } }}
+              onMouseLeave={(e) => { e.currentTarget.style.filter = "none"; e.currentTarget.style.transform = "none"; }}
             >
               {loading ? (
                 <span className="flex items-center justify-center gap-2">

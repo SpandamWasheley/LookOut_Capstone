@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Bell, Clock, AlertTriangle, Radio, CheckCircle, X, Camera as CameraIcon, Moon, Sun, Sunset, Filter, ChevronDown } from "lucide-react";
+import { Bell, Clock, AlertTriangle, Radio, CheckCircle, X, Camera as CameraIcon, Moon, Sun, Sunset, Filter, ChevronDown, ChevronRight } from "lucide-react";
 import { VIOLATION_CONFIG } from "../data/mockData";
 import { ViolationModal } from "./ViolationModal";
 import { DispatchModal } from "./DispatchModal";
@@ -165,13 +165,13 @@ function AlertCard({ alert, onView }) {
   return (
     <div
       onClick={onView}
-      className="rounded-2xl cursor-pointer transition-all duration-150 mb-3 overflow-hidden flex"
+      className="rounded-2xl cursor-pointer transition-all duration-150 mb-3 overflow-hidden flex group"
       style={{ background: "var(--card)", border: "1px solid var(--border)" }}
       onMouseEnter={(e) => { e.currentTarget.style.borderColor = `${vcfg.color}50`; }}
       onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border)"; }}
     >
       {/* Left color stripe */}
-      <div className="w-1 flex-shrink-0 rounded-l-2xl" style={{ background: vcfg.color }} />
+      <div className="w-1.5 flex-shrink-0" style={{ background: vcfg.color }} />
       <div className="flex items-center gap-3.5 px-4 py-3.5 flex-1 min-w-0">
         {/* Icon box */}
         <div className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0"
@@ -181,33 +181,39 @@ function AlertCard({ alert, onView }) {
 
         {/* Left content */}
         <div className="flex-1 min-w-0">
-          {/* Row 1: title + status */}
+          {/* Row 1: title + status dot */}
           <div className="flex items-center gap-2 flex-wrap mb-1">
             <span className="text-[14px] font-semibold" style={{ color: "var(--foreground)" }}>
               {vcfg.label}
             </span>
-            <span className="text-[11px] font-medium px-2 py-0.5 rounded-full"
-              style={{ background: scfg.bg, color: scfg.color }}>
-              {scfg.label}
+            <span className="flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full" style={{ background: scfg.color }} />
+              <span className="text-[12px] font-medium" style={{ color: scfg.color }}>{scfg.label}</span>
             </span>
           </div>
-          {/* Row 2: time */}
-          <div className="flex items-center gap-3 text-[11px]" style={{ color: "var(--muted-foreground)" }}>
-            <span className="flex items-center gap-1"><Clock size={9} /> {formatTime(alert.timestamp)}</span>
+          {/* Row 2: reported time + optional officers */}
+          <div className="flex items-center gap-2 text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+            <span className="flex items-center gap-1"><Clock size={11} /> Reported {formatTime(alert.timestamp)}</span>
+            {officerCount > 0 && (
+              <span className="flex items-center gap-1" style={{ color: "#3b82f6" }}>
+                · <Radio size={10} /> {officerCount} officer{officerCount !== 1 ? "s" : ""}
+              </span>
+            )}
           </div>
         </div>
 
-        {/* Right: confidence + officer count */}
-        <div className="flex flex-col items-end gap-1 flex-shrink-0">
-          <span className="text-[11px] font-medium" style={{ color: vcfg.color }}>
-            {(alert.confidence * 100).toFixed(0)}% conf
-          </span>
-          {officerCount > 0 && (
-            <span className="flex items-center gap-1 text-[11px] font-medium" style={{ color: "#3b82f6" }}>
-              <Radio size={9} />
-              {`${officerCount} officer${officerCount !== 1 ? "s" : ""}`}
+        {/* Right: match % + chevron */}
+        <div className="flex items-center gap-2.5 flex-shrink-0">
+          <div className="flex flex-col items-end leading-none">
+            <span className="text-[9px] font-semibold uppercase tracking-wider" style={{ color: "var(--muted-foreground)" }}>
+              Match
             </span>
-          )}
+            <span className="text-[15px] font-bold mt-1" style={{ color: vcfg.color }}>
+              {(alert.confidence * 100).toFixed(0)}%
+            </span>
+          </div>
+          <ChevronRight size={16} className="transition-transform duration-150 group-hover:translate-x-0.5"
+            style={{ color: "var(--muted-foreground)" }} />
         </div>
       </div>
     </div>
@@ -340,12 +346,12 @@ function RightPanel({ alerts, cameras }) {
             <span className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>No active violations</span>
           </div>
         ) : (
-          <div className="scrollbar-visible flex flex-col gap-2 overflow-y-auto flex-1 min-h-0">
+          <div className="scrollbar-visible alertfeed-scroll flex flex-col gap-3 overflow-y-auto flex-1 min-h-0 pr-2">
             {recentAlerts.slice(0, 5).map((a) => {
               const vcfg = VIOLATION_CONFIG[a.type] ?? { label: a.type, color: "#ef4444", icon: AlertTriangle };
               const scfg = statusConfig[a.status] ?? statusConfig.active;
               return (
-                <div key={a.id} className="rounded-lg p-2.5 flex-shrink-0"
+                <div key={a.id} className="rounded-lg p-3 flex-shrink-0"
                   style={{ background: "var(--secondary)", borderLeft: `3px solid ${vcfg.color}`, border: "1px solid var(--border)" }}>
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-[12px] font-semibold truncate pr-1" style={{ color: "var(--foreground)" }}>{vcfg.label}</span>

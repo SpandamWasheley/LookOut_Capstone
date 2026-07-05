@@ -47,8 +47,8 @@ function StepBar({ step }) {
               <div
                 className="w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold transition-all flex-shrink-0"
                 style={{
-                  background: done ? "#10b981" : active ? "#f59e0b" : "var(--secondary)",
-                  color: done || active ? (done ? "#fff" : "#0c0f16") : "var(--muted-foreground)",
+                  background: done ? "#10b981" : active ? "var(--primary)" : "var(--secondary)",
+                  color: done || active ? (done ? "#fff" : "var(--primary-foreground)") : "var(--muted-foreground)",
                   border: done || active ? "none" : "1px solid var(--border)",
                 }}
               >
@@ -56,7 +56,7 @@ function StepBar({ step }) {
               </div>
               <span
                 className="text-[12px] font-medium"
-                style={{ color: active ? "#f59e0b" : done ? "#10b981" : "var(--muted-foreground)" }}
+                style={{ color: active ? "var(--primary)" : done ? "#10b981" : "var(--muted-foreground)" }}
               >
                 {s.label}
               </span>
@@ -263,8 +263,8 @@ function StepMembers({ familyName, members, onChange }) {
               disabled={!adding.firstName.trim() || !adding.lastName.trim() || !adding.birthdate}
               className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-medium transition-all"
               style={{
-                background: adding.firstName && adding.lastName && adding.birthdate ? "#f59e0b" : "rgba(245,158,11,0.2)",
-                color: adding.firstName && adding.lastName && adding.birthdate ? "#0c0f16" : "rgba(245,158,11,0.4)",
+                background: adding.firstName && adding.lastName && adding.birthdate ? "var(--primary)" : "rgba(245,158,11,0.2)",
+                color: adding.firstName && adding.lastName && adding.birthdate ? "var(--primary-foreground)" : "rgba(245,158,11,0.4)",
               }}>
               <Plus size={11} /> Add member
             </button>
@@ -291,7 +291,7 @@ function StepMembers({ familyName, members, onChange }) {
 }
 
 // ── Custom scrollable dropdown ────────────────────────────────────────────────
-function CustomSelect({ options, placeholder, onSelect }) {
+function CustomSelect({ options, placeholder, onSelect, multi = false }) {
   const [open, setOpen] = useState(false);
 
   return (
@@ -331,7 +331,7 @@ function CustomSelect({ options, placeholder, onSelect }) {
               <button
                 key={opt.value}
                 type="button"
-                onClick={() => { onSelect(opt.value, opt.label); setOpen(false); }}
+                onClick={() => { onSelect(opt.value, opt.label); if (!multi || options.length <= 1) setOpen(false); }}
                 className="w-full text-left px-3 py-2 text-[12px] transition-colors"
                 style={{ color: "var(--foreground)", borderBottom: "1px solid var(--border)" }}
                 onMouseEnter={(e) => (e.currentTarget.style.background = "var(--secondary)")}
@@ -438,6 +438,7 @@ function StepGuardians({ members, links, onChange, extLinks, onExtChange }) {
                     <>
                       <CustomSelect
                         placeholder="Choose a household member…"
+                        multi
                         options={adults
                           .filter((a) => !selected.includes(a.tempId))
                           .map((a) => ({ value: a.tempId, label: `${a.firstName} ${a.lastName}` }))}
@@ -739,8 +740,8 @@ export function AddHouseholdModal({ nextHouseholdId, onSave, onClose }) {
                 onClick={() => setStep((s) => s + 1)}
                 className="flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-medium transition-all"
                 style={{
-                  background: (step === 1 ? step1Valid : step === 2 ? step2Valid : true) ? "#f59e0b" : "rgba(245,158,11,0.2)",
-                  color: (step === 1 ? step1Valid : step === 2 ? step2Valid : true) ? "#0c0f16" : "rgba(245,158,11,0.4)",
+                  background: (step === 1 ? step1Valid : step === 2 ? step2Valid : true) ? "var(--primary)" : "rgba(11,84,113,0.2)",
+                  color: (step === 1 ? step1Valid : step === 2 ? step2Valid : true) ? "var(--primary-foreground)" : "rgba(133,183,214,0.4)",
                   cursor: (step === 1 ? step1Valid : step === 2 ? step2Valid : true) ? "pointer" : "not-allowed",
                 }}
               >
@@ -750,7 +751,7 @@ export function AddHouseholdModal({ nextHouseholdId, onSave, onClose }) {
               <button
                 onClick={handleSave}
                 className="flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-medium"
-                style={{ background: "#f59e0b", color: "#0c0f16" }}
+                style={{ background: "var(--primary)", color: "var(--primary-foreground)" }}
               >
                 <Home size={13} /> Save household
               </button>

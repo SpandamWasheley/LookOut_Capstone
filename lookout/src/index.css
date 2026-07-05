@@ -146,6 +146,12 @@
 .scrollbar-visible:hover::-webkit-scrollbar-thumb,
 .scrollbar-visible::-webkit-scrollbar-thumb:hover { background: rgba(133, 183, 214, 0.7); }
 
+/* ── Alert feed scrollbar — lighter tint (opt-in via .alertfeed-scroll) ────── */
+.alertfeed-scroll::-webkit-scrollbar-track { background: rgba(255, 255, 255, 0.06); border-radius: 999px; }
+.alertfeed-scroll::-webkit-scrollbar-thumb { background: rgba(133, 183, 214, 0.55); border-radius: 999px; }
+.alertfeed-scroll:hover::-webkit-scrollbar-thumb,
+.alertfeed-scroll::-webkit-scrollbar-thumb:hover { background: rgba(133, 183, 214, 0.85); }
+
 /* ── Tailwind @theme mappings ─────────────────────────────────────────────── */
 @theme inline {
   --color-background: var(--background);
