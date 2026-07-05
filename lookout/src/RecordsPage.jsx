@@ -76,7 +76,7 @@ export function RecordsPage() {
       <div className="flex items-center justify-between px-6 h-14 flex-shrink-0"
         style={{ borderBottom: "1px solid var(--border)" }}>
         <div className="flex items-center gap-3">
-          <h1 className="text-[15px] font-semibold text-white">Records</h1>
+          <h1 className="text-xl font-bold" style={{ color: "var(--foreground)" }}>Records</h1>
           <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>Completed violations archive</span>
         </div>
         <div className="flex items-center gap-4 text-xs" style={{ color: "var(--muted-foreground)" }}>

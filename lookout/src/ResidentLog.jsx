@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import {
   Search, AlertTriangle, CheckCircle, Clock, MapPin,
-  TrendingUp, User,
+  User,
 } from "lucide-react";
 import { getResidents, getAlerts, getHouseholds } from "./api";
 import { VIOLATION_CONFIG } from "../data/mockData";
@@ -429,8 +429,7 @@ export function ResidentLog() {
         style={{ borderBottom: "1px solid var(--border)" }}
       >
         <div className="flex items-center gap-3">
-          <TrendingUp size={15} style={{ color: "var(--muted-foreground)" }} />
-          <h1 className="text-[15px] font-semibold" style={{ color: "var(--foreground)" }}>Resident Violations</h1>
+          <h1 className="text-xl font-bold" style={{ color: "var(--foreground)" }}>Resident Violations</h1>
           <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>Linked by suspect identification</span>
         </div>
         <div className="flex items-center gap-4 text-xs" style={{ color: "var(--muted-foreground)" }}>

@@ -778,8 +778,7 @@ export function ResidentDatabase() {
       <div className="flex items-center justify-between px-6 h-14 flex-shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
-            <User size={14} style={{ color: "var(--muted-foreground)" }} />
-            <h1 className="text-[15px] font-semibold" style={{ color: "var(--foreground)" }}>Residents</h1>
+            <h1 className="text-xl font-bold" style={{ color: "var(--foreground)" }}>Residents</h1>
           </div>
           <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>
             ArcFace biometrics ·{" "}
