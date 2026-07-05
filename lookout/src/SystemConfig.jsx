@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Save, RotateCcw, Moon, Volume2, Trash2, Clock, AlertTriangle, Loader2 } from "lucide-react";
+import { Save, RotateCcw, Moon, Volume2, Trash2, AlertTriangle, Loader2 } from "lucide-react";
 import { getSettings, saveSettings } from "./api";
 
 const trimSeconds = (t) => (t ? t.slice(0, 5) : t);
@@ -154,8 +154,8 @@ function Toggle({ label, desc, value, onChange }) {
         style={{ background: value ? "var(--primary)" : "var(--secondary)", border: "1px solid var(--border)" }}
       >
         <div
-          className="absolute top-0.5 w-4 h-4 rounded-full transition-all duration-200"
-          style={{ background: value ? "#0c0f16" : "var(--muted-foreground)", left: value ? "calc(100% - 18px)" : "2px" }}
+          className="absolute top-0.5 w-3.5 h-3.5 rounded-full transition-all duration-200"
+          style={{ background: value ? "#0c0f16" : "var(--muted-foreground)", left: value ? "calc(100% - 16px)" : "2px" }}
         />
       </button>
     </div>
@@ -190,8 +190,6 @@ function TimeInput({ label, value, onChange }) {
           boxShadow: focused ? "0 0 0 3px rgba(var(--primary-rgb, 11 84 113) / 0.15)" : "none",
         }}
       >
-        <Clock size={14} className="flex-shrink-0 transition-colors"
-          style={{ color: active ? "var(--primary)" : "var(--muted-foreground)" }} />
         <input
           ref={inputRef}
           type="time" value={value}
@@ -393,7 +391,7 @@ export function SystemConfig() {
       <div className="flex items-center justify-between px-6 h-14 flex-shrink-0"
         style={{ borderBottom: "1px solid var(--border)" }}>
         <div className="flex items-center gap-3">
-          <h1 className="text-[15px] font-semibold" style={{ color: "var(--foreground)" }}>Settings</h1>
+          <h1 className="text-xl font-bold" style={{ color: "var(--foreground)" }}>Settings</h1>
           <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>Admin only · changes apply immediately</span>
         </div>
         <div className="flex gap-2">
