@@ -116,7 +116,7 @@ function AdminDashboard({ user, onLogout }) {
               <div className="flex items-center gap-6">
                 <div className="flex items-center gap-1.5 text-xs" style={{ color: "var(--muted-foreground)" }}>
                   {statusDot("#10b981")}
-                  <span>AI running · YOLOv8 + ArcFace</span>
+                  <span>AI running · YOLOv8 + InsightFace</span>
                 </div>
                 <LiveClock />
               </div>
@@ -169,7 +169,7 @@ function AdminDashboard({ user, onLogout }) {
                       REC
                     </div>
                     <button
-                      className="flex items-center gap-1 text-xs"
+                      className="flex items-center gap-1 text-xs hover:cursor-pointer hover:underline"
                       style={{ color: "var(--muted-foreground)" }}
                       onClick={() => setActivePage("cameras")}
                     >

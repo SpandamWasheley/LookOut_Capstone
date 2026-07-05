@@ -25,15 +25,33 @@ load_dotenv(BASE_DIR / ".env")
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-u_t@(tpkhtw&!b0)_&zlo58=k#8%(dr8835qq(0uv245^id=o0'
+# Falls back to a dev-only key so `manage.py` still works out of the box if
+# .env is missing, but any real deployment must set SECRET_KEY in the env.
+SECRET_KEY = os.environ.get(
+    'SECRET_KEY',
+    'django-insecure-u_t@(tpkhtw&!b0)_&zlo58=k#8%(dr8835qq(0uv245^id=o0',
+)
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.environ.get('DEBUG', 'True') == 'True'
 
 # '*' is fine here only because DEBUG=True (dev-only settings) — it lets the
 # Expo app reach this server over the LAN using the dev machine's IP address,
 # since "localhost" from a phone refers to the phone itself, not this machine.
-ALLOWED_HOSTS = ['*']
+# A real deployment must set ALLOWED_HOSTS to a comma-separated list of real
+# hostnames in the env.
+_allowed_hosts = os.environ.get('ALLOWED_HOSTS', '*')
+ALLOWED_HOSTS = ['*'] if _allowed_hosts == '*' else [h.strip() for h in _allowed_hosts.split(',')]
+
+# Hardening that only makes sense once this is served over HTTPS in production
+# — left off under DEBUG so local http://localhost development keeps working.
+if not DEBUG:
+    SECURE_SSL_REDIRECT = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_HSTS_SECONDS = 31536000
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_CONTENT_TYPE_NOSNIFF = True
 
 
 # Application definition
@@ -67,6 +85,11 @@ AUTH_USER_MODEL = 'core.User'
 CORS_ALLOWED_ORIGINS = [
     'http://localhost:5173',
     'http://127.0.0.1:5173',
+]
+# A real deployment must add its actual frontend origin(s) here via the env,
+# e.g. ALLOWED_CORS_ORIGINS=https://app.example.com,https://admin.example.com
+CORS_ALLOWED_ORIGINS += [
+    o.strip() for o in os.environ.get('ALLOWED_CORS_ORIGINS', '').split(',') if o.strip()
 ]
 
 REST_FRAMEWORK = {

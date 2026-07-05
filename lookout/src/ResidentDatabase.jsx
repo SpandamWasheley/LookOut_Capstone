@@ -415,7 +415,7 @@ function HouseholdCard({ household, onManage, filter, onAddMember }) {
               return (
                 <div
                   key={member.id}
-                  className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-white/[0.015] cursor-pointer"
+                  className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-white/[0.015]   "
                 >
                   <div
                     className="w-9 h-9 rounded-lg flex items-center justify-center text-xs font-bold flex-shrink-0 overflow-hidden"
