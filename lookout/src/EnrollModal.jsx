@@ -284,7 +284,7 @@ export function EnrollModal({ onClose, onEnroll }) {
                           <div className="flex items-center gap-1.5 flex-shrink-0">
                             {minorCount > 0 && (
                               <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
-                                style={{ background: "rgba(245,158,11,0.15)", color: "#f59e0b" }}>
+                                style={{ background: "var(--primary)", color: "var(--primary-foreground)" }}>
                                 {minorCount} {minorCount === 1 ? "minor" : "minors"}
                               </span>
                             )}
@@ -574,8 +574,8 @@ export function EnrollModal({ onClose, onEnroll }) {
                 onClick={() => selected && setStep("photo")}
                 className="flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-medium transition-all"
                 style={{
-                  background: selected ? "var(--primary)" : "rgba(245,158,11,0.2)",
-                  color: selected ? "var(--primary-foreground)" : "rgba(245,158,11,0.4)",
+                  background: selected ? "var(--primary)" : "rgba(11,84,113,0.2)",
+                  color: selected ? "var(--primary-foreground)" : "rgba(133,183,214,0.4)",
                   cursor: selected ? "pointer" : "not-allowed",
                 }}>
                 Next <ChevronRight size={14} />

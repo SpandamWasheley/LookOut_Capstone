@@ -213,7 +213,7 @@ function ManageHouseholdModal({ household, onSave, onClose }) {
                     {secondaryContacts.map((c) => (
                       <div key={c.phone} className="flex items-center justify-between text-[12px]">
                         <span style={{ color: "var(--muted-foreground)" }}>{c.name}</span>
-                        <span style={{ color: "#f59e0b", fontFamily: "'DM Mono', monospace" }}>{c.phone}</span>
+                        <span style={{ color: "var(--foreground)", fontFamily: "'DM Mono', monospace" }}>{c.phone}</span>
                       </div>
                     ))}
                   </div>
@@ -248,7 +248,7 @@ function ManageHouseholdModal({ household, onSave, onClose }) {
                       <div className="flex items-center gap-2">
                         <span className="text-[12px] font-medium" style={{ color: "var(--foreground)" }}>{m.lastName}, {m.firstName}</span>
                         {minor && (
-                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: "rgba(245,158,11,0.12)", color: "#f59e0b" }}>
+                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: "var(--primary)", color: "var(--primary-foreground)" }}>
                             Minor
                           </span>
                         )}
@@ -276,8 +276,8 @@ function ManageHouseholdModal({ household, onSave, onClose }) {
             onClick={handleSave}
             className="flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-medium transition-all"
             style={{
-              background: saved ? "#10b981" : valid ? "var(--primary)" : "rgba(245,158,11,0.2)",
-              color: saved ? "#fff" : valid ? "var(--primary-foreground)" : "rgba(245,158,11,0.4)",
+              background: saved ? "#10b981" : valid ? "var(--primary)" : "rgba(11,84,113,0.2)",
+              color: saved ? "#fff" : valid ? "var(--primary-foreground)" : "rgba(133,183,214,0.4)",
               cursor: valid ? "pointer" : "not-allowed",
             }}
           >
@@ -343,12 +343,12 @@ function HouseholdCard({ household, onManage, filter, onAddMember }) {
             · {household.address}, Brgy. Tetuan
           </span>
           {minorCount > 0 && (
-            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full" style={{ background: "rgba(245,158,11,0.15)", color: "#f59e0b" }}>
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full" style={{ background: "var(--primary)", color: "var(--primary-foreground)" }}>
               {minorCount} {minorCount === 1 ? "minor" : "minors"}
             </span>
           )}
           {secondaryContacts.length > 0 && (
-            <span className="flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full" style={{ background: "rgba(59,130,246,0.15)", color: "#3b82f6" }}>
+            <span className="flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full" style={{ background: "var(--primary)", color: "var(--primary-foreground)" }}>
               <Phone size={9} /> {secondaryContacts.length} secondary {secondaryContacts.length === 1 ? "number" : "numbers"}
             </span>
           )}
@@ -366,7 +366,7 @@ function HouseholdCard({ household, onManage, filter, onAddMember }) {
         <button
           onClick={() => onManage(household)}
           className="text-[11px] font-medium px-2.5 py-1 rounded-md flex-shrink-0 transition-all"
-          style={{ background: "rgba(245,158,11,0.1)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.2)" }}
+          style={{ background: "var(--primary)", color: "var(--primary-foreground)", border: "1px solid var(--primary)" }}
         >
           Manage
         </button>
@@ -383,7 +383,7 @@ function HouseholdCard({ household, onManage, filter, onAddMember }) {
               Secondary:{" "}
               {secondaryContacts.map((c, i) => (
                 <span key={c.phone}>
-                  <span style={{ color: "#f59e0b", fontFamily: "'DM Mono', monospace" }}>{c.phone}</span>
+                  <span style={{ color: "var(--foreground)", fontFamily: "'DM Mono', monospace" }}>{c.phone}</span>
                   {" "}({c.name}){i < secondaryContacts.length - 1 ? ", " : ""}
                 </span>
               ))}
@@ -438,7 +438,7 @@ function HouseholdCard({ household, onManage, filter, onAddMember }) {
                       <span className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>{member.relation}</span>
                       {minor && (
                         <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full"
-                          style={{ background: "rgba(245,158,11,0.15)", color: "#f59e0b" }}>
+                          style={{ background: "var(--primary)", color: "var(--primary-foreground)" }}>
                           {["Son","Daughter"].includes(member.relation) ? `${member.relation} · Minor` : "Minor"}
                         </span>
                       )}

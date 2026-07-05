@@ -217,9 +217,16 @@ function AdminDashboard({ user, onLogout }) {
         {safePage === "records" && <div className="h-full"><RecordsPage /></div>}
 
         {safePage === "cameras" && (
-          <div className="p-6">
-            <h2 className="text-xl font-bold mb-6" style={{ color: "var(--foreground)" }}>Live Feeds</h2>
-            <CameraGrid />
+          <div className="flex flex-col h-full overflow-hidden">
+            <div
+              className="flex items-center px-6 h-14 flex-shrink-0"
+              style={{ borderBottom: "1px solid var(--border)" }}
+            >
+              <h1 className="text-xl font-bold" style={{ color: "var(--foreground)" }}>Live Feeds</h1>
+            </div>
+            <div className="flex-1 overflow-auto p-6">
+              <CameraGrid />
+            </div>
           </div>
         )}
 

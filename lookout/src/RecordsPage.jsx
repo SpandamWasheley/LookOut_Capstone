@@ -117,8 +117,8 @@ export function RecordsPage() {
           <div className="flex gap-1.5">
             {["all", "resolved", "acknowledged"].map((f) => {
               const label = f === "all" ? "All" : f === "resolved" ? "Resolved" : "Dismissed";
-              const color = f === "resolved" ? "#10b981" : f === "acknowledged" ? "#64748b" : "#0c0f16";
-              const bg    = f === "resolved" ? "rgba(16,185,129,0.1)" : f === "acknowledged" ? "rgba(100,116,139,0.1)" : "#f59e0b";
+              const color = f === "resolved" ? "#10b981" : f === "acknowledged" ? "#64748b" : "var(--primary-foreground)";
+              const bg    = f === "resolved" ? "rgba(16,185,129,0.1)" : f === "acknowledged" ? "rgba(100,116,139,0.1)" : "var(--primary)";
               return (
                 <button
                   key={f}
@@ -127,7 +127,7 @@ export function RecordsPage() {
                   style={{
                     background: filter === f ? bg : "var(--secondary)",
                     color:      filter === f ? color : "var(--muted-foreground)",
-                    border:     `1px solid ${filter === f ? (f === "all" ? "#f59e0b" : color + "40") : "var(--border)"}`,
+                    border:     `1px solid ${filter === f ? (f === "all" ? "var(--primary)" : color + "40") : "var(--border)"}`,
                   }}
                 >
                   {label}

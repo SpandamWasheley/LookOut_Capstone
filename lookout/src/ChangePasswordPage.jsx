@@ -37,7 +37,10 @@ export default function ChangePasswordPage({ onDone }) {
     <div className="min-h-screen flex items-center justify-center bg-slate-950 px-4">
       <div className="w-full max-w-md rounded-[32px] bg-slate-900 border border-slate-800 p-8 shadow-2xl">
         <div className="mb-8 text-center">
-          <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-3xl bg-amber-400 text-slate-950">
+          <div
+            className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-3xl"
+            style={{ background: "var(--sidebar-primary)", color: "var(--sidebar-primary-foreground)" }}
+          >
             <ShieldCheck size={24} />
           </div>
           <h1 className="text-2xl font-semibold text-white">Set a new password</h1>

@@ -204,13 +204,13 @@ function AddAccountModal({ role, onAdd, onClose }) {
                 <div className="flex items-center gap-1.5">
                   <div className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold"
                     style={{
-                      background: done ? "#10b981" : active ? "#f59e0b" : "var(--secondary)",
-                      color: done ? "#fff" : active ? "#0c0f16" : "var(--muted-foreground)",
+                      background: done ? "#10b981" : active ? "var(--primary)" : "var(--secondary)",
+                      color: done ? "#fff" : active ? "var(--primary-foreground)" : "var(--muted-foreground)",
                     }}>
                     {done ? <CheckCircle size={11} /> : s.id}
                   </div>
                   <span className="text-[11px] font-medium"
-                    style={{ color: done ? "#10b981" : active ? "#f59e0b" : "var(--muted-foreground)" }}>
+                    style={{ color: done ? "#10b981" : active ? "var(--primary)" : "var(--muted-foreground)" }}>
                     {s.label}
                   </span>
                 </div>
@@ -245,7 +245,7 @@ function AddAccountModal({ role, onAdd, onClose }) {
                     style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
                   <button onClick={handleGenerateUsername} type="button"
                     className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-medium flex-shrink-0"
-                    style={{ background: "rgba(245,158,11,0.1)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.2)" }}>
+                    style={{ background: "rgba(11,84,113,0.1)", color: "var(--primary)", border: "1px solid rgba(11,84,113,0.2)" }}>
                     <Shuffle size={12} /> Generate
                   </button>
                 </div>
@@ -273,7 +273,7 @@ function AddAccountModal({ role, onAdd, onClose }) {
                     style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
                   <button onClick={handleSendCode} type="button" disabled={!form.email.trim() || sendingCode || form.emailVerified}
                     className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-medium flex-shrink-0 disabled:opacity-50"
-                    style={{ background: "rgba(245,158,11,0.1)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.2)" }}>
+                    style={{ background: "rgba(11,84,113,0.1)", color: "var(--primary)", border: "1px solid rgba(11,84,113,0.2)" }}>
                     {sendingCode ? <Loader2 size={12} className="animate-spin" /> : <Mail size={12} />}
                     {codeSent ? "Resend" : "Send code"}
                   </button>
@@ -281,8 +281,8 @@ function AddAccountModal({ role, onAdd, onClose }) {
               </div>
 
               {codeSent && !form.emailVerified && (
-                <div className="rounded-xl p-3.5 space-y-2" style={{ background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.2)" }}>
-                  <label className="block text-xs font-medium" style={{ color: "#f59e0b" }}>
+                <div className="rounded-xl p-3.5 space-y-2" style={{ background: "rgba(11,84,113,0.06)", border: "1px solid rgba(11,84,113,0.2)" }}>
+                  <label className="block text-xs font-medium" style={{ color: "var(--primary)" }}>
                     Verification code <span className="font-normal" style={{ color: "var(--muted-foreground)" }}>(check the inbox for {form.email})</span>
                   </label>
                   <div className="flex gap-2">
@@ -291,7 +291,7 @@ function AddAccountModal({ role, onAdd, onClose }) {
                       style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--foreground)", fontFamily: "'DM Mono', monospace" }} />
                     <button onClick={handleVerifyCode} type="button" disabled={!form.code.trim() || verifying}
                       className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-xs font-medium flex-shrink-0 disabled:opacity-50"
-                      style={{ background: "#f59e0b", color: "#0c0f16" }}>
+                      style={{ background: "var(--primary)", color: "var(--primary-foreground)" }}>
                       {verifying ? <Loader2 size={12} className="animate-spin" /> : "Verify"}
                     </button>
                   </div>
@@ -317,7 +317,7 @@ function AddAccountModal({ role, onAdd, onClose }) {
                     style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)", fontFamily: "'DM Mono', monospace" }} />
                   <button onClick={() => set("password", generatePassword())} type="button"
                     className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-medium flex-shrink-0"
-                    style={{ background: "rgba(245,158,11,0.1)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.2)" }}>
+                    style={{ background: "rgba(11,84,113,0.1)", color: "var(--primary)", border: "1px solid rgba(11,84,113,0.2)" }}>
                     <Shuffle size={12} /> Generate
                   </button>
                 </div>
@@ -359,8 +359,8 @@ function AddAccountModal({ role, onAdd, onClose }) {
               onClick={() => { setError(""); setStep((s) => s + 1); }}
               className="flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-medium transition-all"
               style={{
-                background: (step === 1 ? step1Valid : step2Valid) ? "#f59e0b" : "rgba(245,158,11,0.2)",
-                color: (step === 1 ? step1Valid : step2Valid) ? "#0c0f16" : "rgba(245,158,11,0.4)",
+                background: (step === 1 ? step1Valid : step2Valid) ? "var(--primary)" : "rgba(245,158,11,0.2)",
+                color: (step === 1 ? step1Valid : step2Valid) ? "var(--primary-foreground)" : "rgba(245,158,11,0.4)",
                 cursor: (step === 1 ? step1Valid : step2Valid) ? "pointer" : "not-allowed",
               }}>
               Next <ChevronRight size={14} />
@@ -371,8 +371,8 @@ function AddAccountModal({ role, onAdd, onClose }) {
               onClick={handleSubmit}
               className="flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-medium transition-all"
               style={{
-                background: step3Valid ? "rgba(245,158,11,0.2)" : "rgba(245,158,11,0.05)",
-                color: step3Valid ? "#f59e0b" : "rgba(245,158,11,0.4)",
+                background: step3Valid ? "var(--primary)" : "rgba(245,158,11,0.05)",
+                color: step3Valid ? "var(--primary-foreground)" : "rgba(245,158,11,0.4)",
                 cursor: step3Valid && !submitting ? "pointer" : "not-allowed",
               }}>
               {submitting ? <Loader2 size={13} className="animate-spin" /> : <UserPlus size={13} />}
@@ -572,15 +572,12 @@ export function OfficersPage() {
         style={{ borderBottom: "1px solid var(--border)" }}>
         <div className="flex items-center gap-3">
           <h1 className="text-xl font-bold" style={{ color: "var(--foreground)" }}>Officers</h1>
-          <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>
-            {officers.filter((o) => o.status !== "off-duty").length} on duty · {officers.length} total
-          </span>
         </div>
         <div className="relative">
           <button
             onClick={() => setAddMenuOpen((v) => !v)}
             className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
-            style={{ background: "rgba(245,158,11,0.12)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.2)" }}
+            style={{ background: "rgba(11,84,113,0.12)", color: "var(--primary)", border: "1px solid rgba(11,84,113,0.2)" }}
           >
             <UserPlus size={12} /> Add Personnel
             <ChevronDown size={12} style={{ transform: addMenuOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
@@ -601,7 +598,7 @@ export function OfficersPage() {
                     onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
                   >
                     <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
-                      style={{ background: "rgba(245,158,11,0.12)", color: "#f59e0b" }}>
+                      style={{ background: "rgba(11,84,113,0.12)", color: "var(--primary)" }}>
                       <opt.icon size={15} />
                     </div>
                     <div className="min-w-0">
@@ -641,9 +638,9 @@ export function OfficersPage() {
               onClick={() => setFilterStatus(s)}
               className="px-3 py-1 text-xs font-medium rounded-full transition-all capitalize"
               style={{
-                background: filterStatus === s ? (s === "all" ? "#f59e0b" : statusConfig[s]?.bg ?? "rgba(245,158,11,0.1)") : "var(--secondary)",
-                color:      filterStatus === s ? (s === "all" ? "#0c0f16" : statusConfig[s]?.color ?? "#f59e0b") : "var(--muted-foreground)",
-                border:     `1px solid ${filterStatus === s ? (s === "all" ? "#f59e0b" : (statusConfig[s]?.color ?? "#f59e0b") + "40") : "var(--border)"}`,
+                background: filterStatus === s ? (s === "all" ? "var(--primary)" : statusConfig[s]?.bg ?? "rgba(245,158,11,0.1)") : "var(--secondary)",
+                color:      filterStatus === s ? (s === "all" ? "var(--primary-foreground)" : statusConfig[s]?.color ?? "#f59e0b") : "var(--muted-foreground)",
+                border:     `1px solid ${filterStatus === s ? (s === "all" ? "var(--primary)" : (statusConfig[s]?.color ?? "#f59e0b") + "40") : "var(--border)"}`,
               }}
             >
               {s === "all" ? "All" : s.replace("-", " ")}
@@ -766,8 +763,8 @@ export function OfficersPage() {
           <h2 className="text-sm font-semibold text-white">Dispatchers</h2>
           <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>{dispatchers.length} total</span>
         </div>
-        <div className="rounded-xl flex-shrink-0" style={{ border: "1px solid var(--border)" }}>
-          <div className="grid px-4 py-2.5 text-[11px] font-semibold"
+        <div className="rounded-xl overflow-hidden flex-shrink-0" style={{ border: "1px solid var(--border)" }}>
+          <div className="grid px-4 py-2.5 text-[11px] font-semibold rounded-t-xl"
             style={{ gridTemplateColumns: "2fr 2fr 1fr", color: "var(--muted-foreground)", background: "var(--card)", borderBottom: "1px solid var(--border)" }}>
             <span>Name</span>
             <span>Email</span>
