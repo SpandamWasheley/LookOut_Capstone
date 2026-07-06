@@ -236,11 +236,13 @@
 /* Outside any @layer so it beats Tailwind utilities — makes text-white theme-aware */
 html:not(.dark) .text-white { color: var(--foreground); }
 
-/* ── Global button hover — teal accent on every button inside the tab content ──
+/* ── Global button hover — darken + lift on every button inside the tab content ──
    Scoped to <main> so the sidebar (<aside>) keeps its own hover behavior.
-   !important + outside @layer so it beats inline style={{ color }} on buttons. */
-main button { transition: color 0.15s ease; }
-main button:not(:disabled):hover { color: rgb(14, 124, 134) !important; }
+   Hovering darkens the button's own color (brightness < 1) and animates a slight
+   lift, instead of recoloring the label text. */
+main button { transition: filter 0.15s ease, transform 0.15s ease; }
+main button:not(:disabled):hover { filter: brightness(0.92); transform: translateY(-1px); }
+main button:not(:disabled):active { filter: brightness(0.85); transform: translateY(0); }
 
 /* ── Native time-input clock picker — white in dark mode ──────────────────────
    The browser's ::-webkit-calendar-picker-indicator is dark by default and

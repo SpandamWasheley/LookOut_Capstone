@@ -77,7 +77,7 @@ function StepHousehold({ form, onChange }) {
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2 mb-2">
-        <Home size={15} style={{ color: "#f59e0b" }} />
+        <Home size={15} style={{ color: "var(--primary)" }} />
         <span className="text-sm font-semibold text-white">Household details</span>
         <span className="text-xs ml-1" style={{ color: "var(--muted-foreground)" }}>Step 1 of 4</span>
       </div>
@@ -158,7 +158,7 @@ function StepMembers({ familyName, members, onChange }) {
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2 mb-2">
-        <Users size={15} style={{ color: "#f59e0b" }} />
+        <Users size={15} style={{ color: "var(--primary)" }} />
         <span className="text-sm font-semibold text-white">Add family members</span>
         <span className="text-xs ml-1" style={{ color: "var(--muted-foreground)" }}>Step 2 of 4 · {familyName} household</span>
       </div>
@@ -185,7 +185,7 @@ function StepMembers({ familyName, members, onChange }) {
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-[13px] font-medium text-white">{m.firstName} {m.lastName}</span>
                   {minor && (
-                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: "rgba(245,158,11,0.15)", color: "#f59e0b" }}>
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: "rgba(11,84,113,0.15)", color: "var(--primary)" }}>
                       Minor
                     </span>
                   )}
@@ -263,8 +263,8 @@ function StepMembers({ familyName, members, onChange }) {
               disabled={!adding.firstName.trim() || !adding.lastName.trim() || !adding.birthdate}
               className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-medium transition-all"
               style={{
-                background: adding.firstName && adding.lastName && adding.birthdate ? "var(--primary)" : "rgba(245,158,11,0.2)",
-                color: adding.firstName && adding.lastName && adding.birthdate ? "var(--primary-foreground)" : "rgba(245,158,11,0.4)",
+                background: adding.firstName && adding.lastName && adding.birthdate ? "var(--primary)" : "rgba(11,84,113,0.2)",
+                color: adding.firstName && adding.lastName && adding.birthdate ? "var(--primary-foreground)" : "rgba(133,183,214,0.4)",
               }}>
               <Plus size={11} /> Add member
             </button>
@@ -274,7 +274,7 @@ function StepMembers({ familyName, members, onChange }) {
         <button
           onClick={() => { setAdding(emptyMember()); setShowForm(true); }}
           className="w-full flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all"
-          style={{ background: "transparent", color: "var(--muted-foreground)", border: "1px dashed var(--border)" }}
+          style={{ background: "transparent", color: "#f59e0b", border: "1px dashed #f59e0b" }}
         >
           <Plus size={13} /> Add another member
         </button>
@@ -688,7 +688,7 @@ export function AddHouseholdModal({ nextHouseholdId, onSave, onClose }) {
     >
       <div
         className="w-full max-w-2xl rounded-2xl overflow-hidden shadow-2xl flex flex-col"
-        style={{ background: "var(--card)", border: "1px solid var(--border)", maxHeight: "92vh" }}
+        style={{ background: "var(--card)", border: "1px solid var(--border)", height: "min(720px, 92vh)" }}
       >
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 flex-shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
@@ -705,7 +705,7 @@ export function AddHouseholdModal({ nextHouseholdId, onSave, onClose }) {
         <StepBar step={step} />
 
         {/* Body */}
-        <div className="flex-1 overflow-y-auto px-6 py-5">
+        <div className="flex-1 overflow-y-auto scrollbar-visible px-6 py-5">
           {step === 1 && <StepHousehold form={form} onChange={setForm} />}
           {step === 2 && <StepMembers familyName={form.familyName} members={members} onChange={setMembers} />}
           {step === 3 && <StepGuardians members={members} links={guardianLinks} onChange={setGuardianLinks} extLinks={extLinks} onExtChange={setExtLinks} />}

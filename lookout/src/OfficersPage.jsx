@@ -577,7 +577,7 @@ export function OfficersPage() {
           <button
             onClick={() => setAddMenuOpen((v) => !v)}
             className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
-            style={{ background: "rgba(11,84,113,0.12)", color: "var(--primary)", border: "1px solid rgba(11,84,113,0.2)" }}
+            style={{ background: "var(--primary)", color: "var(--primary-foreground)" }}
           >
             <UserPlus size={12} /> Add Personnel
             <ChevronDown size={12} style={{ transform: addMenuOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />

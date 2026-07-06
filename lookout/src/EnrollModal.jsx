@@ -147,7 +147,7 @@ export function EnrollModal({ onClose, onEnroll }) {
         enrolledDate: new Date().toISOString().slice(0, 10),
         imageUrl: photos.front.preview ?? selected.imageUrl ?? "",
       });
-    }, 3000);
+    }, 3600);
   };
 
   const steps = [
@@ -157,6 +157,55 @@ export function EnrollModal({ onClose, onEnroll }) {
     { id: "done",       label: "Done" },
   ];
   const stepOrder = ["select", "photo", "processing", "done"];
+
+  // Once enrollment finishes, pop out a dedicated success modal.
+  if (step === "done" && selected) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+        style={{ background: "rgba(0,0,0,0.78)", backdropFilter: "blur(8px)" }}
+        onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+        <div className="w-full max-w-sm rounded-2xl overflow-hidden shadow-2xl"
+          style={{ background: "var(--card)", border: "1px solid var(--border)" }}
+          onClick={(e) => e.stopPropagation()}>
+          <div className="flex flex-col items-center text-center px-6 pt-7 pb-5 gap-4">
+            <div className="w-14 h-14 rounded-full flex items-center justify-center"
+              style={{ background: "rgba(16,185,129,0.12)", border: "2px solid rgba(16,185,129,0.3)" }}>
+              <CheckCircle size={26} style={{ color: "#10b981" }} />
+            </div>
+            <div>
+              <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Enrollment complete</div>
+              <div className="text-[12px] mt-1" style={{ color: "var(--muted-foreground)" }}>
+                {selected.firstName} {selected.lastName} has been enrolled.
+              </div>
+            </div>
+            <div className="w-full rounded-xl p-3.5 space-y-1.5 text-left"
+              style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
+              {[
+                ["Name",      `${selected.lastName}, ${selected.firstName}`],
+                ["Household", selected.householdName],
+                ["BRG ID",    selected.barangayId],
+                ["Age",       `${selected.age} years old`],
+                ["Status",    "Pending verification"],
+                ["Photos",    "Front · Right · Left (3 angles)"],
+                ["Embedding", "insightface · 512-d fused · stored locally"],
+              ].map(([k, v]) => (
+                <div key={k} className="flex justify-between text-[11px]">
+                  <span style={{ color: "var(--muted-foreground)" }}>{k}</span>
+                  <span style={{ color: "var(--muted-foreground)", fontFamily: k === "BRG ID" || k === "Embedding" ? "'DM Mono', monospace" : undefined }}>{v}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="px-6 pb-6">
+            <button onClick={onClose} className="w-full py-2.5 rounded-xl text-sm font-medium"
+              style={{ background: "#10b981", color: "#fff" }}>
+              Done
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
@@ -170,8 +219,8 @@ export function EnrollModal({ onClose, onEnroll }) {
           style={{ borderBottom: "1px solid var(--border)" }}>
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-lg flex items-center justify-center"
-              style={{ background: "rgba(245,158,11,0.12)" }}>
-              <UserPlus size={15} style={{ color: "#f59e0b" }} />
+              style={{ background: "rgba(11,84,113,0.12)" }}>
+              <UserPlus size={15} style={{ color: "var(--primary)" }} />
             </div>
             <div>
               <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Enroll Resident</div>
@@ -380,7 +429,7 @@ export function EnrollModal({ onClose, onEnroll }) {
                   {selected.firstName} {selected.lastName}
                 </div>
                 <p className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>
-                  Upload all three angles for accurate ArcFace embedding.
+                  Upload all three angles for accurate insightface embedding.
                 </p>
               </div>
 
@@ -510,50 +559,17 @@ export function EnrollModal({ onClose, onEnroll }) {
               )}
               <div className="text-center space-y-1.5">
                 <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Generating embeddings…</div>
-                <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>DeepFace · ArcFace backend</div>
+                <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>insightface · buffalo_l backend</div>
               </div>
               <div className="w-full space-y-2">
                 {[
-                  { label: "Detecting landmarks on 3 angles",    delay: 0    },
-                  { label: "Normalizing face regions",           delay: 500  },
-                  { label: "Generating 512-d ArcFace embedding", delay: 1000 },
-                  { label: "Fusing multi-angle embeddings",      delay: 1500 },
-                  { label: "Saving to local database",           delay: 2000 },
+                  { label: "Detecting face — SCRFD (buffalo_l)",        delay: 0    },
+                  { label: "Aligning to 112×112 face template",         delay: 700  },
+                  { label: "Extracting 512-d insightface embedding ×3", delay: 1400 },
+                  { label: "Fusing & L2-normalizing embeddings",        delay: 2100 },
+                  { label: "Writing entry to face_db.json",             delay: 2800 },
                 ].map((item, i) => (
                   <ProcessingStep key={i} label={item.label} delayMs={item.delay} />
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* ── Step 4: Done ── */}
-          {step === "done" && selected && (
-            <div className="flex flex-col items-center justify-center py-6 gap-4 text-center">
-              <div className="w-14 h-14 rounded-full flex items-center justify-center"
-                style={{ background: "rgba(16,185,129,0.12)", border: "2px solid rgba(16,185,129,0.3)" }}>
-                <CheckCircle size={26} style={{ color: "#10b981" }} />
-              </div>
-              <div>
-                <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Enrollment complete</div>
-                <div className="text-[12px] mt-1" style={{ color: "var(--muted-foreground)" }}>
-                  {selected.firstName} {selected.lastName} has been enrolled.
-                </div>
-              </div>
-              <div className="w-full rounded-xl p-3.5 space-y-1.5 text-left"
-                style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-                {[
-                  ["Name",      `${selected.lastName}, ${selected.firstName}`],
-                  ["Household", selected.householdName],
-                  ["BRG ID",    selected.barangayId],
-                  ["Age",       `${selected.age} years old`],
-                  ["Status",    "Pending verification"],
-                  ["Photos",    "Front · Right · Left (3 angles)"],
-                  ["Embedding", "ArcFace · 512-d fused · stored locally"],
-                ].map(([k, v]) => (
-                  <div key={k} className="flex justify-between text-[11px]">
-                    <span style={{ color: "var(--muted-foreground)" }}>{k}</span>
-                    <span style={{ color: "var(--muted-foreground)", fontFamily: k === "BRG ID" || k === "Embedding" ? "'DM Mono', monospace" : undefined }}>{v}</span>
-                  </div>
                 ))}
               </div>
             </div>
@@ -601,12 +617,6 @@ export function EnrollModal({ onClose, onEnroll }) {
                 {allPhotosReady ? "Generate embedding" : "Upload all 3 photos"}
               </button>
             </>
-          )}
-          {step === "done" && (
-            <button onClick={onClose} className="w-full py-2.5 rounded-xl text-sm font-medium"
-              style={{ background: "#10b981", color: "#fff" }}>
-              Done
-            </button>
           )}
         </div>
       </div>

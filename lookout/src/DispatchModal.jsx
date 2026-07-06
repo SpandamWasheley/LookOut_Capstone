@@ -85,7 +85,7 @@ export function DispatchModal({ alert, officers, alerts, onAssign, onClose }) {
         {/* Tip */}
         <div className="px-5 pt-3 pb-1">
           <div className="flex items-center gap-1.5 text-[11px]" style={{ color: "var(--muted-foreground)" }}>
-            <AlertTriangle size={10} style={{ color: "#f59e0b" }} />
+            <AlertTriangle size={10} style={{ color: "#ef4444" }} />
             You can select multiple officers to respond to this violation.
           </div>
         </div>
@@ -115,8 +115,8 @@ export function DispatchModal({ alert, officers, alerts, onAssign, onClose }) {
                 <div
                   className="w-5 h-5 rounded-md flex items-center justify-center flex-shrink-0 transition-all"
                   style={{
-                    background: isChecked ? "#f59e0b" : "transparent",
-                    border: `1px solid ${isChecked ? "#f59e0b" : "rgba(255,255,255,0.15)"}`,
+                    background: isChecked ? "#f59e0b" : "var(--card)",
+                    border: `2px solid ${isChecked ? "#f59e0b" : "var(--muted-foreground)"}`,
                   }}
                 >
                   {isChecked && <Check size={11} color="#0c0f16" strokeWidth={2.5} />}
