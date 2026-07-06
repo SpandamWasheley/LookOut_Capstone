@@ -790,7 +790,7 @@ export function ResidentDatabase() {
         <div className="flex items-center gap-2">
           <button onClick={() => setShowAddHH(true)}
             className="flex items-center gap-2.5 px-4 py-1.5 rounded-lg text-xs font-medium transition-all"
-            style={{ background: "var(--secondary)", color: "var(--foreground)", border: "1px solid var(--border)" }}>
+            style={{ background: "var(--primary)", color: "var(--primary-foreground)" }}>
             <Home size={12} /> Add household
           </button>
           <button onClick={() => setShowEnroll(true)}

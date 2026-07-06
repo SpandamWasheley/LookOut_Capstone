@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import {
-  Search, AlertTriangle, CheckCircle, Clock, MapPin,
-  User,
+  Search, AlertTriangle, CheckCircle,
+  User, Play, X,
 } from "lucide-react";
 import { getResidents, getAlerts, getHouseholds } from "./api";
 import { VIOLATION_CONFIG } from "../data/mockData";
@@ -83,13 +83,6 @@ const STATUS_COLOR = {
   pending:  "#e0972a",
   flagged:  "#ef4e32",
   active:   "#ef4e32",
-};
-
-const ALERT_STATUS_CFG = {
-  active:       { label: "active",     color: "#ef4e32", bg: "rgba(239,78,50,.15)" },
-  dispatched:   { label: "dispatched", color: "#2e7dd6", bg: "rgba(46,125,214,.15)" },
-  acknowledged: { label: "dismissed",  color: "#6e7a78", bg: "rgba(110,122,120,.15)" },
-  resolved:     { label: "resolved",   color: "#34a86b", bg: "rgba(52,168,107,.15)" },
 };
 
 // ── Avatar ────────────────────────────────────────────────────────────────────
@@ -200,25 +193,153 @@ function PersonRow({ person, violations, onSelect, selected }) {
   );
 }
 
+// ── Violation clip (simulated CCTV player over the evidence still) ─────────────
+function ClipPlayer({ src, camera, timestamp }) {
+  const [playing, setPlaying] = useState(false);
+
+  if (!src) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-1 py-8"
+        style={{ borderTop: "1px solid var(--border)", background: "#000" }}>
+        <span className="text-[10px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+          No clip available
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative w-full aspect-video bg-black overflow-hidden"
+      style={{ borderTop: "1px solid var(--border)" }}>
+      <img src={src} alt="Violation clip"
+        className="absolute inset-0 w-full h-full object-cover transition-all duration-300"
+        style={{ opacity: playing ? 0.85 : 0.55, filter: playing ? "none" : "grayscale(25%)" }} />
+      {/* scanlines */}
+      <div className="absolute inset-0 pointer-events-none" style={{
+        backgroundImage: "repeating-linear-gradient(0deg, transparent, transparent 3px, rgba(0,0,0,0.06) 3px, rgba(0,0,0,0.06) 4px)",
+      }} />
+      {/* top overlay */}
+      <div className="absolute top-0 left-0 right-0 px-2 py-1.5 flex items-center justify-between"
+        style={{ background: "linear-gradient(to bottom, rgba(0,0,0,0.72), transparent)" }}>
+        <span className="text-[9px] font-medium px-1.5 py-0.5 rounded"
+          style={{ background: "rgba(239,68,68,0.85)", color: "#fff", fontFamily: "'DM Mono', monospace" }}>
+          ● REC
+        </span>
+        {camera && (
+          <span className="text-[9px]" style={{ color: "rgba(255,255,255,0.75)", fontFamily: "'DM Mono', monospace" }}>
+            {camera}
+          </span>
+        )}
+      </div>
+      {/* timestamp */}
+      <span className="absolute bottom-1.5 left-2 text-[9px]"
+        style={{ color: "rgba(255,255,255,0.75)", fontFamily: "'DM Mono', monospace" }}>
+        {fmtDate(timestamp)} {fmtTime(timestamp)}
+      </span>
+      {/* play / pause */}
+      <button onClick={() => setPlaying((p) => !p)}
+        className="absolute inset-0 flex items-center justify-center group">
+        {!playing && (
+          <div className="w-11 h-11 rounded-full flex items-center justify-center transition-all group-hover:scale-110"
+            style={{ background: "rgba(245,158,11,0.9)", boxShadow: "0 0 22px rgba(245,158,11,0.35)" }}>
+            <Play size={18} color="#0c0f16" fill="#0c0f16" style={{ marginLeft: 2 }} />
+          </div>
+        )}
+      </button>
+    </div>
+  );
+}
+
+// ── Full violation history modal (opened from "View all") ─────────────────────
+const CLIP_RETENTION_DAYS = 30;
+
+function ViolationHistoryModal({ person, violations, onClose }) {
+  const [openClipId, setOpenClipId] = useState(null);
+  const sorted = [...violations].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+  const [now] = useState(() => Date.now());
+  const isExpired = (ts) => (now - new Date(ts).getTime()) > CLIP_RETENTION_DAYS * 86400000;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: "rgba(0,0,0,0.75)", backdropFilter: "blur(6px)" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="w-full max-w-md rounded-2xl overflow-hidden shadow-2xl flex flex-col"
+        style={{ background: "var(--card)", border: "1px solid var(--border)", maxHeight: "85vh" }}>
+        {/* Header */}
+        <div className="flex items-start justify-between px-5 py-4 flex-shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
+          <div>
+            <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>
+              Violation History — {person.name}
+            </div>
+            <div className="text-[11px] mt-0.5" style={{ color: "var(--muted-foreground)" }}>
+              {violations.length} record{violations.length !== 1 ? "s" : ""} · Clips retained for {CLIP_RETENTION_DAYS} days
+            </div>
+          </div>
+          <button onClick={onClose}
+            className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0"
+            style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}>
+            <X size={14} />
+          </button>
+        </div>
+
+        {/* List */}
+        <div className="flex-1 overflow-y-auto scrollbar-visible">
+          {sorted.map((v) => {
+            const code = typeof v.type === "object" ? v.type?.code : v.type;
+            const vcfg = VIOLATION_CONFIG[code] ?? { label: code ?? "Violation", color: "#6e7a78", icon: AlertTriangle };
+            const vid = v.code ?? v.id;
+            const expired = isExpired(v.timestamp);
+            const isOpen = openClipId === vid;
+            const cameraName = v.camera
+              ? (typeof v.camera === "object" ? v.camera.name : v.camera)
+              : v.cameraZone ?? null;
+            return (
+              <div key={vid} style={{ borderBottom: "1px solid var(--border)" }}>
+                <div className="flex items-center gap-3 px-5 py-3">
+                  {/* Type-colored initial */}
+                  <div className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold flex-shrink-0"
+                    style={{ background: `${vcfg.color}22`, color: vcfg.color }}>
+                    {vcfg.label[0]}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[13px] font-semibold truncate" style={{ color: "var(--foreground)" }}>{vcfg.label}</div>
+                    <div className="text-[11px] mt-0.5" style={{ color: "var(--muted-foreground)" }}>
+                      {fmtDate(v.timestamp)} · {fmtTime(v.timestamp)}
+                    </div>
+                  </div>
+                  {expired ? (
+                    <span className="text-[11px] flex-shrink-0" style={{ color: "var(--muted-foreground)" }}>Clip expired</span>
+                  ) : (
+                    <button
+                      onClick={() => setOpenClipId(isOpen ? null : vid)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold flex-shrink-0 transition-all"
+                      style={{ background: "var(--sidebar)", color: "#fff" }}
+                    >
+                      <Play size={11} color="#fff" fill="#fff" /> {isOpen ? "Hide clip" : "Play clip"}
+                    </button>
+                  )}
+                </div>
+                {isOpen && !expired && <ClipPlayer src={v.image_url} camera={cameraName} timestamp={v.timestamp} />}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Violation detail panel ────────────────────────────────────────────────────
 function ViolationPanel({ person, violations }) {
-  const typeBreakdown = Object.entries(VIOLATION_CONFIG)
-    .map(([code, cfg]) => ({
-      code, cfg,
-      count: violations.filter((v) => {
-        const vc = typeof v.type === "object" ? v.type?.code : v.type;
-        return vc === code;
-      }).length,
-    }))
-    .filter((b) => b.count > 0);
+  const [openClipId, setOpenClipId] = useState(null);
+  const [showModal, setShowModal] = useState(false);
+  const totalCount = violations.length;
 
-  const stats = [
-    { label: "Total violations", value: violations.length,
-      color: violations.length === 0 ? "#34a86b" : "#ef4e32" },
-    { label: "Resolved",  value: violations.filter((v) => v.status === "resolved").length,   color: "#34a86b" },
-    { label: "Active",    value: violations.filter((v) => v.status === "active").length,     color: "#ef4e32" },
-    { label: "Dismissed", value: violations.filter((v) => v.status === "acknowledged").length, color: "#6e7a78" },
-  ];
+  const VISIBLE_LIMIT = 4;
+  const sortedViolations = [...violations].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+  const shownViolations = sortedViolations.slice(0, VISIBLE_LIMIT);
 
   return (
     <div className="flex flex-col h-full">
@@ -246,45 +367,31 @@ function ViolationPanel({ person, violations }) {
         </div>
       </div>
 
-      {/* Stats 2×2 */}
-      <div className="grid grid-cols-2 gap-2 mb-4">
-        {stats.map((s) => (
-          <div key={s.label} className="rounded-lg p-3 text-center"
-            style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-            <div className="text-xl font-bold leading-none" style={{ color: s.color }}>{s.value}</div>
-            <div className="text-[10px] mt-1" style={{ color: "var(--muted-foreground)" }}>{s.label}</div>
-          </div>
-        ))}
+      {/* Total violations */}
+      <div className="rounded-lg p-3 text-center mb-4"
+        style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
+        <div className="text-xl font-bold leading-none" style={{ color: totalCount === 0 ? "#34a86b" : "#ef4e32" }}>
+          {totalCount}
+        </div>
+        <div className="text-[10px] mt-1" style={{ color: "var(--muted-foreground)" }}>Total violations</div>
       </div>
 
-      {/* By type */}
-      {typeBreakdown.length > 0 && (
-        <div className="mb-4">
-          <div className="text-[10px] font-semibold tracking-widest uppercase mb-2"
-            style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
-            By type
-          </div>
-          <div className="space-y-1.5">
-            {typeBreakdown.map(({ code, cfg, count }) => {
-              const VIcon = cfg.icon;
-              return (
-                <div key={code} className="flex items-center gap-2.5 px-3 py-2 rounded-lg"
-                  style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-                  <VIcon size={13} style={{ color: cfg.color, flexShrink: 0 }} />
-                  <span className="text-[12px] flex-1" style={{ color: "var(--foreground)" }}>{cfg.label}</span>
-                  <span className="text-[11px] font-bold" style={{ color: cfg.color, fontFamily: "'DM Mono', monospace" }}>{count}</span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
       {/* Violation history */}
-      <div className="flex-1 overflow-y-auto">
-        <div className="text-[10px] font-semibold tracking-widest uppercase mb-2"
-          style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
-          Violation history
+      <div className="flex-1 overflow-y-auto scrollbar-visible pr-2">
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-[10px] font-semibold tracking-widest uppercase"
+            style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+            Violation history
+          </div>
+          {violations.length > VISIBLE_LIMIT && (
+            <button
+              onClick={() => setShowModal(true)}
+              className="text-[10px] font-semibold transition-colors flex-shrink-0"
+              style={{ color: "var(--primary)" }}
+            >
+              View all ({violations.length})
+            </button>
+          )}
         </div>
         {violations.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-8 gap-2">
@@ -294,52 +401,44 @@ function ViolationPanel({ person, violations }) {
           </div>
         ) : (
           <div className="space-y-2">
-            {[...violations]
-              .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-              .map((v) => {
+            {shownViolations.map((v) => {
                 const code = typeof v.type === "object" ? v.type?.code : v.type;
                 const vcfg = VIOLATION_CONFIG[code] ?? { label: code ?? "Violation", color: "#6e7a78", icon: AlertTriangle };
                 const VIcon = vcfg.icon;
-                const scfg = ALERT_STATUS_CFG[v.status] ?? ALERT_STATUS_CFG.acknowledged;
+                const vid = v.code ?? v.id;
+                const isOpen = openClipId === vid;
                 const cameraName = v.camera
                   ? (typeof v.camera === "object" ? v.camera.name : v.camera)
                   : v.cameraZone ?? null;
                 return (
-                  <div key={v.code ?? v.id} className="rounded-xl overflow-hidden"
+                  <div key={vid} className="rounded-xl overflow-hidden"
                     style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-                    {v.image_url && (
-                      <img src={v.image_url} alt="Evidence"
-                        className="w-full h-16 object-cover"
-                        style={{ borderBottom: "1px solid var(--border)" }} />
-                    )}
-                    <div className="flex items-start gap-3 p-3">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <VIcon size={12} style={{ color: vcfg.color, flexShrink: 0 }} />
-                          <span className="text-[12px] font-medium flex-1" style={{ color: "var(--foreground)" }}>{vcfg.label}</span>
-                          <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full flex-shrink-0"
-                            style={{ background: scfg.bg, color: scfg.color }}>
-                            {scfg.label}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-3 mt-1 text-[10px]" style={{ color: "var(--muted-foreground)" }}>
-                          {cameraName && (
-                            <span className="flex items-center gap-1">
-                              <MapPin size={8} /> {cameraName}
-                            </span>
-                          )}
-                          <span className="flex items-center gap-1">
-                            <Clock size={8} /> {fmtDate(v.timestamp)} {fmtTime(v.timestamp)}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
+                    {/* Title — click to reveal the violation clip */}
+                    <button
+                      onClick={() => setOpenClipId(isOpen ? null : vid)}
+                      className="w-full flex items-center gap-2 px-3 py-2.5 text-left transition-colors"
+                    >
+                      <VIcon size={13} style={{ color: vcfg.color, flexShrink: 0 }} />
+                      <span className="text-[12px] font-medium flex-1 min-w-0 truncate" style={{ color: "var(--foreground)" }}>
+                        {vcfg.label}
+                      </span>
+                      <span className="text-[10px] flex-shrink-0" style={{ color: "var(--muted-foreground)" }}>
+                        {fmtDate(v.timestamp)}
+                      </span>
+                    </button>
+
+                    {/* Only the video clip is shown when expanded */}
+                    {isOpen && <ClipPlayer src={v.image_url} camera={cameraName} timestamp={v.timestamp} />}
                   </div>
                 );
               })}
           </div>
         )}
       </div>
+
+      {showModal && (
+        <ViolationHistoryModal person={person} violations={violations} onClose={() => setShowModal(false)} />
+      )}
     </div>
   );
 }
@@ -517,7 +616,7 @@ export function ResidentLog() {
           style={{ borderLeft: "1px solid var(--border)" }}
         >
           {selected ? (
-            <ViolationPanel person={selected} violations={selectedViolations} />
+            <ViolationPanel key={selected.id} person={selected} violations={selectedViolations} />
           ) : (
             <div className="flex flex-col items-center justify-center h-full gap-3 text-center">
               <AlertTriangle size={28} style={{ color: "var(--muted-foreground)" }} />

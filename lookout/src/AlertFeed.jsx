@@ -156,7 +156,7 @@ function DismissModal({ alert, onConfirm, onClose }) {
 }
 
 // ── Alert card ────────────────────────────────────────────────────────────────
-function AlertCard({ alert, onView }) {
+function AlertCard({ alert, onView, thin = false }) {
   const vcfg = VIOLATION_CONFIG[alert.type] ?? { label: alert.type, color: "#f59e0b", icon: AlertTriangle };
   const VIcon = vcfg.icon;
   const scfg = statusConfig[alert.status] ?? statusConfig.acknowledged;
@@ -165,56 +165,93 @@ function AlertCard({ alert, onView }) {
   return (
     <div
       onClick={onView}
-      className="rounded-2xl cursor-pointer transition-all duration-150 mb-3 overflow-hidden flex group"
+      className={`group rounded-2xl cursor-pointer transition-all duration-150 overflow-hidden flex ${thin ? "mb-2" : "mb-3"}`}
       style={{ background: "var(--card)", border: "1px solid var(--border)" }}
       onMouseEnter={(e) => { e.currentTarget.style.borderColor = `${vcfg.color}50`; }}
       onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border)"; }}
     >
       {/* Left color stripe */}
-      <div className="w-1.5 flex-shrink-0" style={{ background: vcfg.color }} />
-      <div className="flex items-center gap-3.5 px-4 py-3.5 flex-1 min-w-0">
+      <div className={`flex-shrink-0 ${thin ? "w-1.5" : "w-1 rounded-l-2xl"}`} style={{ background: vcfg.color }} />
+      <div className={`flex items-center flex-1 min-w-0 ${thin ? "gap-2.5 px-3 py-1" : "gap-3.5 px-4 py-3.5"}`}>
         {/* Icon box */}
-        <div className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0"
+        <div className={`rounded-lg flex items-center justify-center flex-shrink-0 ${thin ? "w-7 h-7" : "w-11 h-11"}`}
           style={{ background: `${vcfg.color}18` }}>
-          <VIcon size={20} color={vcfg.color} />
+          <VIcon size={thin ? 13 : 20} color={vcfg.color} />
         </div>
 
-        {/* Left content */}
-        <div className="flex-1 min-w-0">
-          {/* Row 1: title + status dot */}
-          <div className="flex items-center gap-2 flex-wrap mb-1">
-            <span className="text-[14px] font-semibold" style={{ color: "var(--foreground)" }}>
-              {vcfg.label}
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="w-1.5 h-1.5 rounded-full" style={{ background: scfg.color }} />
-              <span className="text-[12px] font-medium" style={{ color: scfg.color }}>{scfg.label}</span>
-            </span>
-          </div>
-          {/* Row 2: reported time + optional officers */}
-          <div className="flex items-center gap-2 text-[11px]" style={{ color: "var(--muted-foreground)" }}>
-            <span className="flex items-center gap-1"><Clock size={11} /> Reported {formatTime(alert.timestamp)}</span>
-            {officerCount > 0 && (
-              <span className="flex items-center gap-1" style={{ color: "#3b82f6" }}>
-                · <Radio size={10} /> {officerCount} officer{officerCount !== 1 ? "s" : ""}
+        {thin ? (
+          <>
+            {/* Left content */}
+            <div className="flex-1 min-w-0">
+              {/* Row 1: title + status dot */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[13px] font-semibold" style={{ color: "var(--foreground)" }}>
+                  {vcfg.label}
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full" style={{ background: scfg.color }} />
+                  <span className="text-[11px] font-medium" style={{ color: scfg.color }}>{scfg.label}</span>
+                </span>
+              </div>
+              {/* Row 2: reported time + optional officers */}
+              <div className="flex items-center gap-2 text-[10px]" style={{ color: "var(--muted-foreground)" }}>
+                <span className="flex items-center gap-1"><Clock size={11} /> Reported {formatTime(alert.timestamp)}</span>
+                {officerCount > 0 && (
+                  <span className="flex items-center gap-1" style={{ color: "#3b82f6" }}>
+                    · <Radio size={10} /> {officerCount} officer{officerCount !== 1 ? "s" : ""}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Right: match % + chevron */}
+            <div className="flex items-center gap-2.5 flex-shrink-0">
+              <div className="flex flex-col items-end leading-none">
+                <span className="text-[8px] font-semibold uppercase tracking-wider" style={{ color: "var(--muted-foreground)" }}>
+                  Match
+                </span>
+                <span className="text-[13px] font-bold mt-0.5" style={{ color: vcfg.color }}>
+                  {(alert.confidence * 100).toFixed(0)}%
+                </span>
+              </div>
+              <ChevronRight size={16} className="transition-transform duration-150 group-hover:translate-x-0.5"
+                style={{ color: "var(--muted-foreground)" }} />
+            </div>
+          </>
+        ) : (
+          <>
+            {/* Left content */}
+            <div className="flex-1 min-w-0">
+              {/* Row 1: title + status */}
+              <div className="flex items-center gap-2 flex-wrap mb-1">
+                <span className="text-[14px] font-semibold" style={{ color: "var(--foreground)" }}>
+                  {vcfg.label}
+                </span>
+                <span className="text-[11px] font-medium px-2 py-0.5 rounded-full"
+                  style={{ background: scfg.bg, color: scfg.color }}>
+                  {scfg.label}
+                </span>
+              </div>
+              {/* Row 2: time */}
+              <div className="flex items-center gap-3 text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+                <span className="flex items-center gap-1"><Clock size={9} /> {formatTime(alert.timestamp)}</span>
+              </div>
+            </div>
+
+            {/* Right: confidence + officer count */}
+            <div className="flex flex-col items-end gap-1 flex-shrink-0">
+              <span className="text-[11px] font-medium" style={{ color: vcfg.color }}>
+                {(alert.confidence * 100).toFixed(0)}% conf
               </span>
-            )}
-          </div>
-        </div>
-
-        {/* Right: match % + chevron */}
-        <div className="flex items-center gap-2.5 flex-shrink-0">
-          <div className="flex flex-col items-end leading-none">
-            <span className="text-[9px] font-semibold uppercase tracking-wider" style={{ color: "var(--muted-foreground)" }}>
-              Match
-            </span>
-            <span className="text-[15px] font-bold mt-1" style={{ color: vcfg.color }}>
-              {(alert.confidence * 100).toFixed(0)}%
-            </span>
-          </div>
-          <ChevronRight size={16} className="transition-transform duration-150 group-hover:translate-x-0.5"
-            style={{ color: "var(--muted-foreground)" }} />
-        </div>
+              {officerCount > 0 && (
+                <span className="flex items-center gap-1 text-[11px] font-medium" style={{ color: "#3b82f6" }}>
+                  <Radio size={9} />
+                  {`${officerCount} officer${officerCount !== 1 ? "s" : ""}`}
+                </span>
+              )}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -346,12 +383,12 @@ function RightPanel({ alerts, cameras }) {
             <span className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>No active violations</span>
           </div>
         ) : (
-          <div className="scrollbar-visible alertfeed-scroll flex flex-col gap-3 overflow-y-auto flex-1 min-h-0 pr-2">
+          <div className="scrollbar-visible flex flex-col gap-2 overflow-y-auto flex-1 min-h-0">
             {recentAlerts.slice(0, 5).map((a) => {
               const vcfg = VIOLATION_CONFIG[a.type] ?? { label: a.type, color: "#ef4444", icon: AlertTriangle };
               const scfg = statusConfig[a.status] ?? statusConfig.active;
               return (
-                <div key={a.id} className="rounded-lg p-3 flex-shrink-0"
+                <div key={a.id} className="rounded-lg p-2.5 flex-shrink-0"
                   style={{ background: "var(--secondary)", borderLeft: `3px solid ${vcfg.color}`, border: "1px solid var(--border)" }}>
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-[12px] font-semibold truncate pr-1" style={{ color: "var(--foreground)" }}>{vcfg.label}</span>
@@ -565,7 +602,7 @@ export function AlertFeed({ showFilters = false, user }) {
             <div className="text-xs" style={{ color: "var(--muted-foreground)" }}>All zones clear</div>
           </div>
         ) : (
-          visible.map((a) => <AlertCard key={a.id} alert={a} onView={() => setSelectedAlert(a)} />)
+          visible.map((a) => <AlertCard key={a.id} alert={a} onView={() => setSelectedAlert(a)} thin />)
         )}
         {modals}
       </div>
