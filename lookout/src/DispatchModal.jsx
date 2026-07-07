@@ -19,6 +19,12 @@ export function DispatchModal({ alert, officers, alerts, onAssign, onClose }) {
   const [selected, setSelected] = useState(alert.officersAssignedIds ?? []);
   const [confirming, setConfirming] = useState(false);
 
+  // Saving with zero officers selected is allowed — it clears any assignment
+  // and returns the alert to "active". Editing an already-dispatched alert is
+  // also a plain "Save" (no dispatch confirmation needed).
+  const alreadyDispatched = alert.status === "dispatched";
+  const isSave = selected.length === 0 || alreadyDispatched;
+
   const toggle = (id) => {
     setSelected((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
@@ -222,18 +228,20 @@ export function DispatchModal({ alert, officers, alerts, onAssign, onClose }) {
               </span>
             )}
             <button
-              disabled={selected.length === 0}
-              onClick={() => selected.length > 0 && setConfirming(true)}
+              onClick={() => {
+                if (isSave) onAssign(selected);
+                else setConfirming(true);
+              }}
               className="flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-medium transition-all"
               style={{
-                background: selected.length > 0 ? "rgba(245,158,11,0.2)" : "rgba(245,158,11,0.05)",
-                color: selected.length > 0 ? "#f59e0b" : "rgba(245,158,11,0.4)",
-                cursor: selected.length > 0 ? "pointer" : "not-allowed",
+                background: "rgba(245,158,11,0.2)",
+                color: "#f59e0b",
+                cursor: "pointer",
               }}
             >
-              <Radio size={13} />
-              {selected.length === 0
-                ? "Select officers"
+              {isSave ? <Check size={13} /> : <Radio size={13} />}
+              {isSave
+                ? "Save"
                 : selected.length === 1
                 ? "Dispatch officer"
                 : `Dispatch ${selected.length} officers`}

@@ -1192,9 +1192,9 @@ export function ViolationModal({
                               <div className="absolute top-1/2 -translate-y-1/2 w-[2px] h-4 rounded-full"
                                 style={{ left: "75%", background: "var(--foreground)" }} />
                             </div>
-                            <div className="flex justify-end mt-1 relative">
-                              <span className="absolute text-[9px]" style={{ left: "73%", color: "var(--muted-foreground)" }}>threshold</span>
-                              <span className="text-[10px] font-semibold" style={{ color: accentColor }}>{dBFS} dBFS</span>
+                            <div className="flex items-center justify-between mt-1 relative">
+                              <span className="absolute text-[9px] -translate-x-1/2 whitespace-nowrap" style={{ left: "75%", color: "var(--muted-foreground)" }}>threshold</span>
+                              <span className="ml-auto text-[10px] font-semibold" style={{ color: accentColor }}>{dBFS} dBFS</span>
                             </div>
                           </div>
                         </div>
@@ -1442,6 +1442,22 @@ export function ViolationModal({
                 </div>
               </div>
             </div>
+
+            {/* Dismissal reason — full-width block below the description */}
+            {alert.status === "acknowledged" && (
+              <div className="flex items-start gap-2.5 w-full rounded-lg px-4 py-3"
+                style={{ border: "1px solid rgba(239,68,68,0.25)", background: "rgba(239,68,68,0.06)" }}>
+                <X size={15} style={{ color: "#ef4444", flexShrink: 0, marginTop: 1 }} />
+                <div className="flex-1 min-w-0">
+                  <div className="text-[10px] font-semibold uppercase tracking-wider mb-1" style={{ color: "#ef4444" }}>
+                    Dismissal reason
+                  </div>
+                  <p className="text-[12px] leading-relaxed" style={{ color: "var(--foreground)" }}>
+                    {alert.notes || "No reason provided."}
+                  </p>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Footer actions */}
@@ -1477,7 +1493,7 @@ export function ViolationModal({
                   <button
                     onClick={onDismiss}
                     className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all"
-                    style={{ background: "rgba(100,116,139,0.22)", color: "#94a3b8", border: "1px solid rgba(100,116,139,0.45)" }}>
+                    style={{ background: "rgba(239,68,68,0.15)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.4)" }}>
                     <X size={14} /> Dismiss
                   </button>
                   <button
@@ -1491,6 +1507,12 @@ export function ViolationModal({
               )}
               {alert.status === "dispatched" && (
                 <>
+                  <button
+                    onClick={onDismiss}
+                    className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all"
+                    style={{ background: "rgba(239,68,68,0.15)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.4)" }}>
+                    <X size={14} /> Dismiss
+                  </button>
                   <button
                     onClick={onDispatch}
                     className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all"

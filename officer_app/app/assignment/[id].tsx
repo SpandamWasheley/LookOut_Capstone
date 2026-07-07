@@ -713,6 +713,17 @@ export default function AssignmentDetailScreen() {
           </View>
         </View>
 
+        {/* Dismissal reason — shown when the assignment was dismissed */}
+        {assignment.status === "acknowledged" && !!assignment.notes && (
+          <View style={[styles.card, { backgroundColor: c.dangerLight, borderColor: c.destructive }]}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <Feather name="x-circle" size={15} color={c.destructive} />
+              <Text style={[styles.cardLabel, { color: c.destructive }]}>DISMISSAL REASON</Text>
+            </View>
+            <Text style={[styles.description, { color: c.foreground, fontSize: 14 }]}>{assignment.notes}</Text>
+          </View>
+        )}
+
         {/* Recording — evidence clip captured at the moment of detection */}
         {!!assignment.imageUrl && (
           <RecordingPlayer
