@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Bell, Clock, AlertTriangle, Radio, CheckCircle, X, Camera as CameraIcon, Moon, Sun, Sunset, Filter, ChevronDown, ChevronRight } from "lucide-react";
 import { VIOLATION_CONFIG } from "../data/mockData";
 import { ViolationModal } from "./ViolationModal";
@@ -29,7 +29,7 @@ function mapOfficer(raw) {
 }
 
 function formatTime(ts) {
-  return new Date(ts).toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit", hour12: false });
+  return new Date(ts).toLocaleTimeString("en-PH", { hour: "numeric", minute: "2-digit", hour12: true });
 }
 
 const statusConfig = {
@@ -104,8 +104,14 @@ function DismissModal({ alert, onConfirm, onClose }) {
                     value={r}
                     checked={reason === r}
                     onChange={() => setReason(r)}
-                    style={{ accentColor: "#f59e0b" }}
+                    className="sr-only"
                   />
+                  <span
+                    className="w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0"
+                    style={{ border: `2px solid ${reason === r ? "#f59e0b" : "var(--muted-foreground)"}` }}
+                  >
+                    {reason === r && <span className="w-2 h-2 rounded-full" style={{ background: "#f59e0b" }} />}
+                  </span>
                   <span className="text-[12px]"
                     style={{ color: reason === r ? "var(--foreground)" : "var(--muted-foreground)" }}>
                     {r}
@@ -141,9 +147,9 @@ function DismissModal({ alert, onConfirm, onClose }) {
             onClick={() => reason && onConfirm(reason, notes)}
             className="px-5 py-2 rounded-xl text-sm font-medium transition-all"
             style={{
-              background: reason ? "rgba(100,116,139,0.2)" : "rgba(100,116,139,0.08)",
-              color: "var(--muted-foreground)",
-              border: `1px solid ${reason ? "rgba(100,116,139,0.3)" : "var(--border)"}`,
+              background: reason ? "rgba(16,185,129,0.15)" : "rgba(100,116,139,0.08)",
+              color: reason ? "#10b981" : "var(--muted-foreground)",
+              border: `1px solid ${reason ? "rgba(16,185,129,0.4)" : "var(--border)"}`,
               cursor: reason ? "pointer" : "not-allowed",
             }}
           >
@@ -165,18 +171,19 @@ function AlertCard({ alert, onView, thin = false }) {
   return (
     <div
       onClick={onView}
-      className={`group rounded-2xl cursor-pointer transition-all duration-150 overflow-hidden flex ${thin ? "mb-2" : "mb-3"}`}
+      data-alert-card
+      className={`group rounded-2xl cursor-pointer transition-all duration-150 overflow-hidden flex ${thin ? "mb-1.5" : "mb-3"} min-h-[56px]`}
       style={{ background: "var(--card)", border: "1px solid var(--border)" }}
       onMouseEnter={(e) => { e.currentTarget.style.borderColor = `${vcfg.color}50`; }}
       onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border)"; }}
     >
       {/* Left color stripe */}
-      <div className={`flex-shrink-0 ${thin ? "w-1.5" : "w-1 rounded-l-2xl"}`} style={{ background: vcfg.color }} />
-      <div className={`flex items-center flex-1 min-w-0 ${thin ? "gap-2.5 px-3 py-1" : "gap-3.5 px-4 py-3.5"}`}>
+      <div className="flex-shrink-0 w-1 rounded-l-2xl" style={{ background: vcfg.color }} />
+      <div className="flex items-center flex-1 min-w-0 gap-2.5 px-3.5 py-2">
         {/* Icon box */}
-        <div className={`rounded-lg flex items-center justify-center flex-shrink-0 ${thin ? "w-7 h-7" : "w-11 h-11"}`}
+        <div className="rounded-lg flex items-center justify-center flex-shrink-0 w-8 h-8"
           style={{ background: `${vcfg.color}18` }}>
-          <VIcon size={thin ? 13 : 20} color={vcfg.color} />
+          <VIcon size={14} color={vcfg.color} />
         </div>
 
         {thin ? (
@@ -204,16 +211,8 @@ function AlertCard({ alert, onView, thin = false }) {
               </div>
             </div>
 
-            {/* Right: match % + chevron */}
+            {/* Right: chevron */}
             <div className="flex items-center gap-2.5 flex-shrink-0">
-              <div className="flex flex-col items-end leading-none">
-                <span className="text-[8px] font-semibold uppercase tracking-wider" style={{ color: "var(--muted-foreground)" }}>
-                  Match
-                </span>
-                <span className="text-[13px] font-bold mt-0.5" style={{ color: vcfg.color }}>
-                  {(alert.confidence * 100).toFixed(0)}%
-                </span>
-              </div>
               <ChevronRight size={16} className="transition-transform duration-150 group-hover:translate-x-0.5"
                 style={{ color: "var(--muted-foreground)" }} />
             </div>
@@ -223,8 +222,8 @@ function AlertCard({ alert, onView, thin = false }) {
             {/* Left content */}
             <div className="flex-1 min-w-0">
               {/* Row 1: title + status */}
-              <div className="flex items-center gap-2 flex-wrap mb-1">
-                <span className="text-[14px] font-semibold" style={{ color: "var(--foreground)" }}>
+              <div className="flex items-center gap-2 flex-wrap mb-0.5">
+                <span className="text-[13px] font-semibold" style={{ color: "var(--foreground)" }}>
                   {vcfg.label}
                 </span>
                 <span className="text-[11px] font-medium px-2 py-0.5 rounded-full"
@@ -429,6 +428,12 @@ export function AlertFeed({ showFilters = false, user }) {
   const [typeMenuOpen, setTypeMenuOpen] = useState(false);
   const [actionError, setActionError] = useState("");
   const [toast, setToast] = useState(null);
+  // Compact (overview) panel: fit as many cards as the space allows; the rest collapse
+  // into a "…more" row that opens a modal listing every recent violation.
+  const compactListRef = useRef(null);
+  const [compactMax, setCompactMax] = useState(Infinity);
+  const [compactMaxH, setCompactMaxH] = useState(null);
+  const [showAllRecent, setShowAllRecent] = useState(false);
 
   const showToast = (msg) => {
     setToast(msg);
@@ -436,13 +441,76 @@ export function AlertFeed({ showFilters = false, user }) {
   };
 
   const ongoing = alerts.filter((a) => a.status === "active" || a.status === "dispatched");
-  const visible = ongoing.filter((a) => {
+  const filtered = ongoing.filter((a) => {
     if (typeFilter.size > 0 && !typeFilter.has(a.type)) return false;
     if (!showFilters) return a.status === "active";
     if (statusFilter === "active")     return a.status === "active";
     if (statusFilter === "dispatched") return a.status === "dispatched";
     return true;
   });
+  // Alerts tab only: active violations first, dispatched below; newest first within each group.
+  // The compact overview panel keeps its original ordering untouched.
+  const visible = showFilters
+    ? [...filtered].sort((a, b) => {
+        const rank = (s) => (s === "active" ? 0 : 1);
+        if (rank(a.status) !== rank(b.status)) return rank(a.status) - rank(b.status);
+        return new Date(b.timestamp) - new Date(a.timestamp);
+      })
+    : filtered;
+
+  // Responsive fit for the compact overview panel: measure the available height and a
+  // real card, then show as many as fit. Re-measures on container/window resize.
+  useLayoutEffect(() => {
+    if (showFilters) return;
+    const el = compactListRef.current;
+    if (!el) return;
+
+    const parent = el.parentElement;
+    if (!parent) return;
+
+    const recompute = () => {
+      const card = el.querySelector("[data-alert-card]");
+      if (!card) return;
+      const cs = window.getComputedStyle(card);
+      const cardH = card.offsetHeight
+        + parseFloat(cs.marginTop || "0")
+        + parseFloat(cs.marginBottom || "0");
+      if (cardH <= 0) return;
+
+      // Measure the available height from the STABLE parent, not from `el` itself:
+      // we pin `el`'s maxHeight below, so reading `el`'s own height would feed back
+      // and shrink the count on every pass. Distance from the list's top to the
+      // bottom of the parent's content box = the room the list actually has.
+      const parentH = parent.clientHeight;
+      const offsetTop = el.getBoundingClientRect().top - parent.getBoundingClientRect().top;
+      const containerH = parentH - offsetTop;
+      if (containerH <= 0) return;
+
+      // Show as many cards as fit; overflow collapses into the "…more" row. Pin the
+      // list to the exact content height so no gap trails after the last row.
+      const fitAll = Math.floor(containerH / cardH);
+      if (visible.length <= fitAll) {
+        setCompactMax(visible.length);
+        setCompactMaxH(visible.length * cardH);
+      } else {
+        const MORE_ROW_H = 34; // the "…more" row
+        const shown = Math.max(1, Math.floor((containerH - MORE_ROW_H) / cardH));
+        setCompactMax(shown);
+        setCompactMaxH(shown * cardH + MORE_ROW_H);
+      }
+    };
+
+    recompute();
+    // Observe the parent (its size is layout-driven and stable) rather than `el`,
+    // whose height we pin — observing `el` would just watch our own writes.
+    const ro = new ResizeObserver(recompute);
+    ro.observe(parent);
+    window.addEventListener("resize", recompute);
+    return () => { ro.disconnect(); window.removeEventListener("resize", recompute); };
+  }, [showFilters, visible.length]);
+
+  const compactShown = Number.isFinite(compactMax) ? compactMax : visible.length;
+  const compactHidden = Math.max(0, visible.length - compactShown);
 
   const toggleType = (type) => {
     setTypeFilter((prev) => {
@@ -587,7 +655,7 @@ export function AlertFeed({ showFilters = false, user }) {
   // ── Compact (dashboard embed) ──────────────────────────────────────────────
   if (!showFilters) {
     return (
-      <div className="relative">
+      <div className="relative h-full flex flex-col min-h-0">
         {toast && (
           <div className="fixed top-5 left-1/2 -translate-x-1/2 z-[70] flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium shadow-xl"
             style={{ background: "rgba(16,185,129,0.15)", border: "1px solid rgba(16,185,129,0.25)", color: "#10b981", backdropFilter: "blur(8px)" }}>
@@ -602,7 +670,62 @@ export function AlertFeed({ showFilters = false, user }) {
             <div className="text-xs" style={{ color: "var(--muted-foreground)" }}>All zones clear</div>
           </div>
         ) : (
-          visible.map((a) => <AlertCard key={a.id} alert={a} onView={() => setSelectedAlert(a)} thin />)
+          <div ref={compactListRef} className="flex-1 min-h-0 overflow-hidden flex flex-col"
+            style={compactMaxH ? { maxHeight: compactMaxH } : undefined}>
+            {visible.slice(0, compactShown).map((a) => (
+              <AlertCard key={a.id} alert={a} onView={() => setSelectedAlert(a)} thin />
+            ))}
+            {compactHidden > 0 && (
+              <button
+                onClick={() => setShowAllRecent(true)}
+                className="h-[34px] flex-shrink-0 flex items-center justify-center gap-1 text-[11px] font-semibold rounded-lg transition-colors"
+                style={{ color: "var(--primary)", background: "transparent" }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "var(--secondary)")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+              >
+                {compactHidden} more…
+              </button>
+            )}
+          </div>
+        )}
+
+        {showAllRecent && (
+          <div
+            className="fixed inset-0 z-[60] flex items-center justify-center p-4"
+            style={{ background: "rgba(0,0,0,0.8)", backdropFilter: "blur(8px)" }}
+            onClick={(e) => { if (e.target === e.currentTarget) setShowAllRecent(false); }}
+          >
+            <div className="w-full max-w-lg rounded-2xl overflow-hidden shadow-2xl flex flex-col"
+              style={{ background: "var(--card)", border: "1px solid var(--border)", maxHeight: "80vh" }}>
+              <div className="flex items-center justify-between px-5 py-4 flex-shrink-0"
+                style={{ borderBottom: "1px solid var(--border)" }}>
+                <div className="flex items-center gap-2">
+                  <AlertTriangle size={15} style={{ color: "#ef4444" }} />
+                  <span className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>
+                    Recent Violations
+                  </span>
+                  <span className="text-[11px] font-medium px-2 py-0.5 rounded-full"
+                    style={{ background: "rgba(239,68,68,0.12)", color: "#ef4444" }}>
+                    {visible.length}
+                  </span>
+                </div>
+                <button onClick={() => setShowAllRecent(false)} className="p-1.5 rounded-lg"
+                  style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}>
+                  <X size={14} />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto scrollbar-visible px-4 py-4">
+                {visible.map((a) => (
+                  <AlertCard
+                    key={a.id}
+                    alert={a}
+                    onView={() => { setShowAllRecent(false); setSelectedAlert(a); }}
+                    thin
+                  />
+                ))}
+              </div>
+            </div>
+          </div>
         )}
         {modals}
       </div>

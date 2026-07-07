@@ -166,7 +166,7 @@ export default function ProfileScreen() {
         </View>
 
         {profile && (
-          <View style={[styles.section, { backgroundColor: c.card, borderColor: c.border }]}>
+          <View style={[styles.section, { backgroundColor: c.card, borderColor: c.border, marginTop: 8 }]}>
             <Text style={[styles.sectionTitle, { color: c.mutedForeground }]}>DUTY STATUS</Text>
             <View style={styles.statusOptions}>
               {STATUS_OPTIONS.map((opt) => (
@@ -201,7 +201,7 @@ export default function ProfileScreen() {
           </View>
         )}
 
-        <View style={[styles.section, { backgroundColor: c.card, borderColor: c.border }]}>
+        <View style={[styles.section, { backgroundColor: c.card, borderColor: c.border, marginTop: 8 }]}>
           <Text style={[styles.sectionTitle, { color: c.mutedForeground }]}>DETAILS</Text>
           {[
             { icon: "mail" as const, label: "Email", value: authOfficer.username && profile?.email ? profile.email : "—" },
@@ -234,19 +234,19 @@ const styles = StyleSheet.create({
   root: { flex: 1 },
   header: { paddingHorizontal: 20, paddingBottom: 16, borderBottomWidth: 1 },
   title: { fontSize: 22, fontFamily: "Inter_700Bold" },
-  scroll: { paddingHorizontal: 16, paddingTop: 20, gap: 14 },
-  profileCard: { borderRadius: 16, borderWidth: 1, padding: 24, alignItems: "center", gap: 8 },
+  scroll: { paddingHorizontal: 20, paddingTop: 24, gap: 24 },
+  profileCard: { borderRadius: 16, borderWidth: 1, paddingHorizontal: 24, paddingVertical: 28, alignItems: "center", gap: 8 },
   avatar: { width: 72, height: 72, borderRadius: 36, alignItems: "center", justifyContent: "center", marginBottom: 4 },
   avatarText: { color: "#fff", fontSize: 24, fontFamily: "Inter_700Bold" },
   officerName: { fontSize: 20, fontFamily: "Inter_700Bold" },
   rank: { fontSize: 14, fontFamily: "Inter_400Regular" },
   badgePill: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 12, paddingVertical: 5, borderRadius: 20, marginTop: 4 },
   badgeNum: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
-  statsRow: { flexDirection: "row", gap: 10 },
-  statCard: { flex: 1, borderRadius: 12, borderWidth: 1, padding: 16, alignItems: "center", gap: 4 },
+  statsRow: { flexDirection: "row", gap: 10, marginTop: 8 },
+  statCard: { flex: 1, borderRadius: 12, borderWidth: 1, paddingHorizontal: 16, paddingVertical: 20, alignItems: "center", gap: 4 },
   statNum: { fontSize: 24, fontFamily: "Inter_700Bold" },
   statLabel: { fontSize: 12, fontFamily: "Inter_400Regular" },
-  section: { borderRadius: 16, borderWidth: 1, padding: 16, gap: 12 },
+  section: { borderRadius: 16, borderWidth: 1, paddingHorizontal: 16, paddingVertical: 20, gap: 12 },
   sectionTitle: { fontSize: 11, fontFamily: "Inter_600SemiBold", letterSpacing: 0.8 },
   statusOptions: { flexDirection: "row", gap: 8 },
   statusOpt: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 10, borderRadius: 10, borderWidth: 1 },
@@ -256,6 +256,6 @@ const styles = StyleSheet.create({
   detailText: { flex: 1 },
   detailLabel: { fontSize: 11, fontFamily: "Inter_400Regular", textTransform: "uppercase", letterSpacing: 0.5 },
   detailValue: { fontSize: 14, fontFamily: "Inter_500Medium", marginTop: 2 },
-  logoutBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 14, borderRadius: 12, borderWidth: 1, marginTop: 4 },
+  logoutBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 18, borderRadius: 12, borderWidth: 1, marginTop: 12 },
   logoutText: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
 });

@@ -149,7 +149,7 @@ function AdminDashboard({ user, onLogout }) {
             </div>
 
             {/* Main content */}
-            <div className="flex-1 overflow-hidden grid gap-4 px-6 pb-6" style={{ gridTemplateColumns: "1fr 340px" }}>
+            <div className="flex-1 overflow-hidden grid gap-4 px-6 pb-6" style={{ gridTemplateColumns: "1fr 340px", gridTemplateRows: "minmax(0, 1fr)" }}>
               {/* Camera feeds */}
               <div
                 className="flex flex-col min-h-0 rounded-xl overflow-hidden"
@@ -204,7 +204,7 @@ function AdminDashboard({ user, onLogout }) {
                     </span>
                   )}
                 </div>
-                <div className="flex-1 overflow-y-auto p-4">
+                <div className="flex-1 min-h-0 overflow-hidden p-4">
                   <AlertFeed compact user={user} />
                 </div>
               </div>

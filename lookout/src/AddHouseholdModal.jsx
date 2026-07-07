@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { X, Home, Users, Shield, FileText, Plus, CheckCircle, ChevronRight, Info, ChevronDown } from "lucide-react";
+import { X, Home, Users, Shield, FileText, Plus, CheckCircle, ChevronRight, Info } from "lucide-react";
 import { ZONES } from "../data/mockData";
 import { getResidents } from "./api";
 
@@ -261,7 +261,7 @@ function StepMembers({ familyName, members, onChange }) {
             <button
               onClick={addMember}
               disabled={!adding.firstName.trim() || !adding.lastName.trim() || !adding.birthdate}
-              className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-medium transition-all"
+              className="flex items-center justify-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-medium transition-all"
               style={{
                 background: adding.firstName && adding.lastName && adding.birthdate ? "var(--primary)" : "rgba(11,84,113,0.2)",
                 color: adding.firstName && adding.lastName && adding.birthdate ? "var(--primary-foreground)" : "rgba(133,183,214,0.4)",
@@ -273,7 +273,7 @@ function StepMembers({ familyName, members, onChange }) {
       ) : (
         <button
           onClick={() => { setAdding(emptyMember()); setShowForm(true); }}
-          className="w-full flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all"
+          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium transition-all"
           style={{ background: "transparent", color: "#f59e0b", border: "1px dashed #f59e0b" }}
         >
           <Plus size={13} /> Add another member
@@ -290,59 +290,77 @@ function StepMembers({ familyName, members, onChange }) {
   );
 }
 
-// ── Custom scrollable dropdown ────────────────────────────────────────────────
-function CustomSelect({ options, placeholder, onSelect, multi = false }) {
-  const [open, setOpen] = useState(false);
-
+// ── Guardian picker modal ─────────────────────────────────────────────────────
+function GuardianPickerModal({ title, subtitle, options, selectedValues, onToggle, onClose }) {
   return (
-    <div className="w-full">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-[12px]"
-        style={{
-          background: "var(--secondary)",
-          border: "1px solid var(--border)",
-          color: "var(--muted-foreground)",
-          borderRadius: open ? "8px 8px 0 0" : "8px",
-        }}
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center p-4"
+      style={{ background: "rgba(0,0,0,0.8)", backdropFilter: "blur(6px)" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div
+        className="w-full max-w-sm rounded-2xl overflow-hidden shadow-2xl flex flex-col"
+        style={{ background: "var(--card)", border: "1px solid var(--border)", maxHeight: "min(520px, 82vh)" }}
       >
-        <span>{placeholder}</span>
-        <ChevronDown
-          size={12}
-          style={{ color: "var(--muted-foreground)", flexShrink: 0, transform: open ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}
-        />
-      </button>
-      {open && (
-        <div
-          style={{
-            maxHeight: "150px",
-            overflowY: "scroll",
-            border: "1px solid var(--border)",
-            borderTop: "none",
-            borderRadius: "0 0 8px 8px",
-            background: "var(--card)",
-          }}
-        >
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 flex-shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
+          <div className="flex items-center gap-2.5">
+            <div className="w-7 h-7 rounded-md flex items-center justify-center" style={{ background: "rgba(245,158,11,0.15)" }}>
+              <Shield size={14} color="#f59e0b" />
+            </div>
+            <div>
+              <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>{title}</div>
+              {subtitle && <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>{subtitle}</div>}
+            </div>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg" style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}>
+            <X size={14} />
+          </button>
+        </div>
+
+        {/* List */}
+        <div className="flex-1 overflow-y-auto scrollbar-visible p-3 space-y-1.5">
           {options.length === 0 ? (
-            <div className="px-3 py-2 text-[11px]" style={{ color: "var(--muted-foreground)" }}>No options available</div>
+            <div className="px-3 py-8 text-center text-[12px]" style={{ color: "var(--muted-foreground)" }}>
+              No guardians available
+            </div>
           ) : (
-            options.map((opt) => (
-              <button
-                key={opt.value}
-                type="button"
-                onClick={() => { onSelect(opt.value, opt.label); if (!multi || options.length <= 1) setOpen(false); }}
-                className="w-full text-left px-3 py-2 text-[12px] transition-colors"
-                style={{ color: "var(--foreground)", borderBottom: "1px solid var(--border)" }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = "var(--secondary)")}
-                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-              >
-                {opt.label}
-              </button>
-            ))
+            options.map((opt) => {
+              const checked = selectedValues.includes(opt.value);
+              return (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => onToggle(opt.value, opt.label)}
+                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors text-left"
+                  style={{
+                    background: checked ? "rgba(245,158,11,0.1)" : "var(--secondary)",
+                    border: `1px solid ${checked ? "rgba(245,158,11,0.3)" : "var(--border)"}`,
+                  }}
+                >
+                  <div
+                    className="w-5 h-5 rounded flex items-center justify-center flex-shrink-0"
+                    style={{ background: checked ? "#f59e0b" : "transparent", border: `1px solid ${checked ? "#f59e0b" : "var(--border)"}` }}
+                  >
+                    {checked && <CheckCircle size={12} color="#fff" />}
+                  </div>
+                  <span className="text-[13px] font-medium" style={{ color: checked ? "#f59e0b" : "var(--foreground)" }}>
+                    {opt.label}
+                  </span>
+                </button>
+              );
+            })
           )}
         </div>
-      )}
+
+        {/* Footer */}
+        <div className="px-5 py-3.5 flex-shrink-0" style={{ borderTop: "1px solid var(--border)" }}>
+          <button onClick={onClose} className="w-full px-4 py-2 rounded-xl text-sm font-medium"
+            style={{ background: "var(--primary)", color: "var(--primary-foreground)" }}>
+            Done
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -353,6 +371,7 @@ function StepGuardians({ members, links, onChange, extLinks, onExtChange }) {
   const adults = members.filter((m) => !isMinor(m.birthdate));
   const [allResidents, setAllResidents] = useState([]);
   const [expandedGuardians, setExpandedGuardians] = useState(new Set());
+  const [pickerMinor, setPickerMinor] = useState(null);
 
   useEffect(() => {
     getResidents()
@@ -436,14 +455,29 @@ function StepGuardians({ members, links, onChange, extLinks, onExtChange }) {
                     </div>
                   ) : (
                     <>
-                      <CustomSelect
-                        placeholder="Choose a household member…"
-                        multi
-                        options={adults
-                          .filter((a) => !selected.includes(a.tempId))
-                          .map((a) => ({ value: a.tempId, label: `${a.firstName} ${a.lastName}` }))}
-                        onSelect={(val) => toggle(minor.tempId, val)}
-                      />
+                      <button
+                        type="button"
+                        onClick={() => setPickerMinor(minor.tempId)}
+                        className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-[12px]"
+                        style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--muted-foreground)" }}
+                      >
+                        <span>
+                          {selected.length > 0
+                            ? `${selected.length} guardian${selected.length !== 1 ? "s" : ""} selected`
+                            : "Choose a household member…"}
+                        </span>
+                        <ChevronRight size={12} style={{ color: "var(--muted-foreground)", flexShrink: 0 }} />
+                      </button>
+                      {pickerMinor === minor.tempId && (
+                        <GuardianPickerModal
+                          title="Choose guardian"
+                          subtitle={`For ${minor.firstName} ${minor.lastName}`}
+                          options={adults.map((a) => ({ value: a.tempId, label: `${a.firstName} ${a.lastName}` }))}
+                          selectedValues={selected}
+                          onToggle={(val) => toggle(minor.tempId, val)}
+                          onClose={() => setPickerMinor(null)}
+                        />
+                      )}
                       {selected.length > 0 && (() => {
                         const isExpanded = expandedGuardians.has(minor.tempId);
                         const visible = selected.length > 1 && !isExpanded ? selected.slice(0, 1) : selected;
@@ -688,7 +722,7 @@ export function AddHouseholdModal({ nextHouseholdId, onSave, onClose }) {
     >
       <div
         className="w-full max-w-2xl rounded-2xl overflow-hidden shadow-2xl flex flex-col"
-        style={{ background: "var(--card)", border: "1px solid var(--border)", height: "min(720px, 92vh)" }}
+        style={{ background: "var(--card)", border: "1px solid var(--border)", maxHeight: "92vh" }}
       >
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 flex-shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
@@ -738,7 +772,7 @@ export function AddHouseholdModal({ nextHouseholdId, onSave, onClose }) {
               <button
                 disabled={step === 1 ? !step1Valid : step === 2 ? !step2Valid : false}
                 onClick={() => setStep((s) => s + 1)}
-                className="flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-medium transition-all"
+                className="flex items-center justify-center gap-2 px-5 py-2 rounded-xl text-sm font-medium transition-all"
                 style={{
                   background: (step === 1 ? step1Valid : step === 2 ? step2Valid : true) ? "var(--primary)" : "rgba(11,84,113,0.2)",
                   color: (step === 1 ? step1Valid : step === 2 ? step2Valid : true) ? "var(--primary-foreground)" : "rgba(133,183,214,0.4)",
@@ -750,7 +784,7 @@ export function AddHouseholdModal({ nextHouseholdId, onSave, onClose }) {
             ) : (
               <button
                 onClick={handleSave}
-                className="flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-medium"
+                className="flex items-center justify-center gap-2 px-5 py-2 rounded-xl text-sm font-medium"
                 style={{ background: "var(--primary)", color: "var(--primary-foreground)" }}
               >
                 <Home size={13} /> Save household

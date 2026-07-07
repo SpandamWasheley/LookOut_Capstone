@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
-import { Maximize2, WifiOff, AlertTriangle } from "lucide-react";
-import { VIOLATION_CONFIG } from "../data/mockData";
+import { Maximize2, WifiOff } from "lucide-react";
 import { getAlerts, getCameras } from "./api";
 
 function timeAgo(iso) {
@@ -48,7 +47,6 @@ export function CameraGrid({ compact = false }) {
     <div className={`grid gap-3 ${compact ? "grid-cols-2" : "grid-cols-2 xl:grid-cols-2"}`}>
       {cameras.map((cam) => {
         const alert = getAlert(cam.id);
-        const vcfg = alert ? VIOLATION_CONFIG[alert.type] ?? { label: alert.type, color: "#f59e0b", icon: AlertTriangle } : null;
         const isSelected = selected === cam.id;
         return (
           <div
@@ -104,19 +102,6 @@ export function CameraGrid({ compact = false }) {
                 {cam.fps}fps
               </div>
 
-              {/* Alert banner */}
-              {alert && (
-                <div
-                  className="absolute bottom-0 left-0 right-0 px-2.5 py-2"
-                  style={{ background: "linear-gradient(to top, rgba(0,0,0,0.85), transparent)" }}
-                >
-                  <div className="flex items-center gap-1.5">
-                    <vcfg.icon size={12} color={vcfg.color} />
-                    <span className="text-[11px] font-medium" style={{ color: "#fff" }}>{vcfg.label}</span>
-                  </div>
-                </div>
-              )}
-
               {/* Expand on hover */}
               <div className="absolute bottom-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
                 <div className="p-1 rounded" style={{ background: "rgba(0,0,0,0.6)" }}>
@@ -134,14 +119,6 @@ export function CameraGrid({ compact = false }) {
                 </div>
               )}
 
-              {/* Degraded badge */}
-              {cam.status === "degraded" && (
-                <div className="absolute top-2 right-8 flex items-center gap-1 px-1.5 py-0.5 rounded"
-                  style={{ background: "rgba(245,158,11,0.8)" }}>
-                  <AlertTriangle size={8} className="text-black" />
-                  <span className="text-[9px] font-semibold text-black" style={{ fontFamily: "'DM Mono', monospace" }}>DEGRADED</span>
-                </div>
-              )}
             </div>
 
             {/* Footer */}
