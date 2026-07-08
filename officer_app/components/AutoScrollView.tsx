@@ -14,39 +14,37 @@ interface AutoScrollViewProps extends ScrollViewProps {
   children: React.ReactNode;
 }
 
-// Only renders a real ScrollView (with a scroll responder attached) once the
-// content is actually measured to be taller than the visible area. Below that
-// threshold it's a plain View — so there's no scroll gesture to drag into the
-// empty space below short content, instead of fighting RN's scrollEnabled /
-// bounces / overScrollMode flags, which don't reliably block that drag here.
+// Always renders a ScrollView, but only enables scrolling once the content is
+// actually taller than the visible area — so there's no scroll gesture to drag
+// into the empty space below short content.
+//
+// This intentionally does NOT swap between a View and a ScrollView based on the
+// measurement: doing so measured two differently-styled nodes (padded vs. not),
+// so when the content height sat near the viewport height the enabled/disabled
+// decision oscillated forever and flickered the whole screen. Toggling
+// `scrollEnabled` on a single, stable ScrollView avoids that entirely.
 export function AutoScrollView({ style, contentContainerStyle, children, ...rest }: AutoScrollViewProps) {
   const [containerHeight, setContainerHeight] = useState(0);
   const [contentHeight, setContentHeight] = useState(0);
-  const scrollEnabled = contentHeight > containerHeight && containerHeight > 0;
+  // +1 tolerance so sub-pixel rounding on content that exactly fills the
+  // viewport can't flip scrolling on and off.
+  const scrollEnabled = containerHeight > 0 && contentHeight > containerHeight + 1;
 
   const onOuterLayout = (e: LayoutChangeEvent) => {
     setContainerHeight(e.nativeEvent.layout.height);
   };
-  const onContentLayout = (e: LayoutChangeEvent) => {
-    setContentHeight(e.nativeEvent.layout.height);
-  };
 
   return (
-    <View style={[{ flex: 1 }, style]} onLayout={onOuterLayout}>
-      {scrollEnabled ? (
-        <ScrollView
-          style={{ flex: 1 }}
-          contentContainerStyle={contentContainerStyle}
-          showsVerticalScrollIndicator={false}
-          {...rest}
-        >
-          <View onLayout={onContentLayout}>{children}</View>
-        </ScrollView>
-      ) : (
-        <View style={contentContainerStyle} onLayout={onContentLayout}>
-          {children}
-        </View>
-      )}
-    </View>
+    <ScrollView
+      style={[{ flex: 1 }, style]}
+      contentContainerStyle={contentContainerStyle}
+      showsVerticalScrollIndicator={false}
+      onLayout={onOuterLayout}
+      onContentSizeChange={(_w, h) => setContentHeight(h)}
+      {...rest}
+      scrollEnabled={scrollEnabled}
+    >
+      {children}
+    </ScrollView>
   );
 }

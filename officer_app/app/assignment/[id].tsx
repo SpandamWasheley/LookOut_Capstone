@@ -2,7 +2,7 @@ import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { Image } from "expo-image";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -443,10 +443,14 @@ function RecordingPlayer({
   const pct = (elapsed / duration) * 100;
   const skip = (delta: number) => setElapsed((p) => Math.min(duration, Math.max(0, p + delta)));
 
+  // Stable source object so expo-image never treats a parent re-render as a
+  // source change (which would reload the image and flicker).
+  const imageSource = useMemo(() => ({ uri: imageUrl }), [imageUrl]);
+
   const content = (
     <>
       <View style={[rpStyles.imageBox, fullscreen && rpStyles.imageBoxFullscreen]}>
-        <Image source={{ uri: imageUrl }} style={[rpStyles.image, { opacity: playing ? 0.82 : 0.55 }]} contentFit="cover" />
+        <Image source={imageSource} style={[rpStyles.image, { opacity: playing ? 0.82 : 0.55 }]} contentFit="cover" />
         <View style={rpStyles.topOverlay}>
           <View style={rpStyles.recRow}>
             <View style={rpStyles.recBadge}>
