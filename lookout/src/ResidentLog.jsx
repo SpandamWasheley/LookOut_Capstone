@@ -454,11 +454,16 @@ export function ResidentLog() {
   const [filter, setFilter] = useState("all");
 
   useEffect(() => {
-    Promise.all([
-      getHouseholds().then((r) => r.results ?? r).catch(() => []),
-      getResidents().then((r) => r.results ?? r).catch(() => []),
-      getAlerts().then((r) => r.results ?? r).catch(() => []),
-    ]).then(([hh, res, al]) => {
+    let cancelled = false;
+
+    const fetchData = async () => {
+      const [hh, res, al] = await Promise.all([
+        getHouseholds().then((r) => r.results ?? r).catch(() => []),
+        getResidents().then((r) => r.results ?? r).catch(() => []),
+        getAlerts().then((r) => r.results ?? r).catch(() => []),
+      ]);
+      if (cancelled) return;
+
       // Map household API shape to expected shape
       const mappedHH = hh.map((h) => ({
         familyName: h.family_name ?? h.familyName,
@@ -488,7 +493,12 @@ export function ResidentLog() {
       setResidents(mappedRes);
       setAlerts(al);
       setLoading(false);
-    });
+    };
+
+    fetchData();
+    // Poll every 4s so new records / resolved violations appear without a refresh
+    const interval = setInterval(fetchData, 4000);
+    return () => { cancelled = true; clearInterval(interval); };
   }, []);
 
   const allPeople = buildTrackedPersons(households, residents);
