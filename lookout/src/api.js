@@ -82,6 +82,8 @@ export const createHouseholdMember = (payload) =>
   apiFetch("/household-members/", { method: "POST", body: JSON.stringify(payload) });
 export const updateHouseholdMember = (id, payload) =>
   apiFetch(`/household-members/${id}/`, { method: "PATCH", body: JSON.stringify(payload) });
+export const deleteHouseholdMember = (id) =>
+  apiFetch(`/household-members/${id}/`, { method: "DELETE" });
 
 export const getResidents = () => apiFetch("/residents/");
 export const createResident = (payload) =>

@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import {
   Search, UserPlus, CheckCircle, Clock, AlertTriangle,
-  Shield, User, X, Home, LayoutList, ChevronDown, ChevronUp, Plus, Save, Loader2, Phone,
+  Shield, User, X, Home, LayoutList, ChevronDown, ChevronUp, Plus, Save, Loader2, Phone, Trash2,
 } from "lucide-react";
 import { ZONES } from "../data/mockData";
 import {
   getHouseholds, createHousehold, updateHousehold,
-  createHouseholdMember, updateHouseholdMember,
+  createHouseholdMember, updateHouseholdMember, deleteHouseholdMember,
   getResidents, createResident,
 } from "./api";
 import { AddHouseholdModal } from "./AddHouseholdModal";
@@ -101,17 +101,35 @@ function fmtTime(ts) {
 }
 
 // ── Manage Household Modal ─────────────────────────────────────────────────────
-function ManageHouseholdModal({ household, onSave, onClose }) {
+function ManageHouseholdModal({ household, onSave, onDeleteMember, onClose }) {
   const [familyName, setFamilyName] = useState(household.familyName);
   const [purok,      setPurok]      = useState(household.purok);
   const [address,    setAddress]    = useState(household.address);
   const [zone,       setZone]       = useState(household.zone);
   const [contact,    setContact]    = useState(household.contact);
   const [saved, setSaved] = useState(false);
+  const [members, setMembers] = useState(household.members);
+  const [deletingId, setDeletingId] = useState(null);
+  const [confirmMember, setConfirmMember] = useState(null);
 
-  const secondaryContacts = household.members
+  const secondaryContacts = members
     .filter((m) => computeAge(m.birthdate) >= 18 && m.phone)
     .map((m) => ({ name: `${m.firstName} ${m.lastName}`, phone: m.phone }));
+
+  const confirmDeleteMember = async () => {
+    const member = confirmMember;
+    if (!member) return;
+    setDeletingId(member.dbId);
+    try {
+      await onDeleteMember(member.dbId);
+      setMembers((prev) => prev.filter((m) => m.dbId !== member.dbId));
+      setConfirmMember(null);
+    } catch {
+      /* onDeleteMember surfaces the error via alert */
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   const handleSave = () => {
     onSave({ ...household, familyName, purok, address, zone, contact });
@@ -225,18 +243,24 @@ function ManageHouseholdModal({ household, onSave, onClose }) {
           <div>
             <div className="text-[10px] font-semibold tracking-widest uppercase mb-3"
               style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
-              Members ({household.members.length})
+              Members ({members.length})
             </div>
             <div className="rounded-xl overflow-hidden" style={{ border: "1px solid var(--border)" }}>
-              {household.members.map((m, i) => {
+              {members.length === 0 && (
+                <div className="px-4 py-4 text-[11px] text-center" style={{ color: "var(--muted-foreground)" }}>
+                  No members in this household.
+                </div>
+              )}
+              {members.map((m, i) => {
                 const age = computeAge(m.birthdate);
                 const minor = age < 18;
                 const st = statusConfig[m.status];
+                const deleting = deletingId === m.dbId;
                 return (
                   <div
                     key={m.id}
                     className="flex items-center gap-3 px-4 py-2.5"
-                    style={{ borderBottom: i < household.members.length - 1 ? "1px solid var(--border)" : "none" }}
+                    style={{ borderBottom: i < members.length - 1 ? "1px solid var(--border)" : "none", opacity: deleting ? 0.5 : 1 }}
                   >
                     <div
                       className="w-7 h-7 rounded-lg flex items-center justify-center text-[10px] font-bold flex-shrink-0"
@@ -258,6 +282,15 @@ function ManageHouseholdModal({ household, onSave, onClose }) {
                       </div>
                     </div>
                     <span className="text-[11px] font-medium" style={{ color: st.color }}>{st.label}</span>
+                    <button
+                      onClick={() => setConfirmMember(m)}
+                      disabled={deleting}
+                      title="Remove member"
+                      className="p-1.5 rounded-lg flex-shrink-0 transition-colors"
+                      style={{ color: "#ef4444", background: "rgba(239,68,68,0.1)", cursor: deleting ? "not-allowed" : "pointer" }}
+                    >
+                      {deleting ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                    </button>
                   </div>
                 );
               })}
@@ -285,6 +318,53 @@ function ManageHouseholdModal({ household, onSave, onClose }) {
           </button>
         </div>
       </div>
+
+      {confirmMember && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center p-4"
+          style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)" }}
+          onClick={(e) => { if (e.target === e.currentTarget && !deletingId) setConfirmMember(null); }}
+        >
+          <div
+            className="w-full max-w-sm rounded-2xl overflow-hidden shadow-2xl"
+            style={{ background: "var(--card)", border: "1px solid var(--border)" }}
+          >
+            <div className="px-5 pt-5 pb-4 flex flex-col items-center text-center">
+              <div className="w-11 h-11 rounded-full flex items-center justify-center mb-3" style={{ background: "rgba(239,68,68,0.12)" }}>
+                <Trash2 size={18} style={{ color: "#ef4444" }} />
+              </div>
+              <div className="text-sm font-semibold mb-1" style={{ color: "var(--foreground)" }}>
+                Remove member?
+              </div>
+              <div className="text-[12px] leading-relaxed" style={{ color: "var(--muted-foreground)" }}>
+                Are you sure you want to delete{" "}
+                <span className="font-semibold" style={{ color: "var(--foreground)" }}>
+                  {confirmMember.firstName} {confirmMember.lastName}
+                </span>{" "}
+                from this household? This cannot be undone.
+              </div>
+            </div>
+            <div className="flex items-center gap-2 px-5 pb-5">
+              <button
+                onClick={() => setConfirmMember(null)}
+                disabled={!!deletingId}
+                className="flex-1 px-4 py-2 rounded-xl text-sm font-medium"
+                style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)", cursor: deletingId ? "not-allowed" : "pointer" }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDeleteMember}
+                disabled={!!deletingId}
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all"
+                style={{ background: "#ef4444", color: "#fff", cursor: deletingId ? "not-allowed" : "pointer" }}
+              >
+                {deletingId ? <><Loader2 size={13} className="animate-spin" /> Deleting…</> : <><Trash2 size={13} /> Delete</>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -772,6 +852,16 @@ export function ResidentDatabase() {
     }
   };
 
+  const handleDeleteMember = async (memberDbId) => {
+    try {
+      await deleteHouseholdMember(memberDbId);
+      await refreshHouseholds();
+    } catch (err) {
+      alert(`Failed to remove member: ${err.message}`);
+      throw err;
+    }
+  };
+
   return (
     <div className="flex flex-col h-full overflow-hidden">
       {/* Header */}
@@ -891,7 +981,7 @@ export function ResidentDatabase() {
 
       {showAddHH && <AddHouseholdModal nextHouseholdId="Auto-generated on save" onSave={handleAddHousehold} onClose={() => setShowAddHH(false)} />}
       {showEnroll && <EnrollModal onClose={() => setShowEnroll(false)} onEnroll={handleEnroll} />}
-      {managingHH && <ManageHouseholdModal household={managingHH} onSave={handleSaveHousehold} onClose={() => setManagingHH(null)} />}
+      {managingHH && <ManageHouseholdModal household={managingHH} onSave={handleSaveHousehold} onDeleteMember={handleDeleteMember} onClose={() => setManagingHH(null)} />}
     </div>
   );
 }
