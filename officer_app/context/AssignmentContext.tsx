@@ -80,7 +80,15 @@ export function AssignmentProvider({ children }: { children: React.ReactNode }) 
       const typesByCode = Object.fromEntries(
         types.map((t) => [t.code, { code: t.code, label: t.label, color: t.color, icon: t.icon }])
       );
-      setAssignments(alerts.map((a) => mapAlert(a, typesByCode)));
+      const next = alerts.map((a) => mapAlert(a, typesByCode));
+      // Only swap in a new array when the data actually changed. Every 4s poll
+      // otherwise produced fresh object references even when nothing moved,
+      // re-rendering every consumer and reloading the detail screen's evidence
+      // image — which read as a constant flicker. Returning the previous
+      // reference lets React bail out of the re-render entirely.
+      setAssignments((prev) =>
+        JSON.stringify(prev) === JSON.stringify(next) ? prev : next
+      );
       if (silent) setError("");
     } catch (err) {
       // Background polling fails silently (keeps showing the last good data);

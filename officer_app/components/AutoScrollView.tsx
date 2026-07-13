@@ -4,6 +4,7 @@ import {
   ScrollView,
   ScrollViewProps,
   StyleProp,
+  View,
   ViewStyle,
 } from "react-native";
 
@@ -13,33 +14,35 @@ interface AutoScrollViewProps extends ScrollViewProps {
   children: React.ReactNode;
 }
 
-// Keeps a single ScrollView mounted at all times and only toggles its
-// `scrollEnabled` prop once the content is measured to be taller than the
-// visible area. Swapping between a View and a ScrollView (the previous
-// approach) remounted the whole child subtree and, because the two branches
-// measured content height differently, could oscillate around the threshold —
-// which showed up as a flicker when opening a screen. `scrollEnabled={false}`
-// already fully blocks the scroll gesture on short content, so there's no need
-// to swap the component to stop the drag into empty space below.
+// Always renders a ScrollView, but only enables scrolling once the content is
+// actually taller than the visible area — so there's no scroll gesture to drag
+// into the empty space below short content.
+//
+// This intentionally does NOT swap between a View and a ScrollView based on the
+// measurement: doing so measured two differently-styled nodes (padded vs. not),
+// so when the content height sat near the viewport height the enabled/disabled
+// decision oscillated forever and flickered the whole screen. Toggling
+// `scrollEnabled` on a single, stable ScrollView avoids that entirely.
 export function AutoScrollView({ style, contentContainerStyle, children, ...rest }: AutoScrollViewProps) {
   const [containerHeight, setContainerHeight] = useState(0);
   const [contentHeight, setContentHeight] = useState(0);
-  // +1px epsilon so content that fits exactly doesn't jitter the flag.
+  // +1 tolerance so sub-pixel rounding on content that exactly fills the
+  // viewport can't flip scrolling on and off.
   const scrollEnabled = containerHeight > 0 && contentHeight > containerHeight + 1;
 
-  const onLayout = (e: LayoutChangeEvent) => {
+  const onOuterLayout = (e: LayoutChangeEvent) => {
     setContainerHeight(e.nativeEvent.layout.height);
   };
 
   return (
     <ScrollView
-      showsVerticalScrollIndicator={false}
-      {...rest}
       style={[{ flex: 1 }, style]}
       contentContainerStyle={contentContainerStyle}
-      scrollEnabled={scrollEnabled}
-      onLayout={onLayout}
+      showsVerticalScrollIndicator={false}
+      onLayout={onOuterLayout}
       onContentSizeChange={(_w, h) => setContentHeight(h)}
+      {...rest}
+      scrollEnabled={scrollEnabled}
     >
       {children}
     </ScrollView>

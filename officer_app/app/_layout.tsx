@@ -13,6 +13,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { AssignmentProvider } from "@/context/AssignmentContext";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
+import { useColors } from "@/hooks/useColors";
 
 SplashScreen.preventAutoHideAsync();
 
@@ -49,10 +50,15 @@ function NavigationGuard() {
 }
 
 function RootLayoutNav() {
+  const c = useColors();
   return (
     <>
       <NavigationGuard />
-      <Stack screenOptions={{ headerShown: false }}>
+      {/* contentStyle paints the scene background with the theme color so the
+          stack push/pop transition doesn't flash the default (white) background
+          before a screen renders — that flash read as a flicker when opening an
+          assignment, especially in dark mode. */}
+      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: c.background } }}>
         <Stack.Screen name="login" />
         <Stack.Screen name="forgot-password" />
         <Stack.Screen name="change-password" />
