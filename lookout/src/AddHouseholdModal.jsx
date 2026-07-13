@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react";
 import { X, Home, Users, Shield, FileText, Plus, CheckCircle, ChevronRight, Info } from "lucide-react";
-import { ZONES } from "../data/mockData";
 import { getResidents } from "./api";
 
 const formatPhone = (raw) => {
@@ -666,7 +665,7 @@ function StepReview({ form, members, links, nextId }) {
 // ── Main modal ────────────────────────────────────────────────────────────────
 export function AddHouseholdModal({ nextHouseholdId, onSave, onClose }) {
   const [step, setStep] = useState(1);
-  const [form, setForm] = useState({ familyName: "", address: "", zone: "", contact: "" });
+  const [form, setForm] = useState({ familyName: "", address: "", contact: "" });
   const [members, setMembers] = useState([]);
   const [guardianLinks, setGuardianLinks] = useState({});
   const [extLinks, setExtLinks] = useState({});
@@ -707,7 +706,6 @@ export function AddHouseholdModal({ nextHouseholdId, onSave, onClose }) {
     onSave({
       familyName: form.familyName,
       address: form.address,
-      zone: form.zone,
       contact: form.contact,
       members: builtMembers,
       guardianLinks: builtLinks,

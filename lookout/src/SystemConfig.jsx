@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Save, RotateCcw, Moon, Volume2, Trash2, AlertTriangle, Loader2 } from "lucide-react";
+import { Save, RotateCcw, Moon, Volume2, Trash2, Car, AlertTriangle, Loader2 } from "lucide-react";
 import { getSettings, saveSettings } from "./api";
 
 const trimSeconds = (t) => (t ? t.slice(0, 5) : t);
@@ -30,6 +30,10 @@ function fromApi(s) {
     wasteDwell: s.waste_dwell,
     wasteCollectionStart: trimSeconds(s.waste_collection_start),
     wasteCollectionEnd: trimSeconds(s.waste_collection_end),
+    parkingEnabled: s.parking_enabled,
+    parkingConf: s.parking_confidence,
+    parkingDwell: s.parking_dwell,
+    parkingMove: s.parking_move_tolerance,
     cooldown: s.alert_cooldown,
     retention: s.evidence_retention_days,
     autoDispatch: s.auto_dispatch,
@@ -55,6 +59,10 @@ function toApi(f) {
     waste_dwell: f.wasteDwell,
     waste_collection_start: f.wasteCollectionStart,
     waste_collection_end: f.wasteCollectionEnd,
+    parking_enabled: f.parkingEnabled,
+    parking_confidence: f.parkingConf,
+    parking_dwell: f.parkingDwell,
+    parking_move_tolerance: f.parkingMove,
     alert_cooldown: f.cooldown,
     evidence_retention_days: f.retention,
     auto_dispatch: f.autoDispatch,
@@ -67,6 +75,7 @@ const sections = [
   { id: "curfew", label: "Curfew", icon: Moon,    color: "#f59e0b" },
   { id: "noise",  label: "Noise",  icon: Volume2, color: "#a78bfa" },
   { id: "waste",  label: "Waste",  icon: Trash2,  color: "#84cc16" },
+  { id: "parking", label: "Parking", icon: Car,    color: "#ef4444" },
   // { id: "system", label: "System", icon: Clock,   color: "#3b82f6" },
 ];
 
@@ -228,6 +237,10 @@ export function SystemConfig() {
   const [wasteDwell, setWasteDwell] = useState(8);
   const [wasteCollectionStart, setWasteCollectionStart] = useState("06:00");
   const [wasteCollectionEnd, setWasteCollectionEnd] = useState("09:00");
+  const [parkingEnabled, setParkingEnabled] = useState(true);
+  const [parkingConf, setParkingConf] = useState(35);
+  const [parkingDwell, setParkingDwell] = useState(60);
+  const [parkingMove, setParkingMove] = useState(40);
   const [cooldown, setCooldown] = useState(120);
   const [retention, setRetention] = useState(30);
   const [autoDispatch, setAutoDispatch] = useState(false);
@@ -251,6 +264,10 @@ export function SystemConfig() {
     setWasteDwell(f.wasteDwell);
     setWasteCollectionStart(f.wasteCollectionStart);
     setWasteCollectionEnd(f.wasteCollectionEnd);
+    setParkingEnabled(f.parkingEnabled);
+    setParkingConf(f.parkingConf);
+    setParkingDwell(f.parkingDwell);
+    setParkingMove(f.parkingMove);
     setCooldown(f.cooldown);
     setRetention(f.retention);
     setAutoDispatch(f.autoDispatch);
@@ -275,6 +292,10 @@ export function SystemConfig() {
     wasteDwell !== savedSnapshot.wasteDwell ||
     wasteCollectionStart !== savedSnapshot.wasteCollectionStart ||
     wasteCollectionEnd !== savedSnapshot.wasteCollectionEnd ||
+    parkingEnabled !== savedSnapshot.parkingEnabled ||
+    parkingConf !== savedSnapshot.parkingConf ||
+    parkingDwell !== savedSnapshot.parkingDwell ||
+    parkingMove !== savedSnapshot.parkingMove ||
     cooldown !== savedSnapshot.cooldown ||
     retention !== savedSnapshot.retention ||
     autoDispatch !== savedSnapshot.autoDispatch ||
@@ -303,6 +324,7 @@ export function SystemConfig() {
         curfewStart, curfewEnd, curfewAge, curfewConf, curfewDwell,
         guardianCheck, unknownAlert, noiseEnabled, noiseSensitivity, noiseDur,
         wasteEnabled, wasteConf, wasteDwell, wasteCollectionStart, wasteCollectionEnd,
+        parkingEnabled, parkingConf, parkingDwell, parkingMove,
         cooldown, retention, autoDispatch, emailAlerts, smsAlerts,
       }));
       applySettings(fromApi(updated));
@@ -354,6 +376,30 @@ export function SystemConfig() {
         <div className="grid grid-cols-2 gap-4">
           <TimeInput label="Collection hours start" value={wasteCollectionStart} onChange={setWasteCollectionStart} />
           <TimeInput label="Collection hours end" value={wasteCollectionEnd} onChange={setWasteCollectionEnd} />
+        </div>
+      </div>
+    ),
+    parking: (
+      <div className="space-y-6">
+        <Toggle label="Illegal parking detection enabled" desc="Flag vehicles parked / obstructing beyond the dwell time" value={parkingEnabled} onChange={setParkingEnabled} />
+        <Slider
+          label="Detection confidence" value={parkingConf} min={20} max={90} unit="%"
+          desc="How sure the model must be that a box is a vehicle. Lower catches faint/blurry ones; higher reduces false detections."
+          onChange={setParkingConf}
+        />
+        <Slider
+          label="Dwell time before alert" value={parkingDwell} min={5} max={300} unit="s"
+          desc="How long a vehicle must stay put to count as parked. A car merely driving through never reaches this."
+          onChange={setParkingDwell}
+        />
+        <Slider
+          label="Movement tolerance" value={parkingMove} min={10} max={120} unit="px"
+          desc="How far a vehicle may drift and still be 'stationary'. Drift beyond this resets its dwell timer."
+          onChange={setParkingMove}
+        />
+        <div className="rounded-xl p-4 text-xs leading-relaxed"
+          style={{ background: "rgba(239,68,68,0.06)", border: "1px solid rgba(239,68,68,0.15)", color: "var(--muted-foreground)" }}>
+          Detects <strong style={{ color: "#ef4444" }}>car, motorcycle, bus, truck</strong> (tricycles register as motorcycle). A vehicle stationary past the dwell time raises an <strong style={{ color: "#ef4444" }}>Illegal Parking</strong> alert.
         </div>
       </div>
     ),

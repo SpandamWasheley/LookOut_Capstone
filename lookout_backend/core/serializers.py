@@ -94,15 +94,12 @@ class HouseholdMemberSerializer(serializers.ModelSerializer):
 
 
 class HouseholdSerializer(serializers.ModelSerializer):
-    zone = serializers.SlugRelatedField(
-        slug_field="name", queryset=Zone.objects.all(), required=False, allow_null=True
-    )
     members = HouseholdMemberSerializer(many=True, read_only=True)
 
     class Meta:
         model = Household
         fields = [
-            "id", "code", "family_name", "purok", "address", "zone",
+            "id", "code", "family_name", "address",
             "contact", "enrolled_date", "members",
         ]
 
@@ -142,6 +139,8 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
             "noise_enabled", "noise_threshold_db", "noise_duration",
             "waste_enabled", "waste_confidence", "waste_dwell",
             "waste_collection_start", "waste_collection_end",
+            "parking_enabled", "parking_confidence", "parking_dwell",
+            "parking_move_tolerance",
             "alert_cooldown", "evidence_retention_days",
             "auto_dispatch", "email_alerts", "sms_alerts",
             "updated_at",

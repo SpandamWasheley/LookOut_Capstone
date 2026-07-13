@@ -59,7 +59,7 @@ class HouseholdMemberInline(admin.TabularInline):
 
 @admin.register(Household)
 class HouseholdAdmin(admin.ModelAdmin):
-    list_display = ("code", "family_name", "purok", "zone", "enrolled_date")
+    list_display = ("code", "family_name", "enrolled_date")
     inlines = [HouseholdMemberInline]
 
 
