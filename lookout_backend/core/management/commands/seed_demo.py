@@ -10,13 +10,13 @@ from core.models import (
     Resident,
     User,
     ViolationType,
-    Zone,
 )
 
 VIOLATION_TYPES = [
-    {"code": "curfew", "label": "Curfew Violation", "color": "#f59e0b", "icon": "moon"},
-    {"code": "waste", "label": "Waste Violation", "color": "#84cc16", "icon": "trash"},
-    {"code": "noise", "label": "Noise Violation", "color": "#a78bfa", "icon": "noise"},
+    {"code": "theft", "label": "Theft Violation", "color": "#ef4444", "icon": "theft"},
+    {"code": "parking", "label": "Illegal Parking / Obstruction", "color": "#f97316", "icon": "car"},
+    {"code": "drinking", "label": "Drinking in Public Area", "color": "#8b5cf6", "icon": "beer"},
+    {"code": "smoking", "label": "Smoking in Public Places", "color": "#64748b", "icon": "smoke"},
 ]
 
 USERS = [
@@ -69,17 +69,21 @@ HOUSEHOLDS = [
 ]
 
 ALERTS = [
-    {"code": "ALT-0040", "type": "curfew", "status": "active", "camera": "CAM-01", "timestamp": "2025-06-12T22:14:00Z",
-     "confidence": 0.92, "description": "Minor detected outside curfew hours. Security verified ID before alerting barangay staff.",
+    {"code": "ALT-0040", "type": "theft", "status": "active", "camera": "CAM-01", "timestamp": "2025-06-12T22:14:00Z",
+     "confidence": 0.92, "description": "Suspected theft at the market entrance. Individual grabbed goods and fled; footage flagged for barangay staff.",
      "image_url": "https://images.unsplash.com/photo-1549402098-f4d9b419c5f8?w=800&h=450&fit=crop&auto=format",
      "officer_assigned": "PO2 Mangubat, Lisa", "suspect": "Santos, Maria"},
-    {"code": "ALT-0039", "type": "noise", "status": "dispatched", "camera": "CAM-02", "timestamp": "2025-06-12T20:05:00Z",
-     "confidence": 0.79, "description": "Loud music and crowd disturbance after curfew. Officer patrol dispatched to investigate.",
+    {"code": "ALT-0039", "type": "drinking", "status": "dispatched", "camera": "CAM-02", "timestamp": "2025-06-12T20:05:00Z",
+     "confidence": 0.79, "description": "Group drinking alcohol in the plaza public area. Officer patrol dispatched to investigate.",
      "image_url": "https://images.unsplash.com/photo-1512966885769-8207b47677df?w=800&h=450&fit=crop&auto=format",
      "officer_assigned": "PO3 Cabrera, Dante", "suspect": "Group in plaza"},
-    {"code": "ALT-0038", "type": "waste", "status": "acknowledged", "camera": "CAM-04", "timestamp": "2025-06-12T19:12:00Z",
-     "confidence": 0.84, "description": "Illegal dumping detected near residential row. Barangay sanitation team notified.",
+    {"code": "ALT-0038", "type": "parking", "status": "acknowledged", "camera": "CAM-04", "timestamp": "2025-06-12T19:12:00Z",
+     "confidence": 0.84, "description": "Vehicle illegally parked, obstructing the alley near residential row. Barangay traffic team notified.",
      "image_url": "https://images.unsplash.com/photo-1470420084874-431eb0a8d5b1?w=800&h=450&fit=crop&auto=format",
+     "officer_assigned": "PO1 Reyes, Marco", "suspect": ""},
+    {"code": "ALT-0037", "type": "smoking", "status": "active", "camera": "CAM-03", "timestamp": "2025-06-12T18:40:00Z",
+     "confidence": 0.81, "description": "Individual smoking within a designated no-smoking public place. Reminder issued and logged.",
+     "image_url": "https://images.unsplash.com/photo-1527612820672-5b56351f7346?w=800&h=450&fit=crop&auto=format",
      "officer_assigned": "PO1 Reyes, Marco", "suspect": ""},
 ]
 
@@ -88,11 +92,6 @@ class Command(BaseCommand):
     help = "Seed the database with demo data matching the Lookout frontend mock data."
 
     def handle(self, *args, **options):
-        zones = {}
-        for name in ["Zone 1", "Zone 2", "Zone 3", "Zone 4", "Zone 5"]:
-            zones[name], _ = Zone.objects.get_or_create(name=name)
-        self.stdout.write(self.style.SUCCESS(f"Zones: {len(zones)}"))
-
         vtypes = {}
         for v in VIOLATION_TYPES:
             obj, _ = ViolationType.objects.update_or_create(code=v["code"], defaults=v)
@@ -113,7 +112,7 @@ class Command(BaseCommand):
             obj, _ = Camera.objects.update_or_create(
                 code=c["code"],
                 defaults={
-                    "name": c["name"], "zone": zones[c["zone"]], "status": c["status"],
+                    "name": c["name"], "zone": None, "status": c["status"],
                     "fps": c["fps"], "image_url": c["image_url"],
                 },
             )
@@ -148,8 +147,8 @@ class Command(BaseCommand):
             household, _ = Household.objects.update_or_create(
                 code=h["code"],
                 defaults={
-                    "family_name": h["family_name"], "purok": h["purok"], "address": h["address"],
-                    "zone": zones[h["zone"]], "contact": h["contact"],
+                    "family_name": h["family_name"], "purok": "", "address": h["address"],
+                    "zone": None, "contact": h["contact"],
                     "enrolled_date": parse_date(h["enrolled_date"]),
                 },
             )

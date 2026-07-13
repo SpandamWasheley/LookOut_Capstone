@@ -1,0 +1,11 @@
+# Generated / heavy artifacts — keep the code, not the data
+__pycache__/
+*.pyc
+output/
+*.pt
+
+# Test media is large; keep only the READMEs that explain the folders
+sample_images/*
+!sample_images/README.txt
+face_db/*
+!face_db/README.txt

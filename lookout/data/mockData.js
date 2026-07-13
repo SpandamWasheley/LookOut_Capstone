@@ -1,4 +1,4 @@
-import { Moon, Trash2, Volume2 } from "lucide-react";
+import { ShieldAlert, Car, Beer, Cigarette } from "lucide-react";
 
 export const ZONES = [
   "Zone 1",
@@ -16,9 +16,10 @@ export const mockUsers = [
 ];
 
 export const VIOLATION_CONFIG = {
-  curfew: { label: "Curfew Violation", color: "#f59e0b", icon: Moon },
-  waste: { label: "Waste Violation", color: "#84cc16", icon: Trash2 },
-  noise: { label: "Noise Violation", color: "#a78bfa", icon: Volume2 },
+  theft: { label: "Theft Violation", color: "#ef4444", icon: ShieldAlert },
+  parking: { label: "Illegal Parking / Obstruction", color: "#f97316", icon: Car },
+  drinking: { label: "Drinking in Public Area", color: "#8b5cf6", icon: Beer },
+  smoking: { label: "Smoking in Public Places", color: "#64748b", icon: Cigarette },
 };
 
 export const mockCameras = [

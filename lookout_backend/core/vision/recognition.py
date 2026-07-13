@@ -21,6 +21,16 @@ FACE_DB_PATH = VISION_DIR / "face_db.json"
 
 PERSON_CLASS_ID = 0  # COCO class id for "person"
 
+# COCO class ids for the vehicle types relevant to illegal-parking /
+# obstruction detection. yolov8n.pt is trained on COCO, so these come for
+# free from the same model already used for person detection.
+VEHICLE_CLASS_IDS = {
+    2: "car",
+    3: "motorcycle",
+    5: "bus",
+    7: "truck",
+}
+
 # insightface (ArcFace) cosine similarity for a genuine same-person match
 # typically falls in ~0.35-0.70 (35-70 once scaled to a percent), unlike a
 # percentage-intuition 0-100 scale. SystemSettings.curfew_confidence defaults
@@ -70,6 +80,31 @@ def detect_persons(frame, conf=0.5):
         x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
         boxes.append((x1, y1, x2, y2, float(box.conf[0])))
     return boxes
+
+
+def detect_vehicles(frame, conf=0.4):
+    """Returns a list of (x1, y1, x2, y2, conf, label) boxes for detected vehicles.
+
+    `label` is the COCO vehicle class name (car/motorcycle/bus/truck). Reuses
+    the same YOLOv8 model as detect_persons — no extra weights to download.
+    """
+    model = load_yolo()
+    results = model(frame, verbose=False)[0]
+    boxes = []
+    for box in results.boxes:
+        cls_id = int(box.cls[0])
+        if cls_id not in VEHICLE_CLASS_IDS:
+            continue
+        if float(box.conf[0]) < conf:
+            continue
+        x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
+        boxes.append((x1, y1, x2, y2, float(box.conf[0]), VEHICLE_CLASS_IDS[cls_id]))
+    return boxes
+
+
+def load_image(path):
+    """Decodes an image file from disk into an OpenCV BGR array, or None on failure."""
+    return cv2.imread(str(path))
 
 
 def compute_face_embedding(crop):

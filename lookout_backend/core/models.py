@@ -259,6 +259,15 @@ class SystemSettings(models.Model):
     waste_collection_start = models.TimeField(default=time(6, 0))
     waste_collection_end = models.TimeField(default=time(9, 0))
 
+    parking_enabled = models.BooleanField(default=True)
+    # YOLO detection confidence as a 0-100 percent (watch_parking divides by 100).
+    parking_confidence = models.PositiveSmallIntegerField(default=35)
+    # Seconds a vehicle must stay put before it counts as illegally parked.
+    parking_dwell = models.PositiveSmallIntegerField(default=60)
+    # Pixels a vehicle may drift and still count as "stationary" (resets the
+    # dwell timer if exceeded, so a car merely driving through never alerts).
+    parking_move_tolerance = models.PositiveSmallIntegerField(default=40)
+
     alert_cooldown = models.PositiveSmallIntegerField(default=120)
     evidence_retention_days = models.PositiveSmallIntegerField(default=30)
     auto_dispatch = models.BooleanField(default=False)
