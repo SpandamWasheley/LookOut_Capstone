@@ -120,9 +120,7 @@ export const mockHouseholds = [
   {
     id: "HH-TET-0001",
     familyName: "Angeles",
-    purok: "Purok 2",
     address: "142 Don Maria Drive",
-    zone: "Zone 2",
     contact: "+63 917 000 1122",
     enrolledDate: "2025-06-10",
     members: [

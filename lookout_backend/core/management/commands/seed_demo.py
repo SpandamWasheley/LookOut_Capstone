@@ -54,8 +54,8 @@ RESIDENTS = [
 
 HOUSEHOLDS = [
     {
-        "code": "HH-TET-0001", "family_name": "Angeles", "purok": "Purok 2", "address": "142 Don Maria Drive",
-        "zone": "Zone 2", "contact": "+63 917 000 1122", "enrolled_date": "2025-06-10",
+        "code": "HH-TET-0001", "family_name": "Angeles", "address": "142 Don Maria Drive",
+        "contact": "+63 917 000 1122", "enrolled_date": "2025-06-10",
         "members": [
             {"code": "MEM-001", "first_name": "Peter", "last_name": "Angeles", "birthdate": "1990-03-12", "barangay_id": "BRG-TET-0101", "status": "verified", "relation": "Head",
              "image_url": "https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=200&h=200&fit=crop&auto=format", "phone": "+63 917 000 1123"},
@@ -147,8 +147,8 @@ class Command(BaseCommand):
             household, _ = Household.objects.update_or_create(
                 code=h["code"],
                 defaults={
-                    "family_name": h["family_name"], "purok": "", "address": h["address"],
-                    "zone": None, "contact": h["contact"],
+                    "family_name": h["family_name"], "address": h["address"],
+                    "contact": h["contact"],
                     "enrolled_date": parse_date(h["enrolled_date"]),
                 },
             )

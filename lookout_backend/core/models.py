@@ -155,9 +155,7 @@ class Resident(models.Model):
 class Household(models.Model):
     code = models.CharField(max_length=30, unique=True, blank=True)
     family_name = models.CharField(max_length=150)
-    purok = models.CharField(max_length=50, blank=True)
     address = models.CharField(max_length=255, blank=True)
-    zone = models.ForeignKey(Zone, on_delete=models.SET_NULL, null=True, related_name="households")
     contact = models.CharField(max_length=30, blank=True)
     enrolled_date = models.DateField(null=True, blank=True)
 

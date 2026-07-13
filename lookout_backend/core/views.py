@@ -413,7 +413,7 @@ class ResidentViewSet(viewsets.ModelViewSet):
 
 
 class HouseholdViewSet(viewsets.ModelViewSet):
-    queryset = Household.objects.select_related("zone").prefetch_related("members").all()
+    queryset = Household.objects.prefetch_related("members").all()
     serializer_class = HouseholdSerializer
     permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
 

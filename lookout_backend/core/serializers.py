@@ -94,15 +94,12 @@ class HouseholdMemberSerializer(serializers.ModelSerializer):
 
 
 class HouseholdSerializer(serializers.ModelSerializer):
-    zone = serializers.SlugRelatedField(
-        slug_field="name", queryset=Zone.objects.all(), required=False, allow_null=True
-    )
     members = HouseholdMemberSerializer(many=True, read_only=True)
 
     class Meta:
         model = Household
         fields = [
-            "id", "code", "family_name", "purok", "address", "zone",
+            "id", "code", "family_name", "address",
             "contact", "enrolled_date", "members",
         ]
 

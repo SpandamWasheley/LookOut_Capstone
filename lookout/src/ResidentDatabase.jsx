@@ -3,7 +3,6 @@ import {
   Search, UserPlus, CheckCircle, Clock, AlertTriangle,
   Shield, User, X, Home, LayoutList, ChevronDown, ChevronUp, Plus, Save, Loader2, Phone, Trash2,
 } from "lucide-react";
-import { ZONES } from "../data/mockData";
 import {
   getHouseholds, createHousehold, updateHousehold,
   createHouseholdMember, updateHouseholdMember, deleteHouseholdMember,
@@ -28,9 +27,7 @@ function mapHousehold(raw) {
     id: raw.code,
     dbId: raw.id,
     familyName: raw.family_name,
-    purok: raw.purok,
     address: raw.address,
-    zone: raw.zone,
     contact: raw.contact,
     enrolledDate: raw.enrolled_date,
     members: raw.members.map((m) => ({
@@ -103,9 +100,7 @@ function fmtTime(ts) {
 // ── Manage Household Modal ─────────────────────────────────────────────────────
 function ManageHouseholdModal({ household, onSave, onDeleteMember, onClose }) {
   const [familyName, setFamilyName] = useState(household.familyName);
-  const [purok,      setPurok]      = useState(household.purok);
   const [address,    setAddress]    = useState(household.address);
-  const [zone,       setZone]       = useState(household.zone);
   const [contact,    setContact]    = useState(household.contact);
   const [saved, setSaved] = useState(false);
   const [members, setMembers] = useState(household.members);
@@ -132,7 +127,7 @@ function ManageHouseholdModal({ household, onSave, onDeleteMember, onClose }) {
   };
 
   const handleSave = () => {
-    onSave({ ...household, familyName, purok, address, zone, contact });
+    onSave({ ...household, familyName, address, contact });
     setSaved(true);
     setTimeout(() => { setSaved(false); onClose(); }, 900);
   };
@@ -175,28 +170,16 @@ function ManageHouseholdModal({ household, onSave, onDeleteMember, onClose }) {
               Household Details
             </div>
             <div className="space-y-3">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>
-                    Family name <span style={{ color: "#ef4444" }}>*</span>
-                  </label>
-                  <input
-                    value={familyName}
-                    onChange={(e) => setFamilyName(e.target.value)}
-                    className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
-                    style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>Purok / Sitio</label>
-                  <input
-                    value={purok}
-                    onChange={(e) => setPurok(e.target.value)}
-                    placeholder="e.g. Purok 3"
-                    className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
-                    style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
-                  />
-                </div>
+              <div>
+                <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>
+                  Family name <span style={{ color: "#ef4444" }}>*</span>
+                </label>
+                <input
+                  value={familyName}
+                  onChange={(e) => setFamilyName(e.target.value)}
+                  className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
+                  style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
+                />
               </div>
               <div>
                 <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>
@@ -766,9 +749,7 @@ export function ResidentDatabase() {
     try {
       await updateHousehold(updated.dbId, {
         family_name: updated.familyName,
-        purok: updated.purok,
         address: updated.address,
-        zone: updated.zone || null,
         contact: updated.contact,
       });
       await refreshHouseholds();
@@ -784,7 +765,6 @@ export function ResidentDatabase() {
         family_name: data.familyName,
         address: data.address,
         contact: data.contact,
-        ...(data.zone ? { zone: data.zone } : {}),
       });
 
       const localToPk = {};
