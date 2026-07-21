@@ -77,15 +77,16 @@ def main():
     csv_path = OUTPUT_DIR / "batch_summary.csv"
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
-            f, fieldnames=["image", "vehicles", "violations", "faces", "known_faces"]
+            f, fieldnames=["image", "vehicles", "violations", "faces", "known_faces", "smoking"]
         )
         writer.writeheader()
         writer.writerows(rows)
 
-    totals = {k: sum(r[k] for r in rows) for k in ("vehicles", "violations", "faces", "known_faces")}
+    totals = {k: sum(r.get(k, 0) for r in rows)
+              for k in ("vehicles", "violations", "faces", "known_faces", "smoking")}
     print(f"Done. {len(rows)} image(s) processed.")
     print(f"  totals -> vehicles: {totals['vehicles']}, violations: {totals['violations']}, "
-          f"faces: {totals['faces']} ({totals['known_faces']} known)")
+          f"faces: {totals['faces']} ({totals['known_faces']} known), smoking: {totals['smoking']}")
     print(f"  annotated images + summary CSV -> {OUTPUT_DIR}")
 
 

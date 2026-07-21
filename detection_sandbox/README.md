@@ -105,6 +105,19 @@ image:
 
 Adjust the points to match the restricted areas in your own photo.
 
+## Smoking / cigarette detection (needs a custom model)
+
+Smoking detection is wired into both the video app (`video_system.py`) and the
+image CLI (`detect_image.py`), but it stays **off until you install a model**,
+because stock YOLOv8 (COCO) has **no cigarette class** and can't detect one.
+
+To enable it, put a cigarette/smoking-trained model at **`models/smoking.pt`**.
+Get one from Roboflow Universe (search "cigarette detection" → export YOLOv8
+weights) or fine-tune your own — full instructions are in
+[`models/README.txt`](models/README.txt). Once the file exists, smoking is
+detected automatically (amber boxes + a "public smoking" count); with no file
+it's skipped silently and the UI notes it's off.
+
 ## The "tricycle" caveat
 
 Stock YOLOv8 is trained on the COCO dataset, which has **no `tricycle` class**.
