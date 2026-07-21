@@ -65,11 +65,12 @@ PAGE = """
   .tag { display:inline-block; padding:2px 8px; border-radius:99px; font-size:11px; font-weight:700; }
   .tag.park { background:#7f1d1d; color:#fecaca; }
   .tag.drink { background:#701a75; color:#f5d0fe; }
+  .tag.smoke { background:#78350f; color:#fde68a; }
   h2 { margin:26px 0 6px; font-size:16px; }
   .summary { display:flex; gap:12px; flex-wrap:wrap; margin-top:16px; }
   .stat { background:#1e293b; border:1px solid #334155; border-radius:12px; padding:12px 16px; min-width:130px; }
   .stat b { font-size:26px; display:block; color:#38bdf8; }
-  .stat.red b { color:#f87171; } .stat.pink b { color:#e879f9; }
+  .stat.red b { color:#f87171; } .stat.pink b { color:#e879f9; } .stat.amber b { color:#fbbf24; }
   a.dl { color:#38bdf8; }
   .muted { color:#94a3b8; }
 </style>
@@ -77,7 +78,7 @@ PAGE = """
 <body>
 <header>
   <h1>LookOut — Video Detection System</h1>
-  <p>Illegal parking / obstruction &amp; public drinking, from an uploaded video.</p>
+  <p>Illegal parking / obstruction, public drinking &amp; smoking, from an uploaded video.</p>
 </header>
 <main>
   <div id="drop">
@@ -123,11 +124,12 @@ function upload(f){
 }
 
 function render(d){
-  const p=d.parking.length, k=d.drinking.length;
+  const p=d.parking.length, k=d.drinking.length, s=(d.smoking||[]).length;
   let h='<div class="summary">'
     +'<div class="stat"><b>'+d.frames_analyzed+'</b>frames analyzed</div>'
     +'<div class="stat red"><b>'+p+'</b>parking / obstruction</div>'
     +'<div class="stat pink"><b>'+k+'</b>public drinking</div>'
+    +'<div class="stat amber"><b>'+s+'</b>public smoking</div>'
     +'</div>';
   h+='<p style="margin-top:14px"><a class="dl" href="'+d.video_url+'" download>⬇ Download annotated video</a> '
     +'<span class="muted">('+d.duration+'s clip)</span></p>';
@@ -136,13 +138,17 @@ function render(d){
     d.parking.forEach(e=>{ h+=card('park', e); }); h+='</div>'; }
   if(k){ h+='<h2>🍾 Public drinking</h2><div class="cards">';
     d.drinking.forEach(e=>{ h+=card('drink', e); }); h+='</div>'; }
-  if(!p && !k) h+='<p class="muted" style="margin-top:16px">No violations detected. '
+  if(s){ h+='<h2>🚬 Public smoking</h2><div class="cards">';
+    d.smoking.forEach(e=>{ h+=card('smoke', e); }); h+='</div>'; }
+  if(!d.smoking_available) h+='<p class="muted" style="margin-top:12px">🚬 Smoking detection is off — '
+    +'no <code>models/smoking.pt</code> installed. See models/README.txt to add one.</p>';
+  if(!p && !k && !s) h+='<p class="muted" style="margin-top:16px">No violations detected. '
     +'Try a lower dwell or higher sensitivity, or a clip with a parked vehicle / a bottle held by someone.</p>';
   result.innerHTML=h;
 }
 function card(kind,e){
-  const cls=kind==='park'?'park':'drink';
-  const label=kind==='park'?'ILLEGAL PARKING':'PUBLIC DRINKING';
+  const map={park:['park','ILLEGAL PARKING'], drink:['drink','PUBLIC DRINKING'], smoke:['smoke','PUBLIC SMOKING']};
+  const [cls,label]=map[kind];
   return '<div class="card">'+(e.thumb_url?'<img src="'+e.thumb_url+'">':'')
     +'<div class="body"><span class="tag '+cls+'">'+label+'</span>'
     +'<div style="margin-top:6px">'+e.label+' @ '+e.time_str+'</div>'
@@ -188,7 +194,7 @@ def analyze():
     def to_url(path):
         return f"/files/{session}/{Path(path).relative_to(sess_dir).as_posix()}"
 
-    for ev in report["parking"] + report["drinking"]:
+    for ev in report["parking"] + report["drinking"] + report["smoking"]:
         if ev.get("thumb"):
             ev["thumb_url"] = to_url(ev["thumb"])
 
@@ -198,6 +204,8 @@ def analyze():
         "frames_analyzed": report["frames_analyzed"],
         "parking": report["parking"],
         "drinking": report["drinking"],
+        "smoking": report["smoking"],
+        "smoking_available": report["smoking_available"],
     })
 
 

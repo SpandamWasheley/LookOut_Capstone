@@ -10,6 +10,7 @@ stays importable/testable independent of the management commands that use it.
 """
 
 import json
+import os
 import urllib.request
 from pathlib import Path
 
@@ -18,6 +19,11 @@ import numpy as np
 
 VISION_DIR = Path(__file__).resolve().parent
 FACE_DB_PATH = VISION_DIR / "face_db.json"
+
+# Custom-trained smoking detector (cigarette/smoke/vape/smoking). Unlike the
+# COCO yolov8n used for persons/vehicles, this is a separate fine-tuned model,
+# so it loads its own weights. Override with the SMOKING_MODEL env var.
+SMOKING_MODEL_PATH = Path(os.environ.get("SMOKING_MODEL", str(VISION_DIR / "smoking.pt")))
 
 PERSON_CLASS_ID = 0  # COCO class id for "person"
 
@@ -40,6 +46,7 @@ VEHICLE_CLASS_IDS = {
 
 _yolo_model = None
 _face_app = None
+_smoking_model = None
 
 
 def load_yolo():
@@ -49,6 +56,28 @@ def load_yolo():
 
         _yolo_model = YOLO("yolov8n.pt")
     return _yolo_model
+
+
+def smoking_model_available():
+    """True if the custom smoking weights are present (callers skip cleanly if not)."""
+    return SMOKING_MODEL_PATH.exists()
+
+
+def load_smoking_model():
+    """Lazy-loads the custom smoking detector. Raises if the weights are missing —
+    stock YOLOv8 (COCO) has no cigarette/smoking class, so this model is required."""
+    global _smoking_model
+    if _smoking_model is None:
+        if not SMOKING_MODEL_PATH.exists():
+            raise FileNotFoundError(
+                f"Smoking model not found at {SMOKING_MODEL_PATH}. Train one with "
+                "detection_sandbox/train_smoking.py and copy best.pt here, or set "
+                "the SMOKING_MODEL env var."
+            )
+        from ultralytics import YOLO
+
+        _smoking_model = YOLO(str(SMOKING_MODEL_PATH))
+    return _smoking_model
 
 
 def load_face_app():
@@ -99,6 +128,28 @@ def detect_vehicles(frame, conf=0.4):
             continue
         x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
         boxes.append((x1, y1, x2, y2, float(box.conf[0]), VEHICLE_CLASS_IDS[cls_id]))
+    return boxes
+
+
+def detect_smoking(frame, conf=0.3):
+    """Returns a list of (x1, y1, x2, y2, conf, label) boxes for smoking indicators.
+
+    `label` is whatever class the custom model was trained with — typically
+    "cigarette", "smoke", "vape", or "smoking". Uses the model's own class names
+    so it adapts to any smoking dataset. Requires SMOKING_MODEL_PATH weights.
+    """
+    model = load_smoking_model()
+    results = model(frame, verbose=False)[0]
+    names = results.names  # id -> class name, from the trained model
+    boxes = []
+    for box in results.boxes:
+        score = float(box.conf[0])
+        if score < conf:
+            continue
+        cls_id = int(box.cls[0])
+        label = names[cls_id] if cls_id in names else "smoking"
+        x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
+        boxes.append((x1, y1, x2, y2, score, label))
     return boxes
 
 

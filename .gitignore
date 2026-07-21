@@ -31,6 +31,10 @@ lerna-debug.log*
 .env.*
 !.env.example
 
+# ML training output & runtime-generated media (keep code + model, not artifacts)
+detection_sandbox/runs/
+lookout_backend/media/
+
 # Editor / OS
 .vscode/*
 !.vscode/extensions.json

@@ -18,6 +18,7 @@ from pathlib import Path
 import cv2
 
 import face_recognition_test as fr
+import smoking_detection as smoke
 import vehicle_detection as vd
 
 OUTPUT_DIR = Path(__file__).resolve().parent / "output"
@@ -30,7 +31,7 @@ def run_on_image(img, *, zones=None, do_vehicles=True, do_faces=True,
     `db` is a pre-loaded face database (see face_recognition_test.enroll); pass
     it in so batch runs don't re-enroll for every image.
     """
-    summary = {"vehicles": 0, "violations": 0, "faces": 0, "known_faces": 0}
+    summary = {"vehicles": 0, "violations": 0, "faces": 0, "known_faces": 0, "smoking": 0}
 
     if do_vehicles:
         vehicles = vd.detect_vehicles(img, conf=conf)
@@ -45,6 +46,23 @@ def run_on_image(img, *, zones=None, do_vehicles=True, do_faces=True,
                 print(f"    - {v['label']:11s} {v['conf'] * 100:4.0f}%{flag}")
             if zones:
                 print(f"  illegal parking / obstruction: {summary['violations']}")
+
+    # Smoking runs only if a custom models/smoking.pt is installed (COCO can't
+    # detect cigarettes); otherwise it's skipped silently.
+    if smoke.is_available():
+        smokes = smoke.detect_smoking(img, conf=conf)
+        summary["smoking"] = len(smokes)
+        for s in smokes:
+            x1, y1, x2, y2 = s["box"]
+            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 215, 255), 2)  # amber (BGR)
+            cv2.putText(img, f"{s['label']} {s['conf'] * 100:.0f}%", (x1, max(y1 - 8, 0)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 215, 255), 2)
+        if verbose:
+            print(f"  smoking: {len(smokes)}")
+            for s in smokes:
+                print(f"    - {s['label']} {s['conf'] * 100:.0f}%")
+    elif verbose and do_vehicles:
+        print("  smoking: skipped (no models/smoking.pt — see models/README.txt)")
 
     if do_faces:
         faces = fr.recognize_faces_in_image(img, db or [], threshold=face_threshold)

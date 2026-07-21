@@ -266,6 +266,17 @@ class SystemSettings(models.Model):
     # dwell timer if exceeded, so a car merely driving through never alerts).
     parking_move_tolerance = models.PositiveSmallIntegerField(default=40)
 
+    smoking_enabled = models.BooleanField(default=True)
+    # Detection confidence as a 0-100 percent (watch_smoking divides by 100).
+    # The custom smoking model scores genuine cigarette/smoking matches lower
+    # than a percentage intuition (~0.3-0.9), so this default is calibrated to
+    # that scale rather than a generic "high-confidence" bar.
+    smoking_confidence = models.PositiveSmallIntegerField(default=30)
+    # Seconds smoking must be seen continuously before it counts as a violation
+    # (filters one-frame false positives). Smoking is transient, so this is
+    # short compared to the parking dwell.
+    smoking_dwell = models.PositiveSmallIntegerField(default=3)
+
     alert_cooldown = models.PositiveSmallIntegerField(default=120)
     evidence_retention_days = models.PositiveSmallIntegerField(default=30)
     auto_dispatch = models.BooleanField(default=False)

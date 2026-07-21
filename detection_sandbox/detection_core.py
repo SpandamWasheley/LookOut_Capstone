@@ -22,6 +22,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+import smoking_detection as smoke  # optional custom cigarette/smoking model
 import vehicle_detection as vd  # reuse the cached YOLO model + zone helpers
 
 VEHICLE_CLASSES = {1: "bicycle", 2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
@@ -161,8 +162,11 @@ def process_video(input_path, output_dir, *, dwell=5.0, move=40.0, conf=0.35,
 
     vehicles_tracker = Tracker()
     drinks_tracker = Tracker()
-    parking_events, drinking_events = [], []
-    counts = {"vehicles_seen": 0, "drinks_seen": 0}
+    smoking_tracker = Tracker()
+    parking_events, drinking_events, smoking_events = [], [], []
+    counts = {"vehicles_seen": 0, "drinks_seen": 0, "smoking_seen": 0}
+    # Smoking uses a separate custom model; run it only if one is installed.
+    smoking_on = smoke.is_available()
 
     frame_idx = -1
     analyzed = 0
@@ -255,6 +259,30 @@ def process_video(input_path, output_dir, *, dwell=5.0, move=40.0, conf=0.35,
                 _annotate_drink(frame, det, flagged=False)
         drinks_tracker.prune(t)
 
+        # ---- public smoking (needs the custom models/smoking.pt) ----
+        if smoking_on:
+            smokes = smoke.detect_smoking(frame, conf)
+            counts["smoking_seen"] = max(counts["smoking_seen"], len(smokes))
+            stracks = smoking_tracker.update(smokes, t)
+            for tid, tr in stracks.items():
+                det = tr["det"]
+                st = tr["state"]
+                st.setdefault("since", t)
+                st.setdefault("flagged", False)
+                # require ~0.8s of persistence to reject single-frame false hits
+                if t - st["since"] >= 0.8 and not st["flagged"]:
+                    st["flagged"] = True
+                    ev = {"kind": "smoking", "label": det["label"], "time": t,
+                          "time_str": _ts(t),
+                          "reason": f"{det['label']} detected (public smoking)"}
+                    _annotate_smoking(frame, det, flagged=True)
+                    if thumbs:
+                        ev["thumb"] = _save_thumb(frame, thumb_dir, f"smoke_{tid}_{int(t)}")
+                    smoking_events.append(ev)
+                else:
+                    _annotate_smoking(frame, det, flagged=st["flagged"])
+            smoking_tracker.prune(t)
+
         if writer is None:
             h, w = frame.shape[:2]
             writer = cv2.VideoWriter(str(out_video),
@@ -274,6 +302,8 @@ def process_video(input_path, output_dir, *, dwell=5.0, move=40.0, conf=0.35,
         "frames_analyzed": analyzed,
         "parking": parking_events,
         "drinking": drinking_events,
+        "smoking": smoking_events,
+        "smoking_available": smoking_on,
         "counts": counts,
     }
 
@@ -306,6 +336,15 @@ def _annotate_drink(frame, det, flagged):
     x1, y1, x2, y2 = det["box"]
     color = (255, 0, 255) if flagged else (200, 160, 0)
     tag = f"{det['label']} PUBLIC DRINKING" if flagged else det["label"]
+    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+    cv2.putText(frame, tag, (x1, max(y1 - 8, 0)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+
+def _annotate_smoking(frame, det, flagged):
+    x1, y1, x2, y2 = det["box"]
+    color = (0, 215, 255) if flagged else (0, 170, 170)  # amber when flagged (BGR)
+    tag = f"{det['label']} SMOKING" if flagged else det["label"]
     cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
     cv2.putText(frame, tag, (x1, max(y1 - 8, 0)),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
