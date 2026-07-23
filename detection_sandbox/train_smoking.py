@@ -15,7 +15,7 @@ import shutil
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent
-DEFAULT_DATA = r"C:\Users\LENOVO THINKPAD T14s\Downloads\smoking dataset\merged\data.yaml"
+DEFAULT_DATA = r"C:\Users\LENOVO THINKPAD T14s\Downloads\LookOut_Smoking.v1i.yolov8\data_lookout.yaml"
 
 DATA = os.environ.get("SMOKING_DATA", DEFAULT_DATA)
 EPOCHS = int(os.environ.get("SMOKING_EPOCHS", "60"))

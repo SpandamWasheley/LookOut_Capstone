@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Save, RotateCcw, Moon, Volume2, Trash2, Car, AlertTriangle, Loader2 } from "lucide-react";
+import { Save, RotateCcw, Moon, Volume2, Trash2, Car, Cigarette, Siren, AlertTriangle, Loader2 } from "lucide-react";
 import { getSettings, saveSettings } from "./api";
 
 const trimSeconds = (t) => (t ? t.slice(0, 5) : t);
@@ -34,6 +34,12 @@ function fromApi(s) {
     parkingConf: s.parking_confidence,
     parkingDwell: s.parking_dwell,
     parkingMove: s.parking_move_tolerance,
+    smokingEnabled: s.smoking_enabled,
+    smokingConf: s.smoking_confidence,
+    smokingDwell: s.smoking_dwell,
+    thiefEnabled: s.thief_enabled,
+    thiefConf: s.thief_confidence,
+    thiefDwell: s.thief_dwell,
     cooldown: s.alert_cooldown,
     retention: s.evidence_retention_days,
     autoDispatch: s.auto_dispatch,
@@ -63,6 +69,12 @@ function toApi(f) {
     parking_confidence: f.parkingConf,
     parking_dwell: f.parkingDwell,
     parking_move_tolerance: f.parkingMove,
+    smoking_enabled: f.smokingEnabled,
+    smoking_confidence: f.smokingConf,
+    smoking_dwell: f.smokingDwell,
+    thief_enabled: f.thiefEnabled,
+    thief_confidence: f.thiefConf,
+    thief_dwell: f.thiefDwell,
     alert_cooldown: f.cooldown,
     evidence_retention_days: f.retention,
     auto_dispatch: f.autoDispatch,
@@ -76,6 +88,8 @@ const sections = [
   { id: "noise",  label: "Noise",  icon: Volume2, color: "#a78bfa" },
   { id: "waste",  label: "Waste",  icon: Trash2,  color: "#84cc16" },
   { id: "parking", label: "Parking", icon: Car,    color: "#ef4444" },
+  { id: "smoking", label: "Smoking", icon: Cigarette, color: "#f97316" },
+  { id: "thief",   label: "Thief",   icon: Siren,  color: "#dc2626" },
   // { id: "system", label: "System", icon: Clock,   color: "#3b82f6" },
 ];
 
@@ -241,6 +255,12 @@ export function SystemConfig() {
   const [parkingConf, setParkingConf] = useState(35);
   const [parkingDwell, setParkingDwell] = useState(60);
   const [parkingMove, setParkingMove] = useState(40);
+  const [smokingEnabled, setSmokingEnabled] = useState(true);
+  const [smokingConf, setSmokingConf] = useState(30);
+  const [smokingDwell, setSmokingDwell] = useState(3);
+  const [thiefEnabled, setThiefEnabled] = useState(true);
+  const [thiefConf, setThiefConf] = useState(30);
+  const [thiefDwell, setThiefDwell] = useState(3);
   const [cooldown, setCooldown] = useState(120);
   const [retention, setRetention] = useState(30);
   const [autoDispatch, setAutoDispatch] = useState(false);
@@ -268,6 +288,12 @@ export function SystemConfig() {
     setParkingConf(f.parkingConf);
     setParkingDwell(f.parkingDwell);
     setParkingMove(f.parkingMove);
+    setSmokingEnabled(f.smokingEnabled);
+    setSmokingConf(f.smokingConf);
+    setSmokingDwell(f.smokingDwell);
+    setThiefEnabled(f.thiefEnabled);
+    setThiefConf(f.thiefConf);
+    setThiefDwell(f.thiefDwell);
     setCooldown(f.cooldown);
     setRetention(f.retention);
     setAutoDispatch(f.autoDispatch);
@@ -296,6 +322,12 @@ export function SystemConfig() {
     parkingConf !== savedSnapshot.parkingConf ||
     parkingDwell !== savedSnapshot.parkingDwell ||
     parkingMove !== savedSnapshot.parkingMove ||
+    smokingEnabled !== savedSnapshot.smokingEnabled ||
+    smokingConf !== savedSnapshot.smokingConf ||
+    smokingDwell !== savedSnapshot.smokingDwell ||
+    thiefEnabled !== savedSnapshot.thiefEnabled ||
+    thiefConf !== savedSnapshot.thiefConf ||
+    thiefDwell !== savedSnapshot.thiefDwell ||
     cooldown !== savedSnapshot.cooldown ||
     retention !== savedSnapshot.retention ||
     autoDispatch !== savedSnapshot.autoDispatch ||
@@ -325,6 +357,8 @@ export function SystemConfig() {
         guardianCheck, unknownAlert, noiseEnabled, noiseSensitivity, noiseDur,
         wasteEnabled, wasteConf, wasteDwell, wasteCollectionStart, wasteCollectionEnd,
         parkingEnabled, parkingConf, parkingDwell, parkingMove,
+        smokingEnabled, smokingConf, smokingDwell,
+        thiefEnabled, thiefConf, thiefDwell,
         cooldown, retention, autoDispatch, emailAlerts, smsAlerts,
       }));
       applySettings(fromApi(updated));
@@ -400,6 +434,44 @@ export function SystemConfig() {
         <div className="rounded-xl p-4 text-xs leading-relaxed"
           style={{ background: "rgba(239,68,68,0.06)", border: "1px solid rgba(239,68,68,0.15)", color: "var(--muted-foreground)" }}>
           Detects <strong style={{ color: "#ef4444" }}>car, motorcycle, bus, truck</strong> (tricycles register as motorcycle). A vehicle stationary past the dwell time raises an <strong style={{ color: "#ef4444" }}>Illegal Parking</strong> alert.
+        </div>
+      </div>
+    ),
+    smoking: (
+      <div className="space-y-6">
+        <Toggle label="Smoking detection enabled" desc="Detect public smoking (cigarette / vape) on the smoking-monitor feed" value={smokingEnabled} onChange={setSmokingEnabled} />
+        <Slider
+          label="Detection confidence" value={smokingConf} min={10} max={90} unit="%"
+          desc="How sure the model must be. The custom model scores genuine cigarettes/vapes ~30–90%; lower catches more at distance, higher reduces false hits."
+          onChange={setSmokingConf}
+        />
+        <Slider
+          label="Dwell time before alert" value={smokingDwell} min={2} max={30} unit="s"
+          desc="How long smoking must stay visible before alerting. Filters one-frame false positives."
+          onChange={setSmokingDwell}
+        />
+        <div className="rounded-xl p-4 text-xs leading-relaxed"
+          style={{ background: "rgba(249,115,22,0.06)", border: "1px solid rgba(249,115,22,0.15)", color: "var(--muted-foreground)" }}>
+          Detects <strong style={{ color: "#f97316" }}>cigarettes and vapes</strong>. Sustained presence past the dwell time raises a <strong style={{ color: "#f97316" }}>Public Smoking</strong> alert with an evidence snapshot.
+        </div>
+      </div>
+    ),
+    thief: (
+      <div className="space-y-6">
+        <Toggle label="Thief detection enabled" desc="Detect theft/robbery indicators on the thief-monitor feed" value={thiefEnabled} onChange={setThiefEnabled} />
+        <Slider
+          label="Detection confidence" value={thiefConf} min={10} max={90} unit="%"
+          desc="How sure the model must be. Lower catches more (with more false hits); higher is stricter."
+          onChange={setThiefConf}
+        />
+        <Slider
+          label="Dwell time before alert" value={thiefDwell} min={2} max={30} unit="s"
+          desc="How long a threat must stay visible before alerting. Kept short — an armed robbery should alert fast."
+          onChange={setThiefDwell}
+        />
+        <div className="rounded-xl p-4 text-xs leading-relaxed"
+          style={{ background: "rgba(220,38,38,0.06)", border: "1px solid rgba(220,38,38,0.15)", color: "var(--muted-foreground)" }}>
+          Detects <strong style={{ color: "#dc2626" }}>gun, knife, robbery activity, stealing</strong>. Sustained presence past the dwell time raises a <strong style={{ color: "#dc2626" }}>Theft / Robbery</strong> alert with an evidence snapshot.
         </div>
       </div>
     ),

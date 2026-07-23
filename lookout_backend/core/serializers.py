@@ -142,6 +142,7 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
             "parking_enabled", "parking_confidence", "parking_dwell",
             "parking_move_tolerance",
             "smoking_enabled", "smoking_confidence", "smoking_dwell",
+            "thief_enabled", "thief_confidence", "thief_dwell",
             "alert_cooldown", "evidence_retention_days",
             "auto_dispatch", "email_alerts", "sms_alerts",
             "updated_at",

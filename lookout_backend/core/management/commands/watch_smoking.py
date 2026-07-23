@@ -8,11 +8,18 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from core.models import Alert, Camera, SystemSettings, ViolationType
-from core.vision import recognition
+from core.vision import recognition, tracking
 
 SMOKING_CAMERA_CODE = "CAM-SMOKING"
 SETTINGS_REFRESH_SECONDS = 5  # re-poll SystemSettings this often, not every frame
 PRESENCE_GRACE_SECONDS = 2    # tolerate a couple smoke-free frames before resetting dwell
+
+# N-of-M temporal voting (per tracked person): a person's frame counts as
+# "smoking present" only if at least VOTE_MIN of their last VOTE_WINDOW frames
+# were positive. This turns low, flickery per-frame confidence into a stable
+# signal before the dwell timer starts counting.
+VOTE_WINDOW = 15
+VOTE_MIN = 6
 
 
 class Command(BaseCommand):
@@ -47,6 +54,20 @@ class Command(BaseCommand):
             action="store_true",
             help="Webcam mode: show a live preview window with boxes drawn on it.",
         )
+        parser.add_argument(
+            "--far",
+            action="store_true",
+            help="Long-range CCTV mode: split the frame into tiles and run the "
+                 "detector on upscaled person crops so a distant cigarette still "
+                 "lands on enough pixels. Slower per frame; adds N-of-M temporal "
+                 "voting to keep the extra tiling hits from firing false alerts.",
+        )
+        parser.add_argument(
+            "--tiles",
+            default="2x2",
+            help="Far mode only: tiling grid as ROWSxCOLS (e.g. 2x2, 3x3). More "
+                 "tiles reach further but cost more inference per frame.",
+        )
 
     def handle(self, *args, **options):
         # ViolationType/Camera aren't created by any migration, so get_or_create
@@ -72,6 +93,15 @@ class Command(BaseCommand):
 
         self.conf_override = options["confidence"]
         self.dwell_override = options["dwell"]
+        self.far = options["far"]
+        try:
+            rows, cols = (int(v) for v in options["tiles"].lower().split("x"))
+            self.tiles = (rows, cols)
+        except (ValueError, AttributeError):
+            self.stdout.write(self.style.ERROR(
+                f"Invalid --tiles {options['tiles']!r}; expected ROWSxCOLS like 2x2."
+            ))
+            return
 
         cfg = SystemSettings.load()
         if not cfg.smoking_enabled:
@@ -86,6 +116,19 @@ class Command(BaseCommand):
         else:
             self._run_webcam(options["debug"])
 
+    # ---- detection dispatch -----------------------------------------------
+
+    def _detect(self, frame, conf, persons=None):
+        """Runs the smoking detector, using the long-range cascade when --far is
+        set (tiling + upscaled person crops), else the fast single-pass detector."""
+        if not self.far:
+            return recognition.detect_smoking(frame, conf=conf)
+        if persons is None:
+            persons = recognition.detect_persons(frame)
+        return recognition.detect_smoking_far(
+            frame, conf=conf, tiles=self.tiles, person_boxes=persons,
+        )
+
     # ---- single-image test mode -------------------------------------------
 
     def _run_image(self, path, conf):
@@ -94,7 +137,7 @@ class Command(BaseCommand):
             self.stdout.write(self.style.ERROR(f"Could not read image: {path}"))
             return
 
-        smokes = recognition.detect_smoking(frame, conf=conf)
+        smokes = self._detect(frame, conf)
         if not smokes:
             self.stdout.write(self.style.WARNING(
                 f"No smoking detected above confidence {conf}. "
@@ -138,16 +181,18 @@ class Command(BaseCommand):
         cfg = SystemSettings.load()
         cfg_loaded_at = time.time()
 
-        # A single presence timer: smoking is a transient act on tiny, moving
-        # objects (a cigarette), so per-object IoU tracking (as in watch_parking)
-        # is unreliable. Instead we require smoking to be *present* continuously
-        # for `dwell` seconds before alerting, which filters one-frame false hits.
-        smoking_since = None
-        last_seen = 0.0
-        last_alerted_at = 0.0
+        # Per-person tracking: the cigarette itself is too small/transient to
+        # track, but the PERSON holding it isn't — person boxes are matched
+        # across frames (greedy IoU), and each track keeps its own vote window,
+        # dwell timer and alert cooldown, so two smokers in frame are confirmed
+        # and alerted independently. Detections no person box claims fall back
+        # to the tracker's scene pseudo-track.
+        tracker = tracking.PersonTracker(vote_window=VOTE_WINDOW)
 
+        mode = f"FAR {self.tiles[0]}x{self.tiles[1]} tiling + person-crop" if self.far else "near"
         self.stdout.write(self.style.SUCCESS(
-            f"Watching webcam for public smoking (dwell {self.dwell_override or cfg.smoking_dwell}s, "
+            f"Watching webcam for public smoking [{mode} mode] "
+            f"(dwell {self.dwell_override or cfg.smoking_dwell}s, "
             f"reads live from Settings). Press Ctrl+C to stop."
         ))
 
@@ -171,41 +216,27 @@ class Command(BaseCommand):
 
                 conf = self.conf_override or (cfg.smoking_confidence / 100)
                 dwell_seconds = self.dwell_override or cfg.smoking_dwell
-                smokes = recognition.detect_smoking(frame, conf=conf)
 
-                if smokes:
-                    if smoking_since is None:
-                        smoking_since = now_ts
-                    last_seen = now_ts
-                    best = max(smokes, key=lambda s: s[4])
-                    _, _, _, _, best_score, best_label = best
-                    present_for = now_ts - smoking_since
+                # Person detection runs every frame (it's the tracking anchor);
+                # far mode reuses the same boxes for its person-crop pass.
+                persons = recognition.detect_persons(frame)
+                smokes = self._detect(frame, conf, persons=persons)
 
-                    if debug:
-                        for (x1, y1, x2, y2, score, label) in smokes:
-                            color = (0, 165, 245) if present_for >= dwell_seconds else (0, 200, 0)
-                            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                            cv2.putText(frame, f"{label} {present_for:.0f}s", (x1, max(y1 - 8, 0)),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                tracks = tracker.update(persons, now_ts)
+                per_track, leftovers = tracker.assign(smokes)
 
-                    if present_for >= dwell_seconds and now_ts - last_alerted_at >= cfg.alert_cooldown:
-                        summary = ", ".join(sorted({s[5] for s in smokes}))
-                        alert = self._create_alert(
-                            best_score, best_label, frame,
-                            description=(
-                                f"Public smoking detected: {summary} present for "
-                                f"{present_for:.0f}s on smoking-monitor feed."
-                            ),
-                        )
-                        last_alerted_at = now_ts
-                        self.stdout.write(self.style.SUCCESS(
-                            f"ALERT created: {alert.code} ({best_label})"
-                        ))
-                else:
-                    # smoke-free frame: reset the dwell timer only after a short
-                    # grace period, so brief detector flicker doesn't restart it.
-                    if smoking_since is not None and now_ts - last_seen > PRESENCE_GRACE_SECONDS:
-                        smoking_since = None
+                if debug:
+                    for t in tracks:
+                        x1, y1, x2, y2 = t.box
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), (180, 180, 180), 1)
+                        cv2.putText(frame, f"person #{t.id}", (x1, max(y1 - 6, 0)),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
+
+                for track, dets in list(per_track.items()) + [(tracker.scene, leftovers)]:
+                    self._process_track(
+                        track, dets, now_ts, dwell_seconds, cfg.alert_cooldown,
+                        frame, debug,
+                    )
 
                 if debug:
                     cv2.imshow("LookOut - watch_smoking (debug)", frame)
@@ -218,6 +249,56 @@ class Command(BaseCommand):
             if debug:
                 cv2.destroyAllWindows()
             self.stdout.write(self.style.SUCCESS("Stopped."))
+
+    # ---- per-track temporal confirmation ----------------------------------
+
+    def _process_track(self, track, dets, now_ts, dwell_seconds, cooldown,
+                       frame, debug):
+        """Votes, dwell-times and (maybe) alerts ONE track for this frame.
+
+        Same N-of-M + dwell + grace logic as before, but per person: each
+        track's votes/timers/cooldown are its own, so one smoker's alert
+        doesn't mask or reset another's.
+        """
+        track.votes.append(1 if dets else 0)
+        if dets:
+            track.dets = dets
+            track.last_threat_seen = now_ts
+        present = sum(track.votes) >= VOTE_MIN
+
+        if present and track.dets:
+            if track.threat_since is None:
+                track.threat_since = now_ts
+            present_for = now_ts - track.threat_since
+            best = max(track.dets, key=lambda s: s[4])
+            _, _, _, _, best_score, best_label = best
+
+            if debug:
+                for (x1, y1, x2, y2, score, label) in dets:
+                    color = (0, 165, 245) if present_for >= dwell_seconds else (0, 200, 0)
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                    cv2.putText(frame, f"{label} {present_for:.0f}s", (x1, max(y1 - 8, 0)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+
+            if present_for >= dwell_seconds and now_ts - track.last_alerted_at >= cooldown:
+                summary = ", ".join(sorted({s[5] for s in track.dets}))
+                who = f"person #{track.id}" if track.id else "unattributed detection"
+                alert = self._create_alert(
+                    best_score, best_label, frame,
+                    description=(
+                        f"Public smoking detected: {summary} on {who}, present "
+                        f"for {present_for:.0f}s on smoking-monitor feed."
+                    ),
+                )
+                track.last_alerted_at = now_ts
+                self.stdout.write(self.style.SUCCESS(
+                    f"ALERT created: {alert.code} ({best_label}, {who})"
+                ))
+        else:
+            # not present: reset the dwell timer only after a short grace
+            # period, so brief detector flicker doesn't restart it.
+            if track.threat_since is not None and now_ts - track.last_threat_seen > PRESENCE_GRACE_SECONDS:
+                track.threat_since = None
 
     # ---- shared alert creation --------------------------------------------
 
