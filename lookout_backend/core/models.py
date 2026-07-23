@@ -277,6 +277,17 @@ class SystemSettings(models.Model):
     # short compared to the parking dwell.
     smoking_dwell = models.PositiveSmallIntegerField(default=3)
 
+    thief_enabled = models.BooleanField(default=True)
+    # Detection confidence as a 0-100 percent (watch_thief divides by 100).
+    # Like the smoking model, the custom thief model scores genuine matches on
+    # the raw YOLO scale (~0.3-0.9), so this is calibrated to that, not a
+    # "high-confidence percent" intuition.
+    thief_confidence = models.PositiveSmallIntegerField(default=30)
+    # Seconds a gun/knife/robbery detection must persist before alerting
+    # (filters one-frame false positives). Kept short: unlike parking, an armed
+    # robbery should alert fast.
+    thief_dwell = models.PositiveSmallIntegerField(default=3)
+
     alert_cooldown = models.PositiveSmallIntegerField(default=120)
     evidence_retention_days = models.PositiveSmallIntegerField(default=30)
     auto_dispatch = models.BooleanField(default=False)

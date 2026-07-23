@@ -25,6 +25,11 @@ FACE_DB_PATH = VISION_DIR / "face_db.json"
 # so it loads its own weights. Override with the SMOKING_MODEL env var.
 SMOKING_MODEL_PATH = Path(os.environ.get("SMOKING_MODEL", str(VISION_DIR / "smoking.pt")))
 
+# Custom-trained thief/robbery detector (gun/knife/robbery activity/stealing).
+# Same deal as the smoking model: separate fine-tuned weights, trained with
+# detection_sandbox/train_thief.py. Override with the THIEF_MODEL env var.
+THIEF_MODEL_PATH = Path(os.environ.get("THIEF_MODEL", str(VISION_DIR / "thief.pt")))
+
 PERSON_CLASS_ID = 0  # COCO class id for "person"
 
 # COCO class ids for the vehicle types relevant to illegal-parking /
@@ -47,6 +52,7 @@ VEHICLE_CLASS_IDS = {
 _yolo_model = None
 _face_app = None
 _smoking_model = None
+_thief_model = None
 
 
 def load_yolo():
@@ -131,15 +137,14 @@ def detect_vehicles(frame, conf=0.4):
     return boxes
 
 
-def detect_smoking(frame, conf=0.3):
-    """Returns a list of (x1, y1, x2, y2, conf, label) boxes for smoking indicators.
+def _smoking_boxes_from_result(results, conf, offset=(0, 0)):
+    """Pulls (x1,y1,x2,y2,conf,label) tuples out of a YOLO result.
 
-    `label` is whatever class the custom model was trained with — typically
-    "cigarette", "smoke", "vape", or "smoking". Uses the model's own class names
-    so it adapts to any smoking dataset. Requires SMOKING_MODEL_PATH weights.
+    `offset` shifts every box by (ox, oy) so detections found inside a tile or a
+    crop come back in full-frame coordinates. `label` is the model's own class
+    name (cigarette/smoke/vape/smoking), so this adapts to any smoking dataset.
     """
-    model = load_smoking_model()
-    results = model(frame, verbose=False)[0]
+    ox, oy = offset
     names = results.names  # id -> class name, from the trained model
     boxes = []
     for box in results.boxes:
@@ -149,8 +154,175 @@ def detect_smoking(frame, conf=0.3):
         cls_id = int(box.cls[0])
         label = names[cls_id] if cls_id in names else "smoking"
         x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
-        boxes.append((x1, y1, x2, y2, score, label))
+        boxes.append((x1 + ox, y1 + oy, x2 + ox, y2 + oy, score, label))
     return boxes
+
+
+def detect_smoking(frame, conf=0.3):
+    """Single-pass smoking detection over the whole frame (the fast path).
+
+    Requires SMOKING_MODEL_PATH weights. Good for close cameras; at CCTV
+    distance a cigarette is only a few pixels once the frame is downscaled to
+    the model's imgsz, so use detect_smoking_far there instead.
+    """
+    model = load_smoking_model()
+    results = model(frame, verbose=False)[0]
+    return _smoking_boxes_from_result(results, conf)
+
+
+def _iter_tiles(frame, rows, cols, overlap):
+    """Yields (tile, (x_offset, y_offset)) sub-images covering the frame.
+
+    Tiles overlap by `overlap` (fraction of tile size) so a cigarette straddling
+    a seam isn't cut in half. Running the detector on each tile at native
+    resolution — SAHI-style — keeps small far-away objects big enough to detect,
+    instead of losing them when the whole frame is shrunk to the model's imgsz.
+    """
+    h, w = frame.shape[:2]
+    tile_h, tile_w = h // rows, w // cols
+    pad_y, pad_x = int(tile_h * overlap), int(tile_w * overlap)
+    for r in range(rows):
+        for c in range(cols):
+            y0 = max(r * tile_h - pad_y, 0)
+            x0 = max(c * tile_w - pad_x, 0)
+            y1 = min((r + 1) * tile_h + pad_y, h)
+            x1 = min((c + 1) * tile_w + pad_x, w)
+            yield frame[y0:y1, x0:x1], (x0, y0)
+
+
+def _iou(a, b):
+    """Intersection-over-union of two (x1,y1,x2,y2,...) boxes."""
+    ax1, ay1, ax2, ay2 = a[:4]
+    bx1, by1, bx2, by2 = b[:4]
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    iw, ih = max(ix2 - ix1, 0), max(iy2 - iy1, 0)
+    inter = iw * ih
+    if inter == 0:
+        return 0.0
+    area_a = (ax2 - ax1) * (ay2 - ay1)
+    area_b = (bx2 - bx1) * (by2 - by1)
+    return inter / float(area_a + area_b - inter)
+
+
+def _nms(boxes, iou_thresh=0.5):
+    """Greedy non-max suppression over (x1,y1,x2,y2,conf,label) boxes.
+
+    The tiling and person-crop passes overlap, so the same cigarette can be
+    found more than once; this collapses the duplicates, keeping the highest
+    confidence for each real object.
+    """
+    kept = []
+    for b in sorted(boxes, key=lambda x: x[4], reverse=True):
+        if all(_iou(b, k) < iou_thresh for k in kept):
+            kept.append(b)
+    return kept
+
+
+def _detect_far(model, frame, conf, tiles, overlap, person_boxes, upscale):
+    """Long-range detection cascade for CCTV footage, merged from two
+    resolution-preserving passes so a distant small object (a few pixels on the
+    full frame) still lands on enough pixels to detect:
+
+      1. Tiling (SAHI-style): the frame is split into `tiles` (rows, cols) with
+         `overlap`, and the detector runs on each tile at native resolution.
+      2. Person-crop upscale: each person box (pass the output of detect_persons
+         as `person_boxes` to avoid re-running YOLO here) is cropped, enlarged
+         `upscale`x, and run through the detector — spending resolution only
+         where a person actually is.
+
+    Model-agnostic: works for any custom detector (smoking, thief, ...) since
+    labels come from the model's own class names. Returns (x1,y1,x2,y2,conf,
+    label) tuples in full-frame coordinates, de-duplicated with NMS. Slower
+    than a single pass (many inference passes per frame), which is fine for
+    CCTV where high FPS isn't needed.
+    """
+    boxes = []
+
+    rows, cols = tiles
+    if rows > 1 or cols > 1:
+        for tile, (ox, oy) in _iter_tiles(frame, rows, cols, overlap):
+            if tile.size == 0:
+                continue
+            results = model(tile, verbose=False)[0]
+            boxes.extend(_smoking_boxes_from_result(results, conf, offset=(ox, oy)))
+    else:
+        results = model(frame, verbose=False)[0]
+        boxes.extend(_smoking_boxes_from_result(results, conf))
+
+    scale = upscale or 1.0
+    for pb in (person_boxes or []):
+        px1, py1, px2, py2 = (int(v) for v in pb[:4])
+        px1, py1 = max(px1, 0), max(py1, 0)
+        crop = frame[py1:py2, px1:px2]
+        if crop.size == 0:
+            continue
+        if scale != 1.0:
+            crop = cv2.resize(crop, None, fx=scale, fy=scale,
+                              interpolation=cv2.INTER_CUBIC)
+        results = model(crop, verbose=False)[0]
+        for (x1, y1, x2, y2, score, label) in _smoking_boxes_from_result(results, conf):
+            # map the (possibly upscaled) crop-space box back to full-frame coords
+            boxes.append((
+                int(x1 / scale) + px1, int(y1 / scale) + py1,
+                int(x2 / scale) + px1, int(y2 / scale) + py1,
+                score, label,
+            ))
+
+    return _nms(boxes)
+
+
+def detect_smoking_far(frame, conf=0.3, tiles=(2, 2), overlap=0.2,
+                       person_boxes=None, upscale=2.0):
+    """Long-range smoking detection — see _detect_far for how the cascade works."""
+    return _detect_far(load_smoking_model(), frame, conf, tiles, overlap,
+                       person_boxes, upscale)
+
+
+def thief_model_available():
+    """True if the custom thief weights are present (callers skip cleanly if not)."""
+    return THIEF_MODEL_PATH.exists()
+
+
+def load_thief_model():
+    """Lazy-loads the custom thief/robbery detector. Raises if the weights are
+    missing — stock YOLOv8 (COCO) has no gun/knife/robbery class, so this model
+    is required."""
+    global _thief_model
+    if _thief_model is None:
+        if not THIEF_MODEL_PATH.exists():
+            raise FileNotFoundError(
+                f"Thief model not found at {THIEF_MODEL_PATH}. Train one with "
+                "detection_sandbox/train_thief.py and copy best.pt here, or set "
+                "the THIEF_MODEL env var."
+            )
+        from ultralytics import YOLO
+
+        _thief_model = YOLO(str(THIEF_MODEL_PATH))
+    return _thief_model
+
+
+def detect_thief(frame, conf=0.3):
+    """Single-pass thief/robbery detection over the whole frame (the fast path).
+
+    Returns the same (x1,y1,x2,y2,conf,label) tuples as detect_smoking; labels
+    come from the trained model (gun/knife/robbery activity/stealing). Guns,
+    knives and whole-body actions are far larger than a cigarette, so this
+    covers more range than detect_smoking does — but at real CCTV distance a
+    handgun still shrinks to a few pixels; use detect_thief_far there.
+    """
+    model = load_thief_model()
+    results = model(frame, verbose=False)[0]
+    return _smoking_boxes_from_result(results, conf)
+
+
+def detect_thief_far(frame, conf=0.3, tiles=(2, 2), overlap=0.2,
+                     person_boxes=None, upscale=2.0):
+    """Long-range thief/robbery detection — see _detect_far for the cascade.
+    Mainly helps the small handheld classes (gun/knife); the whole-body classes
+    (robbery activity/stealing) usually don't need it."""
+    return _detect_far(load_thief_model(), frame, conf, tiles, overlap,
+                       person_boxes, upscale)
 
 
 def load_image(path):
