@@ -46,12 +46,18 @@ class ViolationTypeSerializer(serializers.ModelSerializer):
 
 class CameraSerializer(serializers.ModelSerializer):
     zone = serializers.SlugRelatedField(slug_field="name", queryset=Zone.objects.all())
+    # `is_live` tells the dashboard to poll the snapshot endpoint instead of the
+    # static image_url. The raw stream_url (which holds credentials) is never
+    # serialized — it is write-only, so an admin can set it but it never leaves
+    # the server in a response.
+    is_live = serializers.BooleanField(read_only=True)
+    stream_url = serializers.CharField(write_only=True, required=False, allow_blank=True)
 
     class Meta:
         model = Camera
         fields = [
             "id", "code", "name", "zone", "status", "fps",
-            "last_motion_at", "image_url",
+            "last_motion_at", "image_url", "is_live", "stream_url",
         ]
 
 
@@ -122,7 +128,7 @@ class AlertSerializer(serializers.ModelSerializer):
         model = Alert
         fields = [
             "id", "code", "type", "status", "camera", "camera_zone", "timestamp",
-            "confidence", "description", "image_url", "officers_assigned",
+            "confidence", "description", "image_url", "video_url", "officers_assigned",
             "officers_assigned_names", "suspect", "notes",
         ]
 
@@ -143,6 +149,8 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
             "parking_move_tolerance",
             "smoking_enabled", "smoking_confidence", "smoking_dwell",
             "thief_enabled", "thief_confidence", "thief_dwell",
+            "drinking_enabled", "drinking_confidence", "drinking_dwell",
+            "drinking_hours_enabled", "drinking_start", "drinking_end",
             "alert_cooldown", "evidence_retention_days",
             "auto_dispatch", "email_alerts", "sms_alerts",
             "updated_at",

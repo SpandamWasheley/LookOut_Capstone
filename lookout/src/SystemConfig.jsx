@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Save, RotateCcw, Moon, Volume2, Trash2, Car, Cigarette, Siren, AlertTriangle, Loader2 } from "lucide-react";
+import { Save, RotateCcw, Moon, Volume2, Trash2, Car, Cigarette, Siren, Beer, AlertTriangle, Loader2 } from "lucide-react";
 import { getSettings, saveSettings } from "./api";
 
 const trimSeconds = (t) => (t ? t.slice(0, 5) : t);
@@ -40,6 +40,12 @@ function fromApi(s) {
     thiefEnabled: s.thief_enabled,
     thiefConf: s.thief_confidence,
     thiefDwell: s.thief_dwell,
+    drinkingEnabled: s.drinking_enabled,
+    drinkingConf: s.drinking_confidence,
+    drinkingDwell: s.drinking_dwell,
+    drinkingHoursEnabled: s.drinking_hours_enabled,
+    drinkingStart: trimSeconds(s.drinking_start),
+    drinkingEnd: trimSeconds(s.drinking_end),
     cooldown: s.alert_cooldown,
     retention: s.evidence_retention_days,
     autoDispatch: s.auto_dispatch,
@@ -75,6 +81,12 @@ function toApi(f) {
     thief_enabled: f.thiefEnabled,
     thief_confidence: f.thiefConf,
     thief_dwell: f.thiefDwell,
+    drinking_enabled: f.drinkingEnabled,
+    drinking_confidence: f.drinkingConf,
+    drinking_dwell: f.drinkingDwell,
+    drinking_hours_enabled: f.drinkingHoursEnabled,
+    drinking_start: f.drinkingStart,
+    drinking_end: f.drinkingEnd,
     alert_cooldown: f.cooldown,
     evidence_retention_days: f.retention,
     auto_dispatch: f.autoDispatch,
@@ -90,6 +102,7 @@ const sections = [
   { id: "parking", label: "Parking", icon: Car,    color: "#ef4444" },
   { id: "smoking", label: "Smoking", icon: Cigarette, color: "#f97316" },
   { id: "thief",   label: "Thief",   icon: Siren,  color: "#dc2626" },
+  { id: "drinking", label: "Drinking", icon: Beer, color: "#8b5cf6" },
   // { id: "system", label: "System", icon: Clock,   color: "#3b82f6" },
 ];
 
@@ -261,6 +274,12 @@ export function SystemConfig() {
   const [thiefEnabled, setThiefEnabled] = useState(true);
   const [thiefConf, setThiefConf] = useState(30);
   const [thiefDwell, setThiefDwell] = useState(3);
+  const [drinkingEnabled, setDrinkingEnabled] = useState(true);
+  const [drinkingConf, setDrinkingConf] = useState(35);
+  const [drinkingDwell, setDrinkingDwell] = useState(8);
+  const [drinkingHoursEnabled, setDrinkingHoursEnabled] = useState(false);
+  const [drinkingStart, setDrinkingStart] = useState("22:00");
+  const [drinkingEnd, setDrinkingEnd] = useState("05:00");
   const [cooldown, setCooldown] = useState(120);
   const [retention, setRetention] = useState(30);
   const [autoDispatch, setAutoDispatch] = useState(false);
@@ -294,6 +313,12 @@ export function SystemConfig() {
     setThiefEnabled(f.thiefEnabled);
     setThiefConf(f.thiefConf);
     setThiefDwell(f.thiefDwell);
+    setDrinkingEnabled(f.drinkingEnabled);
+    setDrinkingConf(f.drinkingConf);
+    setDrinkingDwell(f.drinkingDwell);
+    setDrinkingHoursEnabled(f.drinkingHoursEnabled);
+    setDrinkingStart(f.drinkingStart);
+    setDrinkingEnd(f.drinkingEnd);
     setCooldown(f.cooldown);
     setRetention(f.retention);
     setAutoDispatch(f.autoDispatch);
@@ -328,6 +353,12 @@ export function SystemConfig() {
     thiefEnabled !== savedSnapshot.thiefEnabled ||
     thiefConf !== savedSnapshot.thiefConf ||
     thiefDwell !== savedSnapshot.thiefDwell ||
+    drinkingEnabled !== savedSnapshot.drinkingEnabled ||
+    drinkingConf !== savedSnapshot.drinkingConf ||
+    drinkingDwell !== savedSnapshot.drinkingDwell ||
+    drinkingHoursEnabled !== savedSnapshot.drinkingHoursEnabled ||
+    drinkingStart !== savedSnapshot.drinkingStart ||
+    drinkingEnd !== savedSnapshot.drinkingEnd ||
     cooldown !== savedSnapshot.cooldown ||
     retention !== savedSnapshot.retention ||
     autoDispatch !== savedSnapshot.autoDispatch ||
@@ -359,6 +390,8 @@ export function SystemConfig() {
         parkingEnabled, parkingConf, parkingDwell, parkingMove,
         smokingEnabled, smokingConf, smokingDwell,
         thiefEnabled, thiefConf, thiefDwell,
+        drinkingEnabled, drinkingConf, drinkingDwell,
+        drinkingHoursEnabled, drinkingStart, drinkingEnd,
         cooldown, retention, autoDispatch, emailAlerts, smsAlerts,
       }));
       applySettings(fromApi(updated));
@@ -472,6 +505,36 @@ export function SystemConfig() {
         <div className="rounded-xl p-4 text-xs leading-relaxed"
           style={{ background: "rgba(220,38,38,0.06)", border: "1px solid rgba(220,38,38,0.15)", color: "var(--muted-foreground)" }}>
           Detects <strong style={{ color: "#dc2626" }}>gun, knife, robbery activity, stealing</strong>. Sustained presence past the dwell time raises a <strong style={{ color: "#dc2626" }}>Theft / Robbery</strong> alert with an evidence snapshot.
+        </div>
+      </div>
+    ),
+    drinking: (
+      <div className="space-y-6">
+        <Toggle label="Drinking detection enabled" desc="Detect public drinking on the drinking-monitor feed" value={drinkingEnabled} onChange={setDrinkingEnabled} />
+        <Slider
+          label="Detection confidence" value={drinkingConf} min={10} max={90} unit="%"
+          desc="How sure the model must be. Lower catches more (with more false hits); higher is stricter."
+          onChange={setDrinkingConf}
+        />
+        <Slider
+          label="Dwell time before alert" value={drinkingDwell} min={3} max={60} unit="s"
+          desc="How long a bottle must stay with a person while raised to the mouth. Held-but-not-raised doubles this; an unattended bottle triples it."
+          onChange={setDrinkingDwell}
+        />
+        <Toggle
+          label="Restrict to ordinance hours"
+          desc="Only alert inside the hours below. Off means the detector alerts around the clock."
+          value={drinkingHoursEnabled} onChange={setDrinkingHoursEnabled}
+        />
+        {drinkingHoursEnabled && (
+          <div className="grid grid-cols-2 gap-4">
+            <TimeInput label="Drinking ban starts" value={drinkingStart} onChange={setDrinkingStart} />
+            <TimeInput label="Drinking ban ends" value={drinkingEnd} onChange={setDrinkingEnd} />
+          </div>
+        )}
+        <div className="rounded-xl p-4 text-xs leading-relaxed"
+          style={{ background: "rgba(139,92,246,0.06)", border: "1px solid rgba(139,92,246,0.15)", color: "var(--muted-foreground)" }}>
+          Detects <strong style={{ color: "#8b5cf6" }}>Red Horse bottles</strong> and raises a <strong style={{ color: "#8b5cf6" }}>Public Drinking</strong> alert with an evidence snapshot. The model recognises one brand only — other alcohol is not detected unless the watcher is run with <code>--include-generic</code>, which also counts any bottle, cup or glass raised to the mouth.
         </div>
       </div>
     ),

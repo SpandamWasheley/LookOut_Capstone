@@ -1,4 +1,5 @@
 import random
+import re
 from datetime import timedelta
 
 from django.conf import settings as django_settings
@@ -281,6 +282,43 @@ class SystemSettingsView(generics.RetrieveUpdateAPIView):
         return SystemSettings.load()
 
 
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated])
+def recording_start(request):
+    """Starts the continuous CCTV recorder — called on dashboard login. Uses the
+    stream URL of whichever camera has one configured. Idempotent: a second call
+    while it's already running is a no-op."""
+    from . import recording
+
+    cam = Camera.objects.exclude(stream_url="").first()
+    if cam is None:
+        return Response(
+            {"recording": False,
+             "detail": "No camera has a stream_url configured to record."},
+            status=400,
+        )
+    started = recording.start_recording(cam.stream_url)
+    return Response({"recording": True, "started": started, "camera": cam.code})
+
+
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated])
+def recording_stop(request):
+    """Stops the continuous CCTV recorder — called on dashboard logout."""
+    from . import recording
+
+    stopped = recording.stop_recording()
+    return Response({"recording": False, "stopped": stopped})
+
+
+@api_view(["GET"])
+@permission_classes([permissions.IsAuthenticated])
+def recording_status(request):
+    from . import recording
+
+    return Response({"recording": recording.is_recording()})
+
+
 @api_view(["GET"])
 @permission_classes([permissions.IsAuthenticated])
 def dashboard_stats(request):
@@ -379,6 +417,51 @@ class CameraViewSet(viewsets.ModelViewSet):
     serializer_class = CameraSerializer
     filterset_fields = ["zone", "status"]
     permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
+
+    @action(detail=True, methods=["get"], permission_classes=[permissions.IsAuthenticated])
+    def snapshot(self, request, pk=None):
+        """Proxies a single still frame from the camera to the dashboard.
+
+        Browsers cannot play RTSP and the camera may sit on an isolated subnet
+        the browser can't route to, so the frame is fetched here (server-side,
+        with the camera's own credentials) and streamed back as JPEG. The
+        dashboard polls this a few times a second for a near-live feed.
+
+        Hikvision exposes a still at ISAPI/Streaming/channels/<ch>/picture; the
+        RTSP channel in stream_url (…/Streaming/Channels/102) maps to it.
+        """
+        import urllib.parse
+
+        import requests
+        from django.http import HttpResponse
+        from requests.auth import HTTPDigestAuth
+
+        camera = self.get_object()
+        if not camera.stream_url:
+            return Response({"detail": "Camera has no stream_url configured."}, status=404)
+
+        parsed = urllib.parse.urlparse(camera.stream_url)
+        host = parsed.hostname
+        user = urllib.parse.unquote(parsed.username or "")
+        pw = urllib.parse.unquote(parsed.password or "")
+        # RTSP path .../Channels/101 -> ISAPI snapshot channel; default to sub-stream.
+        channel = "102"
+        m = re.search(r"/Channels/(\d+)", parsed.path)
+        if m:
+            channel = m.group(1)
+        snap_url = f"http://{host}/ISAPI/Streaming/channels/{channel}/picture"
+
+        try:
+            r = requests.get(snap_url, auth=HTTPDigestAuth(user, pw), timeout=6)
+        except requests.RequestException as exc:
+            return Response({"detail": f"Camera unreachable: {exc}"}, status=502)
+        if r.status_code != 200:
+            return Response({"detail": f"Camera returned HTTP {r.status_code}."},
+                            status=502)
+
+        resp = HttpResponse(r.content, content_type=r.headers.get("Content-Type", "image/jpeg"))
+        resp["Cache-Control"] = "no-store"
+        return resp
 
 
 class OfficerViewSet(viewsets.ModelViewSet):

@@ -1,6 +1,54 @@
 import { useEffect, useRef, useState } from "react";
-import { Maximize2, WifiOff, LayoutGrid, Check } from "lucide-react";
-import { getAlerts, getCameras } from "./api";
+import { Maximize2, WifiOff, LayoutGrid, Check, X } from "lucide-react";
+import { getAlerts, getCameras, getCameraSnapshotUrl } from "./api";
+
+// Polls a live camera's snapshot proxy and returns the latest frame as an
+// object URL, or null for a non-live camera. Object URLs are revoked as they're
+// replaced and on unmount, so nothing leaks. A failed poll (camera briefly
+// unreachable) keeps the previous frame rather than flashing black.
+// The gap AFTER each fetch completes (the loop is self-pacing), so the real
+// frame rate is ~fetch(104ms) + intervalMs. At 40ms that's ~7 fps — near the
+// camera's ~104ms/frame ceiling, about as smooth as JPEG polling can get. It
+// can't go faster than the camera serves frames no matter how low this is, and
+// near-continuous polling keeps a dev-server thread and the camera busy, so this
+// is the practical floor rather than 0.
+function useLiveSnapshot(cam, intervalMs = 40) {
+  const [url, setUrl] = useState(null);
+  const urlRef = useRef(null);
+
+  useEffect(() => {
+    if (!cam.isLive || cam.status === "offline") return undefined;
+    let cancelled = false;
+    let timer = null;
+    const controller = new AbortController();
+
+    // Self-pacing loop: the next fetch is scheduled only AFTER the current one
+    // finishes, so a slow or stalled frame delays the feed instead of stacking
+    // overlapping requests on the dev server.
+    const tick = async () => {
+      try {
+        const next = await getCameraSnapshotUrl(cam.dbId, controller.signal);
+        if (cancelled) { URL.revokeObjectURL(next); return; }
+        if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+        urlRef.current = next;
+        setUrl(next);
+      } catch {
+        /* keep the last good frame */
+      }
+      if (!cancelled) timer = setTimeout(tick, intervalMs);
+    };
+
+    tick();
+    return () => {
+      cancelled = true;
+      controller.abort();
+      if (timer) clearTimeout(timer);
+      if (urlRef.current) { URL.revokeObjectURL(urlRef.current); urlRef.current = null; }
+    };
+  }, [cam.dbId, cam.isLive, cam.status, intervalMs]);
+
+  return url;
+}
 
 // NVR-style wall layouts. `cols` = grid columns; `tiles` = slots shown;
 // `hero` (optional) = span of the first tile, in cells, for the "1 + N" walls
@@ -29,12 +77,14 @@ function timeAgo(iso) {
 function mapCamera(raw) {
   return {
     id: raw.code,
+    dbId: raw.id,          // numeric pk, for the snapshot endpoint
     name: raw.name,
     zone: raw.zone,
     status: raw.status,
     fps: raw.fps,
     lastMotion: timeAgo(raw.last_motion_at),
     imageUrl: raw.image_url,
+    isLive: raw.is_live,   // poll the snapshot proxy instead of the static image
   };
 }
 
@@ -84,7 +134,8 @@ function EmptyTile({ fill }) {
   );
 }
 
-function CameraTile({ cam, alert, isSelected, onSelect, fill }) {
+function CameraTile({ cam, alert, isSelected, onSelect, onExpand, fill }) {
+  const liveUrl = useLiveSnapshot(cam);
   return (
     <div
       onClick={onSelect}
@@ -96,14 +147,23 @@ function CameraTile({ cam, alert, isSelected, onSelect, fill }) {
         background: "var(--card)",
       }}
     >
-      {/* Feed image */}
+      {/* Feed image — live snapshot for CCTV cameras, static image otherwise */}
       <div className={`relative w-full overflow-hidden bg-black ${fill ? "flex-1 min-h-0" : "aspect-video"}`}>
         <img
-          src={cam.imageUrl}
+          src={liveUrl || cam.imageUrl}
           alt={`${cam.name} feed`}
           className="w-full h-full object-cover transition-all duration-300"
           style={{ opacity: cam.status === "offline" ? 0.2 : 1 }}
         />
+
+        {/* LIVE badge for a streaming camera */}
+        {cam.isLive && cam.status !== "offline" && (
+          <div className="absolute top-2 right-2 flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold"
+            style={{ background: "rgba(239,68,68,0.85)", color: "#fff" }}>
+            <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
+            LIVE
+          </div>
+        )}
 
         {/* Scanline */}
         <div
@@ -138,12 +198,16 @@ function CameraTile({ cam, alert, isSelected, onSelect, fill }) {
           {cam.fps}fps
         </div>
 
-        {/* Expand on hover */}
-        <div className="absolute bottom-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
-          <div className="p-1 rounded" style={{ background: "rgba(0,0,0,0.6)" }}>
-            <Maximize2 size={10} style={{ color: "#fff" }} />
-          </div>
-        </div>
+        {/* Expand to fullscreen */}
+        <button
+          type="button"
+          title="Expand"
+          onClick={(e) => { e.stopPropagation(); onExpand?.(cam); }}
+          className="absolute bottom-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded cursor-pointer hover:scale-110"
+          style={{ background: "rgba(0,0,0,0.6)", border: "none" }}
+        >
+          <Maximize2 size={12} style={{ color: "#fff" }} />
+        </button>
 
         {/* Offline */}
         {cam.status === "offline" && (
@@ -181,7 +245,77 @@ function CameraTile({ cam, alert, isSelected, onSelect, fill }) {
   );
 }
 
+// Fullscreen overlay for a single camera — a large live view with its own
+// snapshot poll. Closes on the X, on backdrop click, or Escape.
+function ExpandedCamera({ cam, alert, onClose }) {
+  const liveUrl = useLiveSnapshot(cam);
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      onClick={onClose}
+      className="fixed inset-0 z-50 flex items-center justify-center p-6"
+      style={{ background: "rgba(0,0,0,0.85)" }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="relative w-full rounded-xl overflow-hidden"
+        style={{ maxWidth: "min(95vw, 1600px)", border: "1px solid var(--border)", background: "#000" }}
+      >
+        <div className="relative w-full bg-black" style={{ aspectRatio: "16 / 9" }}>
+          <img
+            src={liveUrl || cam.imageUrl}
+            alt={`${cam.name} feed`}
+            className="w-full h-full object-contain"
+            style={{ opacity: cam.status === "offline" ? 0.2 : 1 }}
+          />
+          {cam.isLive && cam.status !== "offline" && (
+            <div className="absolute top-3 left-3 flex items-center gap-1.5 px-2 py-1 rounded text-xs font-semibold"
+              style={{ background: "rgba(239,68,68,0.85)", color: "#fff" }}>
+              <span className="w-2 h-2 rounded-full bg-white animate-pulse" />
+              LIVE
+            </div>
+          )}
+          {alert && (
+            <div className="absolute top-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded text-xs font-semibold"
+              style={{ background: "rgba(239,68,68,0.9)", color: "#fff" }}>
+              ⚠ VIOLATION DETECTED
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={onClose}
+            title="Close (Esc)"
+            className="absolute top-3 right-3 p-2 rounded-lg cursor-pointer hover:scale-110 transition-transform"
+            style={{ background: "rgba(0,0,0,0.6)", border: "none" }}
+          >
+            <X size={18} style={{ color: "#fff" }} />
+          </button>
+        </div>
+        <div className="flex items-center justify-between px-4 py-3"
+          style={{ background: "var(--card)", borderTop: "1px solid var(--border)" }}>
+          <div>
+            <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>{cam.name}</div>
+            <div className="text-[11px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+              {cam.id} · {cam.zone || "—"} · {cam.status}
+            </div>
+          </div>
+          <div className="text-[11px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+            {cam.lastMotion ? `motion ${cam.lastMotion}` : ""}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function CameraGrid({ compact = false }) {
+  const [expanded, setExpanded] = useState(null);
   const [selected, setSelected] = useState(null);
   const [allCameras, setAllCameras] = useState([]);
   const [alerts, setAlerts] = useState([]);
@@ -193,7 +327,16 @@ export function CameraGrid({ compact = false }) {
 
   useEffect(() => {
     const refresh = () => {
-      getCameras().then((res) => setAllCameras((res.results ?? res).map(mapCamera))).catch(() => {});
+      getCameras()
+        .then((res) => {
+          // Live CCTV cameras lead the wall so a real feed is always visible in
+          // the first tiles, ahead of any seeded demo cameras; order is stable
+          // within each group.
+          const mapped = (res.results ?? res).map(mapCamera);
+          mapped.sort((a, b) => (b.isLive ? 1 : 0) - (a.isLive ? 1 : 0));
+          setAllCameras(mapped);
+        })
+        .catch(() => {});
       getAlerts().then((res) => setAlerts(res.results ?? res)).catch(() => {});
     };
     refresh();
@@ -231,8 +374,12 @@ export function CameraGrid({ compact = false }) {
             alert={getAlert(cam.id)}
             isSelected={selected === cam.id}
             onSelect={() => setSelected(selected === cam.id ? null : cam.id)}
+            onExpand={setExpanded}
           />
         ))}
+        {expanded && (
+          <ExpandedCamera cam={expanded} alert={getAlert(expanded.id)} onClose={() => setExpanded(null)} />
+        )}
       </div>
     );
   }
@@ -306,6 +453,7 @@ export function CameraGrid({ compact = false }) {
                   alert={getAlert(cam.id)}
                   isSelected={selected === cam.id}
                   onSelect={() => setSelected(selected === cam.id ? null : cam.id)}
+                  onExpand={setExpanded}
                   fill={!!layout.hero}
                 />
               ) : (
@@ -315,6 +463,10 @@ export function CameraGrid({ compact = false }) {
           );
         })}
       </div>
+
+      {expanded && (
+        <ExpandedCamera cam={expanded} alert={getAlert(expanded.id)} onClose={() => setExpanded(null)} />
+      )}
     </div>
   );
 }
