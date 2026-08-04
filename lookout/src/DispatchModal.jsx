@@ -69,23 +69,47 @@ export function DispatchModal({ alert, officers, alerts, onAssign, onClose }) {
           </button>
         </div>
 
-        {/* Alert snapshot */}
+        {/* Alert evidence — 10s detection clip with bounding boxes if we have
+            one, otherwise the still snapshot. */}
         <div className="px-5 py-3" style={{ borderBottom: "1px solid var(--border)" }}>
-          <div className="flex gap-3 items-center">
-            <img src={alert.imageUrl} alt="Evidence"
-              className="w-20 h-14 rounded-lg object-cover flex-shrink-0"
-              style={{ border: "1px solid var(--border)" }} />
+          {alert.videoUrl ? (
             <div>
-              <p className="text-[11px] leading-relaxed" style={{ color: "var(--muted-foreground)" }}>
-                {alert.description}
-              </p>
-              <div className="flex items-center gap-2 mt-1.5">
-                <span className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>
-                  {(alert.confidence * 100).toFixed(0)}% confidence
+              <div className="relative rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)", background: "#000" }}>
+                <video
+                  src={alert.videoUrl}
+                  poster={alert.imageUrl || undefined}
+                  controls autoPlay loop muted playsInline
+                  className="w-full max-h-72 object-contain bg-black"
+                />
+                <span className="absolute top-2 left-2 px-1.5 py-0.5 rounded text-[10px] font-semibold"
+                  style={{ background: "rgba(0,0,0,0.7)", color: "#fff" }}>
+                  ● EVIDENCE CLIP
                 </span>
               </div>
+              <p className="text-[11px] leading-relaxed mt-2" style={{ color: "var(--muted-foreground)" }}>
+                {alert.description}
+              </p>
+              <span className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>
+                {(alert.confidence * 100).toFixed(0)}% confidence
+              </span>
             </div>
-          </div>
+          ) : (
+            <div className="flex gap-3 items-center">
+              <img src={alert.imageUrl} alt="Evidence"
+                className="w-20 h-14 rounded-lg object-cover flex-shrink-0"
+                style={{ border: "1px solid var(--border)" }} />
+              <div>
+                <p className="text-[11px] leading-relaxed" style={{ color: "var(--muted-foreground)" }}>
+                  {alert.description}
+                </p>
+                <div className="flex items-center gap-2 mt-1.5">
+                  <span className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>
+                    {(alert.confidence * 100).toFixed(0)}% confidence
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Tip */}

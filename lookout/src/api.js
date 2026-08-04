@@ -115,7 +115,29 @@ export const getAlerts = () => apiFetch("/alerts/");
 export const updateAlert = (id, payload) =>
   apiFetch(`/alerts/${id}/`, { method: "PATCH", body: JSON.stringify(payload) });
 
+// Continuous CCTV recording, tied to dashboard login/logout: start when the
+// operator signs in, stop when they sign out. Fire-and-forget from the UI.
+export const startRecording = () => apiFetch("/recording/start/", { method: "POST" });
+export const stopRecording = () => apiFetch("/recording/stop/", { method: "POST" });
+export const getRecordingStatus = () => apiFetch("/recording/status/");
+
 export const getCameras = () => apiFetch("/cameras/");
+
+// Fetches one JPEG frame from a live camera's snapshot proxy as an object URL.
+// The access token lives only in memory, so an <img src> can't carry it — we
+// fetch the bytes with the Authorization header and wrap them in a blob URL.
+// The caller MUST URL.revokeObjectURL the returned value when replacing it, or
+// object URLs leak for the life of the tab.
+export async function getCameraSnapshotUrl(dbId, signal) {
+  const token = getAccessToken();
+  const response = await fetch(`${API_BASE_URL}/cameras/${dbId}/snapshot/`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    signal,
+  });
+  if (!response.ok) throw new Error(`snapshot ${response.status}`);
+  const blob = await response.blob();
+  return URL.createObjectURL(blob);
+}
 
 export const changePassword = (newPassword) =>
   apiFetch("/auth/change-password/", { method: "POST", body: JSON.stringify({ new_password: newPassword }) });

@@ -78,9 +78,19 @@ class Camera(models.Model):
     fps = models.PositiveSmallIntegerField(default=0)
     last_motion_at = models.DateTimeField(null=True, blank=True)
     image_url = models.URLField(blank=True)
+    # RTSP URL for a live camera (e.g. rtsp://user:pass@192.168.1.64:554/...).
+    # Browsers cannot play RTSP, so the dashboard never receives this directly —
+    # the /cameras/{id}/snapshot/ endpoint reads it server-side, pulls a JPEG
+    # from the camera, and streams that to the grid. Credentials therefore stay
+    # on the backend and are never exposed by the serializer.
+    stream_url = models.CharField(max_length=500, blank=True)
 
     class Meta:
         ordering = ["code"]
+
+    @property
+    def is_live(self):
+        return bool(self.stream_url)
 
     def save(self, *args, **kwargs):
         if not self.code:
@@ -218,6 +228,9 @@ class Alert(models.Model):
     confidence = models.FloatField()
     description = models.TextField(blank=True)
     image_url = models.URLField(blank=True)
+    # ~10s evidence clip with detection boxes drawn, written by the watchers'
+    # ClipRecorder. Blank for older alerts / still-only detectors.
+    video_url = models.URLField(blank=True)
     officers_assigned = models.ManyToManyField(Officer, blank=True, related_name="alerts")
     suspect = models.CharField(max_length=150, blank=True)
     notes = models.TextField(blank=True)
@@ -287,6 +300,22 @@ class SystemSettings(models.Model):
     # (filters one-frame false positives). Kept short: unlike parking, an armed
     # robbery should alert fast.
     thief_dwell = models.PositiveSmallIntegerField(default=3)
+
+    drinking_enabled = models.BooleanField(default=True)
+    # Detection confidence as a 0-100 percent (watch_drinking divides by 100).
+    # Same raw-YOLO scale as the smoking/thief models, not a "percent sure" bar.
+    drinking_confidence = models.PositiveSmallIntegerField(default=35)
+    # Seconds a bottle must stay with a person before it counts as public
+    # drinking. Longer than smoking's: a bottle is frequently present without
+    # being consumed (carried home, on a table, held by a bystander), so the
+    # dwell is doing more work here than it does for a cigarette.
+    drinking_dwell = models.PositiveSmallIntegerField(default=8)
+    # Public-drinking ordinances are usually scoped by hour, the way curfew is.
+    # Off by default so enabling the detector doesn't silently stop alerting
+    # during the day; turn it on and set the window to match the local ordinance.
+    drinking_hours_enabled = models.BooleanField(default=False)
+    drinking_start = models.TimeField(default=time(22, 0))
+    drinking_end = models.TimeField(default=time(5, 0))
 
     alert_cooldown = models.PositiveSmallIntegerField(default=120)
     evidence_retention_days = models.PositiveSmallIntegerField(default=30)

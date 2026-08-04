@@ -16,3 +16,4 @@ onnxruntime
 opencv-python
 torch
 ultralytics
+lap  # ultralytics' ByteTrack/BoT-SORT (watch_* --tracker); auto-installs otherwise

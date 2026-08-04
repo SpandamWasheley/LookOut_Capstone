@@ -17,6 +17,7 @@ function mapAlert(raw) {
     confidence: raw.confidence,
     description: raw.description,
     imageUrl: raw.image_url,
+    videoUrl: raw.video_url,
     officersAssignedIds: raw.officers_assigned ?? [],
     officersAssignedNames: raw.officers_assigned_names ?? [],
     suspect: raw.suspect,

@@ -46,3 +46,18 @@ Thumbs.db
 *.njsproj
 *.sln
 *.sw?
+
+# Auto-downloaded YOLO base weights (fetched on first use, don't commit)
+yolov8n.pt
+yolov8n-pose.pt
+lookout_backend/yolov8n.pt
+lookout_backend/yolov8n-pose.pt
+
+# Continuous CCTV recordings and recorder runtime state
+cctv records/
+lookout_backend/recorder.pid
+lookout_backend/recorder.stop
+cctv records/recorder.log
+
+# Local test artifacts
+lookout_backend/_*.jpg

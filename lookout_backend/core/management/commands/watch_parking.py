@@ -46,7 +46,20 @@ class Command(BaseCommand):
         parser.add_argument(
             "--image",
             help="Path to a still image to run detection on once (test mode). "
-                 "Without this, watches the webcam (index 0) continuously.",
+                 "Without this, watches --source continuously.",
+        )
+        parser.add_argument(
+            "--source",
+            default="0",
+            help="Live video source: a webcam index (default 0) or a stream URL "
+                 "/ video file path. Use the RTSP URL for a real CCTV camera, "
+                 "e.g. rtsp://user:pass@192.168.1.64:554/Streaming/Channels/102",
+        )
+        parser.add_argument(
+            "--camera",
+            default=PARKING_CAMERA_CODE,
+            help=f"Camera code to attach alerts to (default {PARKING_CAMERA_CODE}). "
+                 "Give each feed its own code when running one watcher per camera.",
         )
         parser.add_argument(
             "--confidence",
@@ -67,6 +80,25 @@ class Command(BaseCommand):
             action="store_true",
             help="Webcam mode: show a live preview window with boxes drawn on it.",
         )
+        parser.add_argument(
+            "--far",
+            action="store_true",
+            help="Deprecated / no-op: long-range tiling is now ON by default "
+                 "(whole-frame near pass AND tiling far pass every frame, merged). "
+                 "Kept so existing commands don't break.",
+        )
+        parser.add_argument(
+            "--fast",
+            action="store_true",
+            help="Near mode ONLY — the single whole-frame pass at imgsz 1280, no "
+                 "tiling. Faster but weaker on distant vehicles.",
+        )
+        parser.add_argument(
+            "--tiles",
+            default="2x2",
+            help="Far mode only: tiling grid as ROWSxCOLS (e.g. 2x2, 3x3). More "
+                 "tiles reach further but cost more inference per frame.",
+        )
 
     def handle(self, *args, **options):
         # ViolationType/Camera aren't created by any migration, so get_or_create
@@ -76,7 +108,7 @@ class Command(BaseCommand):
             defaults={"label": "Illegal Parking", "color": "#ef4444", "icon": "car"},
         )
         self.camera, _ = Camera.objects.get_or_create(
-            code=PARKING_CAMERA_CODE,
+            code=options["camera"],
             defaults={"name": "Parking Monitor", "status": Camera.Status.ONLINE},
         )
         self.violations_dir = settings.MEDIA_ROOT / "violations"
@@ -84,6 +116,17 @@ class Command(BaseCommand):
 
         self.conf_override = options["confidence"]
         self.dwell_override = options["dwell"]
+        # Both modes by default (far already includes the near whole-frame pass);
+        # --fast opts out to the single near pass.
+        self.far = not options["fast"]
+        try:
+            rows, cols = (int(v) for v in options["tiles"].lower().split("x"))
+            self.tiles = (rows, cols)
+        except (ValueError, AttributeError):
+            self.stdout.write(self.style.ERROR(
+                f"Invalid --tiles {options['tiles']!r}; expected ROWSxCOLS like 2x2."
+            ))
+            return
 
         cfg = SystemSettings.load()
         if not cfg.parking_enabled:
@@ -96,7 +139,16 @@ class Command(BaseCommand):
             conf = self.conf_override or (cfg.parking_confidence / 100)
             self._run_image(options["image"], conf)
         else:
-            self._run_webcam(options["debug"])
+            self._run_stream(options["source"], options["debug"])
+
+    # ---- detection dispatch -----------------------------------------------
+
+    def _detect(self, frame, conf):
+        """Runs vehicle detection, using the long-range tiling cascade when
+        --far is set, else the fast single (upsized) pass."""
+        if self.far:
+            return recognition.detect_vehicles_far(frame, conf=conf, tiles=self.tiles)
+        return recognition.detect_vehicles(frame, conf=conf)
 
     # ---- single-image test mode -------------------------------------------
 
@@ -106,7 +158,7 @@ class Command(BaseCommand):
             self.stdout.write(self.style.ERROR(f"Could not read image: {path}"))
             return
 
-        vehicles = recognition.detect_vehicles(frame, conf=conf)
+        vehicles = self._detect(frame, conf)
         if not vehicles:
             self.stdout.write(self.style.WARNING(
                 f"No vehicles detected above confidence {conf}. "
@@ -136,13 +188,26 @@ class Command(BaseCommand):
             f"ALERT created: {alert.code}"
         ))
 
-    # ---- webcam dwell mode ------------------------------------------------
+    # ---- live stream dwell mode -------------------------------------------
 
-    def _run_webcam(self, debug):
-        cap = cv2.VideoCapture(0)
+    def _open_capture(self, source):
+        """Opens a webcam index or a stream URL / file path."""
+        if source.isdigit():
+            return cv2.VideoCapture(int(source))
+        cap = cv2.VideoCapture(source)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        return cap
+
+    def _run_stream(self, source, debug):
+        cap = self._open_capture(source)
         if not cap.isOpened():
-            self.stdout.write(self.style.ERROR("Could not open webcam (index 0)."))
+            self.stdout.write(self.style.ERROR(f"Could not open video source: {source}"))
             return
+
+        # Live sources get the always-latest reader so slow far-mode processing
+        # never falls behind the stream; a file is read directly.
+        is_live = source.isdigit() or "://" in source
+        reader = recognition.LatestFrameReader(cap) if is_live else cap
 
         # Settings are re-polled every few seconds (like watch_curfew) so edits
         # made in the dashboard's Parking config take effect live, without a
@@ -154,15 +219,18 @@ class Command(BaseCommand):
         next_id = 0
 
         self.stdout.write(self.style.SUCCESS(
-            f"Watching webcam for parked vehicles (dwell {self.dwell_override or cfg.parking_dwell}s, "
+            f"Watching {source} for parked vehicles (dwell {self.dwell_override or cfg.parking_dwell}s, "
             f"reads live from Settings). Press Ctrl+C to stop."
         ))
 
         try:
             while True:
-                ok, frame = cap.read()
+                ok, frame = reader.read()
                 if not ok:
-                    self.stdout.write(self.style.WARNING("Failed to read frame from webcam."))
+                    if is_live:
+                        time.sleep(0.02)
+                        continue
+                    self.stdout.write(self.style.WARNING(f"Failed to read frame from {source}."))
                     time.sleep(0.5)
                     continue
 
@@ -178,7 +246,7 @@ class Command(BaseCommand):
                 conf = self.conf_override or (cfg.parking_confidence / 100)
                 dwell_seconds = self.dwell_override or cfg.parking_dwell
                 move_tolerance = cfg.parking_move_tolerance
-                vehicles = recognition.detect_vehicles(frame, conf=conf)
+                vehicles = self._detect(frame, conf)
 
                 # Greedy IoU association of detections to existing tracks — good
                 # enough for a stationary parking camera (no ByteTrack needed).
@@ -245,7 +313,7 @@ class Command(BaseCommand):
         except KeyboardInterrupt:
             pass
         finally:
-            cap.release()
+            reader.stop() if is_live else cap.release()
             if debug:
                 cv2.destroyAllWindows()
             self.stdout.write(self.style.SUCCESS("Stopped."))

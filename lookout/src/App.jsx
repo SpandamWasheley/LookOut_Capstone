@@ -4,7 +4,7 @@ import Login from "./LoginPage.jsx";
 import AdminDashboard from "./admin_dashboard.jsx";
 import ChangePasswordPage from "./ChangePasswordPage.jsx";
 import ForgotPasswordPage from "./ForgotPasswordPage.jsx";
-import { clearAuth } from "./api.js";
+import { clearAuth, startRecording, stopRecording } from "./api.js";
 
 // Every fresh page load (or hard refresh) requires logging in again —
 // any session left over from a previous load is discarded immediately.
@@ -16,10 +16,14 @@ function AppRoutes() {
 
   const handleLogin = (loggedInUser) => {
     setUser(loggedInUser);
+    // Start the continuous CCTV recorder on login (token is set by now).
+    startRecording().catch(() => {});
     navigate("/dashboard");
   };
 
   const handleLogout = () => {
+    // Stop the recorder BEFORE clearing the token — the request needs it.
+    stopRecording().catch(() => {});
     clearAuth();
     setUser(null);
     navigate("/");
