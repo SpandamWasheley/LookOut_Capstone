@@ -2,7 +2,7 @@ import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { Image } from "expo-image";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -162,246 +162,407 @@ function DismissModal({ visible, onClose, onConfirm }: DismissModalProps) {
   );
 }
 
-interface Candidate {
-  id: string;
-  fullName: string;
-  barangayId: string;
-  household: string;
-  age: number | null;
-  isPossible: boolean;
-}
+// Scope is exactly these four codes — enforced here on the client, not
+// assumed from the API response. A stale row (e.g. a leftover curfew
+// ViolationType in some environment's DB) must not render as selectable.
+const IN_SCOPE_VIOLATION_CODES = ["smoking", "drinking", "parking", "theft"];
 
-function calcAge(birthdate?: string | null): number | null {
-  if (!birthdate) return null;
-  const dob = new Date(birthdate);
-  const today = new Date();
-  let age = today.getFullYear() - dob.getFullYear();
-  if (
-    today.getMonth() < dob.getMonth() ||
-    (today.getMonth() === dob.getMonth() && today.getDate() < dob.getDate())
-  ) age--;
-  return age;
-}
+const BARANGAY_OPTIONS = [
+  { value: "TUGBUNGAN", label: "Tugbungan" },
+  { value: "TETUAN", label: "Tetuan" },
+  { value: "MERCEDES", label: "Mercedes" },
+  { value: "LUNZURAN", label: "Lunzuran" },
+  { value: "TUMAGA", label: "Tumaga" },
+];
 
-function suspectMatches(suspect: string, fullName: string): boolean {
-  if (!suspect || !fullName) return false;
-  const nameParts = fullName.toLowerCase().split(/[\s,]+/).filter((p) => p.length > 2);
-  if (nameParts.length === 0) return false;
-  // Suspect can be several "; "-joined names — match against each one
-  // individually and require ALL of a candidate's name parts to be present,
-  // otherwise a shared surname (e.g. everyone in the same household) makes
-  // every relative look like a match instead of just the tagged person(s).
-  return suspect.split(";").some((entry) => {
-    const e = entry.trim().toLowerCase();
-    return e.length > 0 && nameParts.every((p) => e.includes(p));
-  });
+function normalizeName(...parts: string[]): string {
+  return parts.join(" ").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
 interface ResolveModalProps {
   visible: boolean;
-  suspect: string;
+  assignment: Assignment;
+  officerId: number | null;
+  officerName: string;
+  existingCitations: api.ApiCitation[];
   onClose: () => void;
-  onConfirm: (selectedNames: string | null) => void;
-  saveLabel?: string;
-  mode?: "resolve" | "candidate";
+  onFiled: () => void;
+  onFinished: () => void;
 }
 
-function ResolveModal({ visible, suspect, onClose, onConfirm, saveLabel, mode = "resolve" }: ResolveModalProps) {
+function ResolveModal({
+  visible,
+  assignment,
+  officerId,
+  officerName,
+  existingCitations,
+  onClose,
+  onFiled,
+  onFinished,
+}: ResolveModalProps) {
   const c = useColors();
-  const [candidates, setCandidates] = useState<Candidate[]>([]);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [loading, setLoading] = useState(false);
-  const [search, setSearch] = useState("");
-  const [confirming, setConfirming] = useState(false);
 
+  const [violationTypes, setViolationTypes] = useState<api.ApiViolationType[]>([]);
+  const [typesLoading, setTypesLoading] = useState(true);
+  const [selectedTypeIds, setSelectedTypeIds] = useState<Set<number>>(new Set());
+
+  const [firstName, setFirstName] = useState("");
+  const [middleName, setMiddleName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [suffix, setSuffix] = useState("");
+  const [violatorBarangay, setViolatorBarangay] = useState<string | null>(null);
+  const [carriedBarangay, setCarriedBarangay] = useState(false);
+  const [notes, setNotes] = useState("");
+
+  const [barangaySheetVisible, setBarangaySheetVisible] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [duplicateWarning, setDuplicateWarning] = useState<{ name: string; action: "finish" | "another" } | null>(null);
+  const [formError, setFormError] = useState("");
+
+  const lastNameRef = useRef<TextInput>(null);
+
+  // Fresh form + freshly-fetched, scope-filtered violation types every time
+  // the modal opens (not on every render — a mid-session "add another" reset
+  // is handled separately, inside doSubmit, so it doesn't refetch).
   useEffect(() => {
     if (!visible) return;
-    setLoading(true);
-    setSelected(new Set());
-    setSearch("");
-    setConfirming(false);
-    Promise.all([api.getHouseholds(), api.getResidents()])
-      .then(([hhRes, resRes]) => {
-        const households = Array.isArray(hhRes) ? hhRes : hhRes.results;
-        const residents = Array.isArray(resRes) ? resRes : resRes.results;
-        const seen = new Set<string>();
-        const list: Candidate[] = [];
-        for (const hh of households) {
-          for (const m of hh.members ?? []) {
-            const id = m.barangay_id ?? m.code;
-            if (!id || seen.has(id)) continue;
-            seen.add(id);
-            const fullName = `${m.first_name ?? ""} ${m.last_name ?? ""}`.trim();
-            const isPossible = suspectMatches(suspect, fullName);
-            list.push({
-              id,
-              fullName,
-              barangayId: id,
-              household: `${hh.family_name} household`,
-              age: calcAge(m.birthdate),
-              isPossible,
-            });
-          }
-        }
-        // Standalone residents — not part of any household, but web's picker
-        // includes them too, so mobile must match to keep counts consistent.
-        for (const r of residents) {
-          const id = r.barangay_id ?? r.code;
-          if (!id || seen.has(id)) continue;
-          seen.add(id);
-          const isPossible = suspectMatches(suspect, r.name ?? "");
-          list.push({
-            id,
-            fullName: r.name ?? "",
-            barangayId: id,
-            household: "",
-            age: r.age ?? null,
-            isPossible,
-          });
-        }
-        list.sort((a, b) => (a.isPossible === b.isPossible ? 0 : a.isPossible ? -1 : 1));
-        setCandidates(list);
-        const autoSelect = new Set(list.filter((c) => c.isPossible).map((c) => c.id));
-        setSelected(autoSelect);
+    setTypesLoading(true);
+    api
+      .getViolationTypes()
+      .then((res) => {
+        const all = Array.isArray(res) ? res : res.results;
+        const inScope = all.filter((t) => IN_SCOPE_VIOLATION_CODES.includes(t.code));
+        setViolationTypes(inScope);
+        const detected = inScope.find((t) => t.code === assignment.violationType.code);
+        setSelectedTypeIds(detected ? new Set([detected.id]) : new Set());
       })
-      .catch(() => setCandidates([]))
-      .finally(() => setLoading(false));
-  }, [visible, suspect]);
+      .catch(() => setViolationTypes([]))
+      .finally(() => setTypesLoading(false));
 
-  const toggle = (id: string) =>
-    setSelected((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+    setFirstName("");
+    setMiddleName("");
+    setLastName("");
+    setSuffix("");
+    setViolatorBarangay(null);
+    setCarriedBarangay(false);
+    setNotes("");
+    setFormError("");
+  }, [visible, assignment.violationType.code]);
 
-  const filtered = candidates.filter((c) => {
-    if (!search) return true;
-    const q = search.toLowerCase();
-    return c.fullName.toLowerCase().includes(q) || c.household.toLowerCase().includes(q) || c.barangayId.toLowerCase().includes(q);
-  });
+  const toggleType = (id: number) =>
+    setSelectedTypeIds((prev) => {
+      const n = new Set(prev);
+      n.has(id) ? n.delete(id) : n.add(id);
+      return n;
+    });
 
-  const handleConfirm = () => {
-    const names = candidates.filter((c) => selected.has(c.id)).map((c) => c.fullName).join("; ");
-    onConfirm(names || null);
+  const canSubmit =
+    firstName.trim().length > 0 &&
+    lastName.trim().length > 0 &&
+    !!violatorBarangay &&
+    selectedTypeIds.size > 0 &&
+    !submitting;
+
+  const findDuplicate = () => {
+    const entered = normalizeName(firstName, lastName);
+    return existingCitations.find((ec) => normalizeName(ec.first_name_entered, ec.last_name_entered) === entered);
   };
+
+  const doSubmit = async (action: "finish" | "another") => {
+    if (!canSubmit || officerId == null) return;
+    setSubmitting(true);
+    setFormError("");
+    try {
+      await api.createCitation({
+        alert: assignment.dbId,
+        officer: officerId,
+        first_name_entered: firstName.trim(),
+        middle_name_entered: middleName.trim(),
+        last_name_entered: lastName.trim(),
+        suffix_entered: suffix,
+        barangay_of_violation: "TETUAN",
+        violator_barangay: violatorBarangay!,
+        violations: [...selectedTypeIds],
+        notes: notes.trim(),
+        resolve_alert: false,
+      });
+      onFiled();
+
+      if (action === "finish") {
+        onFinished();
+      } else {
+        // Carry forward violation types + barangay; name and notes are
+        // per-person and always cleared. Cursor goes straight to last name.
+        setFirstName("");
+        setMiddleName("");
+        setLastName("");
+        setSuffix("");
+        setCarriedBarangay(true);
+        setNotes("");
+        requestAnimationFrame(() => lastNameRef.current?.focus());
+      }
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : "Failed to save citation.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handlePress = (action: "finish" | "another") => {
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    const dup = findDuplicate();
+    if (dup) {
+      setDuplicateWarning({ name: dup.violator_name, action });
+      return;
+    }
+    doSubmit(action);
+  };
+
+  const hasFiledAny = existingCitations.length > 0;
+  const selectedBarangayLabel = BARANGAY_OPTIONS.find((b) => b.value === violatorBarangay)?.label;
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <KeyboardAvoidingView style={rStyles.backdrop} behavior={Platform.OS === "ios" ? "padding" : "height"}>
         <Pressable style={rStyles.overlay} onPress={onClose} />
-        <View style={[rStyles.sheet, { backgroundColor: c.card, borderColor: c.border }]}>
+        <View style={[rStyles.sheet, { backgroundColor: c.card, borderColor: c.border, maxHeight: "92%" }]}>
           <View style={[rStyles.handle, { backgroundColor: c.border }]} />
 
           <View style={rStyles.header}>
             <View style={[rStyles.iconWrap, { backgroundColor: "rgba(16,185,129,0.12)" }]}>
-              <Feather name="users" size={20} color="#10b981" />
+              <Feather name="file-text" size={20} color="#10b981" />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={[rStyles.title, { color: c.foreground }]}>Confirm Resolution</Text>
-              <Text style={[rStyles.subtitle, { color: c.mutedForeground }]}>Select involved resident(s)</Text>
+              <Text style={[rStyles.subtitle, { color: c.mutedForeground }]}>File a citation for this scene</Text>
             </View>
-            <Pressable onPress={onClose} style={[rStyles.closeBtn, { backgroundColor: c.secondary }]}>
+            <Pressable
+              onPress={onClose}
+              style={[rStyles.closeBtn, { backgroundColor: c.secondary }]}
+              accessibilityLabel="Close"
+              accessibilityRole="button"
+            >
               <Feather name="x" size={16} color={c.mutedForeground} />
             </Pressable>
           </View>
 
-          <View style={[rStyles.searchWrap, { backgroundColor: c.muted, borderColor: c.border }]}>
-            <Feather name="search" size={14} color={c.mutedForeground} />
-            <TextInput
-              style={[rStyles.searchInput, { color: c.foreground }]}
-              placeholder="Search residents…"
-              placeholderTextColor={c.mutedForeground}
-              value={search}
-              onChangeText={setSearch}
-            />
-          </View>
+          <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} style={{ flexGrow: 0 }}>
+            {hasFiledAny && (
+              <View style={[cfStyles.filedBanner, { backgroundColor: c.successLight, borderColor: c.success }]}>
+                <Feather name="check-circle" size={13} color={c.success} />
+                <Text style={[cfStyles.filedBannerText, { color: c.success }]}>
+                  {existingCitations.length} citation{existingCitations.length !== 1 ? "s" : ""} filed so far for this scene
+                </Text>
+              </View>
+            )}
 
-          <ScrollView style={rStyles.list} showsVerticalScrollIndicator={false}>
-            {loading ? (
-              <ActivityIndicator color="#10b981" style={{ marginTop: 24 }} />
-            ) : filtered.length === 0 ? (
-              <Text style={[rStyles.emptyText, { color: c.mutedForeground }]}>
-                {candidates.length === 0 ? "No residents found" : "No matches"}
+            <View style={cfStyles.lockedRow}>
+              <View style={[cfStyles.lockedChip, { backgroundColor: c.muted, borderColor: c.border }]}>
+                <Feather name="shield" size={12} color={c.mutedForeground} />
+                <Text style={[cfStyles.lockedChipText, { color: c.mutedForeground }]}>{officerName || "Officer"}</Text>
+              </View>
+              <View style={[cfStyles.lockedChip, { backgroundColor: c.muted, borderColor: c.border }]}>
+                <Feather name="map-pin" size={12} color={c.mutedForeground} />
+                <Text style={[cfStyles.lockedChipText, { color: c.mutedForeground }]}>Tetuan (violation site)</Text>
+              </View>
+              <View style={[cfStyles.lockedChip, { backgroundColor: c.muted, borderColor: c.border }]}>
+                <Feather name="clock" size={12} color={c.mutedForeground} />
+                <Text style={[cfStyles.lockedChipText, { color: c.mutedForeground }]}>{formatDate(assignment.dispatchedAt)}</Text>
+              </View>
+            </View>
+
+            <Text style={[cfStyles.sectionLabel, { color: c.mutedForeground }]}>VIOLATION TYPE(S)</Text>
+            {typesLoading ? (
+              <ActivityIndicator color={c.primary} style={{ marginVertical: 12 }} accessibilityLabel="Loading violation types" />
+            ) : (
+              <View style={cfStyles.typeGrid}>
+                {violationTypes.map((t) => {
+                  const checked = selectedTypeIds.has(t.id);
+                  return (
+                    <Pressable
+                      key={t.id}
+                      onPress={() => toggleType(t.id)}
+                      accessibilityRole="checkbox"
+                      accessibilityState={{ checked }}
+                      accessibilityLabel={t.label}
+                      style={({ pressed }) => [
+                        cfStyles.typeRow,
+                        {
+                          backgroundColor: checked ? `${t.color}18` : c.secondary,
+                          borderColor: checked ? t.color : c.border,
+                          opacity: pressed ? 0.8 : 1,
+                        },
+                      ]}
+                    >
+                      <Feather name={getViolationIconName(t.icon)} size={18} color={checked ? t.color : c.mutedForeground} />
+                      <Text style={[cfStyles.typeLabel, { color: checked ? t.color : c.foreground }]}>{t.label}</Text>
+                      {checked && <Feather name="check" size={16} color={t.color} style={{ marginLeft: "auto" }} />}
+                    </Pressable>
+                  );
+                })}
+              </View>
+            )}
+
+            <Text style={[cfStyles.sectionLabel, { color: c.mutedForeground, marginTop: 18 }]}>VIOLATOR NAME</Text>
+            <View style={cfStyles.nameRow}>
+              <TextInput
+                style={[cfStyles.input, cfStyles.nameInputWide, { color: c.foreground, borderColor: c.border, backgroundColor: c.muted }]}
+                placeholder="First name"
+                placeholderTextColor={c.mutedForeground}
+                value={firstName}
+                onChangeText={setFirstName}
+              />
+              <TextInput
+                style={[cfStyles.input, cfStyles.nameInputWide, { color: c.foreground, borderColor: c.border, backgroundColor: c.muted }]}
+                placeholder="Middle name (optional)"
+                placeholderTextColor={c.mutedForeground}
+                value={middleName}
+                onChangeText={setMiddleName}
+              />
+            </View>
+            <View style={cfStyles.nameRow}>
+              <TextInput
+                ref={lastNameRef}
+                style={[cfStyles.input, cfStyles.nameInputWide, { color: c.foreground, borderColor: c.border, backgroundColor: c.muted }]}
+                placeholder="Last name"
+                placeholderTextColor={c.mutedForeground}
+                value={lastName}
+                onChangeText={setLastName}
+              />
+              <TextInput
+                style={[cfStyles.input, cfStyles.nameInputNarrow, { color: c.foreground, borderColor: c.border, backgroundColor: c.muted }]}
+                placeholder="Suffix"
+                placeholderTextColor={c.mutedForeground}
+                value={suffix}
+                onChangeText={setSuffix}
+              />
+            </View>
+
+            <Text style={[cfStyles.sectionLabel, { color: c.mutedForeground, marginTop: 18 }]}>VIOLATOR&apos;S HOME BARANGAY</Text>
+            <Pressable
+              onPress={() => setBarangaySheetVisible(true)}
+              style={[cfStyles.pickerBtn, { backgroundColor: c.muted, borderColor: c.border }]}
+              accessibilityRole="button"
+              accessibilityLabel="Select violator's home barangay"
+            >
+              <Feather name="map-pin" size={15} color={c.mutedForeground} />
+              <Text style={[cfStyles.pickerBtnText, { color: violatorBarangay ? c.foreground : c.mutedForeground }]}>
+                {selectedBarangayLabel ?? "Select barangay…"}
               </Text>
-            ) : filtered.map((item) => {
-              const isChecked = selected.has(item.id);
-              return (
-                <Pressable
-                  key={item.id}
-                  onPress={() => toggle(item.id)}
-                  style={({ pressed }) => [
-                    rStyles.row,
-                    {
-                      backgroundColor: isChecked ? "rgba(16,185,129,0.07)" : c.secondary,
-                      borderColor: isChecked ? "rgba(16,185,129,0.3)" : c.border,
-                      opacity: pressed ? 0.8 : 1,
-                    },
-                  ]}
-                >
-                  <View style={[rStyles.checkbox, { backgroundColor: isChecked ? "#10b981" : "transparent", borderColor: isChecked ? "#10b981" : c.mutedForeground }]}>
-                    {isChecked && <Feather name="check" size={10} color="#fff" />}
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <View style={rStyles.nameRow}>
-                      <Text style={[rStyles.name, { color: c.foreground }]}>{item.fullName}</Text>
-                      {item.isPossible && (
-                        <View style={rStyles.candidateBadge}>
-                          <Text style={rStyles.candidateText}>Possible candidate</Text>
-                        </View>
-                      )}
-                    </View>
-                    <Text style={[rStyles.sub, { color: c.mutedForeground }]}>
-                      {item.barangayId}{item.age != null ? ` · Age ${item.age}` : ""}{item.household ? ` · ${item.household}` : ""}
-                    </Text>
-                  </View>
-                </Pressable>
-              );
-            })}
+              {carriedBarangay && violatorBarangay && (
+                <View style={[cfStyles.sameAsBadge, { backgroundColor: c.infoLight }]}>
+                  <Text style={[cfStyles.sameAsBadgeText, { color: c.info }]}>same as previous</Text>
+                </View>
+              )}
+              <Feather name="chevron-right" size={16} color={c.mutedForeground} />
+            </Pressable>
+
+            <Text style={[cfStyles.sectionLabel, { color: c.mutedForeground, marginTop: 18 }]}>NOTES (OPTIONAL)</Text>
+            <TextInput
+              style={[cfStyles.notesInput, { color: c.foreground, borderColor: c.border, backgroundColor: c.muted }]}
+              placeholder="e.g. two others fled on approach"
+              placeholderTextColor={c.mutedForeground}
+              value={notes}
+              onChangeText={setNotes}
+              multiline
+              numberOfLines={3}
+              textAlignVertical="top"
+            />
+
+            {!!formError && <Text style={[cfStyles.errorText, { color: c.destructive }]}>{formError}</Text>}
           </ScrollView>
 
-          <View style={rStyles.footer}>
-            <Text style={[rStyles.footerHint, { color: c.mutedForeground }]}>
-              {selected.size === 0
-                ? (mode === "candidate" ? "Select at least one resident to continue" : "No residents selected — resolves without linking")
-                : `${selected.size} resident${selected.size !== 1 ? "s" : ""} selected`}
-            </Text>
-            <View style={rStyles.footerBtns}>
-              <Pressable onPress={onClose} style={[rStyles.cancelBtn, { borderColor: c.border }]}>
-                <Text style={[rStyles.cancelText, { color: c.mutedForeground }]}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                onPress={() => setConfirming(true)}
-                disabled={mode === "candidate" && selected.size === 0}
-                style={[rStyles.confirmBtn, { opacity: mode === "candidate" && selected.size === 0 ? 0.5 : 1 }]}
-              >
-                <Feather name="check-circle" size={16} color="#fff" />
-                <Text style={rStyles.confirmText}>{saveLabel ?? "Confirm & Resolve"}</Text>
-              </Pressable>
-            </View>
+          <View style={cfStyles.actionRow}>
+            <Pressable
+              onPress={() => handlePress("another")}
+              disabled={!canSubmit}
+              accessibilityRole="button"
+              accessibilityLabel="Save and add another citation"
+              style={[
+                cfStyles.secondaryBtn,
+                hasFiledAny
+                  ? { backgroundColor: c.info, borderColor: c.info }
+                  : { backgroundColor: "transparent", borderColor: c.border },
+                { opacity: !canSubmit ? 0.5 : 1 },
+              ]}
+            >
+              <Feather name="user-plus" size={15} color={hasFiledAny ? "#fff" : c.foreground} />
+              <Text style={[cfStyles.secondaryBtnText, { color: hasFiledAny ? "#fff" : c.foreground }]}>Save & add another</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => handlePress("finish")}
+              disabled={!canSubmit}
+              accessibilityRole="button"
+              accessibilityLabel="Save and finish, resolving this assignment"
+              style={[cfStyles.primaryBtn, { backgroundColor: "#10b981", opacity: !canSubmit ? 0.5 : 1 }]}
+            >
+              {submitting ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <>
+                  <Feather name="check-circle" size={16} color="#fff" />
+                  <Text style={cfStyles.primaryBtnText}>Save & finish</Text>
+                </>
+              )}
+            </Pressable>
           </View>
         </View>
       </KeyboardAvoidingView>
 
-      <Modal visible={confirming} animationType="fade" transparent onRequestClose={() => setConfirming(false)}>
-        <Pressable style={officersStyles.overlay} onPress={() => setConfirming(false)}>
-          <Pressable style={[officersStyles.sheet, { backgroundColor: c.card, borderColor: c.border, alignItems: "center" }]} onPress={(e) => e.stopPropagation()}>
-            <View style={[rStyles.iconWrap, { backgroundColor: "rgba(16,185,129,0.12)", marginBottom: 4 }]}>
-              <Feather name="check-circle" size={20} color="#10b981" />
+      <Modal visible={barangaySheetVisible} animationType="slide" transparent onRequestClose={() => setBarangaySheetVisible(false)}>
+        <Pressable style={rStyles.overlay} onPress={() => setBarangaySheetVisible(false)} />
+        <View style={[cfStyles.barangaySheet, { backgroundColor: c.card, borderColor: c.border }]}>
+          <View style={[rStyles.handle, { backgroundColor: c.border }]} />
+          <Text style={[rStyles.title, { color: c.foreground, marginBottom: 10 }]}>Home barangay</Text>
+          {BARANGAY_OPTIONS.map((b) => (
+            <Pressable
+              key={b.value}
+              onPress={() => {
+                setViolatorBarangay(b.value);
+                setCarriedBarangay(false);
+                setBarangaySheetVisible(false);
+              }}
+              accessibilityRole="button"
+              accessibilityState={{ selected: violatorBarangay === b.value }}
+              style={[
+                cfStyles.barangayRow,
+                { backgroundColor: violatorBarangay === b.value ? c.successLight : c.secondary, borderColor: c.border },
+              ]}
+            >
+              <Text style={[cfStyles.barangayRowText, { color: c.foreground }]}>{b.label}</Text>
+              {violatorBarangay === b.value && <Feather name="check" size={16} color={c.success} />}
+            </Pressable>
+          ))}
+        </View>
+      </Modal>
+
+      <Modal visible={!!duplicateWarning} animationType="fade" transparent onRequestClose={() => setDuplicateWarning(null)}>
+        <Pressable style={officersStyles.overlay} onPress={() => setDuplicateWarning(null)}>
+          <Pressable
+            style={[officersStyles.sheet, { backgroundColor: c.card, borderColor: c.border, alignItems: "center" }]}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View style={[rStyles.iconWrap, { backgroundColor: c.warningLight, marginBottom: 4 }]}>
+              <Feather name="alert-triangle" size={20} color={c.warning} />
             </View>
-            <Text style={[rStyles.title, { color: c.foreground, marginTop: 8 }]}>
-              {mode === "candidate" ? "Set this candidate match?" : "Resolve this violation?"}
-            </Text>
+            <Text style={[rStyles.title, { color: c.foreground, marginTop: 8, textAlign: "center" }]}>Already cited for this alert</Text>
             <Text style={[rStyles.subtitle, { color: c.mutedForeground, textAlign: "center", marginTop: 4 }]}>
-              {mode === "candidate"
-                ? `${selected.size} resident${selected.size !== 1 ? "s" : ""} will be linked to this violation.`
-                : (selected.size === 0
-                  ? "No residents will be linked to this record."
-                  : `${selected.size} resident${selected.size !== 1 ? "s" : ""} will be linked to this record.`) + " This action cannot be undone."}
+              You&apos;ve already cited a {duplicateWarning?.name} for this alert. File anyway?
             </Text>
             <View style={[rStyles.footerBtns, { marginTop: 16, width: "100%" }]}>
-              <Pressable onPress={() => setConfirming(false)} style={[rStyles.cancelBtn, { borderColor: c.border }]}>
+              <Pressable onPress={() => setDuplicateWarning(null)} style={[rStyles.cancelBtn, { borderColor: c.border }]}>
                 <Text style={[rStyles.cancelText, { color: c.mutedForeground }]}>Cancel</Text>
               </Pressable>
-              <Pressable onPress={() => { setConfirming(false); handleConfirm(); }} style={rStyles.confirmBtn}>
+              <Pressable
+                onPress={() => {
+                  const action = duplicateWarning!.action;
+                  setDuplicateWarning(null);
+                  doSubmit(action);
+                }}
+                style={rStyles.confirmBtn}
+              >
                 <Feather name="check-circle" size={16} color="#fff" />
-                <Text style={rStyles.confirmText}>{mode === "candidate" ? "Confirm" : "Yes, resolve"}</Text>
+                <Text style={rStyles.confirmText}>File anyway</Text>
               </Pressable>
             </View>
           </Pressable>
@@ -623,8 +784,26 @@ export default function AssignmentDetailScreen() {
   const [resolveModalVisible, setResolveModalVisible] = useState(false);
   const [busy, setBusy] = useState(false);
   const [showAllOfficers, setShowAllOfficers] = useState(false);
+  const [citationsForAlert, setCitationsForAlert] = useState<api.ApiCitation[]>([]);
 
   const isNoiseViolation = assignment?.violationType.code === "noise";
+
+  // Sourced from the server (not local state) so a partially-filed scene —
+  // two of four cited, app closed and reopened — still shows "2 filed"
+  // instead of resetting to zero.
+  const refreshCitations = useCallback(async () => {
+    if (!assignment) return;
+    try {
+      const res = await api.getCitations({ alert: String(assignment.dbId) });
+      setCitationsForAlert(Array.isArray(res) ? res : res.results);
+    } catch {
+      // Non-fatal — the filed-count is a convenience, not required to act on the assignment.
+    }
+  }, [assignment?.dbId]);
+
+  useEffect(() => {
+    refreshCitations();
+  }, [refreshCitations]);
 
   if (!assignment) {
     return (
@@ -654,16 +833,11 @@ export default function AssignmentDetailScreen() {
     }
   };
 
-  const handleResolve = async (suspectNames: string | null) => {
-    setResolveModalVisible(false);
+  const handleFinished = async () => {
     setBusy(true);
-    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     try {
-      await resolveAssignment(
-        assignment.id,
-        undefined,
-        suspectNames ?? undefined,
-      );
+      await resolveAssignment(assignment.id);
+      setResolveModalVisible(false);
       router.back();
     } finally {
       setBusy(false);
@@ -796,6 +970,25 @@ export default function AssignmentDetailScreen() {
           )}
         </View>
 
+        {/* Citations filed so far — the officer's working memory for a multi-person scene */}
+        {citationsForAlert.length > 0 && (
+          <View style={[styles.card, { backgroundColor: c.card, borderColor: c.border }]}>
+            <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>
+              CITATIONS FILED ({citationsForAlert.length})
+            </Text>
+            <View style={{ gap: 8 }}>
+              {citationsForAlert.map((cit) => (
+                <View key={cit.id} style={[officersStyles.row, { backgroundColor: c.secondary, borderColor: c.border }]}>
+                  <View style={[officersStyles.avatar, { backgroundColor: c.successLight }]}>
+                    <Feather name="file-text" size={12} color={c.success} />
+                  </View>
+                  <Text style={[officersStyles.name, { color: c.foreground }]}>{cit.violator_name}</Text>
+                </View>
+              ))}
+            </View>
+          </View>
+        )}
+
         {/* Noise violation card */}
         {isNoiseViolation && (
           <NoiseViolationCard
@@ -865,7 +1058,13 @@ export default function AssignmentDetailScreen() {
             ) : (
               <>
                 <Feather name={isUnassigned ? "log-in" : "check-circle"} size={18} color="#fff" />
-                <Text style={styles.advanceBtnText}>{isUnassigned ? "Accept Assignment" : "Mark Resolved"}</Text>
+                <Text style={styles.advanceBtnText}>
+                  {isUnassigned
+                    ? "Accept Assignment"
+                    : citationsForAlert.length > 0
+                      ? `Resolve · ${citationsForAlert.length} filed`
+                      : "Mark Resolved"}
+                </Text>
               </>
             )}
           </Pressable>
@@ -875,9 +1074,13 @@ export default function AssignmentDetailScreen() {
       <DismissModal visible={dismissModalVisible} onClose={() => setDismissModalVisible(false)} onConfirm={handleDismissConfirm} />
       <ResolveModal
         visible={resolveModalVisible}
-        suspect={assignment.suspect}
+        assignment={assignment}
+        officerId={officer?.officerId ?? null}
+        officerName={officer?.name ?? ""}
+        existingCitations={citationsForAlert}
         onClose={() => setResolveModalVisible(false)}
-        onConfirm={handleResolve}
+        onFiled={refreshCitations}
+        onFinished={handleFinished}
       />
     </View>
   );
@@ -893,24 +1096,41 @@ const rStyles = StyleSheet.create({
   title: { fontSize: 16, fontFamily: "Inter_700Bold" },
   subtitle: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 2 },
   closeBtn: { width: 32, height: 32, borderRadius: 8, alignItems: "center", justifyContent: "center" },
-  searchWrap: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12, borderWidth: 1, marginBottom: 10 },
-  searchInput: { flex: 1, fontSize: 14, fontFamily: "Inter_400Regular" },
-  list: { flexGrow: 0, marginBottom: 12 },
-  emptyText: { textAlign: "center", paddingVertical: 24, fontSize: 14, fontFamily: "Inter_400Regular" },
-  row: { flexDirection: "row", alignItems: "center", gap: 12, padding: 12, borderRadius: 12, borderWidth: 1, marginBottom: 8 },
-  checkbox: { width: 20, height: 20, borderRadius: 6, borderWidth: 1.5, alignItems: "center", justifyContent: "center" },
-  nameRow: { flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" },
-  name: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
-  candidateBadge: { backgroundColor: "rgba(245,158,11,0.15)", paddingHorizontal: 7, paddingVertical: 2, borderRadius: 20 },
-  candidateText: { fontSize: 10, fontFamily: "Inter_600SemiBold", color: "#f59e0b" },
-  sub: { fontSize: 11, fontFamily: "Inter_400Regular", marginTop: 2 },
-  footer: { gap: 10 },
-  footerHint: { fontSize: 12, fontFamily: "Inter_400Regular" },
   footerBtns: { flexDirection: "row", gap: 10 },
   cancelBtn: { paddingHorizontal: 18, paddingVertical: 13, borderRadius: 12, borderWidth: 1, alignItems: "center", justifyContent: "center" },
   cancelText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
   confirmBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 13, borderRadius: 12, backgroundColor: "#10b981" },
   confirmText: { color: "#fff", fontSize: 14, fontFamily: "Inter_600SemiBold" },
+});
+
+const cfStyles = StyleSheet.create({
+  filedBanner: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12, borderWidth: 1, marginBottom: 14 },
+  filedBannerText: { fontSize: 12, fontFamily: "Inter_600SemiBold", flex: 1 },
+  lockedRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 16 },
+  lockedChip: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 20, borderWidth: 1 },
+  lockedChipText: { fontSize: 11, fontFamily: "Inter_500Medium" },
+  sectionLabel: { fontSize: 11, fontFamily: "Inter_600SemiBold", letterSpacing: 0.8, marginBottom: 8 },
+  typeGrid: { gap: 8 },
+  typeRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 14, paddingVertical: 14, borderRadius: 12, borderWidth: 1 },
+  typeLabel: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  nameRow: { flexDirection: "row", gap: 10, marginBottom: 10 },
+  input: { borderWidth: 1, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 14, fontSize: 15, fontFamily: "Inter_400Regular" },
+  nameInputWide: { flex: 1 },
+  nameInputNarrow: { width: 88 },
+  pickerBtn: { flexDirection: "row", alignItems: "center", gap: 10, borderWidth: 1, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 14 },
+  pickerBtnText: { flex: 1, fontSize: 15, fontFamily: "Inter_400Regular" },
+  sameAsBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 20 },
+  sameAsBadgeText: { fontSize: 10, fontFamily: "Inter_600SemiBold" },
+  notesInput: { borderWidth: 1, borderRadius: 12, padding: 14, fontSize: 15, fontFamily: "Inter_400Regular", minHeight: 90 },
+  errorText: { fontSize: 13, fontFamily: "Inter_500Medium", marginTop: 12 },
+  actionRow: { flexDirection: "row", gap: 10, marginTop: 16 },
+  secondaryBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 15, borderRadius: 12, borderWidth: 1 },
+  secondaryBtnText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
+  primaryBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 15, borderRadius: 12 },
+  primaryBtnText: { color: "#fff", fontSize: 14, fontFamily: "Inter_600SemiBold" },
+  barangaySheet: { position: "absolute", bottom: 0, left: 0, right: 0, borderTopLeftRadius: 24, borderTopRightRadius: 24, borderWidth: 1, borderBottomWidth: 0, padding: 20, paddingBottom: 36, gap: 8 },
+  barangayRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingVertical: 16, borderRadius: 12, borderWidth: 1 },
+  barangayRowText: { fontSize: 16, fontFamily: "Inter_600SemiBold" },
 });
 
 const officersStyles = StyleSheet.create({
@@ -940,8 +1160,6 @@ const styles = StyleSheet.create({
   violationType: { fontSize: 20, fontFamily: "Inter_700Bold" },
   codeText: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 2 },
   description: { fontSize: 15, fontFamily: "Inter_400Regular", lineHeight: 22 },
-  suspectRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10 },
-  suspectText: { fontSize: 13, fontFamily: "Inter_500Medium" },
   infoRow: { flexDirection: "row", alignItems: "flex-start", gap: 12, paddingBottom: 12, borderBottomWidth: 1 },
   infoLabel: { fontSize: 11, fontFamily: "Inter_400Regular", textTransform: "uppercase", letterSpacing: 0.5 },
   infoValue: { fontSize: 14, fontFamily: "Inter_500Medium", marginTop: 2 },

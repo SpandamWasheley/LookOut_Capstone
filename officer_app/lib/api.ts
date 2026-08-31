@@ -223,35 +223,53 @@ export interface ApiViolationType {
 export const getViolationTypes = () =>
   apiFetch<{ results: ApiViolationType[] } | ApiViolationType[]>("/violation-types/");
 
-export interface ApiHouseholdMember {
-  code: string;
-  first_name: string;
-  last_name: string;
-  barangay_id?: string;
-  birthdate?: string | null;
-  image_url?: string;
-  phone?: string;
-  relation?: string;
+export interface ApiCitation {
+  id: number;
+  alert: number | null;
+  violator: number | null;
+  violator_name: string;
+  first_name_entered: string;
+  middle_name_entered: string;
+  last_name_entered: string;
+  suffix_entered: string;
+  officer: number;
+  officer_name: string;
+  barangay_of_violation: string;
+  violator_barangay: string;
+  violations: number[];
+  violation_labels: string[];
+  matched_person: number | null;
+  match_confidence: number | null;
+  notes: string;
+  created_by: number | null;
+  created_at: string;
 }
 
-export interface ApiHousehold {
-  code: string;
-  family_name: string;
-  address?: string;
-  members: ApiHouseholdMember[];
+export const getCitations = (params: Record<string, string> = {}) => {
+  const qs = new URLSearchParams(params).toString();
+  return apiFetch<{ results: ApiCitation[] } | ApiCitation[]>(`/citations/${qs ? `?${qs}` : ""}`);
+};
+
+export interface CreateCitationPayload {
+  alert: number;
+  violator?: number;
+  first_name_entered: string;
+  middle_name_entered?: string;
+  last_name_entered: string;
+  suffix_entered?: string;
+  officer: number;
+  barangay_of_violation?: string;
+  violator_barangay: string;
+  violations: number[];
+  notes?: string;
+  // Stage 1 backend addition — mobile always sends false here and resolves
+  // the alert as its own explicit step (see resolveAssignment) once the
+  // officer says they're done with the scene, since one alert can produce
+  // several citations. client_uuid isn't sent yet: that's Stage 4 (offline
+  // queue), which is what actually needs a client-generated retry key.
+  resolve_alert?: boolean;
+  client_uuid?: string;
 }
 
-export const getHouseholds = () =>
-  apiFetch<{ results: ApiHousehold[] } | ApiHousehold[]>("/households/");
-
-export interface ApiResident {
-  code: string;
-  name: string;
-  barangay_id?: string;
-  age?: number | null;
-  image_url?: string;
-  status?: string;
-}
-
-export const getResidents = () =>
-  apiFetch<{ results: ApiResident[] } | ApiResident[]>("/residents/");
+export const createCitation = (payload: CreateCitationPayload) =>
+  apiFetch<ApiCitation>("/citations/", { method: "POST", body: JSON.stringify(payload) });

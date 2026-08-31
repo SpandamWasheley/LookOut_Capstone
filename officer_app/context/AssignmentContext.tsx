@@ -24,7 +24,6 @@ export interface Assignment {
   assignedOfficerNames: string[];
   status: "active" | "dispatched" | "acknowledged" | "resolved";
   notes: string;
-  suspect: string;
   imageUrl: string;
 }
 
@@ -45,7 +44,6 @@ function mapAlert(raw: api.ApiAlert, typesByCode: Record<string, ViolationTypeMe
     assignedOfficerNames: raw.officers_assigned_names,
     status: raw.status,
     notes: raw.notes,
-    suspect: raw.suspect,
     imageUrl: raw.image_url,
   };
 }
@@ -59,7 +57,7 @@ interface AssignmentContextType {
   refreshAssignments: () => Promise<void>;
   getAssignment: (id: string) => Assignment | undefined;
   acceptAssignment: (id: string) => Promise<void>;
-  resolveAssignment: (id: string, notes?: string, suspect?: string) => Promise<void>;
+  resolveAssignment: (id: string, notes?: string) => Promise<void>;
   dismissAssignment: (id: string, reason: string) => Promise<void>;
 }
 
@@ -130,13 +128,12 @@ export function AssignmentProvider({ children }: { children: React.ReactNode }) 
   );
 
   const resolveAssignment = useCallback(
-    async (id: string, notes?: string, suspect?: string) => {
+    async (id: string, notes?: string) => {
       const a = assignments.find((x) => x.id === id);
       if (!a) return;
       await api.updateAlert(a.dbId, {
         status: "resolved",
         ...(notes !== undefined ? { notes } : {}),
-        ...(suspect !== undefined ? { suspect } : {}),
       });
       await refreshAssignments();
     },
