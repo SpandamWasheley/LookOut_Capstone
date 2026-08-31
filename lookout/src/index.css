@@ -58,6 +58,47 @@
   --text-soft: #2e6b87;
   --text-muted: #797c82;
   --surface-raised: #ffffff;
+
+  /* violation-type chips (Violator Log) */
+  --violation-smoking-bg: #64748b1f;
+  --violation-smoking-text: #475569;
+  --violation-smoking-border: #64748b40;
+  --violation-smoking-dot: #64748b;
+
+  --violation-drinking-bg: #8b5cf61f;
+  --violation-drinking-text: #7c3aed;
+  --violation-drinking-border: #8b5cf640;
+  --violation-drinking-dot: #8b5cf6;
+
+  --violation-parking-bg: #f973161f;
+  --violation-parking-text: #c2410c;
+  --violation-parking-border: #f9731640;
+  --violation-parking-dot: #f97316;
+
+  --violation-theft-bg: #ef44441f;
+  --violation-theft-text: #c0392b;
+  --violation-theft-border: #ef444440;
+  --violation-theft-dot: #ef4444;
+
+  --violation-unknown-bg: #7979821f;
+  --violation-unknown-text: #797c82;
+  --violation-unknown-border: #79798240;
+  --violation-unknown-dot: #797c82;
+
+  /* violator avatar tints (Violator Log) — deliberately distinct hues from
+     the violation-type chips above, so the two don't read as related. */
+  --avatar-0-bg: #14b8a61f;
+  --avatar-0-text: #0f766e;
+  --avatar-1-bg: #3b82f61f;
+  --avatar-1-text: #1d4ed8;
+  --avatar-2-bg: #ec48991f;
+  --avatar-2-text: #be185d;
+  --avatar-3-bg: #22c55e1f;
+  --avatar-3-text: #15803d;
+  --avatar-4-bg: #6366f11f;
+  --avatar-4-text: #4338ca;
+  --avatar-5-bg: #06b6d41f;
+  --avatar-5-text: #0e7490;
 }
 
 /* ── Dark ─────────────────────────────────────────────────────────────────── */
@@ -106,6 +147,46 @@
   --text-soft: #85b7d6;
   --text-muted: #797c82;
   --surface-raised: #0f2030;
+
+  /* violation-type chips (Violator Log) */
+  --violation-smoking-bg: #64748b33;
+  --violation-smoking-text: #cbd5e1;
+  --violation-smoking-border: #64748b59;
+  --violation-smoking-dot: #94a3b8;
+
+  --violation-drinking-bg: #8b5cf633;
+  --violation-drinking-text: #c4b5fd;
+  --violation-drinking-border: #8b5cf659;
+  --violation-drinking-dot: #a78bfa;
+
+  --violation-parking-bg: #f9731633;
+  --violation-parking-text: #fdba74;
+  --violation-parking-border: #f9731659;
+  --violation-parking-dot: #fb923c;
+
+  --violation-theft-bg: #ef444433;
+  --violation-theft-text: #fca5a5;
+  --violation-theft-border: #ef444459;
+  --violation-theft-dot: #f87171;
+
+  --violation-unknown-bg: #79798233;
+  --violation-unknown-text: #b8bcc2;
+  --violation-unknown-border: #79798259;
+  --violation-unknown-dot: #979aa0;
+
+  /* violator avatar tints (Violator Log) */
+  --avatar-0-bg: #14b8a633;
+  --avatar-0-text: #5eead4;
+  --avatar-1-bg: #3b82f633;
+  --avatar-1-text: #93c5fd;
+  --avatar-2-bg: #ec489933;
+  --avatar-2-text: #f9a8d4;
+  --avatar-3-bg: #22c55e33;
+  --avatar-3-text: #86efac;
+  --avatar-4-bg: #6366f133;
+  --avatar-4-text: #a5b4fc;
+  --avatar-5-bg: #06b6d433;
+  --avatar-5-text: #67e8f9;
 }
 
 /* ── Scrollbar — hidden until hover ──────────────────────────────────────── */
@@ -250,4 +331,20 @@ main button:not(:disabled):active { filter: brightness(0.85); transform: transla
 .dark input[type="time"]::-webkit-calendar-picker-indicator {
   filter: invert(1);
   cursor: pointer;
+}
+
+/* ── Violator Log row focus ring — uses the existing --ring token ─────────── */
+.violator-row:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* ── Respect reduced-motion: kill animations/transitions, not just spins ──── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
