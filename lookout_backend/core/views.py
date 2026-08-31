@@ -628,14 +628,33 @@ class CitationViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         """Filing a citation against an alert resolves that alert in the same
-        transaction — this replaces the old client-driven 'PATCH status to
-        resolved' flow the dashboard used for resident-linked resolution.
+        transaction, UNLESS the client explicitly opts out via resolve_alert
+        (the mobile app does, while more violators from the same scene are
+        still being cited) — this replaces the old client-driven 'PATCH
+        status to resolved' flow the dashboard used for resident-linked
+        resolution, and the dashboard's own request never sets the flag, so
+        its behaviour is unchanged.
 
         Also resolves/creates the Violator this citation belongs to: the
         client may pass an explicit `violator` (an officer confirming a
         "did you mean" suggestion from /api/violators/search); if omitted,
         an exact normalized-name match is reused, or a new Violator is
-        created from the entered names."""
+        created from the entered names.
+
+        client_uuid makes retries safe: it's generated on-device when the
+        citation is created (not when it's sent), so a queued submission
+        resent after a dropped connection reuses the same key. A repeat key
+        short-circuits here and hands back the citation that already exists
+        instead of filing a duplicate."""
+        client_uuid = serializer.validated_data.pop("client_uuid", None)
+        resolve_alert = serializer.validated_data.pop("resolve_alert", True)
+
+        if client_uuid:
+            existing = Citation.objects.filter(client_uuid=client_uuid).first()
+            if existing is not None:
+                serializer.instance = existing
+                return
+
         with transaction.atomic():
             violator = serializer.validated_data.get("violator")
             if violator is None:
@@ -658,8 +677,8 @@ class CitationViewSet(viewsets.ModelViewSet):
             violator.last_seen = timezone.now()
             violator.save(update_fields=["last_seen"])
 
-            citation = serializer.save(created_by=self.request.user, violator=violator)
-            if citation.alert_id:
+            citation = serializer.save(created_by=self.request.user, violator=violator, client_uuid=client_uuid)
+            if citation.alert_id and resolve_alert:
                 Alert.objects.filter(pk=citation.alert_id).update(status=Alert.Status.RESOLVED)
 
 

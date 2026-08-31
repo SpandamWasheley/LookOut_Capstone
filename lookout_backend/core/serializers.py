@@ -157,6 +157,16 @@ class CitationSerializer(serializers.ModelSerializer):
     violator_name = serializers.SerializerMethodField()
     officer_name = serializers.CharField(source="officer.name", read_only=True)
     violation_labels = serializers.SerializerMethodField()
+    # Web sends neither field and gets today's behaviour unchanged: resolve
+    # the alert on save, no idempotency key. Mobile sends both — false while
+    # more violators from the same scene are still being cited, and a
+    # per-citation client_uuid so a queued retry can't double-file. See
+    # CitationViewSet.perform_create for how each is used.
+    resolve_alert = serializers.BooleanField(write_only=True, required=False, default=True)
+    # validators=[] disables ModelSerializer's automatic UniqueValidator for
+    # this field — a repeat client_uuid must reach perform_create so it can
+    # return the existing citation, not fail validation before we get there.
+    client_uuid = serializers.UUIDField(required=False, allow_null=True, validators=[])
 
     class Meta:
         model = Citation
@@ -166,6 +176,7 @@ class CitationSerializer(serializers.ModelSerializer):
             "officer", "officer_name", "barangay_of_violation", "violator_barangay",
             "violations", "violation_labels",
             "matched_person", "match_confidence", "notes", "created_by", "created_at",
+            "resolve_alert", "client_uuid",
         ]
         read_only_fields = ["created_by", "created_at"]
 

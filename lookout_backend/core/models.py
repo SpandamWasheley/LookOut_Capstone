@@ -304,6 +304,12 @@ class Citation(models.Model):
     notes = models.TextField(blank=True)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name="citations")
     created_at = models.DateTimeField(auto_now_add=True)
+    # Client-generated at citation-creation time (not send time) by the mobile
+    # app, so a retried/queued submission after a timeout re-sends the same
+    # key instead of minting a new one — see CitationViewSet.perform_create,
+    # which treats a repeat client_uuid as "already filed" rather than
+    # creating a duplicate. Null for the web dashboard, which doesn't queue.
+    client_uuid = models.UUIDField(null=True, blank=True, unique=True, db_index=True)
 
     class Meta:
         ordering = ["-created_at"]
