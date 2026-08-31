@@ -15,13 +15,16 @@ Detection lives in detection_core.py (shared with the CLI). CPU analysis of a
 video takes a while — a short clip (10-30s) is best for a demo.
 """
 
+import re
 import shutil
 import time
 import uuid
 from pathlib import Path
 
-from flask import (Flask, jsonify, render_template_string, request,
+from flask import (Flask, abort, jsonify, render_template_string, request,
                    send_from_directory)
+
+SESSION_RE = re.compile(r"[0-9a-f]{10}")  # matches uuid.uuid4().hex[:10] below
 
 import detection_core as core
 
@@ -211,6 +214,8 @@ def analyze():
 
 @app.route("/files/<session>/<path:filename>")
 def files(session, filename):
+    if not SESSION_RE.fullmatch(session):
+        abort(404)
     return send_from_directory(WORK_DIR / session, filename)
 
 

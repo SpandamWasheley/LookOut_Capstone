@@ -18,10 +18,14 @@ function mapAlert(raw) {
     description: raw.description,
     imageUrl: raw.image_url,
     videoUrl: raw.video_url,
+    rawVideoUrl: raw.raw_video_url,
     officersAssignedIds: raw.officers_assigned ?? [],
     officersAssignedNames: raw.officers_assigned_names ?? [],
     suspect: raw.suspect,
     notes: raw.notes,
+    matchedPersonId: raw.matched_person,
+    matchedPersonName: raw.matched_person_name,
+    matchConfidence: raw.match_confidence,
   };
 }
 
@@ -523,8 +527,13 @@ export function AlertFeed({ showFilters = false, user }) {
   };
 
   const refresh = async () => {
+    // households/residents are Phase-1-retired endpoints (404 now) — only
+    // SetCandidateModal/ContactGuardianModal's suspect-tagging still reads
+    // them, so degrade those to empty rather than letting a 404 here take
+    // down the alert list itself via Promise.all's fail-fast behavior.
     const [alertsRes, officersRes, camerasRes, householdsRes, residentsRes] = await Promise.all([
-      getAlerts(), getOfficers(), getCameras(), getHouseholds(), getResidents(),
+      getAlerts(), getOfficers(), getCameras(),
+      getHouseholds().catch(() => []), getResidents().catch(() => []),
     ]);
     setAlerts((alertsRes.results ?? alertsRes).map(mapAlert));
     setOfficers((officersRes.results ?? officersRes).map(mapOfficer));
@@ -594,20 +603,13 @@ export function AlertFeed({ showFilters = false, user }) {
     }
   };
 
-  const handleResolve = async (alertId, suspectNames) => {
-    const a = alerts.find((x) => x.id === alertId);
-    if (!a) return;
-    setActionError("");
-    try {
-      const payload = { status: "resolved" };
-      if (suspectNames) payload.suspect = suspectNames;
-      await updateAlert(a.dbId, payload);
-      await refresh();
-      showToast("Violation marked resolved");
-      setSelectedAlert(null);
-    } catch (err) {
-      setActionError(err.message || "Failed to resolve.");
-    }
+  // Resolution itself now happens server-side inside the citation POST (see
+  // CitationFormModal / core/views.py CitationViewSet.perform_create) — this
+  // just refreshes the list and closes up once that's already succeeded.
+  const handleCitationResolved = async () => {
+    await refresh();
+    showToast("Violation marked resolved");
+    setSelectedAlert(null);
   };
 
   const errorBanner = actionError && (
@@ -626,10 +628,12 @@ export function AlertFeed({ showFilters = false, user }) {
           assignedOfficerNames={assignedOfficerNames(selectedAlert.id)}
           households={households}
           residents={residents}
+          officers={officers}
+          currentOfficerId={user?.role === "officer" || user?.role === "both" ? user?.officerId : null}
           verifierName={user?.name}
           onClose={() => setSelectedAlert(null)}
           onDismiss={() => setDismissTarget(selectedAlert)}
-          onResolve={(suspectNames) => handleResolve(selectedAlert.id, suspectNames)}
+          onResolved={handleCitationResolved}
           onUpdateSuspect={(names) => handleUpdateSuspect(selectedAlert.id, names)}
           onDispatch={() => { setDispatchingAlert(selectedAlert); setSelectedAlert(null); }}
         />

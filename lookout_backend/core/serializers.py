@@ -3,13 +3,15 @@ from rest_framework import serializers
 from .models import (
     Alert,
     Camera,
-    Household,
-    HouseholdMember,
+    Citation,
+    DetectionJob,
+    FaceEmbedding,
     Officer,
-    Resident,
+    Person,
     SystemSettings,
     User,
     ViolationType,
+    Violator,
     Zone,
 )
 
@@ -79,35 +81,104 @@ class OfficerSerializer(serializers.ModelSerializer):
         return obj.user.username if obj.user_id else ""
 
 
-class ResidentSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Resident
-        fields = [
-            "id", "code", "name", "barangay_id", "age", "status",
-            "gender", "guardian_name", "image_url", "phone",
-        ]
-
-
-class HouseholdMemberSerializer(serializers.ModelSerializer):
-    guardians = serializers.PrimaryKeyRelatedField(many=True, queryset=HouseholdMember.objects.all(), required=False)
+class FaceEmbeddingSerializer(serializers.ModelSerializer):
+    """Full representation — used for the standalone embeddings admin endpoint.
+    Never exposes the raw `embedding` vector field."""
 
     class Meta:
-        model = HouseholdMember
-        fields = [
-            "id", "code", "household", "first_name", "last_name", "birthdate",
-            "barangay_id", "status", "relation", "image_url", "phone", "guardians",
-        ]
+        model = FaceEmbedding
+        fields = ["id", "person", "angle", "image", "det_score", "created_at"]
+        read_only_fields = fields
 
 
-class HouseholdSerializer(serializers.ModelSerializer):
-    members = HouseholdMemberSerializer(many=True, read_only=True)
+class PersonEmbeddingSerializer(serializers.ModelSerializer):
+    """Nested-in-Person representation: angle + image URL only, per spec —
+    no det_score/timestamps, and never the raw embedding vector."""
 
     class Meta:
-        model = Household
+        model = FaceEmbedding
+        fields = ["id", "angle", "image"]
+
+
+class PersonSerializer(serializers.ModelSerializer):
+    embeddings = PersonEmbeddingSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Person
         fields = [
-            "id", "code", "family_name", "address",
-            "contact", "enrolled_date", "members",
+            "id", "person_code", "full_name", "status",
+            "enrolled_at", "notes", "created_at", "embeddings",
         ]
+        # status/enrolled_at are only ever changed by the enroll-face /
+        # embeddings actions, never directly by the client.
+        read_only_fields = ["person_code", "status", "enrolled_at", "created_at"]
+
+
+def _format_full_name(last, first, middle, suffix):
+    name = f"{last}, {first}"
+    if middle:
+        name += f" {middle}"
+    if suffix:
+        name += f" {suffix}"
+    return name
+
+
+class ViolatorSerializer(serializers.ModelSerializer):
+    full_name = serializers.SerializerMethodField()
+    citation_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Violator
+        fields = [
+            "id", "first_name", "middle_name", "last_name", "suffix", "full_name",
+            "normalized_name", "matched_person", "aliases", "first_seen", "last_seen",
+            "citation_count",
+        ]
+        read_only_fields = ["normalized_name", "aliases", "first_seen", "last_seen"]
+
+    def get_full_name(self, obj):
+        return _format_full_name(obj.last_name, obj.first_name, obj.middle_name, obj.suffix)
+
+    def get_citation_count(self, obj):
+        # Prefer the annotation ViolatorViewSet.get_queryset adds (avoids an
+        # extra query per row in list views); fall back to a live count for
+        # any context that hands this serializer an un-annotated instance
+        # (e.g. the merge response).
+        annotated = getattr(obj, "citation_count", None)
+        return annotated if annotated is not None else obj.citations.count()
+
+
+class CitationSerializer(serializers.ModelSerializer):
+    # Writable-optional: the client can pass an explicit id when the officer
+    # picks a "did you mean" suggestion from /api/violators/search; if
+    # omitted, CitationViewSet.perform_create resolves or creates one from
+    # the *_entered names instead.
+    violator = serializers.PrimaryKeyRelatedField(queryset=Violator.objects.all(), required=False, allow_null=True)
+    violator_name = serializers.SerializerMethodField()
+    officer_name = serializers.CharField(source="officer.name", read_only=True)
+    violation_labels = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Citation
+        fields = [
+            "id", "alert", "violator", "violator_name",
+            "first_name_entered", "middle_name_entered", "last_name_entered", "suffix_entered",
+            "officer", "officer_name", "barangay_of_violation", "violator_barangay",
+            "violations", "violation_labels",
+            "matched_person", "match_confidence", "notes", "created_by", "created_at",
+        ]
+        read_only_fields = ["created_by", "created_at"]
+
+    def validate_violations(self, value):
+        if not value:
+            raise serializers.ValidationError("At least one violation must be selected.")
+        return value
+
+    def get_violator_name(self, obj):
+        return _format_full_name(obj.last_name_entered, obj.first_name_entered, obj.middle_name_entered, obj.suffix_entered)
+
+    def get_violation_labels(self, obj):
+        return [v.label for v in obj.violations.all()]
 
 
 class AlertSerializer(serializers.ModelSerializer):
@@ -123,17 +194,25 @@ class AlertSerializer(serializers.ModelSerializer):
         queryset=Officer.objects.all(), required=False, many=True
     )
     officers_assigned_names = serializers.SerializerMethodField()
+    matched_person_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Alert
         fields = [
             "id", "code", "type", "status", "camera", "camera_zone", "timestamp",
-            "confidence", "description", "image_url", "video_url", "officers_assigned",
-            "officers_assigned_names", "suspect", "notes",
+            "confidence", "description", "image_url", "video_url", "raw_video_url",
+            "officers_assigned", "officers_assigned_names", "suspect", "notes",
+            "matched_person", "matched_person_name", "match_confidence",
         ]
+        # Set only by the watchers' recognition step (see core/face_registry.py),
+        # never by a client PATCH.
+        read_only_fields = ["matched_person", "match_confidence"]
 
     def get_officers_assigned_names(self, obj):
         return [o.name for o in obj.officers_assigned.all()]
+
+    def get_matched_person_name(self, obj):
+        return obj.matched_person.full_name if obj.matched_person_id else None
 
 
 class SystemSettingsSerializer(serializers.ModelSerializer):
@@ -156,3 +235,19 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = ["updated_at"]
+
+
+class DetectionJobSerializer(serializers.ModelSerializer):
+    created_by_name = serializers.CharField(source="created_by.display_name", read_only=True, default="")
+
+    class Meta:
+        model = DetectionJob
+        fields = [
+            "id", "violation_type", "source_filename", "status", "started_at",
+            "finished_at", "error", "created_by_name",
+        ]
+        # Every field here is set by the server (upload handling / the watcher
+        # thread) — the client only ever POSTs the file + violation_type, which
+        # the view's create() reads straight off request.data/request.FILES,
+        # not through this serializer.
+        read_only_fields = fields

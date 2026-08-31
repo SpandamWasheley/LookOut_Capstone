@@ -85,6 +85,8 @@ AUTH_USER_MODEL = 'core.User'
 CORS_ALLOWED_ORIGINS = [
     'http://localhost:5173',
     'http://127.0.0.1:5173',
+    'http://localhost:5174',
+    'http://127.0.0.1:5174',
 ]
 # A real deployment must add its actual frontend origin(s) here via the env,
 # e.g. ALLOWED_CORS_ORIGINS=https://app.example.com,https://admin.example.com

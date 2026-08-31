@@ -37,6 +37,7 @@ export async function login(username, password) {
     role: data.user.role,
     name: data.user.display_name || data.user.username,
     mustChangePassword: data.user.must_change_password,
+    officerId: data.user.officer_id ?? null,
   };
 
   accessToken = data.access;
@@ -72,6 +73,33 @@ export async function apiFetch(path, options = {}) {
   return response.json();
 }
 
+// Like apiFetch, but for multipart/form-data bodies (file uploads) — the
+// Content-Type (with its boundary) must come from the browser, not be set
+// manually, so this skips the JSON header apiFetch always adds.
+async function apiUpload(path, formData) {
+  const token = getAccessToken();
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    let parsed = null;
+    try { parsed = JSON.parse(text); } catch { /* not JSON */ }
+    const message = parsed
+      ? Object.values(parsed).flat().join(" ") || text
+      : text || `Request failed with status ${response.status}`;
+    const err = new Error(message);
+    err.data = parsed;
+    err.status = response.status;
+    throw err;
+  }
+
+  return response.json();
+}
+
 export const getHouseholds = () => apiFetch("/households/");
 export const createHousehold = (payload) =>
   apiFetch("/households/", { method: "POST", body: JSON.stringify(payload) });
@@ -88,6 +116,16 @@ export const deleteHouseholdMember = (id) =>
 export const getResidents = () => apiFetch("/residents/");
 export const createResident = (payload) =>
   apiFetch("/residents/", { method: "POST", body: JSON.stringify(payload) });
+
+export const getPersons = () => apiFetch("/persons/");
+export const createPerson = (payload) =>
+  apiFetch("/persons/", { method: "POST", body: JSON.stringify(payload) });
+export const deletePerson = (id) =>
+  apiFetch(`/persons/${id}/`, { method: "DELETE" });
+// front/right/left File objects under those field names in `formData` —
+// matches core/views.py PersonViewSet.enroll_face's request.FILES.get(angle).
+export const enrollFace = (id, formData) =>
+  apiUpload(`/persons/${id}/enroll-face/`, formData);
 
 export const getSettings = () => apiFetch("/settings/");
 export const saveSettings = (payload) =>
@@ -115,6 +153,24 @@ export const getAlerts = () => apiFetch("/alerts/");
 export const updateAlert = (id, payload) =>
   apiFetch(`/alerts/${id}/`, { method: "PATCH", body: JSON.stringify(payload) });
 
+export const getViolationTypes = () => apiFetch("/violation-types/");
+export const getBarangays = () => apiFetch("/barangays/");
+// Creating a citation against an alert resolves that alert server-side, in
+// the same transaction — see core/views.py CitationViewSet.perform_create.
+export const createCitation = (payload) =>
+  apiFetch("/citations/", { method: "POST", body: JSON.stringify(payload) });
+
+export const getCitations = (params = {}) => {
+  const qs = new URLSearchParams(params).toString();
+  return apiFetch(`/citations/${qs ? `?${qs}` : ""}`);
+};
+
+export const getViolators = () => apiFetch("/violators/");
+export const getViolator = (id) => apiFetch(`/violators/${id}/`);
+export const searchViolators = (q) => apiFetch(`/violators/search/?q=${encodeURIComponent(q)}`);
+export const mergeViolators = (winnerId, loserId) =>
+  apiFetch(`/violators/${winnerId}/merge/`, { method: "POST", body: JSON.stringify({ loser_id: loserId }) });
+
 // Continuous CCTV recording, tied to dashboard login/logout: start when the
 // operator signs in, stop when they sign out. Fire-and-forget from the UI.
 export const startRecording = () => apiFetch("/recording/start/", { method: "POST" });
@@ -122,6 +178,17 @@ export const stopRecording = () => apiFetch("/recording/stop/", { method: "POST"
 export const getRecordingStatus = () => apiFetch("/recording/status/");
 
 export const getCameras = () => apiFetch("/cameras/");
+
+// Admin test harness: run an existing detector against an uploaded clip
+// instead of the terminal. Launches a subprocess server-side; this call
+// returns as soon as the job row is created, not when detection finishes.
+export const getDetectionJobs = () => apiFetch("/detection-jobs/");
+export const uploadDetectionJob = (file, violationType) => {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("violation_type", violationType);
+  return apiUpload("/detection-jobs/", formData);
+};
 
 // Fetches one JPEG frame from a live camera's snapshot proxy as an object URL.
 // The access token lives only in memory, so an <img src> can't carry it — we

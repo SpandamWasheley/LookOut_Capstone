@@ -13,13 +13,13 @@ const navGroups = [
       { id: "cameras",    label: "Live Feeds",   icon: Camera,          roles: ["admin", "dispatcher", "both"] },
       { id: "alerts",     label: "Violations",   icon: Bell,            roles: ["admin", "dispatcher", "both"] },
       { id: "records",    label: "Records",      icon: Archive,         roles: ["admin", "dispatcher", "both"] },
-      { id: "residentlog",label: "Resident Log", icon: TrendingUp,      roles: ["admin", "dispatcher"] },
+      { id: "residentlog",label: "Violator Log", icon: TrendingUp,      roles: ["admin", "dispatcher"] },
     ],
   },
   {
     label: "Manage",
     items: [
-      { id: "residents", label: "Residents", icon: Users,    roles: ["admin"] },
+      { id: "residents", label: "Face Registry", icon: Users,    roles: ["admin"] },
       { id: "officers",  label: "Personnel", icon: Shield,   roles: ["admin"] },
       { id: "config",    label: "Settings",  icon: Settings, roles: ["admin"] },
     ],

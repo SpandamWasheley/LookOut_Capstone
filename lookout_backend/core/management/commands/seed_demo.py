@@ -4,10 +4,8 @@ from django.utils.dateparse import parse_date, parse_datetime
 from core.models import (
     Alert,
     Camera,
-    Household,
-    HouseholdMember,
     Officer,
-    Resident,
+    Person,
     User,
     ViolationType,
 )
@@ -43,29 +41,10 @@ OFFICERS = [
     {"code": "OFC-04", "name": "PO2 Santos, Joy", "badge": "B-044", "status": "off-duty", "location": "Sector 2", "phone": "+63 918 876 3308", "shift": "10PM - 6AM", "joined_date": "2024-02-20"},
 ]
 
-RESIDENTS = [
-    {"code": "RES-01", "name": "Angelica Dela Cruz", "barangay_id": "BRG-TET-0001", "age": 28, "status": "verified", "gender": "female", "guardian_name": "",
-     "image_url": "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=200&h=200&fit=crop&auto=format"},
-    {"code": "RES-02", "name": "Kyle Mendoza", "barangay_id": "BRG-TET-0002", "age": 16, "status": "pending", "gender": "male", "guardian_name": "Dela Cruz, Ronald",
-     "image_url": "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=200&h=200&fit=crop&auto=format"},
-    {"code": "RES-03", "name": "Maria Santos", "barangay_id": "BRG-TET-0003", "age": 42, "status": "flagged", "gender": "female", "guardian_name": "",
-     "image_url": "https://images.unsplash.com/photo-1544723795-3fb6469f5b39?w=200&h=200&fit=crop&auto=format"},
-]
-
-HOUSEHOLDS = [
-    {
-        "code": "HH-TET-0001", "family_name": "Angeles", "address": "142 Don Maria Drive",
-        "contact": "+63 917 000 1122", "enrolled_date": "2025-06-10",
-        "members": [
-            {"code": "MEM-001", "first_name": "Peter", "last_name": "Angeles", "birthdate": "1990-03-12", "barangay_id": "BRG-TET-0101", "status": "verified", "relation": "Head",
-             "image_url": "https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?w=200&h=200&fit=crop&auto=format", "phone": "+63 917 000 1123"},
-            {"code": "MEM-002", "first_name": "Ana", "last_name": "Angeles", "birthdate": "1994-08-21", "barangay_id": "BRG-TET-0102", "status": "verified", "relation": "Spouse",
-             "image_url": "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=200&h=200&fit=crop&auto=format", "phone": "+63 917 000 1124"},
-            {"code": "MEM-003", "first_name": "Leo", "last_name": "Angeles", "birthdate": "2011-11-30", "barangay_id": "BRG-TET-0103", "status": "pending", "relation": "Son",
-             "image_url": "https://images.unsplash.com/photo-1517841905240-472988babdf9?w=200&h=200&fit=crop&auto=format"},
-        ],
-        "guardian_links": [{"minor": "MEM-003", "guardians": ["MEM-001", "MEM-002"]}],
-    },
+PEOPLE = [
+    {"person_code": "BRG-TET-0001", "full_name": "Angelica Dela Cruz", "status": "pending"},
+    {"person_code": "BRG-TET-0002", "full_name": "Kyle Mendoza", "status": "pending"},
+    {"person_code": "BRG-TET-0003", "full_name": "Maria Santos", "status": "pending"},
 ]
 
 ALERTS = [
@@ -132,42 +111,12 @@ class Command(BaseCommand):
             officers[o["name"]] = obj
         self.stdout.write(self.style.SUCCESS(f"Officers: {len(officers)}"))
 
-        for r in RESIDENTS:
-            Resident.objects.update_or_create(
-                code=r["code"],
-                defaults={
-                    "name": r["name"], "barangay_id": r["barangay_id"], "age": r["age"],
-                    "status": r["status"], "gender": r["gender"], "guardian_name": r["guardian_name"],
-                    "image_url": r["image_url"],
-                },
+        for p in PEOPLE:
+            Person.objects.update_or_create(
+                person_code=p["person_code"],
+                defaults={"full_name": p["full_name"], "status": p["status"]},
             )
-        self.stdout.write(self.style.SUCCESS(f"Residents: {len(RESIDENTS)}"))
-
-        for h in HOUSEHOLDS:
-            household, _ = Household.objects.update_or_create(
-                code=h["code"],
-                defaults={
-                    "family_name": h["family_name"], "address": h["address"],
-                    "contact": h["contact"],
-                    "enrolled_date": parse_date(h["enrolled_date"]),
-                },
-            )
-            members = {}
-            for m in h["members"]:
-                member, _ = HouseholdMember.objects.update_or_create(
-                    code=m["code"],
-                    defaults={
-                        "household": household, "first_name": m["first_name"], "last_name": m["last_name"],
-                        "birthdate": parse_date(m["birthdate"]), "barangay_id": m["barangay_id"],
-                        "status": m["status"], "relation": m["relation"], "image_url": m["image_url"],
-                        "phone": m.get("phone", ""),
-                    },
-                )
-                members[m["code"]] = member
-            for link in h.get("guardian_links", []):
-                minor = members[link["minor"]]
-                minor.guardians.set([members[g] for g in link["guardians"]])
-        self.stdout.write(self.style.SUCCESS(f"Households: {len(HOUSEHOLDS)}"))
+        self.stdout.write(self.style.SUCCESS(f"People: {len(PEOPLE)}"))
 
         for a in ALERTS:
             alert, _ = Alert.objects.update_or_create(

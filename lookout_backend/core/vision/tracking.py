@@ -90,6 +90,65 @@ GESTURE_WINDOW_SECONDS = 20.0
 # satisfied by ~1.3s of actual detection.
 ACCRUAL_STALE_SECONDS = 0.5
 
+# Stationarity (watch_drinking's solo path, and gathering duration below): how
+# far a box's center may drift, in mean-box-widths, over the check window and
+# still count as "sitting still" rather than "walking through". Size-relative
+# for the same reason _center_proximity is: a near person's box spans more
+# pixels for the same real-world shift than a far person's does.
+STATIONARY_DIST = 0.6
+
+# Defensive cap on how much position history a Track/Cluster retains, so a
+# long-lived track's history can't grow unbounded. Matches the top of
+# SystemSettings.drinking_group_duration's realistic deployment range (see its
+# help text) — the longest window anything currently asks stationary() for.
+POSITION_HISTORY_MAX_SECONDS = 900
+
+# --- Gatherings (watch_drinking's Path B / "inuman") -----------------------
+# A gathering is identified by spatial footprint (union bbox of its current
+# members), not by a fixed set of track ids: membership genuinely changes as
+# people arrive and leave, and individual tracks churn on top of that. Keying
+# on "the same physical spot" instead of "the same people" is the same
+# principle already used for the person-level spatial cooldown.
+
+# Radius for two person boxes to count as part of the same gathering. Wider
+# than TOMBSTONE_MATCH_DIST (1.2) since group members stand apart from each
+# other, not on top of one another the way one person's box does across a
+# brief occlusion.
+GROUP_CLUSTER_DIST = 1.8
+
+# Radius for matching this frame's candidate gathering to an already-tracked
+# one, by bbox-centroid proximity — same idea as tombstone re-ID, one level up.
+GROUP_MATCH_DIST = 1.2
+
+# Seconds a gathering survives without a matching group of people before it's
+# dropped outright (no tombstone/revival — a gathering that's fully dispersed
+# has nothing worth reviving, unlike an individual's dwell progress).
+GROUP_MAX_GAP = 3.0
+
+# Tolerate a brief dip below drinking_min_group (one dropped frame, someone
+# briefly occluded) before resetting the accumulated duration — mirrors
+# Track's own PRESENCE_GRACE_SECONDS pattern rather than requiring literal
+# every-frame compliance, which would be brittle at low FPS.
+GROUP_PRESENCE_GRACE_SECONDS = 3.0
+
+# Tombstone revival for a gathering that drops out of the matched set for a
+# frame or two (bytetrack losing a member mid-frame, a tiling pass that missed
+# someone) — same mechanism as Track's own TOMBSTONE_SECONDS/TOMBSTONE_MATCH_DIST,
+# one level up. Without this, a gathering not re-matched on the very next
+# processed frame loses its accumulated duration_held and restarts as a
+# brand-new Cluster at 0 — the same track-ID-churn problem this module already
+# solves for individuals, recurring at the cluster level. Diagnosed via
+# --stats on real footage: 44 of 47 clusters in one clip never accumulated
+# more than 5s before dying, versus a handful that reached well past
+# group_duration — a shape that points at identity churn, not genuinely brief
+# encounters.
+# 15s / 5x GROUP_MAX_GAP mirrors Track's own ratio (TOMBSTONE_SECONDS=10 is 5x
+# TRACK_MAX_GAP=2).
+GROUP_TOMBSTONE_SECONDS = 15.0
+# More generous than live matching (GROUP_MATCH_DIST=1.2): a gathering may
+# have drifted while unseen, same reasoning as TOMBSTONE_MATCH_DIST > TRACK_MATCH_DIST.
+GROUP_TOMBSTONE_MATCH_DIST = 2.0
+
 
 def _center_proximity(a, b, max_frac=TRACK_MATCH_DIST):
     """1.0 when two boxes' centers coincide, falling linearly to 0 at
@@ -151,6 +210,9 @@ class Track:
         # Pose hand-to-mouth gesture state (long-range smoking).
         self.hand_zone = None             # 'atface' | 'down' | None
         self.gestures = deque()           # timestamps of completed hand-to-mouth cycles
+        # Rolling (timestamp, box) history for stationarity checks (watch_drinking's
+        # solo path). Populated in PersonTracker wherever a track's box is set.
+        self.position_history = deque()
 
     def update_puff(self, dist_ratio, now, window=PUFF_WINDOW_SECONDS):
         """Feeds the cigarette->mouth distance (in FACE-WIDTHS) into the puff
@@ -207,11 +269,34 @@ class Track:
         """How this track should be named in an alert description."""
         return f"unattributed detection #{self.id}" if self.is_scene else f"person #{self.id}"
 
+    def note_position(self, now):
+        """Records the current box for later stationarity checks. Called from
+        PersonTracker every frame a track is matched or spawned, mirroring how
+        vote()/tick() get their own per-frame call."""
+        self.position_history.append((now, self.box))
+        cutoff = now - POSITION_HISTORY_MAX_SECONDS
+        while self.position_history and self.position_history[0][0] < cutoff:
+            self.position_history.popleft()
+
+    def stationary(self, now, window_seconds, max_frac=STATIONARY_DIST):
+        """True if this track has stayed within `max_frac` box-widths of where
+        it was `window_seconds` ago — genuinely sitting still for that whole
+        span, not merely present at this instant. A track that hasn't existed
+        that long can't yet prove it, so this returns False rather than
+        assuming stillness by default.
+        """
+        cutoff = now - window_seconds
+        for ts, box in self.position_history:
+            if ts >= cutoff:
+                return _center_proximity(self.box, box, max_frac) > 0
+        return False
+
     def adopt(self, other, now):
         """Inherits a recently-lost track's identity and confirmation state."""
         self.id = other.id
         self.votes = other.votes
         self.dets = other.dets
+        self.position_history = other.position_history
         self.last_alerted_at = other.last_alerted_at
         if other.dwell_held > 0:
             # Carry the dwell progress across the occlusion. The occlusion itself
@@ -360,6 +445,7 @@ class PersonTracker:
                 continue
             t.box = tuple(int(v) for v in person_boxes[i][:4])
             t.last_seen = now
+            t.note_position(now)
             matched_tracks.add(id(t))
             matched_boxes.add(i)
 
@@ -385,6 +471,7 @@ class PersonTracker:
                 live[ext] = t
             t.box = box
             t.last_seen = now
+            t.note_position(now)
 
     def _match_or_spawn(self, box, now):
         best, best_score = None, 0.0
@@ -396,6 +483,7 @@ class PersonTracker:
             self.tracks.append(self._spawn(box, now))
         else:
             best.box, best.last_seen = box, now
+            best.note_position(now)
 
     def _spawn(self, box, now, ext_id=None):
         """Creates a track, reviving a nearby recently-lost one if there is one."""
@@ -405,6 +493,7 @@ class PersonTracker:
             t.adopt(ghost, now)
         else:
             self._next_id += 1
+        t.note_position(now)
         return t
 
     def _claim_tombstone(self, box, now):
@@ -496,3 +585,224 @@ class PersonTracker:
             self.scene_tracks.remove(t)
             per_scene.pop(t, None)
         return per_scene
+
+
+def _union_box(boxes):
+    """The smallest box enclosing all the given (x1,y1,x2,y2) boxes."""
+    boxes = list(boxes)
+    return (
+        min(b[0] for b in boxes), min(b[1] for b in boxes),
+        max(b[2] for b in boxes), max(b[3] for b in boxes),
+    )
+
+
+class Cluster:
+    """A persistent gathering of 2+ nearby person tracks (watch_drinking's
+    Path B / "inuman"), identified by spatial footprint — a union bbox of its
+    current members — rather than a fixed member-id set, since membership
+    genuinely changes as people arrive and leave on top of individual tracks
+    churning underneath. Mirrors Track's own accrue/reset/stationary shape
+    (tick, note_position, stationary, in_cooldown) so the two read the same
+    way, just one level up.
+    """
+
+    def __init__(self, cluster_id, bbox, now):
+        self.id = cluster_id
+        self.bbox = bbox                  # union box of current members
+        self.member_ids = set()           # this frame's member Track ids
+        self.last_seen = now              # last frame this cluster matched ANY group
+        self.last_active_seen = now       # last frame member count >= min_group
+        self.position_history = deque()
+        # Accumulated seconds confirmed at >= min_group — like Track.dwell_held,
+        # only counted while active, not raw wall-clock since creation.
+        self.duration_held = 0.0
+        self._last_tick = None
+        # Best (x1,y1,x2,y2,score,label) bottle detection ever seen among
+        # members. Sticky — sightings don't need to be current or per-frame,
+        # per the "occasional, not per-frame" evidence requirement.
+        self.evidence = None
+        # None = never alerted — see Track.last_alerted_at for why not 0.0.
+        self.last_alerted_at = None
+
+    def tick(self, now, active):
+        """Advances the duration clock, crediting only confirmed (>= min_group)
+        time. Returns the total confirmed seconds held so far."""
+        if self._last_tick is not None and active:
+            self.duration_held += now - self._last_tick
+        self._last_tick = now
+        if active:
+            self.last_active_seen = now
+        return self.duration_held
+
+    def reset_duration(self):
+        self.duration_held = 0.0
+
+    def note_position(self, now):
+        self.position_history.append((now, self.bbox))
+        cutoff = now - POSITION_HISTORY_MAX_SECONDS
+        while self.position_history and self.position_history[0][0] < cutoff:
+            self.position_history.popleft()
+
+    def stationary(self, now, window_seconds, max_frac=STATIONARY_DIST):
+        """Same semantics as Track.stationary, against the cluster's bbox
+        instead of a person's — has the GATHERING stayed put, not necessarily
+        every individual member (people shift, gesture, and mill around
+        within a stationary group without the group itself relocating)."""
+        cutoff = now - window_seconds
+        for ts, bbox in self.position_history:
+            if ts >= cutoff:
+                return _center_proximity(self.bbox, bbox, max_frac) > 0
+        return False
+
+    def in_cooldown(self, now, cooldown):
+        return self.last_alerted_at is not None and now - self.last_alerted_at < cooldown
+
+    def adopt(self, other, now):
+        """Inherits a recently-lost cluster's identity and confirmation state
+        — same idea as Track.adopt, one level up."""
+        self.id = other.id
+        self.position_history = other.position_history
+        self.evidence = other.evidence
+        self.last_alerted_at = other.last_alerted_at
+        if other.duration_held > 0:
+            # Carry the duration progress across the gap. Set last_active_seen
+            # to now (not other's stale value) so GROUP_PRESENCE_GRACE_SECONDS'
+            # check doesn't see a gap-sized "inactive" span on the very next
+            # frame and immediately reset the duration we just carried over —
+            # they were unseen, not dispersed. Same reasoning as Track.adopt's
+            # last_threat_seen reset.
+            self.duration_held = other.duration_held
+            self._last_tick = now
+            self.last_active_seen = now
+
+
+class GroupTracker:
+    """Groups each frame's live person tracks into persistent Cluster objects.
+    Mirrors PersonTracker's match/spawn/expire shape one level up: candidate
+    groups this frame are matched to persisting clusters by bbox-centroid
+    proximity, not by comparing member-id sets (which churn).
+
+    Naive single-link proximity clustering: any two person boxes within
+    GROUP_CLUSTER_DIST of each other join the same group, and cluster
+    membership is the transitive closure of that relation. Known limitation,
+    not solved here: one person standing between two genuinely separate
+    gatherings can chain-merge them into one. Needs tuning against real
+    footage, same caveat as every other size-relative radius in this module.
+    """
+
+    def __init__(self, cluster_dist=GROUP_CLUSTER_DIST, max_gap=GROUP_MAX_GAP):
+        self._next_id = 1
+        self.clusters = []
+        self.tombstones = []      # recently lost clusters, for re-identification
+        self.cluster_dist = cluster_dist
+        self.max_gap = max_gap
+
+    def update(self, tracks, now, min_group):
+        """Returns this frame's live clusters, INCLUDING ones currently below
+        min_group — a shrinking gathering isn't dropped the instant
+        membership dips; see GROUP_PRESENCE_GRACE_SECONDS. Scene (unattributed)
+        tracks never participate — a gathering is people, not objects."""
+        people = [t for t in tracks if not t.is_scene]
+        groups = self._group_by_proximity(people)
+
+        matched_ids, seen = set(), []
+        for members in groups:
+            bbox = _union_box(t.box for t in members)
+            cluster = self._match(bbox, matched_ids)
+            if cluster is None:
+                cluster = self._spawn(bbox, now)
+                self.clusters.append(cluster)
+
+            cluster.bbox = bbox
+            cluster.member_ids = {t.id for t in members}
+            cluster.last_seen = now
+            cluster.note_position(now)
+
+            active = len(members) >= min_group
+            cluster.tick(now, active)
+            if not active and now - cluster.last_active_seen > GROUP_PRESENCE_GRACE_SECONDS:
+                cluster.reset_duration()
+
+            matched_ids.add(id(cluster))
+            seen.append(cluster)
+
+        self._expire(now)
+        return seen
+
+    def _spawn(self, bbox, now):
+        """Creates a cluster, reviving a nearby recently-lost one if there is
+        one — same idea as PersonTracker._spawn, one level up."""
+        c = Cluster(self._next_id, bbox, now)
+        ghost = self._claim_tombstone(bbox, now)
+        if ghost is not None:
+            c.adopt(ghost, now)
+        else:
+            self._next_id += 1
+        return c
+
+    def _claim_tombstone(self, bbox, now):
+        """Pops the best-matching recently-lost cluster for this bbox, if
+        any — same idea as PersonTracker._claim_tombstone, one level up."""
+        best, best_score = None, 0.0
+        for c in self.tombstones:
+            score = _center_proximity(c.bbox, bbox, GROUP_TOMBSTONE_MATCH_DIST)
+            if score > best_score:
+                best, best_score = c, score
+        if best is not None:
+            self.tombstones.remove(best)
+        return best
+
+    def _expire(self, now):
+        """Moves clusters unseen beyond max_gap into the tombstone pool
+        instead of dropping them outright, and prunes tombstones older than
+        GROUP_TOMBSTONE_SECONDS — same idea as PersonTracker._expire."""
+        live = []
+        for c in self.clusters:
+            if now - c.last_seen <= self.max_gap:
+                live.append(c)
+            else:
+                self.tombstones.append(c)
+        self.clusters = live
+        self.tombstones = [
+            c for c in self.tombstones if now - c.last_seen <= GROUP_TOMBSTONE_SECONDS
+        ]
+
+    def _group_by_proximity(self, people):
+        """Connected components of the "within cluster_dist" relation, via a
+        small union-find — cheap at the handful of concurrent person tracks
+        a frame realistically has."""
+        n = len(people)
+        parent = list(range(n))
+
+        def find(i):
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+
+        def union(i, j):
+            ri, rj = find(i), find(j)
+            if ri != rj:
+                parent[ri] = rj
+
+        for i in range(n):
+            for j in range(i + 1, n):
+                if _center_proximity(people[i].box, people[j].box, self.cluster_dist) > 0:
+                    union(i, j)
+
+        groups = {}
+        for i, t in enumerate(people):
+            groups.setdefault(find(i), []).append(t)
+        return list(groups.values())
+
+    def _match(self, bbox, already_matched):
+        """Best-matching persisting cluster for this frame's candidate group,
+        by bbox-centroid proximity — same idea as tombstone re-ID."""
+        best, best_score = None, 0.0
+        for c in self.clusters:
+            if id(c) in already_matched:
+                continue
+            score = _center_proximity(c.bbox, bbox, GROUP_MATCH_DIST)
+            if score > best_score:
+                best, best_score = c, score
+        return best

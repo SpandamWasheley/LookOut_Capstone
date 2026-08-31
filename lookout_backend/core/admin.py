@@ -4,14 +4,15 @@ from django.contrib.auth.admin import UserAdmin
 from .models import (
     Alert,
     Camera,
+    Citation,
     EmailVerificationCode,
-    Household,
-    HouseholdMember,
+    FaceEmbedding,
     Officer,
-    Resident,
+    Person,
     SystemSettings,
     User,
     ViolationType,
+    Violator,
     Zone,
 )
 
@@ -46,27 +47,28 @@ class OfficerAdmin(admin.ModelAdmin):
     list_filter = ("status",)
 
 
-@admin.register(Resident)
-class ResidentAdmin(admin.ModelAdmin):
-    list_display = ("code", "name", "barangay_id", "age", "status")
-    list_filter = ("status",)
-
-
-class HouseholdMemberInline(admin.TabularInline):
-    model = HouseholdMember
+class FaceEmbeddingInline(admin.TabularInline):
+    model = FaceEmbedding
     extra = 0
 
 
-@admin.register(Household)
-class HouseholdAdmin(admin.ModelAdmin):
-    list_display = ("code", "family_name", "enrolled_date")
-    inlines = [HouseholdMemberInline]
-
-
-@admin.register(HouseholdMember)
-class HouseholdMemberAdmin(admin.ModelAdmin):
-    list_display = ("code", "first_name", "last_name", "household", "status", "relation")
+@admin.register(Person)
+class PersonAdmin(admin.ModelAdmin):
+    list_display = ("person_code", "full_name", "status", "enrolled_at")
     list_filter = ("status",)
+    inlines = [FaceEmbeddingInline]
+
+
+@admin.register(Citation)
+class CitationAdmin(admin.ModelAdmin):
+    list_display = ("id", "last_name_entered", "first_name_entered", "officer", "barangay_of_violation", "violator_barangay", "created_at")
+    list_filter = ("barangay_of_violation", "violator_barangay")
+
+
+@admin.register(Violator)
+class ViolatorAdmin(admin.ModelAdmin):
+    list_display = ("id", "last_name", "first_name", "suffix", "matched_person", "first_seen", "last_seen")
+    search_fields = ("first_name", "last_name", "normalized_name")
 
 
 @admin.register(Alert)

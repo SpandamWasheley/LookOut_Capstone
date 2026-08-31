@@ -1,30 +1,48 @@
+import os
 import random
 import re
+import subprocess
+import sys
+import threading
+import uuid
 from datetime import timedelta
 
+import cv2
+import django_filters
+import numpy as np
 from django.conf import settings as django_settings
 from django.core.mail import send_mail
 from django.db import transaction
 from django.db.models import Count
 from django.utils import timezone
+from django.utils.text import get_valid_filename
+from rapidfuzz import process as rapidfuzz_process
 from rest_framework import generics, permissions, viewsets
 from rest_framework.decorators import action, api_view, permission_classes, throttle_classes
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView
 
+from core.constants import ZAMBOANGA_BARANGAYS
+from core.face_registry import rebuild_face_db
+from core.vision import recognition
+
 from .models import (
     Alert,
     Camera,
+    Citation,
+    DetectionJob,
     EmailVerificationCode,
-    Household,
-    HouseholdMember,
+    FaceEmbedding,
     Officer,
-    Resident,
+    Person,
     SystemSettings,
     User,
     ViolationType,
+    Violator,
     Zone,
+    normalize_name,
 )
 from .permissions import IsAdmin, IsAdminOrReadOnly
 from .throttling import (
@@ -39,14 +57,16 @@ CODE_EXPIRY_MINUTES = 10
 from .serializers import (
     AlertSerializer,
     CameraSerializer,
+    CitationSerializer,
+    DetectionJobSerializer,
     DispatcherSerializer,
-    HouseholdMemberSerializer,
-    HouseholdSerializer,
+    FaceEmbeddingSerializer,
     OfficerSerializer,
-    ResidentSerializer,
+    PersonSerializer,
     SystemSettingsSerializer,
     UserSerializer,
     ViolationTypeSerializer,
+    ViolatorSerializer,
     ZoneSerializer,
 )
 
@@ -349,8 +369,7 @@ def dashboard_stats(request):
         "alerts_by_type_7d": by_type,
         "weekly_trend": list(weekly_trend),
         "officers_on_duty": Officer.objects.exclude(status=Officer.Status.OFF_DUTY).count(),
-        "residents_total": Resident.objects.count(),
-        "households_total": Household.objects.count(),
+        "people_total": Person.objects.count(),
     })
 
 
@@ -488,24 +507,233 @@ class DispatcherViewSet(viewsets.ModelViewSet):
         instance.delete()
 
 
-class ResidentViewSet(viewsets.ModelViewSet):
-    queryset = Resident.objects.all()
-    serializer_class = ResidentSerializer
+FACE_ENROLL_ANGLES = ["front", "right", "left"]
+FACE_MIN_DIMENSION = 200
+
+
+class PersonViewSet(viewsets.ModelViewSet):
+    queryset = Person.objects.prefetch_related("embeddings").all()
+    serializer_class = PersonSerializer
     filterset_fields = ["status"]
     permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
 
+    def perform_destroy(self, instance):
+        for embedding in instance.embeddings.all():
+            embedding.image.delete(save=False)
+        instance.delete()
+        rebuild_face_db()
 
-class HouseholdViewSet(viewsets.ModelViewSet):
-    queryset = Household.objects.prefetch_related("members").all()
-    serializer_class = HouseholdSerializer
+    @action(detail=True, methods=["post"], url_path="enroll-face", parser_classes=[MultiPartParser, FormParser])
+    def enroll_face(self, request, pk=None):
+        """All-or-nothing 3-angle enrollment. Validates every image before
+        writing anything, so a bad 'left' shot can't leave a person half-enrolled."""
+        person = self.get_object()
+
+        decoded = {}
+        for angle in FACE_ENROLL_ANGLES:
+            upload = request.FILES.get(angle)
+            if upload is None:
+                return Response(
+                    {"detail": f"Missing image for angle '{angle}'.", "angle": angle},
+                    status=400,
+                )
+
+            data = np.frombuffer(upload.read(), dtype=np.uint8)
+            image = cv2.imdecode(data, cv2.IMREAD_COLOR)
+            if image is None:
+                return Response(
+                    {"detail": f"Could not decode image for angle '{angle}'.", "angle": angle},
+                    status=400,
+                )
+
+            height, width = image.shape[:2]
+            if width < FACE_MIN_DIMENSION or height < FACE_MIN_DIMENSION:
+                return Response(
+                    {
+                        "detail": f"Image for angle '{angle}' is too small "
+                                  f"({width}x{height}); must be at least "
+                                  f"{FACE_MIN_DIMENSION}x{FACE_MIN_DIMENSION}.",
+                        "angle": angle,
+                    },
+                    status=400,
+                )
+
+            embedding = recognition.compute_face_embedding(image)
+            if embedding is None:
+                return Response(
+                    {"detail": f"No face detected in image for angle '{angle}'.", "angle": angle},
+                    status=400,
+                )
+
+            upload.seek(0)
+            decoded[angle] = {"upload": upload, "embedding": embedding.flatten().tolist()}
+
+        with transaction.atomic():
+            for angle, result in decoded.items():
+                FaceEmbedding.objects.update_or_create(
+                    person=person,
+                    angle=angle,
+                    defaults={"image": result["upload"], "embedding": result["embedding"]},
+                )
+            person.status = Person.Status.ENROLLED
+            person.enrolled_at = timezone.now()
+            person.save(update_fields=["status", "enrolled_at"])
+
+        rebuild_face_db()
+        person = self.get_queryset().get(pk=person.pk)  # drop the stale (pre-write) embeddings prefetch cache
+        return Response(self.get_serializer(person).data, status=201)
+
+    @action(detail=True, methods=["delete"], url_path="embeddings")
+    def embeddings(self, request, pk=None):
+        person = self.get_object()
+        for embedding in person.embeddings.all():
+            embedding.image.delete(save=False)
+        person.embeddings.all().delete()
+        person.status = Person.Status.PENDING
+        person.enrolled_at = None
+        person.save(update_fields=["status", "enrolled_at"])
+        rebuild_face_db()
+        return Response(self.get_serializer(person).data)
+
+
+class FaceEmbeddingViewSet(viewsets.ReadOnlyModelViewSet):
+    """Read-only: creation/replacement only happens through
+    PersonViewSet.enroll_face, which validates quality and keeps face_db.json
+    (and the all-or-nothing 3-angle guarantee) consistent."""
+
+    queryset = FaceEmbedding.objects.all()
+    serializer_class = FaceEmbeddingSerializer
+    filterset_fields = ["person", "angle"]
     permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
 
 
-class HouseholdMemberViewSet(viewsets.ModelViewSet):
-    queryset = HouseholdMember.objects.all()
-    serializer_class = HouseholdMemberSerializer
-    filterset_fields = ["household", "status"]
-    permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
+class CitationFilter(django_filters.FilterSet):
+    # lookup_expr="date__..." compares the calendar date, not the raw
+    # datetime — plain "gte"/"lte" against a date would compare against
+    # midnight UTC, silently excluding almost every timestamp on date_to's day.
+    date_from = django_filters.DateFilter(field_name="created_at", lookup_expr="date__gte")
+    date_to = django_filters.DateFilter(field_name="created_at", lookup_expr="date__lte")
+    violation_type = django_filters.CharFilter(field_name="violations__code", lookup_expr="iexact")
+
+    class Meta:
+        model = Citation
+        fields = ["alert", "officer", "violator", "violation_type", "date_from", "date_to"]
+
+
+class CitationViewSet(viewsets.ModelViewSet):
+    queryset = Citation.objects.select_related("alert", "officer", "matched_person").prefetch_related("violations").all()
+    serializer_class = CitationSerializer
+    filterset_class = CitationFilter
+    permission_classes = [permissions.IsAuthenticated]
+
+    def perform_create(self, serializer):
+        """Filing a citation against an alert resolves that alert in the same
+        transaction — this replaces the old client-driven 'PATCH status to
+        resolved' flow the dashboard used for resident-linked resolution.
+
+        Also resolves/creates the Violator this citation belongs to: the
+        client may pass an explicit `violator` (an officer confirming a
+        "did you mean" suggestion from /api/violators/search); if omitted,
+        an exact normalized-name match is reused, or a new Violator is
+        created from the entered names."""
+        with transaction.atomic():
+            violator = serializer.validated_data.get("violator")
+            if violator is None:
+                first = serializer.validated_data.get("first_name_entered", "")
+                middle = serializer.validated_data.get("middle_name_entered", "")
+                last = serializer.validated_data.get("last_name_entered", "")
+                suffix = serializer.validated_data.get("suffix_entered", "")
+                violator, created = Violator.objects.get_or_create(
+                    normalized_name=normalize_name(first, middle, last),
+                    defaults={
+                        "first_name": first, "middle_name": middle,
+                        "last_name": last, "suffix": suffix,
+                    },
+                )
+                matched_person = serializer.validated_data.get("matched_person")
+                if created and matched_person:
+                    violator.matched_person = matched_person
+                    violator.save(update_fields=["matched_person"])
+
+            violator.last_seen = timezone.now()
+            violator.save(update_fields=["last_seen"])
+
+            citation = serializer.save(created_by=self.request.user, violator=violator)
+            if citation.alert_id:
+                Alert.objects.filter(pk=citation.alert_id).update(status=Alert.Status.RESOLVED)
+
+
+class ViolatorViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = ViolatorSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return Violator.objects.annotate(citation_count=Count("citations")).order_by("last_name", "first_name")
+
+    @action(detail=False, methods=["get"])
+    def search(self, request):
+        """Exact match on normalized_name first, then a rapidfuzz pass, top 5
+        either way.
+
+        The fuzzy pass scores against each violator's first+last name only
+        (middle name excluded) — the web form wires this to First+Last (see
+        ViolationModal.jsx), so scoring against the full normalized_name
+        (which includes middle name) would dock a correct match just for
+        omitting a middle name the officer never typed."""
+        q = request.query_params.get("q", "").strip()
+        if not q:
+            return Response([])
+
+        normalized_q = normalize_name(q, "", "")
+        queryset = self.get_queryset()
+
+        exact = list(queryset.filter(normalized_name=normalized_q)[:5])
+        if exact:
+            return Response(ViolatorSerializer(exact, many=True).data)
+
+        violators = list(queryset)
+        by_id = {v.id: v for v in violators}
+        core_names = {v.id: normalize_name(v.first_name, "", v.last_name) for v in violators}
+        matches = rapidfuzz_process.extract(
+            normalized_q, core_names, score_cutoff=85, limit=5,
+        )
+        fuzzy = [by_id[vid] for _name, _score, vid in matches]
+        return Response(ViolatorSerializer(fuzzy, many=True).data)
+
+    @action(detail=True, methods=["post"])
+    def merge(self, request, pk=None):
+        """Merges `loser_id` into this (winning) violator: reassigns the
+        loser's citations, appends the loser's name to aliases, deletes the
+        loser. The winner is the one named in the URL; the loser never
+        outlives this call, so citations, not the loser row, are the thing
+        that must never silently disappear here."""
+        winner = self.get_object()
+        loser_id = request.data.get("loser_id")
+        if not loser_id:
+            return Response({"detail": "loser_id is required."}, status=400)
+        if str(loser_id) == str(winner.pk):
+            return Response({"detail": "Cannot merge a violator into itself."}, status=400)
+
+        loser = Violator.objects.filter(pk=loser_id).first()
+        if loser is None:
+            return Response({"detail": "loser_id does not match an existing violator."}, status=404)
+
+        with transaction.atomic():
+            Citation.objects.filter(violator=loser).update(violator=winner)
+            winner.aliases = [*winner.aliases, str(loser)]
+            if loser.last_seen and (not winner.last_seen or loser.last_seen > winner.last_seen):
+                winner.last_seen = loser.last_seen
+            winner.save(update_fields=["aliases", "last_seen"])
+            loser.delete()
+
+        winner.refresh_from_db()
+        return Response(ViolatorSerializer(winner).data)
+
+
+@api_view(["GET"])
+@permission_classes([permissions.IsAuthenticated])
+def barangays(request):
+    return Response([{"value": value, "label": label} for value, label in ZAMBOANGA_BARANGAYS])
 
 
 class AlertViewSet(viewsets.ModelViewSet):
@@ -533,3 +761,155 @@ class AlertViewSet(viewsets.ModelViewSet):
             alert.save(update_fields=["status"])
 
         return Response(self.get_serializer(alert).data)
+
+
+# ---- Detection job upload/launch (admin test harness) ----------------------
+# Only detectors with a working --source (file) mode can be driven from an
+# upload — watch_curfew is webcam-only, and watch_smoking_pose/watch_all are
+# alternate/composite entry points rather than a single selectable type.
+DETECTION_COMMANDS = {
+    "smoking": "watch_smoking",
+    "drinking": "watch_drinking",
+    "thief": "watch_thief",
+    "parking": "watch_parking",
+}
+DETECTION_UPLOAD_EXTENSIONS = {".mp4", ".mkv", ".avi"}
+DETECTION_MAX_UPLOAD_BYTES = 1024 * 1024 * 1024  # 1GB
+
+
+def _tail_log(path, max_chars=4000):
+    """Last bit of a detection job's combined stdout/stderr, for surfacing why
+    it failed without shipping the whole log to the client."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - max_chars))
+            return f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _watch_detection_job(job_id, proc, log_path, source_path):
+    """Runs in a daemon thread per launched job — blocks on the subprocess's
+    exit code (liveness alone can't tell success from failure) and updates the
+    DB row once it's known. No task queue: this assumes a single long-lived
+    `runserver` process, which is what this project actually runs; it wouldn't
+    generalise to a multi-worker WSGI deployment without a real queue."""
+    returncode = proc.wait()
+    job = DetectionJob.objects.filter(id=job_id).first()
+    if job is None:
+        return
+    job.status = DetectionJob.Status.DONE if returncode == 0 else DetectionJob.Status.FAILED
+    job.finished_at = timezone.now()
+    if returncode != 0:
+        job.error = _tail_log(log_path)
+    job.save(update_fields=["status", "finished_at", "error"])
+    # The uploaded source clip is scratch input, not evidence — the watcher's
+    # own evidence clips (media/violations/) are separate and untouched.
+    try:
+        os.remove(source_path)
+    except OSError:
+        pass
+
+
+class DetectionJobViewSet(viewsets.ModelViewSet):
+    """Admin-only test harness: upload a video clip, run one of the existing
+    watch_* management commands against it exactly as it runs from the
+    terminal (no detection logic is duplicated here), and expose the run's
+    status. Alerts it produces land in the normal Alert table via a dedicated
+    "<TYPE>-TEST" camera, so they're visible in the Violations tab like any
+    other alert but distinguishable from live-camera ones.
+    """
+
+    queryset = DetectionJob.objects.select_related("created_by").all()
+    serializer_class = DetectionJobSerializer
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+    parser_classes = [MultiPartParser, FormParser]
+    http_method_names = ["get", "post", "head"]
+
+    def create(self, request, *args, **kwargs):
+        violation_type = request.data.get("violation_type", "")
+        command = DETECTION_COMMANDS.get(violation_type)
+        if command is None:
+            return Response(
+                {"detail": f"Unknown violation_type. Choose one of: {', '.join(DETECTION_COMMANDS)}."},
+                status=400,
+            )
+
+        upload = request.FILES.get("file")
+        if upload is None:
+            return Response({"detail": "No file uploaded."}, status=400)
+
+        ext = os.path.splitext(upload.name)[1].lower()
+        if ext not in DETECTION_UPLOAD_EXTENSIONS:
+            return Response(
+                {"detail": f"Unsupported file type {ext!r}. Allowed: "
+                           f"{', '.join(sorted(DETECTION_UPLOAD_EXTENSIONS))}."},
+                status=400,
+            )
+        if upload.size > DETECTION_MAX_UPLOAD_BYTES:
+            limit_mb = DETECTION_MAX_UPLOAD_BYTES // (1024 * 1024)
+            return Response({"detail": f"File too large — limit is {limit_mb}MB."}, status=400)
+
+        upload_dir = django_settings.MEDIA_ROOT / "uploads"
+        os.makedirs(upload_dir, exist_ok=True)
+        safe_name = get_valid_filename(upload.name)
+        saved_path = upload_dir / f"{uuid.uuid4().hex}_{safe_name}"
+        with open(saved_path, "wb") as dest:
+            for chunk in upload.chunks():
+                dest.write(chunk)
+
+        # A matching extension can be spoofed — a quick decode check catches a
+        # corrupt or non-video file before a detector is launched against it.
+        cap = cv2.VideoCapture(str(saved_path))
+        opened = cap.isOpened()
+        cap.release()
+        if not opened:
+            os.remove(saved_path)
+            return Response({"detail": "File could not be read as a video."}, status=400)
+
+        camera_code = f"CAM-{violation_type.upper()}-TEST"
+        log_path = f"{saved_path}.log"
+        log_file = open(log_path, "w")
+        try:
+            # Anaconda's numpy/MKL and PyTorch both bundle libiomp5md.dll; when
+            # both get loaded in the same process (as they are here — cv2 +
+            # torch/ultralytics inside the watcher) OpenMP aborts with error #15
+            # rather than silently picking one. This must be set on the
+            # subprocess's own env, not assumed inherited from whatever shell
+            # happened to launch `runserver`.
+            env = os.environ.copy()
+            env["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+            # --cascade only exists on watch_smoking (native-res person crops —
+            # matches smoking_v5's ~25px training domain). The other three
+            # watchers never define this flag, so passing it to them would
+            # make argparse reject the whole command outright.
+            cascade_args = ["--cascade"] if violation_type == "smoking" else []
+            proc = subprocess.Popen(
+                [sys.executable, "manage.py", command,
+                 "--source", str(saved_path), "--camera", camera_code, *cascade_args],
+                cwd=str(django_settings.BASE_DIR),
+                stdout=log_file, stderr=subprocess.STDOUT,
+                env=env,
+            )
+        finally:
+            # The child inherits its own duplicated handle — safe to close ours.
+            log_file.close()
+
+        job = DetectionJob.objects.create(
+            violation_type=violation_type,
+            source_filename=upload.name,
+            source_path=str(saved_path),
+            status=DetectionJob.Status.RUNNING,
+            pid=proc.pid,
+            created_by=request.user,
+        )
+
+        threading.Thread(
+            target=_watch_detection_job,
+            args=(job.id, proc, log_path, str(saved_path)),
+            daemon=True,
+        ).start()
+
+        return Response(self.get_serializer(job).data, status=201)

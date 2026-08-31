@@ -1,11 +1,25 @@
 import { useRef, useEffect, useState, useMemo } from "react";
 import {
   X, MapPin, Clock, User, Shield, Play, Pause,
-  SkipBack, Volume2, VolumeX, Download, Radio, CheckCircle, AlertTriangle,
+  SkipBack, Download, Radio, CheckCircle, AlertTriangle,
   MessageSquare, Phone, ChevronDown, ChevronRight, Home, Loader2, Search, Send, Info,
 } from "lucide-react";
 import { VIOLATION_CONFIG } from "../data/mockData";
-import { sendSms } from "./api";
+import { sendSms, getViolationTypes, getBarangays, createCitation, searchViolators } from "./api";
+
+const SUFFIX_OPTIONS = ["", "Jr.", "Sr.", "II", "III", "IV"];
+
+// Best-effort split of a single free-text name (from a Person's full_name or
+// a legacy Alert.suspect string) into the 4 structured fields — there's no
+// reliable way to know where a compound surname starts, so a 3+-word name
+// puts everything but the first/last word into "middle." Always editable.
+function splitFullName(fullName) {
+  const parts = (fullName ?? "").trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return { first: "", middle: "", last: "" };
+  if (parts.length === 1) return { first: parts[0], middle: "", last: "" };
+  if (parts.length === 2) return { first: parts[0], middle: "", last: parts[1] };
+  return { first: parts[0], middle: parts.slice(1, -1).join(" "), last: parts[parts.length - 1] };
+}
 
 const statusConfig = {
   active:       { label: "Active",     color: "#ef4444", bg: "rgba(239,68,68,0.1)" },
@@ -29,48 +43,71 @@ function formatShort(ts) {
 }
 
 // ── Recording player ──────────────────────────────────────────────────────────
+// Evidence clips have no audio track (frame-only capture, no microphone
+// anywhere in this pipeline), so there's no mute/volume control here — it
+// would be a dead control implying an audio path that doesn't exist.
 function RecordingPlayer({ alert }) {
+  const videoRef = useRef(null);
+  const hasRaw = !!alert.rawVideoUrl;
+  const hasAnnotated = !!alert.videoUrl;
+  const hasVideo = hasRaw || hasAnnotated;
+  // RAW by default when it exists; otherwise fall back to whichever exists.
+  const [useRaw, setUseRaw] = useState(hasRaw);
   const [playing, setPlaying] = useState(false);
-  const [muted, setMuted] = useState(false);
-  const [elapsed, setElapsed] = useState(18);
-  const duration = 45;
-  const ivRef = useRef(null);
+  const [elapsed, setElapsed] = useState(0);
+  const [duration, setDuration] = useState(0);
+
+  const src = useRaw && hasRaw ? alert.rawVideoUrl : (hasAnnotated ? alert.videoUrl : alert.rawVideoUrl);
 
   useEffect(() => {
-    if (playing) {
-      ivRef.current = window.setInterval(() => {
-        setElapsed((p) => {
-          if (p >= duration) { setPlaying(false); return duration; }
-          return p + 0.5;
-        });
-      }, 500);
-    } else {
-      if (ivRef.current !== null) { window.clearInterval(ivRef.current); ivRef.current = null; }
-    }
-    return () => { if (ivRef.current !== null) { window.clearInterval(ivRef.current); ivRef.current = null; } };
-  }, [playing]);
+    setPlaying(false);
+    setElapsed(0);
+    setDuration(0);
+  }, [src]);
 
   const fmtSec = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
-  const pct = (elapsed / duration) * 100;
+  const pct = duration > 0 ? (elapsed / duration) * 100 : 0;
+
+  const togglePlay = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused) { v.play(); setPlaying(true); } else { v.pause(); setPlaying(false); }
+  };
+
+  if (!hasVideo) {
+    return (
+      <div className="rounded-xl overflow-hidden" style={{ background: "#000", border: "1px solid var(--border)" }}>
+        <div className="relative" style={{ paddingTop: "56.25%" }}>
+          <img src={alert.imageUrl} alt="Evidence" className="absolute inset-0 w-full h-full object-cover" />
+          <div className="absolute bottom-3 left-3 right-3 text-[11px] text-center py-1.5 rounded-lg"
+            style={{ background: "rgba(0,0,0,0.6)", color: "var(--muted-foreground)" }}>
+            No evidence clip available for this alert — still image only.
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-xl overflow-hidden" style={{ background: "#000", border: "1px solid var(--border)" }}>
       <div className="relative" style={{ paddingTop: "56.25%" }}>
-        <img
-          src={alert.imageUrl}
-          alt="Recording"
-          className="absolute inset-0 w-full h-full object-cover transition-all duration-300"
-          style={{ opacity: playing ? 0.82 : 0.55, filter: playing ? "none" : "grayscale(25%)" }}
+        <video
+          key={src}
+          ref={videoRef}
+          src={src}
+          playsInline
+          className="absolute inset-0 w-full h-full object-contain bg-black"
+          onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)}
+          onTimeUpdate={(e) => setElapsed(e.currentTarget.currentTime)}
+          onEnded={() => setPlaying(false)}
+          onClick={togglePlay}
         />
-        <div className="absolute inset-0 pointer-events-none" style={{
-          backgroundImage: "repeating-linear-gradient(0deg, transparent, transparent 3px, rgba(0,0,0,0.06) 3px, rgba(0,0,0,0.06) 4px)",
-        }} />
-        <div className="absolute top-0 left-0 right-0 px-3 py-2 flex items-center justify-between"
+        <div className="absolute top-0 left-0 right-0 px-3 py-2 flex items-center justify-between pointer-events-none"
           style={{ background: "linear-gradient(to bottom, rgba(0,0,0,0.72), transparent)" }}>
           <div className="flex items-center gap-2">
             <span className="text-[10px] font-medium px-1.5 py-0.5 rounded"
               style={{ background: "rgba(239,68,68,0.85)", color: "#fff", fontFamily: "'DM Mono', monospace" }}>
-              ● REC
+              ● {useRaw && hasRaw ? "RAW" : "ANNOTATED"}
             </span>
             <span className="text-[10px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
               {alert.camera}
@@ -80,12 +117,8 @@ function RecordingPlayer({ alert }) {
             {formatFull(alert.timestamp)}
           </span>
         </div>
-        <div className="absolute bottom-10 left-3 text-[10px]"
-          style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
-          {alert.cameraZone}
-        </div>
         {!playing && (
-          <button onClick={() => setPlaying(true)} className="absolute inset-0 flex items-center justify-center group">
+          <button onClick={togglePlay} className="absolute inset-0 flex items-center justify-center group">
             <div className="w-14 h-14 rounded-full flex items-center justify-center transition-all group-hover:scale-110"
               style={{ background: "rgba(245,158,11,0.9)", boxShadow: "0 0 28px rgba(245,158,11,0.35)" }}>
               <Play size={22} color="#0c0f16" fill="#0c0f16" style={{ marginLeft: 2 }} />
@@ -94,25 +127,48 @@ function RecordingPlayer({ alert }) {
         )}
       </div>
       <div className="px-4 py-3" style={{ background: "var(--sidebar)" }}>
+        {/* RAW/ANNOTATED toggle — hidden when only one version exists (older
+            alerts, or a raw/annotated cut that failed) so it degrades gracefully. */}
+        {hasRaw && hasAnnotated && (
+          <div className="flex items-center gap-1.5 mb-3">
+            <button
+              onClick={() => setUseRaw(true)}
+              className="flex-1 text-[11px] font-medium py-1.5 rounded-lg transition-all"
+              style={{
+                background: useRaw ? "var(--primary)" : "var(--secondary)",
+                color: useRaw ? "#0c0f16" : "var(--muted-foreground)",
+              }}>
+              Raw
+            </button>
+            <button
+              onClick={() => setUseRaw(false)}
+              className="flex-1 text-[11px] font-medium py-1.5 rounded-lg transition-all"
+              style={{
+                background: !useRaw ? "var(--primary)" : "var(--secondary)",
+                color: !useRaw ? "#0c0f16" : "var(--muted-foreground)",
+              }}>
+              Annotated
+            </button>
+          </div>
+        )}
         <div
           className="relative h-1 rounded-full mb-3 cursor-pointer"
           style={{ background: "var(--border)" }}
           onClick={(e) => {
+            const v = videoRef.current;
+            if (!v || !duration) return;
             const r = e.currentTarget.getBoundingClientRect();
             const t = ((e.clientX - r.left) / r.width) * duration;
-            setElapsed(Math.max(0, Math.min(t, duration)));
+            v.currentTime = Math.max(0, Math.min(t, duration));
           }}
         >
           <div className="absolute left-0 top-0 h-full rounded-full transition-all"
             style={{ width: `${pct}%`, background: "var(--primary)" }} />
-          <div className="absolute top-1/2 -translate-y-1/2 w-2 h-2 rounded-full border-2"
-            style={{ left: `${(18 / duration) * 100}%`, background: "#ef4444", borderColor: "var(--sidebar)" }}
-            title="Violation detected" />
         </div>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <button
-              onClick={() => { setElapsed(0); setPlaying(false); }}
+              onClick={() => { const v = videoRef.current; if (v) v.currentTime = 0; }}
               className="p-1 rounded transition-colors"
               style={{ color: "var(--muted-foreground)" }}
               onMouseEnter={(e) => (e.currentTarget.style.color = "var(--foreground)")}
@@ -121,7 +177,7 @@ function RecordingPlayer({ alert }) {
               <SkipBack size={13} />
             </button>
             <button
-              onClick={() => setPlaying(!playing)}
+              onClick={togglePlay}
               className="w-8 h-8 rounded-full flex items-center justify-center"
               style={{ background: "var(--primary)" }}
             >
@@ -129,28 +185,21 @@ function RecordingPlayer({ alert }) {
                 ? <Pause size={13} color="#0c0f16" fill="#0c0f16" />
                 : <Play  size={13} color="#0c0f16" fill="#0c0f16" style={{ marginLeft: 1 }} />}
             </button>
-            <button
-              onClick={() => setMuted(!muted)}
-              className="p-1 rounded"
-              style={{ color: "var(--muted-foreground)" }}
-              onMouseEnter={(e) => (e.currentTarget.style.color = "var(--foreground)")}
-              onMouseLeave={(e) => (e.currentTarget.style.color = "var(--muted-foreground)")}
-            >
-              {muted ? <VolumeX size={13} /> : <Volume2 size={13} />}
-            </button>
             <span className="text-[11px] tabular-nums"
               style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
               {fmtSec(elapsed)} / {fmtSec(duration)}
             </span>
           </div>
-          <button
+          <a
+            href={src}
+            download
             className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-md"
             style={{ color: "var(--muted-foreground)" }}
             onMouseEnter={(e) => { e.currentTarget.style.color = "var(--foreground)"; e.currentTarget.style.background = "var(--border)"; }}
             onMouseLeave={(e) => { e.currentTarget.style.color = "var(--muted-foreground)"; e.currentTarget.style.background = "transparent"; }}
           >
             <Download size={11} /> Save clip
-          </button>
+          </a>
         </div>
       </div>
     </div>
@@ -247,50 +296,216 @@ function buildCandidates(rawHouseholds, rawResidents) {
   return people;
 }
 
-// ── Resolve checklist modal ───────────────────────────────────────────────────
-function ResolveChecklistModal({ alert, vcfg, households: rawHH, residents: rawRes, onConfirm, onClose }) {
+// ── Searchable barangay select ────────────────────────────────────────────────
+function BarangaySelect({ options, value, onChange, error }) {
+  const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
-  const [checkedIds, setCheckedIds] = useState(new Set());
-  const [resolving, setResolving] = useState(false);
-  const [confirming, setConfirming] = useState(false);
-
-  const candidates = useMemo(() => buildCandidates(rawHH, rawRes), [rawHH, rawRes]);
-  const initializedRef = useRef(false);
+  const rootRef = useRef(null);
 
   useEffect(() => {
-    // Background polling refreshes households/residents every few seconds,
-    // producing a new `candidates` array each time — only seed the checked
-    // set once, otherwise it stomps on the user's in-progress selection.
-    if (initializedRef.current || candidates.length === 0) return;
-    initializedRef.current = true;
-    if (!alert.suspect) return;
-    setCheckedIds(new Set(candidates.filter((c) => suspectMatches(alert.suspect, c.fullName)).map((c) => c.id)));
-  }, [candidates, alert.suspect]);
+    const onDocClick = (e) => { if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, []);
 
-  const isCurfew = alert.type === "curfew";
+  const filtered = options.filter((o) => o.label.toLowerCase().includes(search.toLowerCase()));
+  const selectedLabel = options.find((o) => o.value === value)?.label ?? "";
 
-  const filtered = candidates.filter((c) => {
-    if (!search) return true;
-    const q = search.toLowerCase();
-    return c.name.toLowerCase().includes(q) || c.barangayId.toLowerCase().includes(q) || (c.household ?? "").toLowerCase().includes(q);
-  });
+  return (
+    <div className="relative" ref={rootRef}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="relative w-full px-3 py-2.5 pr-9 rounded-xl text-sm text-left outline-none"
+        style={{ background: "var(--secondary)", border: `1px solid ${error ? "#ef4444" : "var(--border)"}`, color: selectedLabel ? "var(--foreground)" : "var(--muted-foreground)" }}
+      >
+        <span className="block truncate">{selectedLabel || "Select barangay…"}</span>
+        {/* Absolutely positioned (not a flex sibling) so this lines up
+            pixel-for-pixel with the native <select> chevrons below, which
+            use the same right-3/top-1/2/-translate-y-1/2 positioning. */}
+        <ChevronDown size={13} className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: "var(--muted-foreground)" }} />
+      </button>
+      {open && (
+        <div className="absolute z-10 mt-1.5 w-full rounded-xl overflow-hidden shadow-2xl"
+          style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
+          <div className="p-2" style={{ borderBottom: "1px solid var(--border)" }}>
+            <div className="relative">
+              <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2" style={{ color: "var(--muted-foreground)" }} />
+              <input
+                autoFocus
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search barangay…"
+                className="w-full pl-7 pr-2 py-1.5 rounded-lg text-[12px] outline-none"
+                style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
+              />
+            </div>
+          </div>
+          <div className="max-h-48 overflow-y-auto py-1">
+            {filtered.length === 0 ? (
+              <div className="px-3 py-3 text-[12px] text-center" style={{ color: "var(--muted-foreground)" }}>No matches</div>
+            ) : filtered.map((o) => (
+              <button
+                key={o.value}
+                type="button"
+                onClick={() => { onChange(o.value); setOpen(false); setSearch(""); }}
+                className="w-full text-left px-3 py-1.5 text-[12px] transition-colors"
+                style={{ color: o.value === value ? "var(--primary)" : "var(--foreground)", background: o.value === value ? "rgba(11,84,113,0.08)" : "transparent" }}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
-  const sorted = [...filtered].sort((a, b) => {
-    const ac = checkedIds.has(a.id) ? 0 : 1, bc = checkedIds.has(b.id) ? 0 : 1;
-    if (ac !== bc) return ac - bc;
-    if (isCurfew) { const am = a.isMinor ? 0 : 1, bm = b.isMinor ? 0 : 1; if (am !== bm) return am - bm; }
-    return a.name.localeCompare(b.name);
-  });
+// ── Citation form (Confirm Resolution) ────────────────────────────────────────
+function CitationFormModal({ alert, vcfg, officers = [], currentOfficerId, onResolved, onClose }) {
+  // Set by watch_smoking/watch_drinking's recognition step (see
+  // core/face_registry.py) only when a detected face matched an enrolled
+  // Person above threshold. watch_curfew predates that wiring and still only
+  // carries a plain suspect-name string + a 0-1 match score on `confidence`
+  // (score_pct / 100) — kept as a fallback so curfew alerts don't lose the
+  // hint they already had.
+  const hasMatchedPerson = !!alert.matchedPersonId;
+  const isCurfewMatch = !hasMatchedPerson && alert.type === "curfew" && !!alert.suspect;
+  const isFaceMatch = hasMatchedPerson || isCurfewMatch;
+  const matchedName = hasMatchedPerson ? alert.matchedPersonName : isCurfewMatch ? alert.suspect.split(";")[0].trim() : "";
+  const matchConfidencePct = hasMatchedPerson ? alert.matchConfidence : isCurfewMatch ? (alert.confidence ?? 0) * 100 : 0;
+  const matchedSplit = useMemo(() => splitFullName(matchedName), [matchedName]);
 
-  const toggle = (id) => setCheckedIds((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const [firstName, setFirstName] = useState(matchedSplit.first);
+  const [middleName, setMiddleName] = useState(matchedSplit.middle);
+  const [lastName, setLastName] = useState(matchedSplit.last);
+  const [suffix, setSuffix] = useState("");
+  const [matchCleared, setMatchCleared] = useState(false);
+  const [officerId, setOfficerId] = useState(currentOfficerId ? String(currentOfficerId) : "");
+  const [violatorBarangay, setViolatorBarangay] = useState("");
+  const [checkedTypeIds, setCheckedTypeIds] = useState(new Set());
+  const [notes, setNotes] = useState("");
 
-  const handleConfirm = async () => {
-    setResolving(true);
-    const names = candidates.filter((c) => checkedIds.has(c.id)).map((c) => c.fullName).join("; ");
-    await onConfirm(names || null);
+  // "Did you mean" suggestions from /api/violators/search, debounced off
+  // First+Last only (per spec — middle/suffix aren't part of the query).
+  const [selectedViolatorId, setSelectedViolatorId] = useState(null);
+  const [suggestions, setSuggestions] = useState([]);
+  const [searchingViolators, setSearchingViolators] = useState(false);
+
+  const [violationTypes, setViolationTypes] = useState([]);
+  const [barangayOptions, setBarangayOptions] = useState([]);
+  const [loadingOptions, setLoadingOptions] = useState(true);
+  const [loadError, setLoadError] = useState("");
+
+  const [submitting, setSubmitting] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState({});
+  const [formError, setFormError] = useState("");
+
+  const typesSeededRef = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoadingOptions(true);
+      setLoadError("");
+      try {
+        const [typesRes, barangaysRes] = await Promise.all([getViolationTypes(), getBarangays()]);
+        if (cancelled) return;
+        const types = (typesRes.results ?? typesRes);
+        setViolationTypes(types);
+        setBarangayOptions((barangaysRes ?? []).map((b) => ({ value: b.value, label: b.label })));
+        if (!typesSeededRef.current) {
+          typesSeededRef.current = true;
+          const detected = types.find((t) => t.code === alert.type);
+          if (detected) setCheckedTypeIds(new Set([detected.id]));
+        }
+      } catch (err) {
+        if (!cancelled) setLoadError(err.message || "Failed to load form options.");
+      } finally {
+        if (!cancelled) setLoadingOptions(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [alert.type]);
+
+  // Debounced "did you mean" lookup — skipped once a suggestion has been
+  // picked, until the officer edits the name again (see the pickers below).
+  useEffect(() => {
+    if (selectedViolatorId) return;
+    const q = `${firstName} ${lastName}`.trim();
+    if (q.length < 3) { setSuggestions([]); return; }
+    const timer = setTimeout(async () => {
+      setSearchingViolators(true);
+      try {
+        const results = await searchViolators(q);
+        setSuggestions(results ?? []);
+      } catch {
+        setSuggestions([]);
+      } finally {
+        setSearchingViolators(false);
+      }
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [firstName, lastName, selectedViolatorId]);
+
+  const pickSuggestion = (violator) => {
+    setFirstName(violator.first_name);
+    setMiddleName(violator.middle_name);
+    setLastName(violator.last_name);
+    setSuffix(violator.suffix);
+    setSelectedViolatorId(violator.id);
+    setSuggestions([]);
+  };
+
+  // Editing the name after a pick means it may no longer refer to the
+  // violator that was confirmed, so that link is dropped — the server falls
+  // back to its own exact-match-or-create resolution at submit time.
+  const editName = (setter) => (value) => {
+    setSelectedViolatorId(null);
+    setter(value);
+  };
+
+  const toggleType = (id) =>
+    setCheckedTypeIds((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+
+  const valid = firstName.trim() && lastName.trim() && officerId && violatorBarangay && checkedTypeIds.size > 0;
+
+  const handleSubmit = async () => {
+    if (!valid) return;
+    setSubmitting(true);
+    setFieldErrors({});
+    setFormError("");
+    try {
+      await createCitation({
+        alert: alert.dbId,
+        violator: selectedViolatorId,
+        first_name_entered: firstName.trim(),
+        middle_name_entered: middleName.trim(),
+        last_name_entered: lastName.trim(),
+        suffix_entered: suffix,
+        officer: Number(officerId),
+        barangay_of_violation: "TETUAN",
+        violator_barangay: violatorBarangay,
+        violations: [...checkedTypeIds],
+        matched_person: hasMatchedPerson && !matchCleared ? alert.matchedPersonId : null,
+        match_confidence: isFaceMatch && !matchCleared ? matchConfidencePct : null,
+        notes: notes.trim(),
+      });
+      onResolved();
+    } catch (err) {
+      if (err.data && typeof err.data === "object") {
+        setFieldErrors(err.data);
+      } else {
+        setFormError(err.message || "Failed to submit citation.");
+      }
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const VIcon = vcfg.icon;
+  const fieldError = (name) => (Array.isArray(fieldErrors[name]) ? fieldErrors[name].join(" ") : fieldErrors[name]);
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center p-4"
@@ -315,7 +530,7 @@ function ResolveChecklistModal({ alert, vcfg, households: rawHH, residents: rawR
               </div>
             </div>
           </div>
-          {!resolving && (
+          {!submitting && (
             <button onClick={onClose} className="p-1.5 rounded-lg"
               style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}>
               <X size={14} />
@@ -323,160 +538,238 @@ function ResolveChecklistModal({ alert, vcfg, households: rawHH, residents: rawR
           )}
         </div>
 
-        {/* Instruction */}
-        <div className="px-5 pt-4 pb-2 flex-shrink-0">
-          <div className="text-[12px] px-3 py-2.5 rounded-xl"
-            style={{ background: "rgba(16,185,129,0.06)", border: "1px solid rgba(16,185,129,0.15)", color: "var(--muted-foreground)", lineHeight: 1.5 }}>
-            Select the resident(s) involved. Checking them adds this violation to their log in Resident Violations.
-          </div>
-        </div>
+        {/* Form body */}
+        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4" style={{ minHeight: 0 }}>
+          {loadError && (
+            <div className="flex items-center gap-2 text-[11px] px-3 py-2 rounded-lg"
+              style={{ background: "rgba(239,68,68,0.08)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.2)" }}>
+              <AlertTriangle size={12} /> {loadError}
+            </div>
+          )}
+          {formError && (
+            <div className="flex items-center gap-2 text-[11px] px-3 py-2 rounded-lg"
+              style={{ background: "rgba(239,68,68,0.08)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.2)" }}>
+              <AlertTriangle size={12} /> {formError}
+            </div>
+          )}
 
-        {/* Search */}
-        <div className="px-5 py-3 flex-shrink-0">
-          <div className="relative">
-            <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2"
-              style={{ color: "var(--muted-foreground)" }} />
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder={isCurfew ? "Search minors or residents…" : "Search residents…"}
-              className="w-full pl-9 pr-3 py-2.5 rounded-xl text-sm outline-none"
+          {/* 1. Name of violator */}
+          <div>
+            <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>
+              Name of violator <span style={{ color: "#ef4444" }}>*</span>
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <input
+                  value={firstName}
+                  onChange={(e) => editName(setFirstName)(e.target.value)}
+                  placeholder="First name"
+                  className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
+                  style={{ background: "var(--secondary)", border: `1px solid ${fieldError("first_name_entered") ? "#ef4444" : "var(--border)"}`, color: "var(--foreground)" }}
+                />
+                {fieldError("first_name_entered") && (
+                  <div className="text-[11px] mt-1" style={{ color: "#ef4444" }}>{fieldError("first_name_entered")}</div>
+                )}
+              </div>
+              <div>
+                <input
+                  value={middleName}
+                  onChange={(e) => editName(setMiddleName)(e.target.value)}
+                  placeholder="Middle name"
+                  className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
+                  style={{ background: "var(--secondary)", border: `1px solid ${fieldError("middle_name_entered") ? "#ef4444" : "var(--border)"}`, color: "var(--foreground)" }}
+                />
+              </div>
+              <div>
+                <input
+                  value={lastName}
+                  onChange={(e) => editName(setLastName)(e.target.value)}
+                  placeholder="Last name"
+                  className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
+                  style={{ background: "var(--secondary)", border: `1px solid ${fieldError("last_name_entered") ? "#ef4444" : "var(--border)"}`, color: "var(--foreground)" }}
+                />
+                {fieldError("last_name_entered") && (
+                  <div className="text-[11px] mt-1" style={{ color: "#ef4444" }}>{fieldError("last_name_entered")}</div>
+                )}
+              </div>
+              <div className="relative">
+                <select
+                  value={suffix}
+                  onChange={(e) => editName(setSuffix)(e.target.value)}
+                  className="w-full appearance-none px-3 py-2.5 pr-9 rounded-xl text-sm outline-none"
+                  style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: suffix ? "var(--foreground)" : "var(--muted-foreground)" }}
+                >
+                  {SUFFIX_OPTIONS.map((s) => <option key={s} value={s}>{s || "Suffix"}</option>)}
+                </select>
+                <ChevronDown size={13} className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: "var(--muted-foreground)" }} />
+              </div>
+            </div>
+
+            {/* "Did you mean" suggestions from /api/violators/search */}
+            {searchingViolators && (
+              <div className="flex items-center gap-1.5 mt-1.5 text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+                <Loader2 size={11} className="animate-spin" /> Checking existing violators…
+              </div>
+            )}
+            {!searchingViolators && !selectedViolatorId && suggestions.length > 0 && (
+              <div className="mt-1.5 rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
+                <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide"
+                  style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}>
+                  Did you mean?
+                </div>
+                {suggestions.map((s) => (
+                  <button key={s.id} type="button" onClick={() => pickSuggestion(s)}
+                    className="w-full flex items-center justify-between px-2.5 py-1.5 text-[12px] text-left transition-colors"
+                    style={{ color: "var(--foreground)", background: "var(--card)" }}>
+                    <span>{s.full_name}</span>
+                    <span style={{ color: "var(--muted-foreground)" }}>
+                      {s.citation_count} citation{s.citation_count !== 1 ? "s" : ""}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {selectedViolatorId && (
+              <div className="text-[11px] mt-1.5" style={{ color: "#10b981" }}>
+                Linked to an existing violator record.
+              </div>
+            )}
+
+            {isFaceMatch && !matchCleared && (
+              <div className="flex items-center justify-between gap-2 mt-1.5">
+                <span className="text-[11px]" style={{ color: "#10b981" }}>
+                  Matched: {matchedName} (confidence {Math.round(matchConfidencePct)}%)
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMatchCleared(true);
+                    setFirstName(""); setMiddleName(""); setLastName(""); setSuffix("");
+                    setSelectedViolatorId(null);
+                  }}
+                  className="text-[11px] font-medium underline flex-shrink-0"
+                  style={{ color: "var(--muted-foreground)" }}>
+                  clear
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* 2. Officer */}
+          <div>
+            <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>
+              Officer <span style={{ color: "#ef4444" }}>*</span>
+            </label>
+            <div className="relative">
+              <select
+                value={officerId}
+                onChange={(e) => setOfficerId(e.target.value)}
+                className="w-full appearance-none px-3 py-2.5 pr-9 rounded-xl text-sm outline-none"
+                style={{ background: "var(--secondary)", border: `1px solid ${fieldError("officer") ? "#ef4444" : "var(--border)"}`, color: officerId ? "var(--foreground)" : "var(--muted-foreground)" }}
+              >
+                <option value="">Select officer…</option>
+                {officers.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+              </select>
+              <ChevronDown size={13} className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: "var(--muted-foreground)" }} />
+            </div>
+            {fieldError("officer") && (
+              <div className="text-[11px] mt-1" style={{ color: "#ef4444" }}>{fieldError("officer")}</div>
+            )}
+          </div>
+
+          {/* 3. Barangay where it occurred — locked to Tetuan, so no chevron:
+              there's nothing to open. */}
+          <div>
+            <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>
+              Barangay where it occurred
+            </label>
+            <select disabled value="TETUAN"
+              className="w-full appearance-none px-3 py-2.5 rounded-xl text-sm outline-none opacity-70 cursor-not-allowed"
+              style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}>
+              <option value="TETUAN">Tetuan</option>
+            </select>
+          </div>
+
+          {/* 4. Violator's barangay */}
+          <div>
+            <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>
+              Violator's barangay <span style={{ color: "#ef4444" }}>*</span>
+            </label>
+            <BarangaySelect options={barangayOptions} value={violatorBarangay} onChange={setViolatorBarangay} error={fieldError("violator_barangay")} />
+            {fieldError("violator_barangay") && (
+              <div className="text-[11px] mt-1" style={{ color: "#ef4444" }}>{fieldError("violator_barangay")}</div>
+            )}
+          </div>
+
+          {/* 5. Violations */}
+          <div>
+            <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>
+              Violation(s) <span style={{ color: "#ef4444" }}>*</span>
+            </label>
+            {loadingOptions ? (
+              <div className="flex items-center gap-2 py-2 text-[12px]" style={{ color: "var(--muted-foreground)" }}>
+                <Loader2 size={13} className="animate-spin" /> Loading violation types…
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                {violationTypes.map((t) => {
+                  const checked = checkedTypeIds.has(t.id);
+                  return (
+                    <button key={t.id} type="button" onClick={() => toggleType(t.id)}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left transition-all"
+                      style={{ background: checked ? "rgba(16,185,129,0.07)" : "var(--secondary)", border: `1px solid ${checked ? "rgba(16,185,129,0.3)" : "var(--border)"}` }}>
+                      <div className="flex-shrink-0 w-4 h-4 rounded flex items-center justify-center"
+                        style={{ background: checked ? "#10b981" : "transparent", border: `1.5px solid ${checked ? "#10b981" : "var(--muted-foreground)"}` }}>
+                        {checked && <CheckCircle size={10} color="#fff" strokeWidth={3} />}
+                      </div>
+                      <span className="text-[12px] font-medium" style={{ color: "var(--foreground)" }}>{t.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            {fieldError("violations") && (
+              <div className="text-[11px] mt-1" style={{ color: "#ef4444" }}>{fieldError("violations")}</div>
+            )}
+          </div>
+
+          {/* 6. Notes */}
+          <div>
+            <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>
+              Notes <span className="font-normal" style={{ color: "var(--muted-foreground)" }}>(optional)</span>
+            </label>
+            <textarea
+              rows={3}
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Additional details…"
+              className="w-full px-3 py-2.5 rounded-xl text-sm resize-none outline-none"
               style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
             />
           </div>
         </div>
 
-        {/* Count label */}
-        <div className="px-5 pb-1 flex items-center justify-between flex-shrink-0">
-          <span className="text-[10px] font-semibold uppercase tracking-wide"
-            style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
-            {isCurfew ? "Potential violators" : "Household candidates"} · {sorted.length}
-          </span>
-          {checkedIds.size > 0 && (
-            <span className="text-[10px] font-semibold" style={{ color: "#10b981" }}>
-              {checkedIds.size} selected
-            </span>
-          )}
-        </div>
-
-        {/* Candidate list */}
-        <div className="flex-1 overflow-y-auto px-5 pb-3 pt-1 space-y-1.5" style={{ minHeight: 0 }}>
-          {sorted.length === 0 ? (
-            <div className="py-10 text-center text-sm" style={{ color: "var(--muted-foreground)" }}>
-              {candidates.length === 0 ? "Loading residents…" : "No matches found"}
-            </div>
-          ) : sorted.map((c) => {
-            const isChecked = checkedIds.has(c.id);
-            const isIdentified = suspectMatches(alert.suspect, c.fullName);
-            return (
-              <button key={c.id} onClick={() => toggle(c.id)}
-                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-all"
-                style={{
-                  background: isChecked ? "rgba(16,185,129,0.07)" : "var(--secondary)",
-                  border: `1px solid ${isChecked ? "rgba(16,185,129,0.3)" : "var(--border)"}`,
-                }}>
-                {/* Checkbox */}
-                <div className="flex-shrink-0 w-4 h-4 rounded flex items-center justify-center transition-all"
-                  style={{ background: isChecked ? "#10b981" : "transparent", border: `1.5px solid ${isChecked ? "#10b981" : "var(--muted-foreground)"}` }}>
-                  {isChecked && <CheckCircle size={10} color="#fff" strokeWidth={3} />}
-                </div>
-                {/* Avatar */}
-                <div className="w-8 h-8 rounded-lg flex-shrink-0 flex items-center justify-center text-xs font-bold overflow-hidden"
-                  style={{ background: c.isMinor ? "rgba(224,151,42,0.15)" : "var(--secondary)", color: c.isMinor ? "#e0972a" : "var(--muted-foreground)", border: "1px solid var(--border)" }}>
-                  {c.imageUrl
-                    ? <img src={c.imageUrl} alt={c.name} className="w-full h-full object-cover" onError={(e) => { e.currentTarget.style.display = "none"; }} />
-                    : (c.name[0] ?? "?")}
-                </div>
-                {/* Info */}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="text-[12px] font-medium" style={{ color: "var(--foreground)" }}>{c.name}</span>
-                    {c.isMinor && (
-                      <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full"
-                        style={{ background: "rgba(224,151,42,0.15)", color: "#e0972a" }}>Minor</span>
-                    )}
-                    {isIdentified && (
-                      <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full"
-                        style={{ background: "rgba(245,158,11,0.15)", color: "#f59e0b" }}>Possible candidate</span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-1.5 mt-0.5 text-[10px]" style={{ color: "var(--muted-foreground)" }}>
-                    <span style={{ fontFamily: "'DM Mono', monospace" }}>{c.barangayId}</span>
-                    {c.age != null && <><span>·</span><span>Age {c.age}</span></>}
-                    {c.household && <><span>·</span><span className="truncate">{c.household}</span></>}
-                  </div>
-                </div>
-              </button>
-            );
-          })}
-        </div>
-
         {/* Footer */}
-        <div className="px-5 py-4 flex items-center justify-between gap-3 flex-shrink-0"
+        <div className="px-5 py-4 flex items-center justify-end gap-2 flex-shrink-0"
           style={{ borderTop: "1px solid var(--border)" }}>
-          <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
-            {checkedIds.size === 0
-              ? "No residents selected — resolves without linking"
-              : `${checkedIds.size} resident${checkedIds.size !== 1 ? "s" : ""} will be linked`}
-          </div>
-          <div className="flex items-center gap-2 flex-shrink-0">
-            {!resolving && (
-              <button onClick={onClose} className="px-4 py-2 rounded-xl text-sm font-medium"
-                style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}>
-                Cancel
-              </button>
-            )}
-            <button disabled={resolving} onClick={() => setConfirming(true)}
-              className="flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-medium"
-              style={{ background: "#10b981", color: "#fff", cursor: resolving ? "not-allowed" : "pointer", opacity: resolving ? 0.7 : 1 }}>
-              {resolving ? <Loader2 size={13} className="animate-spin" /> : <CheckCircle size={13} />}
-              {resolving ? "Resolving…" : "Confirm & Resolve"}
+          {!submitting && (
+            <button onClick={onClose} className="px-4 py-2 rounded-xl text-sm font-medium"
+              style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}>
+              Cancel
             </button>
-          </div>
+          )}
+          <button disabled={!valid || submitting} onClick={handleSubmit}
+            className="flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-medium transition-all"
+            style={{
+              background: valid ? "#10b981" : "rgba(16,185,129,0.2)",
+              color: valid ? "#fff" : "rgba(16,185,129,0.5)",
+              cursor: valid && !submitting ? "pointer" : "not-allowed",
+            }}>
+            {submitting ? <Loader2 size={13} className="animate-spin" /> : <CheckCircle size={13} />}
+            {submitting ? "Submitting…" : "Confirm"}
+          </button>
         </div>
       </div>
-
-      {confirming && (
-        <div
-          className="fixed inset-0 z-[80] flex items-center justify-center p-4"
-          style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)" }}
-          onClick={() => setConfirming(false)}
-        >
-          <div
-            className="w-full max-w-xs rounded-2xl overflow-hidden shadow-2xl"
-            style={{ background: "var(--card)", border: "1px solid var(--border)" }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="px-5 pt-5 pb-4 flex flex-col items-center text-center gap-3">
-              <div className="w-10 h-10 rounded-full flex items-center justify-center"
-                style={{ background: "rgba(16,185,129,0.12)" }}>
-                <CheckCircle size={18} style={{ color: "#10b981" }} />
-              </div>
-              <div>
-                <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Resolve this violation?</div>
-                <div className="text-[12px] mt-1" style={{ color: "var(--muted-foreground)" }}>
-                  {checkedIds.size === 0
-                    ? "No residents will be linked to this record."
-                    : `${checkedIds.size} resident${checkedIds.size !== 1 ? "s" : ""} will be linked to this record.`}
-                  {" "}This action cannot be undone.
-                </div>
-              </div>
-            </div>
-            <div className="flex items-center gap-2 px-5 pb-5">
-              <button onClick={() => setConfirming(false)}
-                className="flex-1 px-4 py-2 rounded-xl text-sm font-medium"
-                style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}>
-                Cancel
-              </button>
-              <button onClick={() => { setConfirming(false); handleConfirm(); }}
-                className="flex-1 flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium"
-                style={{ background: "#10b981", color: "#fff" }}>
-                <CheckCircle size={13} /> Yes, resolve
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -1046,7 +1339,8 @@ function SetCandidateModal({ alert, households: rawHH, residents: rawRes, onSave
 
 // ── Main modal ─────────────────────────────────────────────────────────────────
 export function ViolationModal({
-  alert, assignedOfficerNames, households, residents, onDismiss, onDispatch, onResolve, onClose, onUpdateSuspect, verifierName,
+  alert, assignedOfficerNames, households, residents, officers = [], currentOfficerId,
+  onDismiss, onDispatch, onResolved, onClose, onUpdateSuspect, verifierName,
 }) {
   const vcfg = VIOLATION_CONFIG[alert.type] ?? { label: alert.type, color: "#f59e0b", icon: AlertTriangle };
   const scfg = statusConfig[alert.status] ?? statusConfig.acknowledged;
@@ -1542,14 +1836,14 @@ export function ViolationModal({
       )}
 
       {showResolveChecklist && (
-        <ResolveChecklistModal
+        <CitationFormModal
           alert={alert}
           vcfg={vcfg}
-          households={households}
-          residents={residents}
-          onConfirm={(suspectNames) => {
+          officers={officers}
+          currentOfficerId={currentOfficerId}
+          onResolved={() => {
             setShowResolveChecklist(false);
-            onResolve(suspectNames);
+            onResolved();
           }}
           onClose={() => setShowResolveChecklist(false)}
         />

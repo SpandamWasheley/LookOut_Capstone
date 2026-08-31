@@ -225,7 +225,7 @@ function AdminDashboard({ user, onLogout }) {
               <h1 className="text-xl font-bold" style={{ color: "var(--foreground)" }}>Live Feeds</h1>
             </div>
             <div className="flex-1 overflow-auto p-6">
-              <CameraGrid />
+              <CameraGrid isAdmin={role === "admin"} />
             </div>
           </div>
         )}

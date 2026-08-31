@@ -245,7 +245,7 @@ export function RecordsPage() {
           assignedOfficerNames={selected.officersAssignedNames ?? []}
           onDismiss={() => {}}
           onDispatch={() => {}}
-          onResolve={() => {}}
+          onResolved={() => {}}
           onClose={() => setSelected(null)}
         />
       )}

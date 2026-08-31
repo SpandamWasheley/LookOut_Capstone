@@ -230,9 +230,12 @@ class Command(BaseCommand):
                     if is_live:
                         time.sleep(0.02)
                         continue
-                    self.stdout.write(self.style.WARNING(f"Failed to read frame from {source}."))
-                    time.sleep(0.5)
-                    continue
+                    # A file source that stops yielding frames has reached its
+                    # end — finish rather than looping forever on a test video.
+                    self.stdout.write(self.style.SUCCESS(
+                        f"End of {source} — done."
+                    ))
+                    break
 
                 now_ts = time.time()
                 if now_ts - cfg_loaded_at >= SETTINGS_REFRESH_SECONDS:

@@ -1,7 +1,22 @@
+import re
 from datetime import time
 
 from django.contrib.auth.models import AbstractUser
 from django.db import models
+
+from core.constants import ZAMBOANGA_BARANGAYS
+
+_PUNCTUATION_RE = re.compile(r"[^\w\s]")
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def normalize_name(first_name, middle_name, last_name):
+    """lowercase, strip, collapse whitespace, strip punctuation — suffix is
+    deliberately excluded so 'Dela Cruz, Juan Jr.' and '... Sr.' still
+    normalize to the same person for exact-match lookups."""
+    raw = " ".join(part for part in (first_name, middle_name, last_name) if part)
+    no_punct = _PUNCTUATION_RE.sub("", raw)
+    return _WHITESPACE_RE.sub(" ", no_punct).strip().lower()
 
 
 class User(AbstractUser):
@@ -129,88 +144,53 @@ class Officer(models.Model):
         return f"{self.code} - {self.name}"
 
 
-class Resident(models.Model):
+class Person(models.Model):
+    """A face-registry entry: someone enrolled for facial recognition
+    (curfew/violator matching), not a resident household record."""
+
     class Status(models.TextChoices):
-        VERIFIED = "verified", "Verified"
         PENDING = "pending", "Pending"
-        FLAGGED = "flagged", "Flagged"
+        ENROLLED = "enrolled", "Enrolled"
 
-    class Gender(models.TextChoices):
-        MALE = "male", "Male"
-        FEMALE = "female", "Female"
-        OTHER = "other", "Other"
-
-    code = models.CharField(max_length=20, unique=True, blank=True)
-    name = models.CharField(max_length=150)
-    barangay_id = models.CharField(max_length=30, unique=True, blank=True)
-    age = models.PositiveSmallIntegerField(null=True, blank=True)
+    person_code = models.CharField(max_length=20, unique=True, blank=True)
+    full_name = models.CharField(max_length=150)
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
-    gender = models.CharField(max_length=10, choices=Gender.choices, blank=True)
-    guardian_name = models.CharField(max_length=150, blank=True)
-    image_url = models.URLField(blank=True)
-    phone = models.CharField(max_length=30, blank=True)
+    enrolled_at = models.DateTimeField(null=True, blank=True)
+    notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ["code"]
+        ordering = ["person_code"]
 
     def save(self, *args, **kwargs):
-        if not self.code:
-            self.code = _next_code(Resident, "RES")
+        if not self.person_code:
+            self.person_code = _next_code(Person, "BRG-TET", width=4, field="person_code")
         super().save(*args, **kwargs)
 
     def __str__(self):
-        return f"{self.code} - {self.name}"
+        return f"{self.person_code} - {self.full_name}"
 
 
-class Household(models.Model):
-    code = models.CharField(max_length=30, unique=True, blank=True)
-    family_name = models.CharField(max_length=150)
-    address = models.CharField(max_length=255, blank=True)
-    contact = models.CharField(max_length=30, blank=True)
-    enrolled_date = models.DateField(null=True, blank=True)
+class FaceEmbedding(models.Model):
+    class Angle(models.TextChoices):
+        FRONT = "front", "Front"
+        RIGHT = "right", "Right"
+        LEFT = "left", "Left"
 
-    class Meta:
-        ordering = ["code"]
-
-    def save(self, *args, **kwargs):
-        if not self.code:
-            self.code = _next_code(Household, "HH-TET", width=4)
-        super().save(*args, **kwargs)
-
-    def __str__(self):
-        return f"{self.code} - {self.family_name}"
-
-
-class HouseholdMember(models.Model):
-    class Status(models.TextChoices):
-        VERIFIED = "verified", "Verified"
-        PENDING = "pending", "Pending"
-        FLAGGED = "flagged", "Flagged"
-
-    code = models.CharField(max_length=30, unique=True, blank=True)
-    household = models.ForeignKey(Household, on_delete=models.CASCADE, related_name="members")
-    first_name = models.CharField(max_length=100)
-    last_name = models.CharField(max_length=100)
-    birthdate = models.DateField(null=True, blank=True)
-    barangay_id = models.CharField(max_length=30, unique=True, blank=True)
-    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
-    relation = models.CharField(max_length=50, blank=True)
-    image_url = models.URLField(blank=True)
-    phone = models.CharField(max_length=30, blank=True)
-    guardians = models.ManyToManyField(
-        "self", symmetrical=False, blank=True, related_name="wards"
-    )
+    person = models.ForeignKey(Person, on_delete=models.CASCADE, related_name="embeddings")
+    angle = models.CharField(max_length=10, choices=Angle.choices)
+    image = models.ImageField(upload_to="face_enrollment/")
+    embedding = models.JSONField()
+    det_score = models.FloatField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ["code"]
-
-    def save(self, *args, **kwargs):
-        if not self.code:
-            self.code = _next_code(HouseholdMember, "MEM", width=3)
-        super().save(*args, **kwargs)
+        constraints = [
+            models.UniqueConstraint(fields=["person", "angle"], name="unique_person_angle"),
+        ]
 
     def __str__(self):
-        return f"{self.code} - {self.first_name} {self.last_name}"
+        return f"{self.person.person_code} - {self.angle}"
 
 
 class Alert(models.Model):
@@ -231,9 +211,23 @@ class Alert(models.Model):
     # ~10s evidence clip with detection boxes drawn, written by the watchers'
     # ClipRecorder. Blank for older alerts / still-only detectors.
     video_url = models.URLField(blank=True)
+    # Unannotated evidence clip at full source frame rate/resolution — cut
+    # directly from the source file, or from a live raw-frame buffer for a
+    # stream source. Blank for alerts created before this field existed, or
+    # when the cut/buffer save failed.
+    raw_video_url = models.URLField(blank=True)
     officers_assigned = models.ManyToManyField(Officer, blank=True, related_name="alerts")
     suspect = models.CharField(max_length=150, blank=True)
     notes = models.TextField(blank=True)
+    # Set by watch_smoking/watch_drinking (see core/face_registry.py) when a
+    # face in the alert frame matches an enrolled Person above
+    # SystemSettings.curfew_confidence — the citation form prefills from
+    # these. Never gates alert creation: null on no match, no enrolled
+    # faces, or a recognition failure.
+    matched_person = models.ForeignKey(
+        Person, on_delete=models.SET_NULL, null=True, blank=True, related_name="alerts"
+    )
+    match_confidence = models.FloatField(null=True, blank=True)
 
     class Meta:
         ordering = ["-timestamp"]
@@ -245,6 +239,108 @@ class Alert(models.Model):
 
     def __str__(self):
         return self.code
+
+
+class Violator(models.Model):
+    class Suffix(models.TextChoices):
+        NONE = "", "—"
+        JR = "Jr.", "Jr."
+        SR = "Sr.", "Sr."
+        II = "II", "II"
+        III = "III", "III"
+        IV = "IV", "IV"
+
+    first_name = models.CharField(max_length=100)
+    last_name = models.CharField(max_length=100)
+    middle_name = models.CharField(max_length=100, blank=True)
+    suffix = models.CharField(max_length=5, choices=Suffix.choices, blank=True)
+    # Auto-generated in save() from first+middle+last (suffix excluded) — the
+    # exact-match half of violator search, and how repeat citations for the
+    # same typed name resolve to one record without a fuzzy pass.
+    normalized_name = models.CharField(max_length=310, db_index=True, editable=False)
+    matched_person = models.ForeignKey(
+        Person, on_delete=models.SET_NULL, null=True, blank=True, related_name="violators"
+    )
+    # Prior full names this record has absorbed via merge() — see
+    # ViolatorViewSet.merge. Plain strings, not FKs: the loser row is gone.
+    aliases = models.JSONField(default=list, blank=True)
+    first_seen = models.DateTimeField(auto_now_add=True)
+    # Bumped on every new citation for this violator (see
+    # CitationViewSet.perform_create) — NOT auto_now, since an unrelated edit
+    # (e.g. a merge appending an alias) shouldn't count as a new sighting.
+    last_seen = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["last_name", "first_name"]
+
+    def save(self, *args, **kwargs):
+        self.normalized_name = normalize_name(self.first_name, self.middle_name, self.last_name)
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.last_name}, {self.first_name} {self.suffix}".strip()
+
+
+class Citation(models.Model):
+    class Barangay(models.TextChoices):
+        TETUAN = "TETUAN", "Tetuan"
+
+    alert = models.ForeignKey(Alert, on_delete=models.SET_NULL, null=True, blank=True, related_name="citations")
+    violator = models.ForeignKey(Violator, on_delete=models.PROTECT, related_name="citations")
+    # Snapshot of exactly what was typed on THIS citation — kept even after
+    # `violator` is set/merged, so a later merge (which can rewrite which
+    # Violator a citation points to) never loses what was actually written
+    # on the paper/screen at the time.
+    first_name_entered = models.CharField(max_length=100)
+    last_name_entered = models.CharField(max_length=100)
+    middle_name_entered = models.CharField(max_length=100, blank=True)
+    suffix_entered = models.CharField(max_length=5, choices=Violator.Suffix.choices, blank=True)
+    officer = models.ForeignKey(Officer, on_delete=models.PROTECT, related_name="citations")
+    barangay_of_violation = models.CharField(max_length=30, choices=Barangay.choices, default=Barangay.TETUAN)
+    violator_barangay = models.CharField(max_length=50, choices=ZAMBOANGA_BARANGAYS)
+    violations = models.ManyToManyField(ViolationType, related_name="citations")
+    matched_person = models.ForeignKey(Person, on_delete=models.SET_NULL, null=True, blank=True, related_name="citations")
+    match_confidence = models.FloatField(null=True, blank=True)
+    notes = models.TextField(blank=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name="citations")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Citation - {self.last_name_entered}, {self.first_name_entered} ({self.created_at:%Y-%m-%d})"
+
+
+class DetectionJob(models.Model):
+    """An admin-triggered test run of one detector (watch_smoking etc.) against
+    an uploaded video file, launched as a plain subprocess (see views.py) rather
+    than through a task queue — a testing/demo tool, not a production pipeline.
+    Alerts it produces are ordinary Alert rows, tagged onto a dedicated
+    "<CODE>-TEST" camera so they're distinguishable from live-camera alerts.
+    """
+
+    class Status(models.TextChoices):
+        RUNNING = "running", "Running"
+        DONE = "done", "Done"
+        FAILED = "failed", "Failed"
+
+    violation_type = models.CharField(max_length=20)      # key into views.DETECTION_COMMANDS
+    source_filename = models.CharField(max_length=255)    # original upload name, for display
+    source_path = models.CharField(max_length=500)        # saved temp path — subprocess arg + cleanup
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.RUNNING)
+    pid = models.IntegerField(null=True, blank=True)
+    started_at = models.DateTimeField(auto_now_add=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    # Tail of the subprocess's combined stdout/stderr log — only set on failure.
+    error = models.TextField(blank=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name="detection_jobs")
+
+    class Meta:
+        ordering = ["-started_at"]
+
+    def __str__(self):
+        return f"{self.violation_type} job #{self.id} ({self.status})"
 
 
 class SystemSettings(models.Model):
@@ -316,6 +412,18 @@ class SystemSettings(models.Model):
     drinking_hours_enabled = models.BooleanField(default=False)
     drinking_start = models.TimeField(default=time(22, 0))
     drinking_end = models.TimeField(default=time(5, 0))
+
+    # Gathering ("inuman") detection: a second, independent path to an alert
+    # alongside the per-person one above. Near the camera an individual's
+    # bottle is verifiable on its own; at range it isn't, but a sustained
+    # gathering still is — so this scales the evidence standard with what the
+    # camera can actually establish, instead of one fixed per-person rule.
+    drinking_min_group = models.PositiveSmallIntegerField(default=2)
+    # Default of 25s is deliberately short for testing against sub-minute
+    # clips — a real deployment should set this much higher, ~600-900s
+    # (10-15 minutes), so a few people briefly standing near each other isn't
+    # mistaken for a drinking session.
+    drinking_group_duration = models.PositiveSmallIntegerField(default=25)
 
     alert_cooldown = models.PositiveSmallIntegerField(default=120)
     evidence_retention_days = models.PositiveSmallIntegerField(default=30)

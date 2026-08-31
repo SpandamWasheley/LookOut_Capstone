@@ -9,11 +9,13 @@ router.register("zones", views.ZoneViewSet)
 router.register("violation-types", views.ViolationTypeViewSet)
 router.register("cameras", views.CameraViewSet)
 router.register("officers", views.OfficerViewSet)
-router.register("residents", views.ResidentViewSet)
-router.register("households", views.HouseholdViewSet)
-router.register("household-members", views.HouseholdMemberViewSet)
+router.register("persons", views.PersonViewSet)
+router.register("face-embeddings", views.FaceEmbeddingViewSet)
+router.register("citations", views.CitationViewSet)
+router.register("violators", views.ViolatorViewSet, basename="violator")
 router.register("alerts", views.AlertViewSet)
 router.register("dispatchers", views.DispatcherViewSet)
+router.register("detection-jobs", views.DetectionJobViewSet)
 
 urlpatterns = [
     path("auth/login/", views.LoginView.as_view(), name="login"),
@@ -23,6 +25,7 @@ urlpatterns = [
     path("auth/forgot-password/send-code/", views.forgot_password_send_code, name="forgot_password_send_code"),
     path("auth/forgot-password/reset/", views.forgot_password_reset, name="forgot_password_reset"),
     path("dashboard/stats/", views.dashboard_stats, name="dashboard_stats"),
+    path("barangays/", views.barangays, name="barangays"),
     path("recording/start/", views.recording_start, name="recording_start"),
     path("recording/stop/", views.recording_stop, name="recording_stop"),
     path("recording/status/", views.recording_status, name="recording_status"),

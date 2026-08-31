@@ -12,6 +12,8 @@ stays importable/testable independent of the management commands that use it.
 import json
 import os
 import datetime
+import subprocess
+import tempfile
 import threading
 import time
 import urllib.request
@@ -20,6 +22,15 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+
+
+def _hold_reps(ts, next_ts, playback_fps, max_hold_seconds):
+    """How many times to repeat one buffered frame so real-time gaps between
+    frames become real-time playback duration, capped so a detector stall
+    can't freeze the clip on a single frame for longer than max_hold_seconds."""
+    max_reps = max(1, round(max_hold_seconds * playback_fps))
+    reps = max(1, round((next_ts - ts) * playback_fps))
+    return min(reps, max_reps)
 
 
 class ClipRecorder:
@@ -43,6 +54,11 @@ class ClipRecorder:
         self.playback_fps = playback_fps
         self.label = label            # e.g. camera code, drawn next to the time
         self._buf = deque()  # (timestamp, annotated_frame)
+        # Cap in seconds on how long a single buffered frame can be held during
+        # playback. Without this, a detector stall (e.g. a slow far-mode tile
+        # pass) between two buffered frames turns into a multi-second freeze on
+        # ONE frame instead of a shorter, less misleading gap.
+        self._max_hold_seconds = 2.0
 
     def add(self, frame, now):
         self._buf.append((now, frame.copy()))
@@ -72,21 +88,177 @@ class ClipRecorder:
             return False
         frames = list(self._buf)
         h, w = frames[0][1].shape[:2]
-        writer = cv2.VideoWriter(
-            str(path), cv2.VideoWriter_fourcc(*"mp4v"),
-            self.playback_fps, (w, h),
+
+        # Write to a temporary mp4v file (reliable, no codec DLL issues).
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+            temp_path = tmp.name
+
+        try:
+            writer = cv2.VideoWriter(
+                str(temp_path), cv2.VideoWriter_fourcc(*"mp4v"),
+                self.playback_fps, (w, h),
+            )
+            if not writer.isOpened():
+                return False
+            for i, (ts, frame) in enumerate(frames):
+                self._stamp(frame, ts)   # real date/time of THIS frame
+                nxt = frames[i + 1][0] if i + 1 < len(frames) else ts + 1.0 / self.playback_fps
+                reps = _hold_reps(ts, nxt, self.playback_fps, self._max_hold_seconds)
+                for _ in range(reps):
+                    writer.write(frame)
+            writer.release()
+
+            # Transcode to H.264 with ffmpeg for browser compatibility.
+            # -movflags +faststart moves moov atom to front for streaming without
+            # downloading the whole file. -crf 28 provides good quality/size tradeoff.
+            return _run_ffmpeg([
+                "-i", temp_path,
+                "-vf", "scale=1280:-2",
+                "-c:v", "libx264",
+                "-preset", "veryfast",
+                "-crf", "28",
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
+                str(path),
+            ])
+        finally:
+            # Clean up temp file.
+            try:
+                os.unlink(temp_path)
+            except FileNotFoundError:
+                pass
+
+
+# How much context a RAW evidence clip carries around the alert-firing moment.
+# Kept short of the annotated buffer's window on purpose — this is cut from the
+# original source at full frame rate/resolution, so it doesn't need to be long
+# to be useful, and shorter keeps the -c copy cut fast.
+RAW_CLIP_PRE_SECONDS = 15
+RAW_CLIP_POST_SECONDS = 2
+
+
+def _run_ffmpeg(args, timeout=300):
+    """Runs ffmpeg with `args` (excluding the binary name/-y). Returns True on
+    success; logs and returns False on any failure — evidence capture must
+    never crash a watcher over a transcode/cut problem."""
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-y", *args],
+            capture_output=True, text=True, timeout=timeout,
         )
-        if not writer.isOpened():
+        if result.returncode != 0:
+            print(f"ffmpeg failed: {result.stderr}")
             return False
-        for i, (ts, frame) in enumerate(frames):
-            self._stamp(frame, ts)   # real date/time of THIS frame
-            # Hold each frame for its real duration so the clip runs ~real-time.
-            nxt = frames[i + 1][0] if i + 1 < len(frames) else ts + 1.0 / self.playback_fps
-            reps = max(1, round((nxt - ts) * self.playback_fps))
-            for _ in range(reps):
-                writer.write(frame)
-        writer.release()
         return True
+    except FileNotFoundError:
+        print("ffmpeg not found — cannot produce evidence clip")
+        return False
+    except subprocess.TimeoutExpired:
+        print(f"ffmpeg timeout (>{timeout}s)")
+        return False
+
+
+def cut_raw_clip(source_path, start_sec, duration_sec, out_path):
+    """Cuts [start_sec, start_sec + duration_sec) directly out of a seekable
+    source video file with -c copy (stream copy, no re-encode) — full source
+    frame rate and resolution, unlike the annotated clip, which is
+    reconstructed from the detector's own much sparser processed-frame buffer.
+
+    File sources only: -ss before -i seeks the input directly (fast, but
+    keyframe-snapped rather than frame-exact — fine for evidence context).
+    This only works for a real file/seekable stream, not a live RTSP feed,
+    which can't be seeked backwards this way.
+    """
+    return _run_ffmpeg([
+        "-ss", f"{max(0.0, start_sec):.3f}",
+        "-i", str(source_path),
+        "-t", f"{duration_sec:.3f}",
+        "-c", "copy",
+        "-movflags", "+faststart",
+        str(out_path),
+    ], timeout=60)
+
+
+class RawFrameRecorder:
+    """Rolling buffer of RAW (unannotated) frames for a LIVE source, for cutting
+    a raw evidence clip when there's no seekable file to pull from instead (see
+    cut_raw_clip for the file-source path).
+
+    Frames are JPEG-encoded rather than held as raw arrays to keep memory
+    bounded: a raw 2560x1440x3 frame is ~11MB, so a 15s window at 15fps held as
+    arrays would be ~2.5GB continuously. JPEG brings that down to roughly
+    200KB/frame (~45MB for the same window). Encode cost is paid once per frame
+    on capture; decode only happens if save() is actually called.
+
+    Segment files from record_camera were considered as a source for this
+    instead, but its cv2.VideoWriter-based mp4 muxing doesn't finalize the
+    moov atom until the segment rolls over/closes (the same class of problem
+    fixed for the annotated clip's own mp4v output) — the currently-open
+    segment, which always covers "right now", isn't safely readable by a
+    second process. This buffer sidesteps that entirely.
+    """
+
+    def __init__(self, seconds=RAW_CLIP_PRE_SECONDS + RAW_CLIP_POST_SECONDS,
+                 quality=85, playback_fps=12):
+        self.seconds = seconds
+        self.quality = quality
+        self.playback_fps = playback_fps
+        self._max_hold_seconds = 2.0
+        self._buf = deque()  # (timestamp, jpeg_bytes)
+
+    def add(self, frame, now):
+        ok, enc = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, self.quality])
+        if ok:
+            self._buf.append((now, enc.tobytes()))
+        cutoff = now - self.seconds
+        while self._buf and self._buf[0][0] < cutoff:
+            self._buf.popleft()
+
+    def save(self, path):
+        """Writes the buffered clip to `path` (MP4). Returns True on success."""
+        if len(self._buf) < 2:
+            return False
+        frames = list(self._buf)
+        first = cv2.imdecode(np.frombuffer(frames[0][1], np.uint8), cv2.IMREAD_COLOR)
+        if first is None:
+            return False
+        h, w = first.shape[:2]
+
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+            temp_path = tmp.name
+
+        try:
+            writer = cv2.VideoWriter(
+                str(temp_path), cv2.VideoWriter_fourcc(*"mp4v"),
+                self.playback_fps, (w, h),
+            )
+            if not writer.isOpened():
+                return False
+            for i, (ts, enc) in enumerate(frames):
+                frame = cv2.imdecode(np.frombuffer(enc, np.uint8), cv2.IMREAD_COLOR)
+                if frame is None:
+                    continue
+                nxt = frames[i + 1][0] if i + 1 < len(frames) else ts + 1.0 / self.playback_fps
+                reps = _hold_reps(ts, nxt, self.playback_fps, self._max_hold_seconds)
+                for _ in range(reps):
+                    writer.write(frame)
+            writer.release()
+
+            return _run_ffmpeg([
+                "-i", temp_path,
+                "-vf", "scale=1280:-2",
+                "-c:v", "libx264",
+                "-preset", "veryfast",
+                "-crf", "28",
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
+                str(path),
+            ])
+        finally:
+            try:
+                os.unlink(temp_path)
+            except FileNotFoundError:
+                pass
 
 
 class LatestFrameReader:
@@ -139,7 +311,7 @@ FACE_DB_PATH = VISION_DIR / "face_db.json"
 # Custom-trained smoking detector (cigarette/smoke/vape/smoking). Unlike the
 # COCO yolov8n used for persons/vehicles, this is a separate fine-tuned model,
 # so it loads its own weights. Override with the SMOKING_MODEL env var.
-SMOKING_MODEL_PATH = Path(os.environ.get("SMOKING_MODEL", str(VISION_DIR / "smoking.pt")))
+SMOKING_MODEL_PATH = Path(os.environ.get("SMOKING_MODEL", str(VISION_DIR / "smoking_v5.pt")))
 
 # Custom-trained thief/robbery detector (gun/knife/robbery activity/stealing).
 # Same deal as the smoking model: separate fine-tuned weights, trained with
