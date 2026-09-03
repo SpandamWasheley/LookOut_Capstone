@@ -79,3 +79,27 @@ def preprocess(frame, mode="near", sharpen=False):
         out = cv2.filter2D(out, -1, _SHARPEN_KERNEL)
 
     return out
+
+
+def add_cli_flags(parser, ablatable=True):
+    """Registers --preprocess/--sharpen on a watch_<x> management command.
+
+    Every detector takes the same two flags with the same meaning, so they are
+    declared once here instead of being copy-pasted per command. `ablatable` is
+    False for the watchers that have no --ablate flag of their own.
+    """
+    parser.add_argument(
+        "--preprocess",
+        action="store_true",
+        help="Enhance dim/noisy frames before detection: gamma-brighten, "
+             "denoise, and CLAHE local contrast (daytime frames bypass "
+             "untouched). Helps in low light; adds a little cost per dark "
+             "frame."
+             + (" Add 'preprocess' to --ablate to A/B it." if ablatable else ""),
+    )
+    parser.add_argument(
+        "--sharpen",
+        action="store_true",
+        help="With --preprocess, also apply an unsharp kernel (sharper edges "
+             "for small objects, but can amplify noise).",
+    )

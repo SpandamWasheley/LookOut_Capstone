@@ -22,7 +22,9 @@ they are still confirmed and alerted — separately per location, not pooled.
 No Django model access here — same rule as recognition.py, pure CV plumbing.
 """
 
+import math
 from collections import deque
+from statistics import median
 
 from .recognition import _iou
 
@@ -90,6 +92,40 @@ GESTURE_WINDOW_SECONDS = 20.0
 # satisfied by ~1.3s of actual detection.
 ACCRUAL_STALE_SECONDS = 0.5
 
+# --- Layer E primitives (E1-E3) and track-level guards (E25-E27) -------------
+# See core/vision/theft.py for the theft pattern rules that consume these. They
+# live here because they are properties of a *track*, not of theft: any future
+# pattern layer needs the same normalized distance, speed and path shape.
+
+# How much centroid history each track keeps. Must exceed the longest window any
+# consumer asks for — E10's 20s loiter test is the current maximum.
+TRAIL_SECONDS = 30.0
+SPEED_WINDOW = 0.5       # seconds of trail used for an instantaneous speed
+EFF_WINDOW = 20.0        # E3 path-efficiency window
+EFF_MIN_SAMPLES = 3      # below this the trail says nothing; efficiency abstains
+
+# E2: the scene velocity baseline is an EMA with this time constant, over the
+# median per-track speed. Median, not mean, so one sprinter can't redefine
+# "normal" for the whole frame.
+SCENE_VELOCITY_WINDOW = 60.0
+# Floor for the baseline. A stationary scene drives the median toward zero, and
+# v_norm = v_track / v_scene would then explode and report every twitch as a
+# sprint. 0.1 heights/s is about a tenth of walking pace (a 1.7m adult walking
+# 1.4 m/s covers ~0.8 of their own height per second).
+MIN_SCENE_SPEED = 0.1
+
+# E25: a box within this many pixels of any frame edge is treated as truncated —
+# its centroid and height are wrong, which corrupts every normalized quantity.
+EDGE_MARGIN_PX = 2
+
+# E26: a centroid that moves faster than this (in box heights per second) did not
+# move — the identifier was reassigned to a different person. Expressed as a
+# speed rather than a per-frame pixel jump on purpose: at far mode's ~1 FPS a
+# walking person legitimately crosses more than a box width between frames, so a
+# fixed jump threshold would flag every ordinary walker as an identity switch.
+# Usain Bolt peaks near 3.5 heights/s, so 6.0 is unreachable by a real human.
+ID_SWITCH_SPEED = 6.0
+
 
 def _center_proximity(a, b, max_frac=TRACK_MATCH_DIST):
     """1.0 when two boxes' centers coincide, falling linearly to 0 at
@@ -151,6 +187,129 @@ class Track:
         # Pose hand-to-mouth gesture state (long-range smoking).
         self.hand_zone = None             # 'atface' | 'down' | None
         self.gestures = deque()           # timestamps of completed hand-to-mouth cycles
+        # --- Layer E state (E1-E3, E25-E27) ---
+        self.first_seen = now
+        self.trail = deque()              # (t, cx, cy) centroid history
+        self.seen_log = deque()           # (t, was_matched) — E27 occlusion fraction
+        self.truncated = False            # E25: box touches a frame edge this frame
+        self.id_switch_at = None          # E26: last impossible centroid jump
+
+    # ---- Layer E geometry (E1-E3, E25-E27) --------------------------------
+
+    @property
+    def center(self):
+        x1, y1, x2, y2 = self.box
+        return ((x1 + x2) / 2, (y1 + y2) / 2)
+
+    @property
+    def width(self):
+        return max(self.box[2] - self.box[0], 1)
+
+    @property
+    def height(self):
+        """Box height in pixels — the E1 normalization unit. Floored at 1 so a
+        degenerate box can never divide by zero downstream."""
+        return max(self.box[3] - self.box[1], 1)
+
+    @property
+    def aspect(self):
+        """Width-to-height ratio — E17's crouch proxy. A standing adult sits
+        around 0.35-0.45; crouching pushes it past 0.9."""
+        return self.width / self.height
+
+    def age(self, now):
+        return now - self.first_seen
+
+    def observe(self, now, frame_shape=None):
+        """Records this frame's position/visibility. Called once per frame by
+        PersonTracker.update for every live track, matched or not."""
+        seen = self.seen_at(now)
+        if seen:
+            cx, cy = self.center
+            if self.trail:
+                pt, px, py = self.trail[-1]
+                dt = now - pt
+                if dt > 0:
+                    jumped = math.hypot(cx - px, cy - py) / dt / self.height
+                    if jumped > ID_SWITCH_SPEED:
+                        self.id_switch_at = now
+            self.trail.append((now, cx, cy))
+            if frame_shape is not None:
+                fh, fw = frame_shape[:2]
+                x1, y1, x2, y2 = self.box
+                self.truncated = (
+                    x1 <= EDGE_MARGIN_PX or y1 <= EDGE_MARGIN_PX
+                    or x2 >= fw - EDGE_MARGIN_PX or y2 >= fh - EDGE_MARGIN_PX
+                )
+        self.seen_log.append((now, seen))
+        cutoff = now - TRAIL_SECONDS
+        while self.trail and self.trail[0][0] < cutoff:
+            self.trail.popleft()
+        while self.seen_log and self.seen_log[0][0] < cutoff:
+            self.seen_log.popleft()
+
+    def speed(self, now=None, window=SPEED_WINDOW):
+        """Centroid speed in BOX HEIGHTS per second (E1-normalized).
+
+        Height-relative rather than raw pixels/s so the same walk reads the same
+        whether the subject is 3m or 30m from the camera — the whole point of
+        E1. Returns 0.0 when there is not enough trail to measure.
+        """
+        if len(self.trail) < 2:
+            return 0.0
+        t1, x1, y1 = self.trail[-1]
+        ref = None
+        for sample in self.trail:
+            if t1 - sample[0] <= window:
+                ref = sample
+                break
+        if ref is None or ref[0] >= t1:
+            ref = self.trail[-2]
+        dt = t1 - ref[0]
+        if dt <= 0:
+            return 0.0
+        return math.hypot(x1 - ref[1], y1 - ref[2]) / dt / self.height
+
+    def path_efficiency(self, now, window=EFF_WINDOW):
+        """E3 — net displacement / path length over the window.
+
+        ~0.9 for someone walking through, <0.3 for someone milling around.
+        Returns None (abstain) when the trail is too short to mean anything,
+        so a freshly-seen track is never scored as a loiterer.
+        """
+        pts = [p for p in self.trail if now - p[0] <= window]
+        if len(pts) < EFF_MIN_SAMPLES:
+            return None
+        path = sum(
+            math.hypot(b[1] - a[1], b[2] - a[2]) for a, b in zip(pts, pts[1:])
+        )
+        if path <= 0:
+            return 0.0     # perfectly stationary is maximally inefficient
+        net = math.hypot(pts[-1][1] - pts[0][1], pts[-1][2] - pts[0][2])
+        return net / path
+
+    def heading(self, now, window=1.5):
+        """Smoothed unit heading vector over the window, or None if the track
+        barely moved (a heading from noise is worse than no heading)."""
+        pts = [p for p in self.trail if now - p[0] <= window]
+        if len(pts) < 2:
+            return None
+        dx, dy = pts[-1][1] - pts[0][1], pts[-1][2] - pts[0][2]
+        mag = math.hypot(dx, dy)
+        if mag < 0.1 * self.height:
+            return None
+        return (dx / mag, dy / mag)
+
+    def occluded_fraction(self, now, window):
+        """E27 — share of the window's frames where this track was NOT matched."""
+        seen = [s for s in self.seen_log if now - s[0] <= window]
+        if not seen:
+            return 1.0
+        return sum(1 for _, ok in seen if not ok) / len(seen)
+
+    def id_switched_within(self, now, window):
+        """E26 — True if this track's identifier was reassigned inside the window."""
+        return self.id_switch_at is not None and now - self.id_switch_at <= window
 
     def update_puff(self, dist_ratio, now, window=PUFF_WINDOW_SECONDS):
         """Feeds the cigarette->mouth distance (in FACE-WIDTHS) into the puff
@@ -213,6 +372,14 @@ class Track:
         self.votes = other.votes
         self.dets = other.dets
         self.last_alerted_at = other.last_alerted_at
+        # Layer E history rides along: an occlusion is exactly the case E27 and
+        # the tombstone mechanism exist for, so a person who walked behind a
+        # jeepney must keep their loiter age (E10) and path shape (E3) instead of
+        # reappearing as a brand-new track with no history.
+        self.first_seen = other.first_seen
+        self.trail = other.trail
+        self.seen_log = other.seen_log
+        self.id_switch_at = other.id_switch_at
         if other.dwell_held > 0:
             # Carry the dwell progress across the occlusion. The occlusion itself
             # costs nothing extra, because dwell only accrues on confirmed frames.
@@ -306,6 +473,62 @@ class Track:
         return max(candidates, key=lambda d: d[4]) if candidates else None
 
 
+def norm_distance(a, b):
+    """E1 — centre distance between two boxes in units of their mean height.
+
+    A standing adult is roughly 0.4 h wide, so arm's reach is ~0.8 h at any
+    depth in the frame. Dividing by height removes the dependence on how far the
+    subjects are from the camera, and on the lens and mounting height — which is
+    what lets a single constant (REACH_NORM) be calibrated once instead of
+    per-camera.
+    """
+    acx, acy = (a[0] + a[2]) / 2, (a[1] + a[3]) / 2
+    bcx, bcy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+    mean_h = (max(a[3] - a[1], 1) + max(b[3] - b[1], 1)) / 2
+    return math.hypot(acx - bcx, acy - bcy) / mean_h
+
+
+class SceneBaseline:
+    """E2 — an EMA of the median per-track speed, used to normalize velocity.
+
+    "Running" cannot be a fixed pixel threshold: it depends on depth, lens, and
+    on how busy the scene is. This tracks what ordinary movement looks like in
+    THIS frame right now, so v_norm = track.speed / baseline.reference means the
+    same thing at noon in a crowd and at 2am on an empty street.
+    """
+
+    def __init__(self, window=SCENE_VELOCITY_WINDOW, floor=MIN_SCENE_SPEED):
+        self.window = window
+        self.floor = floor
+        self.value = None
+        self._last_update = None
+
+    def update(self, tracks, now):
+        speeds = [t.speed(now) for t in tracks if not t.is_scene and len(t.trail) >= 2]
+        if not speeds:
+            self._last_update = now
+            return self.reference
+        med = median(speeds)
+        if self.value is None:
+            self.value = med
+        else:
+            dt = now - (self._last_update or now)
+            # Time-based smoothing factor, so the EMA has the same 60s memory
+            # whether the loop runs at 15 FPS or at far mode's ~1 FPS.
+            alpha = min(dt / self.window, 1.0) if dt > 0 else 0.0
+            self.value += (med - self.value) * alpha
+        self._last_update = now
+        return self.reference
+
+    @property
+    def reference(self):
+        return max(self.value or 0.0, self.floor)
+
+    def norm(self, track, now):
+        """v_norm for one track: its speed relative to the scene's normal."""
+        return track.speed(now) / self.reference
+
+
 class PersonTracker:
     def __init__(self, window_seconds=VOTE_WINDOW_SECONDS,
                  iou_match=TRACK_MATCH_IOU, max_gap=TRACK_MAX_GAP):
@@ -320,7 +543,7 @@ class PersonTracker:
 
     # ---- person tracks -----------------------------------------------------
 
-    def update(self, person_boxes, now, ids=None):
+    def update(self, person_boxes, now, ids=None, frame_shape=None):
         """Matches person boxes to tracks, starts tracks for unmatched boxes,
         expires stale ones. Returns live tracks.
 
@@ -328,12 +551,17 @@ class PersonTracker:
         (ByteTrack/BoT-SORT). When given, association is theirs and this just
         keeps the per-track confirmation state keyed to them; otherwise the
         greedy IoU + proximity matcher below runs.
+
+        `frame_shape` (frame.shape) enables the E25 edge-truncation flag; without
+        it tracks are simply never marked truncated.
         """
         if ids is not None:
             self._update_by_ext_id(person_boxes, ids, now)
         else:
             self._update_greedy(person_boxes, now)
         self._expire(now)
+        for t in self.tracks:
+            t.observe(now, frame_shape)
         return self.tracks
 
     def _update_greedy(self, person_boxes, now):

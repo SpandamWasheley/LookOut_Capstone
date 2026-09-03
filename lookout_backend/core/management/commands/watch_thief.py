@@ -1,4 +1,5 @@
 import datetime
+import json
 import os
 import time
 from collections import Counter
@@ -9,7 +10,8 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from core.models import Alert, Camera, SystemSettings, ViolationType
-from core.vision import recognition, tracking
+from core.vision import preprocess as preproc
+from core.vision import recognition, theft, tracking
 
 THIEF_CAMERA_CODE = "CAM-THIEF"
 SETTINGS_REFRESH_SECONDS = 5  # re-poll SystemSettings this often, not every frame
@@ -55,7 +57,22 @@ COOLDOWN_IOU = 0.3
 # footage be replayed with a single rule removed, so each rule's contribution to
 # the true/false alert counts can be measured rather than asserted. Everything is
 # ON by default; this exists for evaluation, not for production tuning.
-ABLATABLE = ("class-floor", "vote", "dwell", "cooldown")
+ABLATABLE = (
+    ("class-floor", "vote", "dwell", "cooldown", "preprocess", "layer-e")
+    # Layer E is ablatable per RULE as well as wholesale: E.9 of the spec calls
+    # for per-cue removal so each weight can be revised against measured
+    # precision instead of asserted. `--ablate e9` drops just the custody cue.
+    + tuple(f"e{i}" for i in range(1, 30))
+)
+
+# Local hours the nocturnal amplifier (E20) applies to. Wraps midnight.
+NIGHT_START, NIGHT_END = datetime.time(22, 0), datetime.time(5, 0)
+
+
+def _is_night(now_dt):
+    """E20 — 22:00 to 05:00 local time."""
+    t = now_dt.time()
+    return t >= NIGHT_START or t < NIGHT_END
 
 
 class Command(BaseCommand):
@@ -74,7 +91,14 @@ class Command(BaseCommand):
         self._alert_log = []   # (box, timestamp) — cooldown that survives track churn
         self.dry_run = False
         self.tracker_name = "greedy"
+        self.preprocess = False
+        self.sharpen = False
         self.ablate = set()
+        self.layer_e = True
+        self.layer_e_only = False
+        self.weapon_alone_alerts = False
+        self.observe_log = None
+        self.engine = None
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -135,10 +159,11 @@ class Command(BaseCommand):
         parser.add_argument(
             "--ablate",
             default="",
-            help="Evaluation only: comma-separated heuristic stages to DISABLE, "
-                 f"from {'/'.join(ABLATABLE)}. Replay one recording per setting "
-                 "and compare the alert counts to measure what each rule "
-                 "contributes. Combine with --dry-run and --stats.",
+            help="Evaluation only: comma-separated stages to DISABLE — "
+                 "class-floor/vote/dwell/cooldown/preprocess/layer-e, or an "
+                 "individual Layer E rule (e6, e9, e14, e23 ...). Replay one "
+                 "recording per setting and compare the alert counts to measure "
+                 "what each rule contributes. Combine with --dry-run and --stats.",
         )
         parser.add_argument(
             "--stats",
@@ -166,6 +191,40 @@ class Command(BaseCommand):
             default="2x2",
             help="Far mode only: tiling grid as ROWSxCOLS (e.g. 2x2, 3x3). More "
                  "tiles reach further but cost more inference per frame.",
+        )
+        preproc.add_cli_flags(parser)
+        parser.add_argument(
+            "--no-layer-e",
+            action="store_true",
+            help="Disable the Layer E theft pattern rules (E1-E29) and run only "
+                 "the per-class detection gate. Same as --ablate layer-e.",
+        )
+        parser.add_argument(
+            "--layer-e-only",
+            action="store_true",
+            help="Make Layer E the ONLY decision path, per the spec's "
+                 "implementation binding ('the scoring function replaces the "
+                 "current conjunctive gate'). NOTE: with the written weights a "
+                 "lone weapon scores 0.45, below the 0.55 alert band, so a gun "
+                 "with no other cue stops raising alerts — pair this with "
+                 "--weapon-alone-alerts if that is not what you want.",
+        )
+        parser.add_argument(
+            "--weapon-alone-alerts",
+            action="store_true",
+            help="Promote any evidence containing the weapon cue (E14) to the "
+                 "Candidate band regardless of score. Resolves the spec's own "
+                 "conflict between E14's weight (0.45) and its stated rationale "
+                 "('sufficient alone to reach the alert band') in favour of the "
+                 "rationale.",
+        )
+        parser.add_argument(
+            "--observe-log",
+            default=None,
+            help="Append Observe-band evidence (E29: 0.35-0.55) to this file as "
+                 "JSON lines, with the full cue vector. This is the ablation "
+                 "store the spec calibrates the threshold against after the "
+                 "field shoot — near-misses accumulate instead of being lost.",
         )
 
     def handle(self, *args, **options):
@@ -212,6 +271,29 @@ class Command(BaseCommand):
                 f"ABLATION: {', '.join(sorted(self.ablate))} DISABLED — "
                 "measurement run, not a production configuration."
             ))
+        # Kept after --ablate is parsed, so 'preprocess' in --ablate is honoured.
+        self.preprocess = options["preprocess"] and "preprocess" not in self.ablate
+        self.sharpen = options["sharpen"]
+
+        # --- Layer E ---
+        self.layer_e = not options["no_layer_e"] and "layer-e" not in self.ablate
+        self.layer_e_only = options["layer_e_only"] and self.layer_e
+        self.weapon_alone_alerts = options["weapon_alone_alerts"]
+        self.observe_log = options["observe_log"]
+        if self.layer_e:
+            # The engine shares self.stats, so --stats reports Layer E's
+            # suppressions and cue counts in the same table as the legacy gate's.
+            self.engine = theft.TheftEngine(
+                ablate=self.ablate, stats=self.stats,
+                weapon_alone_alerts=self.weapon_alone_alerts,
+            )
+        if self.layer_e_only:
+            self.stdout.write(self.style.WARNING(
+                "LAYER E ONLY: the per-class dwell gate is off. A lone weapon "
+                f"scores {theft.WEIGHTS['E14']:.2f}, under the "
+                f"{theft.SCORE_ALERT:.2f} alert band, so it will land in "
+                "Observe rather than alerting unless --weapon-alone-alerts is set."
+            ))
         try:
             rows, cols = (int(v) for v in options["tiles"].lower().split("x"))
             self.tiles = (rows, cols)
@@ -233,12 +315,25 @@ class Command(BaseCommand):
             ))
 
         if options["image"]:
+            if self.layer_e:
+                self.stdout.write(self.style.WARNING(
+                    "--image runs the per-class gate only: every Layer E rule is "
+                    "temporal (approach, dwell, freeze, custody change), so a "
+                    "single still frame cannot satisfy any of them."
+                ))
             conf = self.conf_override or (cfg.thief_confidence / 100)
             self._run_image(options["image"], conf)
         else:
             self._run_stream(options["source"], options["debug"])
 
     # ---- per-class policy --------------------------------------------------
+
+    def _preprocess(self, frame):
+        """Enhance a dim/noisy frame before detection (no-op unless --preprocess,
+        and daytime frames bypass inside preprocess() itself)."""
+        if not self.preprocess:
+            return frame
+        return preproc.preprocess(frame, mode="near", sharpen=self.sharpen)
 
     def _policy(self, label):
         """Per-class scales, or the neutral default when the class-floor stage is
@@ -271,9 +366,21 @@ class Command(BaseCommand):
 
     def _detect_persons(self, frame):
         """Person boxes + (optionally) external track ids for the chosen tracker."""
+        persons, ids, _, _ = self._detect_scene(frame)
+        return persons, ids
+
+    def _detect_scene(self, frame):
+        """(persons, ids, carriables, vehicles) from ONE YOLO pass.
+
+        Layer E needs the bags people carry (E4/E9/E21/E22) and the vehicles they
+        park (E5/E15-E19) in addition to the person boxes. They are extra class
+        filters on the person pass that runs every frame anyway, so the whole
+        Layer E object layer costs no additional inference.
+        """
         if self.tracker_name == "greedy":
-            return recognition.detect_persons(frame), None
-        return recognition.detect_persons_tracked(
+            persons, ids, carriables, vehicles = recognition.detect_scene(frame)
+            return persons, None, carriables, vehicles
+        return recognition.detect_scene_tracked(
             frame, tracker=f"{self.tracker_name}.yaml",
         )
 
@@ -298,6 +405,7 @@ class Command(BaseCommand):
         if frame is None:
             self.stdout.write(self.style.ERROR(f"Could not read image: {path}"))
             return
+        frame = self._preprocess(frame)
 
         threats = self._detect(frame, conf)
         if not threats:
@@ -370,12 +478,24 @@ class Command(BaseCommand):
         tracker = tracking.PersonTracker()
 
         mode = f"FAR {self.tiles[0]}x{self.tiles[1]} tiling + person-crop" if self.far else "near"
+        layer_e = "off"
+        if self.layer_e:
+            layer_e = "ONLY" if self.layer_e_only else "on"
         self.stdout.write(self.style.SUCCESS(
             f"Watching {source} for theft/robbery indicators "
-            f"[{mode} mode, {self.tracker_name} tracker] "
+            f"[{mode} mode, {self.tracker_name} tracker, Layer E {layer_e}] "
             f"(dwell {self.dwell_override or cfg.thief_dwell}s, "
             f"reads live from Settings). Press Ctrl+C to stop."
         ))
+        if self.layer_e:
+            self.stdout.write(
+                "Layer E watches four patterns — snatch (E6-E9), holdup "
+                "(E10-E14), carnapping of two-wheelers (E15-E20) and unattended "
+                "property (E21-E22). Anchors need time to register: a vehicle "
+                f"must sit still {theft.ANCHOR_STATIC_SECONDS}s and then be "
+                f"alone {theft.ABSENCE_SECONDS}s before carnapping rules "
+                "evaluate at all."
+            )
 
         started_at = time.time()
         fps_warned = False
@@ -392,6 +512,9 @@ class Command(BaseCommand):
                     time.sleep(0.5)
                     continue
 
+                # Enhance dim/noisy frames before detection (daytime bypasses).
+                frame = self._preprocess(frame)
+
                 now_ts = time.time()
                 if now_ts - cfg_loaded_at >= SETTINGS_REFRESH_SECONDS:
                     cfg = SystemSettings.load()
@@ -406,11 +529,16 @@ class Command(BaseCommand):
                 dwell_seconds = self.dwell_override or cfg.thief_dwell
 
                 # Person detection runs every frame (it's the tracking anchor);
-                # far mode reuses the same boxes for its person-crop pass.
-                persons, ids = self._detect_persons(frame)
+                # far mode reuses the same boxes for its person-crop pass. The
+                # same pass yields the carriables and vehicles Layer E needs.
+                persons, ids, carriables, vehicles = self._detect_scene(frame)
                 threats = self._detect(frame, conf, persons=persons)
 
-                tracks = tracker.update(persons, now_ts, ids=ids)
+                # frame.shape feeds the E25 edge-truncation guard: a box clipped
+                # by the frame border has a wrong centroid and height, which
+                # corrupts every normalized quantity in E1-E3.
+                tracks = tracker.update(persons, now_ts, ids=ids,
+                                        frame_shape=frame.shape)
                 per_track = tracker.assign(threats, now_ts)
 
                 if debug:
@@ -420,11 +548,26 @@ class Command(BaseCommand):
                         cv2.putText(frame, f"person #{t.id}", (x1, max(y1 - 6, 0)),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
 
-                for track, dets in per_track.items():
-                    self._process_track(
-                        track, dets, now_ts, dwell_seconds, cfg.alert_cooldown,
-                        frame, debug,
+                # Layer E: pattern rules over the tracks, scored and banded.
+                if self.layer_e:
+                    evidence = self.engine.update(
+                        tracks, carriables, vehicles, threats, now_ts,
+                        is_night=_is_night(datetime.datetime.now()),
                     )
+                    for ev in evidence:
+                        self._handle_evidence(ev, frame, now_ts,
+                                              cfg.alert_cooldown, debug)
+
+                # The per-class dwell gate. Layer E replaces it under
+                # --layer-e-only; by default both run, so a confirmed weapon or
+                # action still alerts on its own terms while Layer E adds the
+                # pattern-based candidates on top.
+                if not self.layer_e_only:
+                    for track, dets in per_track.items():
+                        self._process_track(
+                            track, dets, now_ts, dwell_seconds, cfg.alert_cooldown,
+                            frame, debug,
+                        )
 
                 # Confirmation is time-based, but VOTE_MIN_FRAMES still needs a
                 # few frames to land inside the window — below ~2 FPS that floor,
@@ -551,6 +694,86 @@ class Command(BaseCommand):
             (f"ALERT created: {alert.code}" if alert else "ALERT suppressed (dry run)")
             + f" ({best_label}, {who}, held {present_for:.0f}s)"
         ))
+
+    # ---- Layer E evidence handling (E29) ----------------------------------
+
+    def _handle_evidence(self, ev, frame, now_ts, cooldown, debug):
+        """E29 — route one scored evidence vector to its band's outcome.
+
+        Discard  (<0.35)      nothing beyond the suppression log
+        Observe  (0.35-0.55)  logged with the full cue vector, no alert
+        Candidate(>0.55)      an Alert row, entering the existing lifecycle
+        """
+        if debug:
+            x1, y1, x2, y2 = ev.box
+            color = {theft.CANDIDATE: (0, 0, 220),
+                     theft.OBSERVE: (0, 165, 255)}.get(ev.band, (120, 120, 120))
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(frame, f"{ev.kind} {ev.score:.2f} {ev.band}",
+                        (x1, max(y1 - 8, 0)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+
+        if ev.band == theft.DISCARD:
+            return
+        if ev.band == theft.OBSERVE:
+            self._log_observe(ev)
+            return
+
+        if "cooldown" not in self.ablate and self._cooldown_blocks(
+                ev.box, now_ts, cooldown):
+            self.stats["suppressed: recent alert at same spot"] += 1
+            return
+
+        self.stats[f"ALERTS:{ev.kind}"] += 1
+        alert = self._create_alert(
+            # Alert.confidence is a 0-1 field, but an E28 score is a weighted
+            # sum that can legitimately exceed 1.0 (weapon + custody + night).
+            # Clamp for storage; the true score is in the description.
+            min(ev.score, 1.0), ev.kind, frame,
+            description=(
+                f"Theft pattern detected ({ev.kind}): {ev.detail}. "
+                f"Layer E score {ev.score:.2f} "
+                f"[{', '.join(ev.rules)}] on {self.camera.code} feed."
+            ),
+        )
+        self._alert_log.append((tuple(ev.box), now_ts))
+        self.stdout.write(self.style.SUCCESS(
+            (f"ALERT created: {alert.code}" if alert else "ALERT suppressed (dry run)")
+            + f" [Layer E {ev.kind}] {ev.summary()}"
+        ))
+
+    def _log_observe(self, ev):
+        """The Observe band: a near miss, kept with its evidence vector intact.
+
+        This is how the decision threshold gets calibrated after the field
+        shoot — against real footage rather than against reasoned defaults — so
+        these records are the point, not noise.
+        """
+        self.stats[f"OBSERVE:{ev.kind}"] += 1
+        self.stdout.write(self.style.WARNING(f"OBSERVE {ev.summary()}"))
+        if not self.observe_log:
+            return
+        row = {
+            "at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "camera": self.camera.code,
+            "kind": ev.kind,
+            "score": round(ev.score, 4),
+            "band": ev.band,
+            "cues": ev.cues,
+            "multipliers": ev.multipliers,
+            "abstained": sorted(ev.abstained),
+            "tracks": ev.tracks,
+            "box": list(ev.box),
+            "detail": ev.detail,
+        }
+        try:
+            with open(self.observe_log, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(row) + "\n")
+        except OSError as exc:
+            self.stdout.write(self.style.ERROR(
+                f"Could not write --observe-log {self.observe_log}: {exc}"
+            ))
+            self.observe_log = None   # don't retry once per frame
 
     def _cooldown_blocks(self, box, now, cooldown):
         """True if we already alerted on roughly this part of the frame inside

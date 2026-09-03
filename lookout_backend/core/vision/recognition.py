@@ -177,6 +177,23 @@ VEHICLE_CLASS_IDS = {
     7: "truck",
 }
 
+# COCO "carriable" classes — the personal property Layer E watches for a change
+# of custody (rules E4, E9, E21, E22). Like the vessel and vehicle sets above,
+# these are a different class filter on the person pass that already runs every
+# frame, so they cost no extra inference. Custody transfer is the single most
+# specific theft cue available without training a new model.
+CARRIABLE_CLASS_IDS = {
+    24: "backpack",
+    26: "handbag",
+    28: "suitcase",
+}
+
+# Two-wheelers only, per the Layer E scope limitation: at the planned mounting
+# geometry (~6m elevation, 2.8mm lens) a four-wheeled vehicle does not fit
+# usably in frame at detection range, so carnapping is not claimed for cars.
+TWO_WHEELER_LABELS = {"motorcycle", "bicycle"}
+BICYCLE_CLASS_ID = 1
+
 # --- Phase 0: configurable inference resolution --------------------------
 # YOLO downscales every frame to `imgsz` before inference (default 640), so a
 # person or object far from the camera can lose all detail even on a 1440p main
@@ -441,6 +458,64 @@ def detect_persons_and_vessels(frame, conf=0.5, vessel_conf=0.35):
             x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
             vessels.append((x1, y1, x2, y2, score, VESSEL_CLASS_IDS[cls_id]))
     return persons, vessels
+
+
+def _scene_from_result(results, conf, obj_conf):
+    """Splits one YOLO result into (persons, ids, carriables, vehicles).
+
+    Layer E needs people, the bags they carry and the vehicles they park, all in
+    the same coordinate frame and all on the same frame. Pulling three class
+    filters out of ONE result is the difference between one inference per frame
+    and three — on CPU that is the difference between the module being usable
+    and not.
+    """
+    persons, ids, carriables, vehicles = [], [], [], []
+    for box in results.boxes:
+        cls_id = int(box.cls[0])
+        score = float(box.conf[0])
+        x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
+        if cls_id == PERSON_CLASS_ID:
+            if score < conf:
+                continue
+            persons.append((x1, y1, x2, y2, score))
+            # box.id exists only on model.track() results, not model() ones.
+            tid = getattr(box, "id", None)
+            ids.append(int(tid[0]) if tid is not None else None)
+        elif cls_id in CARRIABLE_CLASS_IDS:
+            if score < obj_conf:
+                continue
+            carriables.append((x1, y1, x2, y2, score, CARRIABLE_CLASS_IDS[cls_id]))
+        elif cls_id in VEHICLE_CLASS_IDS or cls_id == BICYCLE_CLASS_ID:
+            if score < obj_conf:
+                continue
+            label = "bicycle" if cls_id == BICYCLE_CLASS_ID else VEHICLE_CLASS_IDS[cls_id]
+            vehicles.append((x1, y1, x2, y2, score, label))
+    return persons, ids, carriables, vehicles
+
+
+def detect_scene(frame, conf=0.5, obj_conf=0.35, imgsz=None):
+    """One YOLO pass returning (persons, ids, carriables, vehicles) for Layer E.
+
+    `ids` is a list of None here — the plain detector has no identities. Use
+    detect_scene_tracked when the caller wants ByteTrack/BoT-SORT ids, which E26
+    (identity-switch guard) is written against.
+    """
+    model = load_yolo()
+    results = model(frame, verbose=False, imgsz=imgsz or NEAR_IMGSZ)[0]
+    return _scene_from_result(results, conf, obj_conf)
+
+
+def detect_scene_tracked(frame, conf=0.5, obj_conf=0.35,
+                         tracker="bytetrack.yaml", imgsz=None):
+    """detect_scene, but with ultralytics' multi-object tracker supplying ids.
+
+    Same caveats as detect_persons_tracked: it keeps state between calls, so it
+    assumes consecutive frames of one stream and roughly regular intervals.
+    """
+    model = load_yolo()
+    results = model.track(frame, verbose=False, persist=True, tracker=tracker,
+                          imgsz=imgsz or NEAR_IMGSZ)[0]
+    return _scene_from_result(results, conf, obj_conf)
 
 
 def _vehicle_boxes_from_result(results, conf, offset=(0, 0)):

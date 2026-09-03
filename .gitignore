@@ -61,3 +61,8 @@ cctv records/recorder.log
 
 # Local test artifacts
 lookout_backend/_*.jpg
+
+# Test footage - too large for git (Aug14_17.mkv is 452MB, GitHub caps at 100MB)
+*.mkv
+*.mp4
+*.avi

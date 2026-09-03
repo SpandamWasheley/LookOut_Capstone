@@ -227,20 +227,7 @@ class Command(BaseCommand):
                  "becomes 30-50px in the crop. Use with the MAIN stream "
                  "(/Streaming/Channels/101); cheaper than --far (no tiling).",
         )
-        parser.add_argument(
-            "--preprocess",
-            action="store_true",
-            help="Enhance dim/noisy frames before detection: gamma-brighten, "
-                 "denoise, and CLAHE local contrast (daytime frames bypass "
-                 "untouched). Helps in low light; adds a little cost per dark "
-                 "frame. Add 'preprocess' to --ablate to A/B it.",
-        )
-        parser.add_argument(
-            "--sharpen",
-            action="store_true",
-            help="With --preprocess, also apply an unsharp kernel (sharper edges "
-                 "for small objects, but can amplify noise).",
-        )
+        preproc.add_cli_flags(parser)
         parser.add_argument(
             "--tiles",
             default="2x2",
@@ -278,8 +265,6 @@ class Command(BaseCommand):
         # person crops), which overrides the others when set.
         self.cascade = options["cascade"]
         self.far = not options["fast"] and not self.cascade
-        self.preprocess = options["preprocess"] and "preprocess" not in self.ablate
-        self.sharpen = options["sharpen"]
         self.dry_run = options["dry_run"]
         self.tracker_name = options["tracker"]
         self.show_stats = options["stats"]
@@ -301,6 +286,10 @@ class Command(BaseCommand):
         # --no-face-check and --ablate face are the same switch.
         self.face_check = not options["no_face_check"] and "face" not in self.ablate
         self.require_puff = options["require_puff"] and "puff" not in self.ablate
+        # Must stay AFTER --ablate is parsed above, or 'preprocess' in --ablate
+        # would be read against the empty default set and silently ignored.
+        self.preprocess = options["preprocess"] and "preprocess" not in self.ablate
+        self.sharpen = options["sharpen"]
         try:
             rows, cols = (int(v) for v in options["tiles"].lower().split("x"))
             self.tiles = (rows, cols)
@@ -328,6 +317,15 @@ class Command(BaseCommand):
             self._run_stream(options["source"], options["debug"])
 
     # ---- detection dispatch -----------------------------------------------
+
+    def _preprocess(self, frame):
+        """Enhance a dim/noisy frame before detection (no-op unless --preprocess,
+        and daytime frames bypass inside preprocess() itself)."""
+        if not self.preprocess:
+            return frame
+        return preproc.preprocess(
+            frame, mode="cascade" if self.cascade else "near", sharpen=self.sharpen,
+        )
 
     def _policy(self, label):
         """Per-class scales, or the neutral default when the class-floor stage is
@@ -465,6 +463,7 @@ class Command(BaseCommand):
         if frame is None:
             self.stdout.write(self.style.ERROR(f"Could not read image: {path}"))
             return
+        frame = self._preprocess(frame)
 
         smokes = self._detect(frame, conf)
         if not smokes:
@@ -570,11 +569,7 @@ class Command(BaseCommand):
                     break
 
                 # Enhance dim/noisy frames before detection (daytime bypasses).
-                if self.preprocess:
-                    frame = preproc.preprocess(
-                        frame, mode="cascade" if self.cascade else "near",
-                        sharpen=self.sharpen,
-                    )
+                frame = self._preprocess(frame)
 
                 now_ts = time.time()
                 if now_ts - cfg_loaded_at >= SETTINGS_REFRESH_SECONDS:

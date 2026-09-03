@@ -25,6 +25,7 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from core.models import Alert, Camera, SystemSettings, ViolationType
+from core.vision import preprocess as preproc
 from core.vision import recognition, tracking
 
 SETTINGS_REFRESH_SECONDS = 5
@@ -57,6 +58,7 @@ class Command(BaseCommand):
                             help="Preview window with pose skeleton points and gesture count.")
         parser.add_argument("--dry-run", action="store_true",
                             help="Detect but write no Alert rows.")
+        preproc.add_cli_flags(parser, ablatable=False)
 
     def handle(self, *args, **options):
         self.smoking_type, _ = ViolationType.objects.get_or_create(
@@ -74,6 +76,8 @@ class Command(BaseCommand):
         self.dwell_override = options["dwell"]
         self.min_cycles = max(1, options["cycles"])
         self.dry_run = options["dry_run"]
+        self.preprocess = options["preprocess"]
+        self.sharpen = options["sharpen"]
         self._alert_log = []
 
         self._run(options["source"], options["debug"])
@@ -110,6 +114,11 @@ class Command(BaseCommand):
                 if not ok:
                     time.sleep(0.02 if is_live else 0.5)
                     continue
+
+                # Enhance dim/noisy frames before pose estimation — keypoints at
+                # range are the first thing lost in low light (daytime bypasses).
+                if self.preprocess:
+                    frame = preproc.preprocess(frame, mode="near", sharpen=self.sharpen)
 
                 now = time.time()
                 if now - cfg_at >= SETTINGS_REFRESH_SECONDS:
