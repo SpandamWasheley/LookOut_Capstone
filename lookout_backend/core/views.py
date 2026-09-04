@@ -786,11 +786,20 @@ class AlertViewSet(viewsets.ModelViewSet):
 # Only detectors with a working --source (file) mode can be driven from an
 # upload — watch_curfew is webcam-only, and watch_smoking_pose/watch_all are
 # alternate/composite entry points rather than a single selectable type.
+# watch_merged is also composite (it can produce smoking/drinking/thief
+# alerts from one run) but, unlike watch_all, is deliberately exposed here —
+# it's the one composite command meant to be launched from the upload UI.
 DETECTION_COMMANDS = {
     "smoking": "watch_smoking",
     "drinking": "watch_drinking",
     "thief": "watch_thief",
     "parking": "watch_parking",
+    # Merged Bottle/Cigarette/knife model — one detection pass, routed to
+    # smoking/drinking/thief's own rule layers (see watch_merged.py). A
+    # single run can therefore produce alerts of all three of those
+    # ViolationTypes; "merged" itself is only the DetectionJob's own label,
+    # not a ViolationType.
+    "merged": "watch_merged",
 }
 DETECTION_UPLOAD_EXTENSIONS = {".mp4", ".mkv", ".avi"}
 DETECTION_MAX_UPLOAD_BYTES = 1024 * 1024 * 1024  # 1GB

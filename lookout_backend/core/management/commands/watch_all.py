@@ -123,6 +123,10 @@ class Command(BaseCommand):
                     f"{name}: model not available, skipping this detector."))
                 continue
             self.engines[name] = {"cmd": cmd, "tracker": tracking.PersonTracker()}
+            if name == "drinking":
+                # Path B (gathering) needs its own group-level tracker,
+                # driven alongside Path A in _run_person_detector.
+                self.engines[name]["group_tracker"] = tracking.GroupTracker()
 
         # Parking needs its own violation type; it tracks vehicles, not people.
         self.parking_type, _ = ViolationType.objects.get_or_create(
@@ -159,12 +163,19 @@ class Command(BaseCommand):
         cmd._alert_log = []
         cmd.stdout = self.stdout
         cmd.style = self.style
+        # Every engine gets its own evidence clip buffer (smoking, drinking
+        # AND thief) — without this, _create_alert's getattr(self, "clip",
+        # None) silently no-ops and every alert through this command loses
+        # its evidence video.
+        cmd.clip = recognition.ClipRecorder(seconds=30, label=self.camera.code)
         # detector-specific extras
         if hasattr(cmd, "face_check"):
             cmd.face_check = True
         if hasattr(cmd, "include_generic"):
             cmd.include_generic = False
             cmd.zones = []
+            cmd.min_group_override = None
+            cmd.group_duration_override = None
         # violation types each command's _create_alert references
         cmd.smoking_type = self._vtype("smoking", "Public Smoking", "#f59e0b", "cigarette")
         cmd.thief_type = self._vtype("thief", "Theft / Robbery", "#ef4444", "siren")
@@ -250,10 +261,15 @@ class Command(BaseCommand):
                 # detectors are due this frame.
                 need_persons = any(n in due for n in self.engines)
                 persons = recognition.detect_persons(frame) if need_persons else []
+                # Snapshot before any engine draws a violation box on `frame` —
+                # face recognition (smoking/drinking's citation-prefill match)
+                # must run against a clean copy, same reasoning as each
+                # standalone command's own loop.
+                clean_frame = frame.copy() if need_persons else None
 
                 for name, eng in self.engines.items():
                     if name in due:
-                        self._run_person_detector(name, eng, frame, persons, now, cfg, debug)
+                        self._run_person_detector(name, eng, frame, persons, now, cfg, debug, clean_frame)
 
                 if "parking" in due:
                     self._run_parking(frame, now, cfg, debug)
@@ -280,7 +296,7 @@ class Command(BaseCommand):
 
     # ---- per-detector drivers (reuse each command's own methods) ---------
 
-    def _run_person_detector(self, name, eng, frame, persons, now, cfg, debug):
+    def _run_person_detector(self, name, eng, frame, persons, now, cfg, debug, clean_frame):
         cmd, tracker = eng["cmd"], eng["tracker"]
         conf = getattr(cfg, f"{name}_confidence") / 100
         dwell = getattr(cfg, f"{name}_dwell")
@@ -290,13 +306,56 @@ class Command(BaseCommand):
         else:
             dets = cmd._detect(frame, conf, persons=persons)
 
-        tracker.update(persons, now)
+        tracks = tracker.update(persons, now)
         per_track = tracker.assign(dets, now)
         if name == "smoking":
             per_track = cmd._apply_face_rule(frame, per_track, now)
 
-        for track, td in per_track.items():
-            cmd._process_track(track, td, now, dwell, cfg.alert_cooldown, frame, debug)
+        if name == "drinking":
+            self._run_gathering(eng, tracks, per_track, now, cfg, frame, debug, clean_frame)
+            for track, td in per_track.items():
+                cmd._process_track(track, td, now, dwell, cfg.alert_cooldown,
+                                   frame, debug, cfg.curfew_confidence, clean_frame)
+        elif name == "smoking":
+            for track, td in per_track.items():
+                cmd._process_track(track, td, now, dwell, cfg.alert_cooldown,
+                                   frame, debug, cfg.curfew_confidence, clean_frame)
+        else:  # thief — no face_threshold/clean_frame param on this one
+            for track, td in per_track.items():
+                cmd._process_track(track, td, now, dwell, cfg.alert_cooldown, frame, debug)
+
+        # Buffer this annotated frame into the engine's own evidence clip —
+        # cmd.clip is created in _share_setup but nothing else fills it;
+        # without this call it stays effectively empty and every alert's
+        # clip is a near-blank few-hundred-ms stub, not the ~30s of context
+        # the standalone commands' own _run_stream loops buffer every frame.
+        cmd.clip.add(frame, now)
+
+    def _run_gathering(self, eng, tracks, per_track, now, cfg, frame, debug, clean_frame):
+        """Drinking's Path B (gathering) — previously never invoked here, so a
+        sustained group with no single confirmed solo drinker never alerted
+        when run through this command. Evaluated BEFORE Path A's per-track
+        loop, so a cluster alert that fires this frame lands in
+        cmd._alert_log in time to suppress its members' solo alerts later in
+        the same frame — mirrors watch_drinking.py's own _run_stream."""
+        cmd, group_tracker = eng["cmd"], eng["group_tracker"]
+        min_group = cfg.drinking_min_group
+        group_duration = cfg.drinking_group_duration
+        clusters = group_tracker.update(tracks, now, min_group)
+        detected_ids = {t.id for t, dets in per_track.items() if dets and not t.is_scene}
+        for cluster in clusters:
+            if cluster.member_ids & detected_ids:
+                member_dets = [d for t, dets in per_track.items()
+                              for d in dets
+                              if t.id in cluster.member_ids and not t.is_scene]
+                if member_dets:
+                    best = max(member_dets, key=lambda d: d[4])
+                    if cluster.evidence is None or best[4] > cluster.evidence[4]:
+                        cluster.evidence = best
+            cmd._process_cluster(
+                cluster, now, min_group, group_duration, cfg.alert_cooldown,
+                frame, debug, cfg.curfew_confidence, clean_frame,
+            )
 
     def _run_parking(self, frame, now, cfg, debug):
         """Vehicle movement/dwell logic, mirroring watch_parking, inline."""

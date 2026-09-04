@@ -325,6 +325,17 @@ THIEF_MODEL_PATH = Path(os.environ.get("THIEF_MODEL", str(VISION_DIR / "thief.pt
 # DRINKING_MODEL env var.
 DRINKING_MODEL_PATH = Path(os.environ.get("DRINKING_MODEL", str(VISION_DIR / "drinking.pt")))
 
+# Merged detector: a single fine-tuned model covering Bottle/Cigarette/knife in
+# one network, used by watch_merged.py to run one detection pass per frame and
+# route each class to its own rule engine (smoking/drinking/thief). Labels come
+# from THIS model's own names dict (see _smoking_boxes_from_result), so the
+# per-model class index/order used during training is irrelevant here — only
+# the class-name strings matter, and they must match what each rule engine's
+# CLASS_POLICY/FACE_ANCHORED_CLASSES/GENERIC_LABELS expect (case rules differ
+# per engine; see watch_merged.py's module docstring). Override with the
+# MERGED_MODEL env var.
+MERGED_MODEL_PATH = Path(os.environ.get("MERGED_MODEL", str(VISION_DIR / "merged.pt")))
+
 PERSON_CLASS_ID = 0  # COCO class id for "person"
 
 # COCO drinking-vessel classes. The custom drinking model recognises exactly one
@@ -384,6 +395,7 @@ _face_app = None
 _smoking_model = None
 _thief_model = None
 _drinking_model = None
+_merged_model = None
 _pose_model = None
 
 # COCO 17-keypoint indices used by the hand-to-mouth gesture detector.
@@ -975,6 +987,50 @@ def detect_drinking_far(frame, conf=0.35, tiles=(2, 2), overlap=0.2,
                         person_boxes=None, upscale=2.0):
     """Long-range public-drinking detection — see _detect_far for the cascade."""
     return _detect_far(load_drinking_model(), frame, conf, tiles, overlap,
+                       person_boxes, upscale)
+
+
+def merged_model_available():
+    """True if the merged (Bottle/Cigarette/knife) weights are present."""
+    return MERGED_MODEL_PATH.exists()
+
+
+def load_merged_model():
+    """Lazy-loads the merged multi-class detector. Raises if the weights are
+    missing. See MERGED_MODEL_PATH for how classes route to rule engines."""
+    global _merged_model
+    if _merged_model is None:
+        if not MERGED_MODEL_PATH.exists():
+            raise FileNotFoundError(
+                f"Merged model not found at {MERGED_MODEL_PATH}. Copy the "
+                "trained best.pt there, or set the MERGED_MODEL env var."
+            )
+        from ultralytics import YOLO
+
+        _merged_model = YOLO(str(MERGED_MODEL_PATH))
+    return _merged_model
+
+
+def detect_merged(frame, conf=0.15, imgsz=None):
+    """Single-pass merged detection over the whole frame (the fast path).
+
+    `conf` should be the LOWEST of the three engines' configured confidences
+    (watch_merged does this) — each engine's own class floor is applied
+    downstream, after routing by label, so this pass must not pre-filter a
+    detection away before the engine that actually owns its class gets a look.
+    Returns the same (x1,y1,x2,y2,conf,label) tuples as detect_smoking/
+    detect_thief/detect_drinking; labels come from the merged model's own
+    class names.
+    """
+    model = load_merged_model()
+    results = model(frame, verbose=False, imgsz=imgsz or NEAR_IMGSZ)[0]
+    return _smoking_boxes_from_result(results, conf)
+
+
+def detect_merged_far(frame, conf=0.15, tiles=(2, 2), overlap=0.2,
+                      person_boxes=None, upscale=2.0):
+    """Long-range merged detection — see _detect_far for how the cascade works."""
+    return _detect_far(load_merged_model(), frame, conf, tiles, overlap,
                        person_boxes, upscale)
 
 

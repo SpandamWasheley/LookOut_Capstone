@@ -5,6 +5,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Animated,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -13,6 +14,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -201,10 +203,14 @@ function ResolveModal({
   onFinished,
 }: ResolveModalProps) {
   const c = useColors();
+  // A definite height (not maxHeight) is required for the ScrollView below
+  // to resolve flex: 1 — see the sheet's style comment for why.
+  const { height: windowHeight } = useWindowDimensions();
 
   const [violationTypes, setViolationTypes] = useState<api.ApiViolationType[]>([]);
   const [typesLoading, setTypesLoading] = useState(true);
   const [selectedTypeIds, setSelectedTypeIds] = useState<Set<number>>(new Set());
+  const [typesExpanded, setTypesExpanded] = useState(false);
 
   const [firstName, setFirstName] = useState("");
   const [middleName, setMiddleName] = useState("");
@@ -216,10 +222,36 @@ function ResolveModal({
 
   const [barangaySheetVisible, setBarangaySheetVisible] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [duplicateWarning, setDuplicateWarning] = useState<{ name: string; action: "finish" | "another" } | null>(null);
+  const [reviewState, setReviewState] = useState<{ action: "finish" | "another"; duplicateName: string | null } | null>(null);
   const [formError, setFormError] = useState("");
 
   const lastNameRef = useRef<TextInput>(null);
+  const scrollRef = useRef<ScrollView>(null);
+  // Synchronous guard against a double-tap firing doSubmit twice before
+  // React re-renders `submitting` — state updates aren't fast enough to
+  // rely on alone for this.
+  const submitLockRef = useRef(false);
+
+  // Brief, unmistakable acknowledgment that the previous citation actually
+  // filed and this is a fresh one — the persistent "N filed" banner count
+  // ticking up is too quiet on its own to read as a state change.
+  const [justFiledName, setJustFiledName] = useState<string | null>(null);
+  const justFiledAnim = useRef(new Animated.Value(0)).current;
+
+  // Re-triggering interrupts the running sequence (Animated stops the prior
+  // one automatically); its callback then fires with finished:false, so it
+  // correctly skips clearing the name the new sequence just set.
+  const announceJustFiled = (name: string) => {
+    setJustFiledName(name);
+    justFiledAnim.setValue(0);
+    Animated.sequence([
+      Animated.timing(justFiledAnim, { toValue: 1, duration: 150, useNativeDriver: true }),
+      Animated.delay(1400),
+      Animated.timing(justFiledAnim, { toValue: 0, duration: 300, useNativeDriver: true }),
+    ]).start(({ finished }) => {
+      if (finished) setJustFiledName(null);
+    });
+  };
 
   // Fresh form + freshly-fetched, scope-filtered violation types every time
   // the modal opens (not on every render — a mid-session "add another" reset
@@ -235,6 +267,9 @@ function ResolveModal({
         setViolationTypes(inScope);
         const detected = inScope.find((t) => t.code === assignment.violationType.code);
         setSelectedTypeIds(detected ? new Set([detected.id]) : new Set());
+        // Nothing to confirm-and-collapse if the alert's type isn't one we
+        // could pre-check — go straight to the full picker.
+        setTypesExpanded(!detected);
       })
       .catch(() => setViolationTypes([]))
       .finally(() => setTypesLoading(false));
@@ -247,6 +282,7 @@ function ResolveModal({
     setCarriedBarangay(false);
     setNotes("");
     setFormError("");
+    setJustFiledName(null);
   }, [visible, assignment.violationType.code]);
 
   const toggleType = (id: number) =>
@@ -270,6 +306,8 @@ function ResolveModal({
 
   const doSubmit = async (action: "finish" | "another") => {
     if (!canSubmit || officerId == null) return;
+    if (submitLockRef.current) return;
+    submitLockRef.current = true;
     setSubmitting(true);
     setFormError("");
     try {
@@ -291,6 +329,7 @@ function ResolveModal({
       if (action === "finish") {
         onFinished();
       } else {
+        const filedName = [firstName.trim(), lastName.trim()].filter(Boolean).join(" ");
         // Carry forward violation types + barangay; name and notes are
         // per-person and always cleared. Cursor goes straight to last name.
         setFirstName("");
@@ -299,22 +338,33 @@ function ResolveModal({
         setSuffix("");
         setCarriedBarangay(true);
         setNotes("");
+        // Carried types are already "confirmed" — re-collapse rather than
+        // leave the full picker open for the next person.
+        setTypesExpanded(false);
+        scrollRef.current?.scrollTo({ y: 0, animated: true });
+        if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        announceJustFiled(filedName);
         requestAnimationFrame(() => lastNameRef.current?.focus());
       }
     } catch (err) {
       setFormError(err instanceof Error ? err.message : "Failed to save citation.");
     } finally {
       setSubmitting(false);
+      submitLockRef.current = false;
     }
   };
 
   const handlePress = (action: "finish" | "another") => {
+    if (!canSubmit) return;
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     const dup = findDuplicate();
-    if (dup) {
-      setDuplicateWarning({ name: dup.violator_name, action });
-      return;
-    }
+    setReviewState({ action, duplicateName: dup?.violator_name ?? null });
+  };
+
+  const confirmReview = () => {
+    if (!reviewState) return;
+    const { action } = reviewState;
+    setReviewState(null);
     doSubmit(action);
   };
 
@@ -325,7 +375,7 @@ function ResolveModal({
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <KeyboardAvoidingView style={rStyles.backdrop} behavior={Platform.OS === "ios" ? "padding" : "height"}>
         <Pressable style={rStyles.overlay} onPress={onClose} />
-        <View style={[rStyles.sheet, { backgroundColor: c.card, borderColor: c.border, maxHeight: "92%" }]}>
+        <View style={[rStyles.sheet, { backgroundColor: c.card, borderColor: c.border, height: windowHeight * 0.92 }]}>
           <View style={[rStyles.handle, { backgroundColor: c.border }]} />
 
           <View style={rStyles.header}>
@@ -346,7 +396,27 @@ function ResolveModal({
             </Pressable>
           </View>
 
-          <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} style={{ flexGrow: 0 }}>
+          <ScrollView
+            ref={scrollRef}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+            style={{ flex: 1 }}
+            contentContainerStyle={{ paddingTop: 6, paddingBottom: 20 }}
+          >
+            {justFiledName && (
+              <Animated.View
+                style={[
+                  cfStyles.justFiledBanner,
+                  { backgroundColor: c.success, opacity: justFiledAnim, transform: [{ scale: justFiledAnim.interpolate({ inputRange: [0, 1], outputRange: [0.96, 1] }) }] },
+                ]}
+              >
+                <Feather name="check-circle" size={15} color="#fff" />
+                <Text style={cfStyles.justFiledBannerText}>
+                  Citation filed for {justFiledName} — ready for the next person
+                </Text>
+              </Animated.View>
+            )}
+
             {hasFiledAny && (
               <View style={[cfStyles.filedBanner, { backgroundColor: c.successLight, borderColor: c.success }]}>
                 <Feather name="check-circle" size={13} color={c.success} />
@@ -356,24 +426,34 @@ function ResolveModal({
               </View>
             )}
 
-            <View style={cfStyles.lockedRow}>
-              <View style={[cfStyles.lockedChip, { backgroundColor: c.muted, borderColor: c.border }]}>
-                <Feather name="shield" size={12} color={c.mutedForeground} />
-                <Text style={[cfStyles.lockedChipText, { color: c.mutedForeground }]}>{officerName || "Officer"}</Text>
-              </View>
-              <View style={[cfStyles.lockedChip, { backgroundColor: c.muted, borderColor: c.border }]}>
-                <Feather name="map-pin" size={12} color={c.mutedForeground} />
-                <Text style={[cfStyles.lockedChipText, { color: c.mutedForeground }]}>Tetuan (violation site)</Text>
-              </View>
-              <View style={[cfStyles.lockedChip, { backgroundColor: c.muted, borderColor: c.border }]}>
-                <Feather name="clock" size={12} color={c.mutedForeground} />
-                <Text style={[cfStyles.lockedChipText, { color: c.mutedForeground }]}>{formatDate(assignment.dispatchedAt)}</Text>
-              </View>
-            </View>
+            <Text style={[cfStyles.lockedLine, { color: c.mutedForeground }]}>
+              {officerName || "Officer"} · Tetuan (violation site) · {formatDate(assignment.dispatchedAt)}
+            </Text>
 
             <Text style={[cfStyles.sectionLabel, { color: c.mutedForeground }]}>VIOLATION TYPE(S)</Text>
             {typesLoading ? (
               <ActivityIndicator color={c.primary} style={{ marginVertical: 12 }} accessibilityLabel="Loading violation types" />
+            ) : !typesExpanded ? (
+              <View>
+                {violationTypes
+                  .filter((t) => selectedTypeIds.has(t.id))
+                  .map((t) => (
+                    <View key={t.id} style={[cfStyles.confirmedTypeRow, { backgroundColor: `${t.color}18`, borderColor: t.color }]}>
+                      <Feather name={getViolationIconName(t.icon)} size={16} color={t.color} />
+                      <Text style={[cfStyles.typeLabel, { color: t.color }]}>{t.label}</Text>
+                      <Feather name="check" size={15} color={t.color} style={{ marginLeft: "auto" }} />
+                    </View>
+                  ))}
+                <Pressable
+                  onPress={() => setTypesExpanded(true)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Add another violation type"
+                  style={cfStyles.addAnotherLink}
+                >
+                  <Feather name="plus" size={13} color={c.info} />
+                  <Text style={[cfStyles.addAnotherLinkText, { color: c.info }]}>Add another violation</Text>
+                </Pressable>
+              </View>
             ) : (
               <View style={cfStyles.typeGrid}>
                 {violationTypes.map((t) => {
@@ -536,33 +616,60 @@ function ResolveModal({
         </View>
       </Modal>
 
-      <Modal visible={!!duplicateWarning} animationType="fade" transparent onRequestClose={() => setDuplicateWarning(null)}>
-        <Pressable style={officersStyles.overlay} onPress={() => setDuplicateWarning(null)}>
+      <Modal visible={!!reviewState} animationType="fade" transparent onRequestClose={() => setReviewState(null)}>
+        <Pressable style={officersStyles.overlay} onPress={() => setReviewState(null)}>
           <Pressable
-            style={[officersStyles.sheet, { backgroundColor: c.card, borderColor: c.border, alignItems: "center" }]}
+            style={[officersStyles.sheet, { backgroundColor: c.card, borderColor: c.border }]}
             onPress={(e) => e.stopPropagation()}
           >
-            <View style={[rStyles.iconWrap, { backgroundColor: c.warningLight, marginBottom: 4 }]}>
-              <Feather name="alert-triangle" size={20} color={c.warning} />
+            <View style={rStyles.header}>
+              <View style={[rStyles.iconWrap, { backgroundColor: c.successLight }]}>
+                <Feather name="clipboard" size={18} color={c.success} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[rStyles.title, { color: c.foreground }]}>Review citation</Text>
+                <Text style={[rStyles.subtitle, { color: c.mutedForeground }]}>
+                  {reviewState?.action === "finish" ? "This will resolve the assignment." : "You can file another after this."}
+                </Text>
+              </View>
             </View>
-            <Text style={[rStyles.title, { color: c.foreground, marginTop: 8, textAlign: "center" }]}>Already cited for this alert</Text>
-            <Text style={[rStyles.subtitle, { color: c.mutedForeground, textAlign: "center", marginTop: 4 }]}>
-              You&apos;ve already cited a {duplicateWarning?.name} for this alert. File anyway?
-            </Text>
+
+            {reviewState?.duplicateName && (
+              <View style={[cfStyles.filedBanner, { backgroundColor: c.warningLight, borderColor: c.warning, marginTop: 6 }]}>
+                <Feather name="alert-triangle" size={13} color={c.warning} />
+                <Text style={[cfStyles.filedBannerText, { color: c.warning }]}>
+                  Already cited a {reviewState.duplicateName} for this alert.
+                </Text>
+              </View>
+            )}
+
+            <View style={cfStyles.reviewBlock}>
+              <Text style={[cfStyles.reviewLabel, { color: c.mutedForeground }]}>VIOLATOR</Text>
+              <Text style={[cfStyles.reviewValue, { color: c.foreground }]}>
+                {[firstName, middleName, lastName, suffix].filter(Boolean).join(" ")}
+              </Text>
+            </View>
+            <View style={cfStyles.reviewBlock}>
+              <Text style={[cfStyles.reviewLabel, { color: c.mutedForeground }]}>VIOLATION TYPE(S)</Text>
+              <Text style={[cfStyles.reviewValue, { color: c.foreground }]}>
+                {violationTypes
+                  .filter((t) => selectedTypeIds.has(t.id))
+                  .map((t) => t.label)
+                  .join(", ")}
+              </Text>
+            </View>
+            <View style={cfStyles.reviewBlock}>
+              <Text style={[cfStyles.reviewLabel, { color: c.mutedForeground }]}>HOME BARANGAY</Text>
+              <Text style={[cfStyles.reviewValue, { color: c.foreground }]}>{selectedBarangayLabel}</Text>
+            </View>
+
             <View style={[rStyles.footerBtns, { marginTop: 16, width: "100%" }]}>
-              <Pressable onPress={() => setDuplicateWarning(null)} style={[rStyles.cancelBtn, { borderColor: c.border }]}>
+              <Pressable onPress={() => setReviewState(null)} style={[rStyles.cancelBtn, { borderColor: c.border }]}>
                 <Text style={[rStyles.cancelText, { color: c.mutedForeground }]}>Cancel</Text>
               </Pressable>
-              <Pressable
-                onPress={() => {
-                  const action = duplicateWarning!.action;
-                  setDuplicateWarning(null);
-                  doSubmit(action);
-                }}
-                style={rStyles.confirmBtn}
-              >
+              <Pressable onPress={confirmReview} style={rStyles.confirmBtn}>
                 <Feather name="check-circle" size={16} color="#fff" />
-                <Text style={rStyles.confirmText}>File anyway</Text>
+                <Text style={rStyles.confirmText}>Confirm</Text>
               </Pressable>
             </View>
           </Pressable>
@@ -1073,6 +1180,7 @@ export default function AssignmentDetailScreen() {
 
       <DismissModal visible={dismissModalVisible} onClose={() => setDismissModalVisible(false)} onConfirm={handleDismissConfirm} />
       <ResolveModal
+        key={assignment.dbId}
         visible={resolveModalVisible}
         assignment={assignment}
         officerId={officer?.officerId ?? null}
@@ -1089,7 +1197,10 @@ export default function AssignmentDetailScreen() {
 const rStyles = StyleSheet.create({
   backdrop: { flex: 1, justifyContent: "flex-end" },
   overlay: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(0,0,0,0.6)" },
-  sheet: { borderTopLeftRadius: 24, borderTopRightRadius: 24, borderWidth: 1, borderBottomWidth: 0, maxHeight: "85%", paddingHorizontal: 20, paddingBottom: 36 },
+  // No height here — it's set per-instance where used (a definite `height`,
+  // not maxHeight: see ResolveModal, which needs a definite parent size for
+  // its ScrollView's flex: 1 to resolve against).
+  sheet: { borderTopLeftRadius: 24, borderTopRightRadius: 24, borderWidth: 1, borderBottomWidth: 0, paddingHorizontal: 20, paddingBottom: 36 },
   handle: { width: 40, height: 4, borderRadius: 2, alignSelf: "center", marginTop: 12, marginBottom: 8 },
   header: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 12 },
   iconWrap: { width: 44, height: 44, borderRadius: 12, alignItems: "center", justifyContent: "center" },
@@ -1104,15 +1215,18 @@ const rStyles = StyleSheet.create({
 });
 
 const cfStyles = StyleSheet.create({
+  justFiledBanner: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 12, borderRadius: 12, marginBottom: 12 },
+  justFiledBannerText: { fontSize: 13, fontFamily: "Inter_700Bold", color: "#fff", flex: 1 },
   filedBanner: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12, borderWidth: 1, marginBottom: 14 },
   filedBannerText: { fontSize: 12, fontFamily: "Inter_600SemiBold", flex: 1 },
-  lockedRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 16 },
-  lockedChip: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 20, borderWidth: 1 },
-  lockedChipText: { fontSize: 11, fontFamily: "Inter_500Medium" },
+  lockedLine: { fontSize: 12, fontFamily: "Inter_400Regular", marginBottom: 16 },
   sectionLabel: { fontSize: 11, fontFamily: "Inter_600SemiBold", letterSpacing: 0.8, marginBottom: 8 },
   typeGrid: { gap: 8 },
   typeRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 14, paddingVertical: 14, borderRadius: 12, borderWidth: 1 },
   typeLabel: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  confirmedTypeRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 14, paddingVertical: 12, borderRadius: 12, borderWidth: 1, marginBottom: 8 },
+  addAnotherLink: { flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 6 },
+  addAnotherLinkText: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
   nameRow: { flexDirection: "row", gap: 10, marginBottom: 10 },
   input: { borderWidth: 1, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 14, fontSize: 15, fontFamily: "Inter_400Regular" },
   nameInputWide: { flex: 1 },
@@ -1131,6 +1245,9 @@ const cfStyles = StyleSheet.create({
   barangaySheet: { position: "absolute", bottom: 0, left: 0, right: 0, borderTopLeftRadius: 24, borderTopRightRadius: 24, borderWidth: 1, borderBottomWidth: 0, padding: 20, paddingBottom: 36, gap: 8 },
   barangayRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingVertical: 16, borderRadius: 12, borderWidth: 1 },
   barangayRowText: { fontSize: 16, fontFamily: "Inter_600SemiBold" },
+  reviewBlock: { marginTop: 12 },
+  reviewLabel: { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 0.6, marginBottom: 3 },
+  reviewValue: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
 });
 
 const officersStyles = StyleSheet.create({

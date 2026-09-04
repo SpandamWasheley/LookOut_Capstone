@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { X, Upload, FileVideo, Loader2, Cigarette, Beer, Car, ShieldAlert, AlertTriangle } from "lucide-react";
+import { X, Upload, FileVideo, Loader2, Cigarette, Beer, Car, ShieldAlert, AlertTriangle, Layers } from "lucide-react";
 import { uploadDetectionJob } from "./api";
 
 // Local label/icon map for the upload flow only — deliberately NOT reusing
@@ -12,6 +12,10 @@ const DETECTION_TYPES = [
   { key: "drinking", label: "Drinking", icon: Beer, color: "#8b5cf6" },
   { key: "thief", label: "Theft (Holdup)", icon: ShieldAlert, color: "#ef4444" },
   { key: "parking", label: "Parking", icon: Car, color: "#f97316" },
+  // Merged Bottle/Cigarette/knife model — one detection pass that can
+  // produce smoking, drinking AND theft alerts from a single clip (see
+  // watch_merged.py). Not a ViolationType itself, just a 5th job type.
+  { key: "merged", label: "Merged (All 3)", icon: Layers, color: "#22c55e" },
 ];
 
 const ALLOWED_EXTENSIONS = [".mp4", ".mkv", ".avi"];

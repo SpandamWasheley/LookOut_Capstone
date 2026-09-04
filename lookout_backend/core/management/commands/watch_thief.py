@@ -37,12 +37,6 @@ CLASS_POLICY = {
 }
 DEFAULT_POLICY = {"conf_scale": 1.0, "dwell_scale": 1.0}
 
-# The scene pseudo-track holds detections no person box claimed. Those are the
-# least trustworthy of all — a weapon with nobody holding it is usually a
-# poster, a TV, a tool on a bench, or a person the detector missed — so it has
-# to hold for twice as long as the same class on a real person.
-SCENE_DWELL_SCALE = 2.0
-
 # Tracks are destroyed after tracking.TRACK_MAX_GAP seconds unseen, and a new
 # track starts with a fresh cooldown — so a person who flickers out of the
 # person detector for two seconds would re-alert immediately, defeating the
@@ -259,13 +253,10 @@ class Command(BaseCommand):
                 self.stats[f"cut by class floor:{d[5]}"] += 1
         return kept
 
-    def _dwell_for(self, label, base_dwell, is_scene):
+    def _dwell_for(self, label, base_dwell):
         """Dwell seconds required for this class, scaled up for the weak
-        pose-like classes and again for unattributed detections."""
-        dwell = base_dwell * self._policy(label)["dwell_scale"]
-        if is_scene:
-            dwell *= SCENE_DWELL_SCALE
-        return dwell
+        pose-like classes."""
+        return base_dwell * self._policy(label)["dwell_scale"]
 
     # ---- detection dispatch -----------------------------------------------
 
@@ -369,6 +360,12 @@ class Command(BaseCommand):
         # the tracker's scene pseudo-track.
         tracker = tracking.PersonTracker()
 
+        # Rolling 30-second buffer of annotated frames — on an alert it's
+        # written out as the evidence clip, so the card shows the weapon/pose
+        # being detected with its box, not just a still. Mirrors
+        # watch_smoking/watch_drinking's own ClipRecorder.
+        self.clip = recognition.ClipRecorder(seconds=30, label=self.camera.code)
+
         mode = f"FAR {self.tiles[0]}x{self.tiles[1]} tiling + person-crop" if self.far else "near"
         self.stdout.write(self.style.SUCCESS(
             f"Watching {source} for theft/robbery indicators "
@@ -414,18 +411,22 @@ class Command(BaseCommand):
                 tracks = tracker.update(persons, now_ts, ids=ids)
                 per_track = tracker.assign(threats, now_ts)
 
-                if debug:
-                    for t in tracks:
-                        x1, y1, x2, y2 = t.box
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), (180, 180, 180), 1)
-                        cv2.putText(frame, f"person #{t.id}", (x1, max(y1 - 6, 0)),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
+                # Draw person boxes ALWAYS (not just in debug) so the evidence
+                # clip shows the context, not only the debug window.
+                for t in tracks:
+                    x1, y1, x2, y2 = t.box
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (180, 180, 180), 1)
+                    cv2.putText(frame, f"person #{t.id}", (x1, max(y1 - 6, 0)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
 
                 for track, dets in per_track.items():
                     self._process_track(
                         track, dets, now_ts, dwell_seconds, cfg.alert_cooldown,
                         frame, debug,
                     )
+
+                # Buffer this annotated frame for the evidence clip.
+                self.clip.add(frame, now_ts)
 
                 # Confirmation is time-based, but VOTE_MIN_FRAMES still needs a
                 # few frames to land inside the window — below ~2 FPS that floor,
@@ -486,6 +487,16 @@ class Command(BaseCommand):
         votes/timers/cooldown are its own, so one person's alert doesn't mask or
         reset another's.
         """
+        # Theft is committed by a person by definition. An unattributed
+        # ("scene") detection has no person box behind it at all — a knife on
+        # a counter, a poster, a kitchen drawer — and no dwell length makes it
+        # actionable (Alert.suspect would name a weapon with nobody to hold
+        # accountable). Matches watch_smoking/watch_drinking's identical
+        # scene-track discard.
+        if track.is_scene:
+            self.stats["discarded: no person (scene)"] += 1
+            return
+
         track.vote(dets, now_ts)
         # Ablating the vote removes temporal confirmation entirely: a detection
         # in THIS frame is taken at face value, which is the no-heuristics
@@ -512,16 +523,18 @@ class Command(BaseCommand):
         _, _, _, _, best_score, best_label = best
 
         required = 0 if "dwell" in self.ablate else self._dwell_for(
-            best_label, dwell_seconds, track.is_scene,
+            best_label, dwell_seconds,
         )
 
-        if debug:
-            for (x1, y1, x2, y2, score, label) in dets:
-                color = (0, 0, 220) if present_for >= required else (0, 200, 0)
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(frame, f"{label} {present_for:.0f}/{required:.0f}s",
-                            (x1, max(y1 - 8, 0)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+        # Draw the violation boxes ALWAYS (green while building, red once the
+        # dwell is met) — not just in debug — so the evidence clip shows the
+        # weapon/pose being detected. Matches watch_smoking/watch_drinking.
+        for (x1, y1, x2, y2, score, label) in dets:
+            color = (0, 0, 220) if present_for >= required else (0, 200, 0)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(frame, f"{label} {present_for:.0f}/{required:.0f}s",
+                        (x1, max(y1 - 8, 0)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
         if present_for < required:
             self.stats[f"held back: dwell not met:{best_label}"] += 1
@@ -571,6 +584,19 @@ class Command(BaseCommand):
         cv2.imwrite(str(self.violations_dir / filename), frame)
         image_url = f"{settings.SITE_BASE_URL}{settings.MEDIA_URL}violations/{filename}"
 
+        # Write the ~30s evidence clip (annotated frames leading up to the
+        # alert). getattr guards --image test mode, which never creates
+        # self.clip (mirrors watch_smoking/watch_drinking's own guard).
+        video_url = ""
+        clip = getattr(self, "clip", None)
+        if clip is not None:
+            # Add the fully-annotated current frame (with the alert box) to
+            # the buffer at the moment the alert fires, so the clip includes it.
+            clip.add(frame, time.time())
+            video_name = f"{ts_label}_thief_{safe_label}.mp4"
+            if clip.save(self.violations_dir / video_name):
+                video_url = f"{settings.SITE_BASE_URL}{settings.MEDIA_URL}violations/{video_name}"
+
         if self.dry_run:
             return None
 
@@ -582,5 +608,6 @@ class Command(BaseCommand):
             confidence=score,
             description=description,
             image_url=image_url,
+            video_url=video_url,
             suspect=label,
         )
