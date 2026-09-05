@@ -10,6 +10,7 @@ from django.utils import timezone
 
 from core import face_registry
 from core.models import Alert, Camera, SystemSettings, ViolationType
+from core.vision import preprocess as preproc
 from core.vision import recognition, tracking
 
 DRINKING_CAMERA_CODE = "CAM-DRINKING"
@@ -77,7 +78,10 @@ MOUTH_PROXIMITY = 3.0
 FACE_CACHE_SECONDS = 1.0
 
 # Ablation switches — see HEURISTIC_RULES.md. Everything ON by default.
-ABLATABLE = ("posture", "vote", "dwell", "cooldown", "hours", "zones", "stationary", "gathering")
+ABLATABLE = (
+    "posture", "vote", "dwell", "cooldown", "hours", "zones",
+    "stationary", "gathering", "preprocess",
+)
 
 # --- Path A (solo) vs Path B (gathering / "inuman") -----------------------
 # Near the camera an individual's bottle is verifiable on its own (Path A);
@@ -144,6 +148,8 @@ class Command(BaseCommand):
         self.face_check = True
         self.include_generic = False
         self.zones = []
+        self.preprocess = False
+        self.sharpen = False
         self.ablate = set()
         # Set only for a file source (see _run_stream) — lets _create_alert cut
         # a RAW evidence clip straight from the source instead of the sparser
@@ -281,6 +287,7 @@ class Command(BaseCommand):
             default="2x2",
             help="Far mode only: tiling grid as ROWSxCOLS (e.g. 2x2, 3x3).",
         )
+        preproc.add_cli_flags(parser)
 
     def handle(self, *args, **options):
         # ViolationType/Camera aren't created by any migration, so get_or_create
@@ -327,6 +334,10 @@ class Command(BaseCommand):
                 f"ABLATION: {', '.join(sorted(self.ablate))} DISABLED — "
                 "measurement run, not a production configuration."
             ))
+
+        # Kept after --ablate is parsed, so 'preprocess' in --ablate is honoured.
+        self.preprocess = options["preprocess"] and "preprocess" not in self.ablate
+        self.sharpen = options["sharpen"]
 
         # --no-face-check and --ablate posture are the same switch.
         self.face_check = not options["no_face_check"] and "posture" not in self.ablate
@@ -504,11 +515,19 @@ class Command(BaseCommand):
 
     # ---- single-image test mode -------------------------------------------
 
+    def _preprocess(self, frame):
+        """Enhance a dim/noisy frame before detection (no-op unless --preprocess,
+        and daytime frames bypass inside preprocess() itself)."""
+        if not self.preprocess:
+            return frame
+        return preproc.preprocess(frame, mode="near", sharpen=self.sharpen)
+
     def _run_image(self, path, conf):
         frame = recognition.load_image(path)
         if frame is None:
             self.stdout.write(self.style.ERROR(f"Could not read image: {path}"))
             return
+        frame = self._preprocess(frame)
 
         vessels = []
         if self.include_generic:
@@ -634,6 +653,9 @@ class Command(BaseCommand):
                 # RawFrameRecorder.
                 if self._raw_buffer is not None:
                     self._raw_buffer.add(frame, time.time())
+
+                # Enhance dim/noisy frames before detection (daytime bypasses).
+                frame = self._preprocess(frame)
 
                 now_ts = time.time()
                 if now_ts - cfg_loaded_at >= SETTINGS_REFRESH_SECONDS:

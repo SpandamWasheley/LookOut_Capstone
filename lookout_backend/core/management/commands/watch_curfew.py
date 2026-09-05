@@ -8,6 +8,7 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from core.models import Alert, Camera, SystemSettings, ViolationType
+from core.vision import preprocess as preproc
 from core.vision import recognition
 
 WEBCAM_CAMERA_CODE = "CAM-WEBCAM"
@@ -30,9 +31,14 @@ class Command(BaseCommand):
             action="store_true",
             help="Show a live preview window with detection boxes drawn on it.",
         )
+        preproc.add_cli_flags(parser, ablatable=False)
 
     def handle(self, *args, **options):
         debug = options["debug"]
+        # Curfew runs at night by definition, so the enhancement path will
+        # actually engage on most frames here — unlike the daytime detectors.
+        self.preprocess = options["preprocess"]
+        self.sharpen = options["sharpen"]
 
         face_db = recognition.precompute_face_db(recognition.load_face_db())
         if not face_db:
@@ -83,6 +89,12 @@ class Command(BaseCommand):
                     self.stdout.write(self.style.WARNING("Failed to read frame from webcam."))
                     time.sleep(0.5)
                     continue
+
+                # Enhance dim/noisy frames before detection AND before the face
+                # crops are cut from this frame, so recognition sees the
+                # brightened pixels too (daytime frames bypass untouched).
+                if self.preprocess:
+                    frame = preproc.preprocess(frame, mode="near", sharpen=self.sharpen)
 
                 now_ts = time.time()
                 now_dt = datetime.datetime.now()

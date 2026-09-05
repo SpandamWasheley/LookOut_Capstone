@@ -28,6 +28,7 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from core.models import Alert, Camera, SystemSettings, ViolationType
+from core.vision import preprocess as preproc
 from core.vision import recognition, tracking
 
 from .watch_smoking import Command as SmokingCommand
@@ -80,6 +81,7 @@ class Command(BaseCommand):
                                  "not frame-based, so each detector still confirms within "
                                  "its window. 'all' runs every model every frame "
                                  "(accurate but ~4x slower; use only on a GPU).")
+        preproc.add_cli_flags(parser, ablatable=False)
 
     def handle(self, *args, **options):
         self.camera, _ = Camera.objects.get_or_create(
@@ -94,6 +96,8 @@ class Command(BaseCommand):
         self.far = not options["fast"]
         self.dry_run = options["dry_run"]
         self.schedule = options["schedule"]
+        self.preprocess = options["preprocess"]
+        self.sharpen = options["sharpen"]
         try:
             rows, cols = (int(v) for v in options["tiles"].lower().split("x"))
             self.tiles = (rows, cols)
@@ -158,6 +162,20 @@ class Command(BaseCommand):
         cmd.dwell_override = None
         cmd.tracker_name = "greedy"
         cmd.show_stats = False
+        # OFF on the sub-commands on purpose: we enhance the shared frame ONCE
+        # per frame in _run() and hand the same enhanced frame to every detector,
+        # so letting each one preprocess again would re-denoise/re-CLAHE an
+        # already-enhanced image three times over.
+        cmd.preprocess = False
+        cmd.sharpen = False
+        # Layer E (theft patterns, E1-E29) drives itself from watch_thief's own
+        # frame loop, which this combined runner bypasses — it calls each
+        # detector's _detect/_process_track directly. Turned off explicitly so
+        # the sub-command isn't left half-initialised; run `watch_thief` for the
+        # pattern rules.
+        if hasattr(cmd, "layer_e"):
+            cmd.layer_e = False
+            cmd.layer_e_only = False
         cmd.ablate = set()
         cmd.stats = Counter()
         cmd._alert_log = []
@@ -238,6 +256,12 @@ class Command(BaseCommand):
                     # Live reader may not have its first frame yet; wait briefly.
                     time.sleep(0.02)
                     continue
+
+                # One enhancement pass for the whole frame, before the shared
+                # person detection — every detector this frame sees the same
+                # enhanced pixels (daytime frames bypass untouched).
+                if self.preprocess:
+                    frame = preproc.preprocess(frame, mode="near", sharpen=self.sharpen)
 
                 now = time.time()
                 if now - cfg_at >= SETTINGS_REFRESH_SECONDS:

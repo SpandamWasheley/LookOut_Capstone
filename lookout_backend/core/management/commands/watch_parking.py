@@ -1,4 +1,5 @@
 import datetime
+import json
 import os
 import time
 
@@ -8,9 +9,17 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from core.models import Alert, Camera, SystemSettings, ViolationType
+from core.vision import preprocess as preproc
+from core.vision import obstruction as obs
 from core.vision import recognition
 
 PARKING_CAMERA_CODE = "CAM-PARKING"
+# Grace for the PLAIN dwell rule below, whose default dwell is 60s. It is far
+# too short for the obstruction rule, whose dwell is minutes: one jeepney
+# passing in front would reset a five-minute timer and the alert would never
+# fire on a busy street. The obstruction path therefore does NOT use this - it
+# runs its own tracker with a 12s grace plus a position-keyed cooldown that
+# survives losing the track entirely. See core/vision/obstruction.py.
 TRACK_GRACE_SECONDS = 2  # tolerate a couple missed frames before dropping a track
 SETTINGS_REFRESH_SECONDS = 5  # re-poll SystemSettings this often, not every frame
 
@@ -99,6 +108,27 @@ class Command(BaseCommand):
             help="Far mode only: tiling grid as ROWSxCOLS (e.g. 2x2, 3x3). More "
                  "tiles reach further but cost more inference per frame.",
         )
+        preproc.add_cli_flags(parser, ablatable=False)
+        parser.add_argument(
+            "--edges",
+            default=None,
+            help="Path to a JSON file of road-edge lines, switching this command "
+                 "to OBSTRUCTION mode: a vehicle is judged by how much of its "
+                 "footprint sits past the edge and for how long, instead of by "
+                 "dwell alone. Draw the edges once per camera with "
+                 "detection_sandbox/obstruction_web.py. Format: "
+                 '{"left": {"points": [[x,y],[x,y]], "side": 1}, "right": {...}} '
+                 "in the coordinates of the frame as processed.",
+        )
+        parser.add_argument(
+            "--obstruction-pct", type=int, default=50,
+            help="Share of the vehicle's footprint that must be past the edge "
+                 "(default 50).",
+        )
+        parser.add_argument(
+            "--obstruction-minutes", type=float, default=5.0,
+            help="Minutes it must be held before it counts (default 5).",
+        )
 
     def handle(self, *args, **options):
         # ViolationType/Camera aren't created by any migration, so get_or_create
@@ -119,6 +149,9 @@ class Command(BaseCommand):
         # Both modes by default (far already includes the near whole-frame pass);
         # --fast opts out to the single near pass.
         self.far = not options["fast"]
+        self.preprocess = options["preprocess"]
+        self.sharpen = options["sharpen"]
+        self.monitors = self._load_edges(options)
         try:
             rows, cols = (int(v) for v in options["tiles"].lower().split("x"))
             self.tiles = (rows, cols)
@@ -141,7 +174,87 @@ class Command(BaseCommand):
         else:
             self._run_stream(options["source"], options["debug"])
 
+    # ---- obstruction mode --------------------------------------------------
+
+    def _load_edges(self, options):
+        """Builds one ObstructionMonitor per drawn edge, or {} for dwell mode."""
+        if not options.get("edges"):
+            return {}
+        try:
+            with open(options["edges"], encoding="utf-8") as fh:
+                specs = json.load(fh)
+        except (OSError, ValueError) as exc:
+            self.stdout.write(self.style.ERROR(f"Could not read --edges: {exc}"))
+            return {}
+
+        enter = max(min(options["obstruction_pct"], 90), 10) / 100.0
+        obs.ENTER_FRACTION = enter
+        obs.EXIT_FRACTION = max(enter - 0.10, 0.05)
+        seconds = max(options["obstruction_minutes"], 0.1) * 60
+
+        monitors = {}
+        for name, spec in specs.items():
+            if len(spec.get("points") or []) < 2:
+                continue
+            edge = obs.build_edge(spec)
+            monitors[name] = (edge, obs.ObstructionMonitor(
+                edge, obstruction_seconds=seconds))
+        if monitors:
+            self.stdout.write(self.style.SUCCESS(
+                f"OBSTRUCTION mode: {len(monitors)} edge(s) "
+                f"[{', '.join(monitors)}], {enter*100:.0f}% past the line held "
+                f"for {seconds/60:.1f} min."
+            ))
+        return monitors
+
+    def _run_obstruction(self, frame, vehicles, now_ts, cooldown, debug):
+        """Judges each vehicle against every edge; alerts once per violation."""
+        boxes = [v[:4] for v in vehicles]
+        labels = [v[5] for v in vehicles]
+        # Pedestrians standing on the road side of an edge next to a stopped
+        # vehicle are people who had to walk around it - the most convincing
+        # evidence there is that a footpath was actually blocked.
+        people = [p[:4] for p in recognition.detect_persons(frame)]
+
+        for name, (edge, monitor) in self.monitors.items():
+            edge.draw(frame, (0, 165, 255), 2)
+            for state, verdict in monitor.update(
+                    boxes, now_ts, labels=labels, frame_shape=frame.shape,
+                    pedestrians=people):
+                if debug:
+                    x1, y1, x2, y2 = state.box
+                    colour = ((0, 0, 220) if verdict == obs.OBSTRUCTION
+                              else (0, 190, 230) if verdict == obs.WATCHING
+                              else (150, 150, 150))
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2)
+                    cv2.putText(frame,
+                                f"{name} {state.fraction*100:.0f}% {state.held:.0f}s",
+                                (x1, max(y1 - 8, 0)), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.5, colour, 1)
+                if not state.fresh_alert:
+                    continue
+                detour = (f" {state.detours} pedestrian(s) forced onto the road."
+                          if state.detours else "")
+                alert = self._create_alert(
+                    state.fraction, name, frame,
+                    description=(
+                        f"Road-edge obstruction on the {name} edge: vehicle "
+                        f"{state.fraction*100:.0f}% past the line, held "
+                        f"{state.held/60:.1f} min.{detour}"
+                    ),
+                )
+                self.stdout.write(self.style.SUCCESS(
+                    f"ALERT created: {alert.code} [{name}] {state.summary()}"
+                ))
+
     # ---- detection dispatch -----------------------------------------------
+
+    def _preprocess(self, frame):
+        """Enhance a dim/noisy frame before detection (no-op unless --preprocess,
+        and daytime frames bypass inside preprocess() itself)."""
+        if not self.preprocess:
+            return frame
+        return preproc.preprocess(frame, mode="near", sharpen=self.sharpen)
 
     def _detect(self, frame, conf):
         """Runs vehicle detection, using the long-range tiling cascade when
@@ -157,6 +270,7 @@ class Command(BaseCommand):
         if frame is None:
             self.stdout.write(self.style.ERROR(f"Could not read image: {path}"))
             return
+        frame = self._preprocess(frame)
 
         vehicles = self._detect(frame, conf)
         if not vehicles:
@@ -237,6 +351,9 @@ class Command(BaseCommand):
                     ))
                     break
 
+                # Enhance dim/noisy frames before detection (daytime bypasses).
+                frame = self._preprocess(frame)
+
                 now_ts = time.time()
                 if now_ts - cfg_loaded_at >= SETTINGS_REFRESH_SECONDS:
                     cfg = SystemSettings.load()
@@ -250,6 +367,19 @@ class Command(BaseCommand):
                 dwell_seconds = self.dwell_override or cfg.parking_dwell
                 move_tolerance = cfg.parking_move_tolerance
                 vehicles = self._detect(frame, conf)
+
+                # Obstruction mode replaces the plain dwell rule rather than
+                # adding to it: "parked here for 60s" and "half over the footpath
+                # for 5 minutes" would otherwise both fire on the same vehicle
+                # and report the same event twice.
+                if self.monitors:
+                    self._run_obstruction(frame, vehicles, now_ts,
+                                          cfg.alert_cooldown, debug)
+                    if debug:
+                        cv2.imshow("LookOut - watch_parking (debug)", frame)
+                        if cv2.waitKey(1) & 0xFF == ord("q"):
+                            break
+                    continue
 
                 # Greedy IoU association of detections to existing tracks — good
                 # enough for a stationary parking camera (no ByteTrack needed).
