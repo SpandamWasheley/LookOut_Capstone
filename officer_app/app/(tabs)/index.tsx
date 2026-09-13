@@ -128,7 +128,7 @@ export default function AssignmentsScreen() {
               </Text>
               <Text style={[styles.emptyText, { color: c.mutedForeground }]}>
                 {myAssignments.length === 0
-                  ? "Waiting for dispatch from command"
+                  ? "Waiting for assignment"
                   : "Try a different search term"}
               </Text>
             </View>

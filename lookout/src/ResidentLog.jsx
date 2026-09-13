@@ -8,6 +8,7 @@ import { getViolators, getCitations, searchViolators, mergeViolators } from "./a
 import {
   VIOLATION_TYPES, UNKNOWN_VIOLATION_TYPE, resolveViolationType, loadViolationTypeIndex, violationChipStyle,
 } from "./constants/violationTypes.js";
+import { TypeFilterDropdown } from "./TypeFilterDropdown";
 
 function fmtDate(ts) {
   return new Date(ts).toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" });
@@ -343,27 +344,7 @@ function ViolatorDetail({ violator, onBack, onMerged }) {
 
         {!loading && !loadError && totalCitations > 0 && (
           <div className="flex items-center gap-2 flex-wrap">
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="flex items-center gap-1 text-[11px] font-medium flex-shrink-0" style={{ color: "var(--muted-foreground)" }}>
-                <Filter size={11} /> Type{typeFilter.size > 0 && ` (${typeFilter.size})`}
-              </span>
-              {FILTERABLE_TYPES.map((t) => {
-                const active = typeFilter.has(t.code);
-                const Icon = t.icon;
-                return (
-                  <button
-                    key={t.code}
-                    onClick={() => toggleTypeFilter(t.code)}
-                    aria-pressed={active}
-                    aria-label={`Filter by ${t.label}`}
-                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[12px] font-medium border transition-colors"
-                    style={active ? violationChipStyle(t) : { background: "var(--secondary)", color: "var(--muted-foreground)", borderColor: "var(--border)" }}
-                  >
-                    <Icon size={11} /> {t.short}
-                  </button>
-                );
-              })}
-            </div>
+            <TypeFilterDropdown selected={typeFilter} onToggle={toggleTypeFilter} onClear={clearFilters} />
 
             <div className="flex items-center rounded-lg overflow-hidden flex-shrink-0 ml-auto" style={{ border: "1px solid var(--border)" }}>
               {DETAIL_SORT_OPTIONS.map((opt) => (
@@ -699,6 +680,17 @@ export function ResidentLog() {
     }, { replace: true });
   };
 
+  // Type-only clear for the filter dropdown's own "Clear all" — clearFilters
+  // above also wipes the search box, which is right for its own "no matches"
+  // empty-state button but wrong for a control scoped to just the type list.
+  const clearTypeFilter = () => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("type");
+      return next;
+    }, { replace: true });
+  };
+
   if (selected) {
     return (
       <ViolatorDetail
@@ -813,27 +805,10 @@ export function ResidentLog() {
           </div>
         </div>
 
-        {/* Type filter chips */}
-        <div className="flex items-center gap-1.5 flex-shrink-0 flex-wrap">
-          <span className="flex items-center gap-1 text-[11px] font-medium flex-shrink-0" style={{ color: "var(--muted-foreground)" }}>
-            <Filter size={11} /> Type{typeFilter.size > 0 && ` (${typeFilter.size})`}
-          </span>
-          {FILTERABLE_TYPES.map((t) => {
-            const active = typeFilter.has(t.code);
-            const Icon = t.icon;
-            return (
-              <button
-                key={t.code}
-                onClick={() => toggleTypeFilter(t.code)}
-                aria-pressed={active}
-                aria-label={`Filter by ${t.label}`}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[12px] font-medium border transition-colors"
-                style={active ? violationChipStyle(t) : { background: "var(--secondary)", color: "var(--muted-foreground)", borderColor: "var(--border)" }}
-              >
-                <Icon size={11} /> {t.short}
-              </button>
-            );
-          })}
+        {/* Type filter — shared with the Violations tab's, so the two
+            can't drift into different rules/looks again. */}
+        <div className="flex-shrink-0">
+          <TypeFilterDropdown selected={typeFilter} onToggle={toggleTypeFilter} onClear={clearTypeFilter} />
         </div>
 
         {/* List */}

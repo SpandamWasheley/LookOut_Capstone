@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { Maximize2, WifiOff, LayoutGrid, Check, X, Upload, Loader2, CheckCircle2, AlertTriangle, History } from "lucide-react";
-import { getAlerts, getCameras, getCameraSnapshotUrl, getDetectionJobs } from "./api";
+import { Maximize2, WifiOff, LayoutGrid, Check, X, Upload, Loader2, CheckCircle2, AlertTriangle, History, Shapes, Ban } from "lucide-react";
+import { getAlerts, getCameras, getCameraSnapshotUrl, getDetectionJobs, cancelDetectionJob } from "./api";
 import { UploadDetectionModal } from "./UploadDetectionModal";
 import { DetectionJobHistoryModal } from "./DetectionJobHistoryModal";
+import { EdgeEditorModal } from "./EdgeEditorModal";
 
 // Polls a live camera's snapshot proxy and returns the latest frame as an
 // object URL, or null for a non-live camera. Object URLs are revoked as they're
@@ -87,6 +88,12 @@ function mapCamera(raw) {
     lastMotion: timeAgo(raw.last_motion_at),
     imageUrl: raw.image_url,
     isLive: raw.is_live,   // poll the snapshot proxy instead of the static image
+    // Obstruction-zone config, passed through as-is for the edge editor.
+    edges: raw.edges,
+    edges_width: raw.edges_width,
+    edges_height: raw.edges_height,
+    obstruction_pct: raw.obstruction_pct,
+    obstruction_minutes: raw.obstruction_minutes,
   };
 }
 
@@ -112,6 +119,7 @@ const JOB_STATUS_CONFIG = {
   running: { icon: Loader2, color: "#f59e0b", spin: true, label: "Running" },
   done: { icon: CheckCircle2, color: "#10b981", spin: false, label: "Done" },
   failed: { icon: AlertTriangle, color: "#ef4444", spin: false, label: "Failed" },
+  cancelled: { icon: Ban, color: "#6b7280", spin: false, label: "Cancelled" },
 };
 
 // How long a finished job stays in the floating panel after a fresh poll
@@ -130,7 +138,7 @@ const AUTO_DISMISS_DONE_MS = 6_000;
 // "done" card ages out) only hides it from this panel — the job row and any
 // alerts it produced are untouched, and remain visible in the full history
 // (DetectionJobHistoryModal).
-function DetectionJobsPanel({ jobs, onDismiss }) {
+function DetectionJobsPanel({ jobs, onDismiss, onCancel }) {
   // The current time, sampled only from the ticking effect below — never
   // read directly during render (Date.now() there would make render impure).
   const [now, setNow] = useState(() => Date.now());
@@ -152,13 +160,13 @@ function DetectionJobsPanel({ jobs, onDismiss }) {
     return () => clearInterval(id);
   }, [hasRunning, hasFinished]);
 
-  // Auto-dismiss "done" cards a few seconds after they finish. Recomputed
-  // from each job's real finishedAt every time this runs (on every jobs
-  // change, e.g. each 4s poll), so it stays correct across re-renders rather
-  // than restarting the countdown.
+  // Auto-dismiss "done" (and self-cancelled) cards a few seconds after they
+  // finish. Recomputed from each job's real finishedAt every time this runs
+  // (on every jobs change, e.g. each 4s poll), so it stays correct across
+  // re-renders rather than restarting the countdown.
   useEffect(() => {
     const timers = jobs
-      .filter((j) => j.status === "done" && j.finishedAt)
+      .filter((j) => (j.status === "done" || j.status === "cancelled") && j.finishedAt)
       .map((j) => {
         const remaining = AUTO_DISMISS_DONE_MS - (Date.now() - new Date(j.finishedAt).getTime());
         return setTimeout(() => onDismiss(j.id), Math.max(0, remaining));
@@ -184,10 +192,17 @@ function DetectionJobsPanel({ jobs, onDismiss }) {
                   <span className="text-[12px] font-semibold capitalize" style={{ color: "var(--foreground)" }}>
                     {job.violationType} test
                   </span>
-                  <button onClick={() => onDismiss(job.id)} className="flex-shrink-0"
-                    style={{ color: "var(--muted-foreground)" }}>
-                    <X size={12} />
-                  </button>
+                  {job.status === "running" && onCancel ? (
+                    <button onClick={() => onCancel(job.id)} className="flex-shrink-0"
+                      title="Cancel this detection job" style={{ color: "#ef4444" }}>
+                      <Ban size={13} />
+                    </button>
+                  ) : (
+                    <button onClick={() => onDismiss(job.id)} className="flex-shrink-0"
+                      style={{ color: "var(--muted-foreground)" }}>
+                      <X size={12} />
+                    </button>
+                  )}
                 </div>
                 <div className="text-[10px] truncate" style={{ color: "var(--muted-foreground)" }} title={job.sourceFilename}>
                   {job.sourceFilename}
@@ -373,8 +388,9 @@ function CameraTile({ cam, alert, isSelected, onSelect, onExpand, fill }) {
 
 // Fullscreen overlay for a single camera — a large live view with its own
 // snapshot poll. Closes on the X, on backdrop click, or Escape.
-function ExpandedCamera({ cam, alert, onClose }) {
+function ExpandedCamera({ cam, alert, onClose, isAdmin, onCameraUpdated }) {
   const liveUrl = useLiveSnapshot(cam);
+  const [showEdgeEditor, setShowEdgeEditor] = useState(false);
 
   useEffect(() => {
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
@@ -383,6 +399,7 @@ function ExpandedCamera({ cam, alert, onClose }) {
   }, [onClose]);
 
   return (
+    <>
     <div
       onClick={onClose}
       className="fixed inset-0 z-50 flex items-center justify-center p-6"
@@ -431,12 +448,33 @@ function ExpandedCamera({ cam, alert, onClose }) {
               {cam.id} · {cam.zone || "—"} · {cam.status}
             </div>
           </div>
-          <div className="text-[11px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
-            {cam.lastMotion ? `motion ${cam.lastMotion}` : ""}
+          <div className="flex items-center gap-3">
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() => setShowEdgeEditor(true)}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium"
+                style={{ background: "var(--secondary)", color: "var(--foreground)", border: "1px solid var(--border)" }}
+              >
+                <Shapes size={12} /> Edge Zones
+              </button>
+            )}
+            <div className="text-[11px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+              {cam.lastMotion ? `motion ${cam.lastMotion}` : ""}
+            </div>
           </div>
         </div>
       </div>
     </div>
+
+    {showEdgeEditor && (
+      <EdgeEditorModal
+        camera={cam}
+        onClose={() => setShowEdgeEditor(false)}
+        onSaved={(updated) => onCameraUpdated?.(updated)}
+      />
+    )}
+    </>
   );
 }
 
@@ -489,6 +527,28 @@ export function CameraGrid({ compact = false, isAdmin = false }) {
     return () => clearInterval(interval);
   }, [isAdmin]);
 
+  // Stops a running job's subprocess server-side (see DetectionJobViewSet.cancel)
+  // — e.g. the wrong video got uploaded and there's no other way to stop it.
+  // Applies the server's response immediately instead of waiting up to 4s for
+  // the next poll, so the card/row updates right away.
+  const handleCancelJob = (id) => {
+    cancelDetectionJob(id)
+      .then((updated) => {
+        const mapped = mapDetectionJob(updated);
+        setDetectionJobs((prev) => prev.map((j) => (j.id === id ? mapped : j)));
+      })
+      .catch((err) => {
+        // Most likely it already finished on its own a moment before the
+        // click landed — refresh so the row/card reflects its real status
+        // instead of looking stuck, and only bother the admin if that
+        // wasn't it.
+        getDetectionJobs()
+          .then((res) => setDetectionJobs((res.results ?? res).map(mapDetectionJob)))
+          .catch(() => {});
+        alert(`Could not cancel: ${err.message || "unknown error"}`);
+      });
+  };
+
   // Close the layout menu when clicking outside it.
   useEffect(() => {
     if (!menuOpen) return;
@@ -501,6 +561,14 @@ export function CameraGrid({ compact = false, isAdmin = false }) {
 
   const getAlert = (cameraId) =>
     alerts.find((a) => a.camera === cameraId && (a.status === "active" || a.status === "acknowledged"));
+
+  // Merges a saved edge-zone update back into the grid's own camera list, so
+  // it reflects immediately without waiting for the next 4s poll.
+  const handleCameraUpdated = (raw) => {
+    const mapped = mapCamera(raw);
+    setAllCameras((prev) => prev.map((c) => (c.dbId === mapped.dbId ? mapped : c)));
+    setExpanded((prev) => (prev && prev.dbId === mapped.dbId ? mapped : prev));
+  };
 
   const selectLayout = (key) => {
     setLayoutKey(key);
@@ -523,7 +591,8 @@ export function CameraGrid({ compact = false, isAdmin = false }) {
           />
         ))}
         {expanded && (
-          <ExpandedCamera cam={expanded} alert={getAlert(expanded.id)} onClose={() => setExpanded(null)} />
+          <ExpandedCamera cam={expanded} alert={getAlert(expanded.id)} onClose={() => setExpanded(null)}
+            isAdmin={isAdmin} onCameraUpdated={handleCameraUpdated} />
         )}
       </div>
     );
@@ -634,7 +703,8 @@ export function CameraGrid({ compact = false, isAdmin = false }) {
       </div>
 
       {expanded && (
-        <ExpandedCamera cam={expanded} alert={getAlert(expanded.id)} onClose={() => setExpanded(null)} />
+        <ExpandedCamera cam={expanded} alert={getAlert(expanded.id)} onClose={() => setExpanded(null)}
+          isAdmin={isAdmin} onCameraUpdated={handleCameraUpdated} />
       )}
 
       {isAdmin && showUpload && (
@@ -645,13 +715,14 @@ export function CameraGrid({ compact = false, isAdmin = false }) {
       )}
 
       {isAdmin && showHistory && (
-        <DetectionJobHistoryModal jobs={detectionJobs} onClose={() => setShowHistory(false)} />
+        <DetectionJobHistoryModal jobs={detectionJobs} onClose={() => setShowHistory(false)} onCancel={handleCancelJob} />
       )}
 
       {isAdmin && (
         <DetectionJobsPanel
           jobs={detectionJobs.filter((j) => !dismissedJobIds.has(j.id))}
           onDismiss={(id) => setDismissedJobIds((prev) => new Set(prev).add(id))}
+          onCancel={handleCancelJob}
         />
       )}
     </div>

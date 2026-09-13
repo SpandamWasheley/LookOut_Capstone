@@ -13,7 +13,7 @@ export function AlertsPage() {
         style={{ borderBottom: "1px solid var(--border)" }}
       >
         <div className="flex items-center gap-3">
-          <h1 className="text-[15px] font-semibold text-white">Violations</h1>
+          <h1 className="text-[15px] font-semibold" style={{ color: "var(--foreground)" }}>Potential Violations</h1>
           {activeCount > 0 && (
             <span
               className="flex items-center gap-1.5 text-xs font-medium px-2 py-0.5 rounded-full"

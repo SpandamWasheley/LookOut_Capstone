@@ -30,7 +30,7 @@ export const VIOLATION_TYPES = {
   },
   parking: {
     code: "parking",
-    label: "Parking Obstruction",
+    label: "Parking Obstruction in Area",
     short: "Parking",
     icon: Car,
     aliases: [
@@ -38,19 +38,24 @@ export const VIOLATION_TYPES = {
       "illegal parking",
       "illegal parking / obstruction",
       "parking obstruction",
+      "parking obstruction in area",
     ],
   },
-  // The backend has a real theft/thief split: watch_thief.py creates a
-  // second ViolationType row (code "thief") alongside the original "theft"
-  // row, so a citation can carry either. This entry is a display-layer
-  // patch that folds both into one "Theft" chip — it does not touch or fix
-  // the underlying data split.
+  // watch_thief.py used to create a SECOND ViolationType row (code "thief")
+  // alongside the seeded "theft" row, so a citation or alert could carry
+  // either — see migration 0026, which merged every "thief" row into
+  // "theft" at the source (watch_thief.py/watch_all.py/watch_merged.py now
+  // all create code="theft" too). The old aliases stay below regardless, as
+  // a safety net for any row/citation text created before that fix.
   theft: {
     code: "theft",
-    label: "Theft",
-    short: "Theft",
+    label: "Holdup in Public Area",
+    short: "Holdup",
     icon: ShieldAlert,
-    aliases: ["theft", "thief", "theft violation", "theft / robbery", "theft (holdup)"],
+    aliases: [
+      "theft", "thief", "theft violation", "theft / robbery", "theft (holdup)",
+      "holdup in public area", "holdup",
+    ],
   },
 };
 
@@ -145,4 +150,42 @@ export function resolveViolationType({ id, code, label } = {}) {
     if (resolved) return resolved;
   }
   return UNKNOWN_VIOLATION_TYPE;
+}
+
+// Capitalizes a raw backend code/slug for display when nothing in
+// VIOLATION_TYPES claims it (curfew/waste/noise — deliberately out of scope,
+// see the top of this file — or a future type this map hasn't been taught
+// yet), so a user sees "Curfew", never the raw "curfew", and never something
+// as opaque as "thief". Pure string helper — does not change what
+// resolveViolationType returns, so it can't affect callers that rely on its
+// identity contract (e.g. ResidentLog.jsx's `!== UNKNOWN_VIOLATION_TYPE`).
+export function humanizeType(raw) {
+  const s = String(raw ?? "").trim();
+  if (!s) return "Unknown";
+  return s.replace(/[_-]+/g, " ").split(" ")
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
+// Convenience for components that just need {label, icon, color} for an
+// alert's type and must never leak its raw db code — wraps
+// resolveViolationType + humanizeType so every caller gets the same safe
+// fallback instead of re-deriving it (that re-deriving, with a hand-rolled
+// `?? { label: alert.type, icon: AlertTriangle }`, is exactly what used to
+// render "thief" directly on ALT-0097's card).
+export function violationDisplay(code) {
+  const resolved = resolveViolationType({ code });
+  const c = resolved.code !== "unknown" ? resolved.code : "unknown";
+  return {
+    label: resolved.code !== "unknown" ? resolved.label : humanizeType(code),
+    icon: resolved.icon,
+    color: `var(--violation-${c}-dot)`,
+    // Translucent tints for icon-chip backgrounds/hover borders — use these
+    // instead of hand-rolling one from `color` (e.g. `${color}22`), which
+    // breaks now that color is a CSS custom property string, not a hex
+    // literal you can string-concat an alpha suffix onto.
+    bg: `var(--violation-${c}-bg)`,
+    border: `var(--violation-${c}-border)`,
+  };
 }

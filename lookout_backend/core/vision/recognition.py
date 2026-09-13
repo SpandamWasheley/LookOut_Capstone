@@ -10,6 +10,7 @@ stays importable/testable independent of the management commands that use it.
 """
 
 import json
+import math
 import os
 import datetime
 import subprocess
@@ -31,6 +32,55 @@ def _hold_reps(ts, next_ts, playback_fps, max_hold_seconds):
     max_reps = max(1, round(max_hold_seconds * playback_fps))
     reps = max(1, round((next_ts - ts) * playback_fps))
     return min(reps, max_reps)
+
+
+def draw_label(frame, text, x, y, color, scale=0.8, thickness=2, bg=(0, 0, 0)):
+    """Draws one detection/track/cluster label with a filled background —
+    the same convention ClipRecorder._stamp already uses for its timestamp
+    overlay, just applied to per-box labels too — so text stays legible
+    against a bright frame instead of the bare colored text every call site
+    used to draw directly onto the image. Also clamps the origin so the
+    label can't run off the frame's right edge, which a longer label (class
+    name + confidence + dwell) makes much more likely than the short ones
+    this used to draw.
+
+    `(x, y)` is the text BASELINE origin, same convention cv2.putText itself
+    uses and every call site already passes — typically `(x1, max(y1 - 8, 0))`,
+    just above a box's top-left corner.
+    """
+    h, w = frame.shape[:2]
+    (tw, th), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, thickness)
+    x = max(0, min(x, w - tw - 2))
+    y = max(th + 2, y)
+    cv2.rectangle(frame, (x - 2, y - th - 4), (x + tw + 2, y + baseline + 2), bg, -1)
+    cv2.putText(frame, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color,
+               thickness, cv2.LINE_AA)
+
+
+def draw_dashed_rect(frame, pt1, pt2, color, thickness=2, dash_len=8, gap_len=6):
+    """Dashed-outline version of cv2.rectangle — marks a box as HISTORICAL
+    (the track's last known detection, not a live one this frame) so an
+    evidence clip can show why a track that crossed its dwell/alert
+    threshold on a frame with no current detection still has a box
+    justifying it, instead of drawing nothing that frame. cv2 has no native
+    dashed-line primitive, hence drawing each side as short segments."""
+    x1, y1 = pt1
+    x2, y2 = pt2
+
+    def dashed_line(p1, p2):
+        (lx1, ly1), (lx2, ly2) = p1, p2
+        length = max(1, int(math.hypot(lx2 - lx1, ly2 - ly1)))
+        step = dash_len + gap_len
+        for i in range(0, length, step):
+            t0, t1 = i / length, min(i + dash_len, length) / length
+            sx, sy = int(lx1 + (lx2 - lx1) * t0), int(ly1 + (ly2 - ly1) * t0)
+            ex, ey = int(lx1 + (lx2 - lx1) * t1), int(ly1 + (ly2 - ly1) * t1)
+            cv2.line(frame, (sx, sy), (ex, ey), color, thickness)
+
+    dashed_line((x1, y1), (x2, y1))
+    dashed_line((x2, y1), (x2, y2))
+    dashed_line((x2, y2), (x1, y2))
+    dashed_line((x1, y2), (x1, y1))
 
 
 class ClipRecorder:
@@ -271,12 +321,25 @@ class LatestFrameReader:
     processing loop always gets a near-live frame; latency stays at ~one frame
     plus one inference instead of a growing backlog.
 
+    Also reconnects: a dropped RTSP connection otherwise leaves cap.read()
+    returning False forever — the process stays alive, burning CPU, silently
+    producing zero detections. After max_consecutive_failures failed reads
+    (same threshold record_camera.py uses to decide a stream is "really gone"),
+    this releases the dead capture and calls open_fn() in a retry loop until a
+    fresh one opens, logging every attempt and the eventual recovery via `log`.
+    Pass open_fn=None to opt out and keep the old non-reconnecting behavior.
+
     Use for live sources only (RTSP / webcam). A video file should be read
     sequentially so no frames are skipped.
     """
 
-    def __init__(self, cap):
+    def __init__(self, cap, open_fn=None, log=None,
+                 max_consecutive_failures=30, reconnect_wait=3.0):
         self.cap = cap
+        self._open_fn = open_fn
+        self._log = log or (lambda msg: None)
+        self._max_consecutive_failures = max_consecutive_failures
+        self._reconnect_wait = reconnect_wait
         self._lock = threading.Lock()
         self._frame = None
         self._stopped = False
@@ -284,13 +347,46 @@ class LatestFrameReader:
         self._t.start()
 
     def _loop(self):
+        fails = 0
         while not self._stopped:
             ok, f = self.cap.read()
             if not ok:
-                time.sleep(0.01)
+                fails += 1
+                if self._open_fn is not None and fails >= self._max_consecutive_failures:
+                    self._reconnect(fails)
+                    fails = 0
+                else:
+                    time.sleep(0.01)
                 continue
+            if fails:
+                self._log(f"Live source recovered after {fails} failed read(s).")
+            fails = 0
             with self._lock:
                 self._frame = f
+
+    def _reconnect(self, fails):
+        self._log(f"Live source stopped responding after {fails} consecutive "
+                   "failed reads — reconnecting...")
+        try:
+            self.cap.release()
+        except Exception:
+            pass
+        attempt = 0
+        while not self._stopped:
+            attempt += 1
+            new_cap = self._open_fn()
+            if new_cap is not None and new_cap.isOpened():
+                self.cap = new_cap
+                self._log(f"Reconnected to live source (attempt {attempt}).")
+                return
+            self._log(f"Reconnect attempt {attempt} failed — retrying in "
+                       f"{self._reconnect_wait:.0f}s.")
+            # Sleep in small increments so stop() doesn't have to wait out a
+            # full reconnect_wait to interrupt a stuck retry loop.
+            for _ in range(int(self._reconnect_wait / 0.1)):
+                if self._stopped:
+                    return
+                time.sleep(0.1)
 
     def read(self):
         with self._lock:
@@ -516,12 +612,20 @@ def load_face_app():
     Model weights (~280MB) auto-download on first use to
     ~/.insightface/models/buffalo_l — no manual download step needed, but
     the first run will be slow while that completes.
+
+    providers is pinned to CPU explicitly. Without this, insightface builds
+    each ONNX session with onnxruntime.get_available_providers() — which
+    lists CUDAExecutionProvider as "available" whenever onnxruntime-gpu is
+    installed, regardless of whether its CUDA DLLs actually load — so every
+    process start was attempting and failing a CUDA load per model (5 error
+    blocks in the log) before silently landing on CPU anyway via ctx_id=-1
+    below. Same effective behavior, no more misleading failure spam.
     """
     global _face_app
     if _face_app is None:
         from insightface.app import FaceAnalysis
 
-        _face_app = FaceAnalysis(name="buffalo_l")
+        _face_app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
         _face_app.prepare(ctx_id=-1, det_size=(320, 320))  # ctx_id=-1 -> CPU
     return _face_app
 

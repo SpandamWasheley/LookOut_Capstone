@@ -19,15 +19,18 @@ labels come from the merged model's own names dict, so its class INDEX order
 the strings "Bottle"/"Cigarette"/"knife" matter, matched case-insensitively
 for routing (see ROUTE_ENGINE). Downstream, each engine's own rule layer also
 matches by name (watch_smoking lowercases, watch_thief does not — "knife"
-already matches either way), EXCEPT one case-sensitive coincidence worth
-knowing: watch_drinking.GENERIC_LABELS (the weaker "must be raised to the
-mouth, 2x dwell" vessel path) is the set of lowercase COCO names {"bottle",
-"wine glass", "cup"} — the merged model's "Bottle" (capital B) does NOT match
-it, so a Bottle detection is treated as full branded evidence, the same tier
-as watch_drinking's own "Red Horse" class, not degraded generic evidence.
-That's the behavior we want, but it depends on the merged model never being
-re-exported with a lowercase "bottle" class name — if it ever is, Bottle
-detections would silently downgrade to the weaker generic-vessel path.
+already matches either way). watch_drinking has no branded-vs-generic
+distinction any more either (Phase B3 follow-up removed it) — a merged-model
+"Bottle" detection is judged by the exact same posture/dwell logic as every
+other bottle-class label, so there is no tier for a class-name spelling to
+accidentally fall into or out of.
+
+A DIFFERENT name-matching hazard remains, though: ROUTE_ENGINE itself is a
+name lookup, so if a future retrain renames a class (e.g. "Bottle" ->
+"Beer Bottle"), ROUTE_ENGINE silently stops matching it and that engine gets
+NO detections at all — nothing looks broken, the other two engines keep
+alerting normally, this one just goes quiet. See _check_route_coverage,
+checked at startup.
 
 Unlike watch_all.py (which runs THREE separate custom models per frame, one
 per detector, sharing only the person-detection pass), this genuinely is one
@@ -42,6 +45,7 @@ positional arguments for smoking/drinking (missing face_threshold, which
 raises TypeError on the first frame with any person in view) and never
 drives drinking's Path B (GroupTracker/_process_cluster) at all.
 """
+import csv
 import os
 import time
 from collections import Counter
@@ -55,7 +59,7 @@ from core.vision import recognition, tracking
 
 from .watch_smoking import Command as SmokingCommand
 from .watch_thief import Command as ThiefCommand
-from .watch_drinking import Command as DrinkingCommand, GENERIC_LABELS
+from .watch_drinking import Command as DrinkingCommand
 
 MERGED_CAMERA_CODE = "CAM-MERGED-TEST"
 SETTINGS_REFRESH_SECONDS = 5
@@ -103,6 +107,20 @@ class Command(BaseCommand):
         parser.add_argument("--stats", action="store_true",
                             help="On exit, print each engine's own detection-stage stats "
                                  "(same --stats output each standalone watcher prints).")
+        parser.add_argument("--calibration-csv", default="",
+                            help="Phase-0 instrumentation: write every raw merged-model "
+                                 "detection to this CSV path, one row per detection per "
+                                 "frame, BEFORE any per-engine confidence floor, heuristic, "
+                                 "or alert logic runs. Columns: frame_idx, timestamp, "
+                                 "camera_id, class_name, confidence, x1, y1, x2, y2, "
+                                 "box_area_px, track_id. While active, the merged model's "
+                                 "own inference floor is dropped to 0.01 (instead of the "
+                                 "lowest active engine's configured confidence) so the CSV "
+                                 "captures the full confidence distribution, including "
+                                 "everything that would normally be discarded before any "
+                                 "engine gets a look — alerting behavior is unaffected, "
+                                 "since each engine's own floor is still applied downstream "
+                                 "exactly as without this flag.")
 
     def handle(self, *args, **options):
         if not recognition.merged_model_available():
@@ -114,16 +132,14 @@ class Command(BaseCommand):
 
         # Load eagerly (normally lazy, on first detection call) so this check
         # runs — and can fail loudly — before opening a camera or touching the
-        # DB. See the module docstring: watch_drinking treats a Bottle-routed
-        # detection as full branded evidence UNLESS its exact label string
-        # collides with GENERIC_LABELS, in which case it silently downgrades
-        # to the weak "raised-to-mouth-only, 2x dwell" generic-vessel path —
-        # with no error, just a quietly worse true-positive rate. Fail here
-        # instead of letting that happen unnoticed.
+        # DB. See the module docstring and _check_route_coverage: a renamed
+        # class silently drops an entire engine's detections with nothing
+        # looking broken, so this is caught here instead of discovered later
+        # as "why did knife never fire on this run".
         model = recognition.load_merged_model()
-        collision = self._bottle_generic_collision(model)
-        if collision:
-            self.stdout.write(self.style.ERROR(collision))
+        uncovered = self._check_route_coverage(model)
+        if uncovered:
+            self.stdout.write(self.style.ERROR(uncovered))
             return
 
         self.camera, _ = Camera.objects.get_or_create(
@@ -156,6 +172,10 @@ class Command(BaseCommand):
         if self.dry_run:
             self.stdout.write(self.style.WARNING(
                 "DRY RUN: evidence images will be saved but no alerts created."))
+
+        self.calibration_csv_path = options["calibration_csv"]
+        self.calibration_file = None
+        self.calibration_writer = None
 
         self.engines = {}
         for name, cls in (("smoking", SmokingCommand),
@@ -195,7 +215,9 @@ class Command(BaseCommand):
         # three are created once here (get_or_create, so this is idempotent
         # with each standalone command's own handle()).
         cmd.smoking_type = self._vtype("smoking", "Public Smoking", "#f59e0b", "cigarette")
-        cmd.thief_type = self._vtype("thief", "Theft / Robbery", "#ef4444", "siren")
+        # code="theft" (not "thief") — matches watch_thief.py's own fix; see
+        # migration 0026 for why the two codes must never diverge again.
+        cmd.thief_type = self._vtype("theft", "Holdup in Public Area", "#ef4444", "siren")
         cmd.drinking_type = self._vtype("drinking", "Public Drinking", "#8b5cf6", "beer")
         # Every engine gets its OWN evidence clip buffer (smoking, drinking
         # AND thief — thief's _create_alert didn't build a video_url at all
@@ -218,37 +240,34 @@ class Command(BaseCommand):
             code=code, defaults={"label": label, "color": color, "icon": icon})
         return vt
 
-    def _bottle_generic_collision(self, model):
-        """None if safe, else an error message: does the merged model's
-        Bottle-routed class name (as it will actually appear on a detection,
-        e.g. "Bottle") collide with watch_drinking.GENERIC_LABELS — the set
-        of lowercase COCO vessel names {"bottle", "wine glass", "cup"}?
-        watch_drinking checks that membership with an EXACT, non-lowercased
-        compare (`best_label in GENERIC_LABELS`), so this only bites if the
-        merged model's class is itself lowercase "bottle" — but if it ever
-        is (a re-export, a different training run), every Bottle detection
-        would silently take the weak generic-vessel path instead of full
-        branded evidence, and nothing would look broken — the detector would
-        just alert less than it should, which reads as poor accuracy, not a
-        wiring bug. Checked at startup so that failure mode can't happen
-        unnoticed.
+    def _check_route_coverage(self, model):
+        """None if safe, else an error message: does every rule engine
+        (smoking/drinking/thief) have at least one merged-model class routed
+        to it via ROUTE_ENGINE?
+
+        ROUTE_ENGINE matches by name (see the module docstring), so if a
+        future retrain renames a class — "Bottle" to "Beer Bottle", say — the
+        rename silently stops matching any ROUTE_ENGINE key and that engine
+        gets NO detections at all for the rest of the run. Nothing looks
+        broken: the process starts fine, the other two engines keep alerting
+        normally, this one just never fires. That reads as "the model got
+        worse" or "nothing happening tonight", not a wiring bug — exactly the
+        kind of failure that should be loud at startup instead of discovered
+        hours into a review. Checked here so it can't happen unnoticed.
         """
         names = model.names.values() if isinstance(model.names, dict) else model.names
-        for label in names:
-            if ROUTE_ENGINE.get(label.lower()) != "drinking":
-                continue
-            if label in GENERIC_LABELS:
-                return (
-                    f"Merged model's Bottle class is named {label!r}, which collides "
-                    f"with watch_drinking.GENERIC_LABELS {sorted(GENERIC_LABELS)!r}. "
-                    "Every Bottle detection would silently be treated as weak generic-"
-                    "vessel evidence (must be raised to the mouth, 2x dwell) instead of "
-                    "full branded evidence — refusing to start rather than alert less "
-                    "than expected with no visible error. Re-export the merged model "
-                    "with a non-colliding Bottle class name (e.g. capitalized "
-                    "'Bottle'), or if this is intentional, update GENERIC_LABELS in "
-                    "watch_drinking.py to exclude it."
-                )
+        covered = {ROUTE_ENGINE[label.lower()] for label in names
+                  if label.lower() in ROUTE_ENGINE}
+        missing = set(ROUTE_ENGINE.values()) - covered
+        if missing:
+            return (
+                f"Merged model's classes {sorted(names)!r} route (via ROUTE_ENGINE) to "
+                f"{sorted(covered)!r}, leaving {sorted(missing)!r} with NO class at all. "
+                "That engine would silently never produce a detection for the rest of "
+                "the run — refusing to start rather than run one or two engines short "
+                "with no visible error. Update ROUTE_ENGINE to match the model's actual "
+                "class names, or re-export the model with the expected ones."
+            )
         return None
 
     def _active(self, name, cfg):
@@ -272,13 +291,16 @@ class Command(BaseCommand):
             return
 
         is_live = source.isdigit() or "://" in source
-        reader = recognition.LatestFrameReader(cap) if is_live else cap
+        reader = recognition.LatestFrameReader(
+            cap, open_fn=lambda: self._open(source),
+            log=lambda m: self.stdout.write(self.style.WARNING(m)),
+        ) if is_live else cap
 
-        # A file source is seekable, so smoking/drinking can cut raw evidence
-        # clips straight from it later; a live source gets its own rolling
-        # raw-frame buffer instead — same setup each standalone command does
-        # in its own _run_stream. Thief doesn't use either (no raw clip).
-        for name in ("smoking", "drinking"):
+        # A file source is seekable, so each engine can cut raw evidence clips
+        # straight from it later; a live source gets its own rolling raw-frame
+        # buffer instead — same setup each standalone command does in its own
+        # _run_stream.
+        for name in ("smoking", "drinking", "thief"):
             cmd = self.engines[name]["cmd"]
             cmd._source_path = None if is_live else source
             cmd._raw_buffer = recognition.RawFrameRecorder() if is_live else None
@@ -291,6 +313,21 @@ class Command(BaseCommand):
             f"Watching {source} [{mode}, {self.tracker_name} tracker] for: {names}. "
             "Ctrl+C to stop."
         ))
+
+        if self.calibration_csv_path:
+            self.calibration_file = open(
+                self.calibration_csv_path, "w", newline="", encoding="utf-8")
+            self.calibration_writer = csv.writer(self.calibration_file)
+            self.calibration_writer.writerow([
+                "frame_idx", "timestamp", "camera_id", "class_name", "confidence",
+                "x1", "y1", "x2", "y2", "box_area_px", "track_id",
+            ])
+            self.stdout.write(self.style.WARNING(
+                f"CALIBRATION MODE: raw detections logging to {self.calibration_csv_path} "
+                "(merged-model inference floor forced to 0.01)."))
+
+        if debug:
+            cv2.namedWindow("LookOut - watch_merged (debug)", cv2.WINDOW_NORMAL)
 
         started = time.time()
         frames = 0
@@ -305,30 +342,44 @@ class Command(BaseCommand):
                     self.stdout.write(self.style.SUCCESS(f"End of {source} — done."))
                     break
 
-                for name in ("smoking", "drinking"):
+                for name in ("smoking", "drinking", "thief"):
                     cmd = self.engines[name]["cmd"]
                     if cmd._raw_buffer is not None:
                         cmd._raw_buffer.add(frame, time.time())
 
-                now = time.time()
-                if now - cfg_at >= SETTINGS_REFRESH_SECONDS:
+                wall_now = time.time()
+                if wall_now - cfg_at >= SETTINGS_REFRESH_SECONDS:
                     cfg = SystemSettings.load()
-                    cfg_at = now
+                    cfg_at = wall_now
                 frames += 1
 
                 active = [n for n in self.engines if self._active(n, cfg)]
                 if not active:
                     continue
 
-                for name in ("smoking", "drinking"):
+                # Content-time clock: video position for a file source (not
+                # wall clock) so vote/dwell/duration/cooldown measure the
+                # same seconds a human watching the clip would see, and a
+                # raw clip cut later lines up with what the detector just
+                # saw — even though processing routinely runs far slower
+                # than real-time in --far mode. Wall-clock for a live
+                # source, where video time and wall-clock time are the same
+                # thing by definition. See the false-positive-suppression
+                # brief's timing-bug finding: wall-clock badly overstated
+                # every dwell/duration figure against an uploaded file (a
+                # gathering reading "33/25s" on a 19s clip).
+                now = wall_now if is_live else reader.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+
+                for name in ("smoking", "drinking", "thief"):
                     cmd = self.engines[name]["cmd"]
                     if cmd._source_path is not None:
-                        cmd._video_pos_sec = reader.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+                        cmd._video_pos_sec = now
 
-                self._process_frame(frame, now, cfg, active, debug)
+                timestamp = now if not is_live else wall_now - started
+                self._process_frame(frame, now, cfg, active, debug, frames, timestamp)
 
                 if not fps_warned and frames >= 20:
-                    fps = frames / max(now - started, 1e-6)
+                    fps = frames / max(wall_now - started, 1e-6)
                     if fps < 1.5:
                         fps_warned = True
                         self.stdout.write(self.style.WARNING(
@@ -343,6 +394,10 @@ class Command(BaseCommand):
             pass
         finally:
             reader.stop() if is_live else cap.release()
+            if self.calibration_file is not None:
+                self.calibration_file.close()
+                self.stdout.write(self.style.SUCCESS(
+                    f"Calibration CSV written: {self.calibration_csv_path}"))
             if debug:
                 cv2.destroyAllWindows()
             if self.show_stats:
@@ -353,7 +408,7 @@ class Command(BaseCommand):
 
     # ---- per-frame: one merged pass, routed to each engine ------------------
 
-    def _process_frame(self, frame, now, cfg, active, debug):
+    def _process_frame(self, frame, now, cfg, active, debug, frame_idx=None, timestamp=None):
         # One shared person pass per frame. bytetrack is safe here — see the
         # module docstring for why this differs from watch_all's hardcoded
         # greedy matcher.
@@ -370,17 +425,37 @@ class Command(BaseCommand):
         # is still applied afterward, per class, exactly as it would run
         # standalone (see _apply_engine_floor).
         conf_floor = min(getattr(cfg, f"{n}_confidence") for n in active) / 100
+        if self.calibration_writer is not None:
+            # Calibration wants the FULL raw confidence distribution, not
+            # just what the engines would have kept — drop the inference
+            # floor to (near) zero. Alerting is unaffected: _apply_engine_floor
+            # still filters each engine's slice against the real cfg
+            # confidence below, exactly as it would without this flag.
+            conf_floor = min(conf_floor, 0.01)
         if self.far:
             dets = recognition.detect_merged_far(
                 frame, conf=conf_floor, tiles=self.tiles, person_boxes=persons)
         else:
             dets = recognition.detect_merged(frame, conf=conf_floor)
 
+        if self.calibration_writer is not None:
+            self._log_calibration_rows(dets, persons, ids, frame_idx, timestamp)
+
         routed = {"smoking": [], "drinking": [], "thief": []}
         for d in dets:
             engine = ROUTE_ENGINE.get(d[5].lower())
             if engine is not None:
                 routed[engine].append(d)
+
+        # Raw merged-model output ALWAYS, thin yellow, before any per-engine
+        # confidence floor / spatial rule / vote / dwell gating touches it —
+        # so a detection that never survives gating is still visible for
+        # sanity checking, not just each engine's own green/red confirmed
+        # boxes drawn later in _process_track.
+        for (x1, y1, x2, y2, score, label) in dets:
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 220, 220), 1)
+            recognition.draw_label(frame, f"{label} {score * 100:.0f}%",
+                                   x1, max(y1 - 8, 0), (0, 220, 220), scale=0.5)
 
         # Person boxes drawn once, shared — context for the evidence clip and
         # debug window regardless of which engine(s) end up alerting. Each
@@ -405,6 +480,8 @@ class Command(BaseCommand):
             per_track = tracker.assign(filtered, now)
             if name == "smoking":
                 per_track = cmd._apply_face_rule(frame, per_track, now)
+            elif name == "thief":
+                per_track = cmd._apply_weapon_region_rule(per_track, frame)
 
             if name == "drinking":
                 self._process_drinking_frame(
@@ -420,6 +497,34 @@ class Command(BaseCommand):
 
         for name in active:
             self.engines[name]["cmd"].clip.add(frame, now)
+
+    def _log_calibration_rows(self, dets, persons, ids, frame_idx, timestamp):
+        """Writes one CSV row per raw detection, before routing, per-engine
+        confidence floors, or any rule-layer/alert logic. `track_id` is a
+        best-effort association to the shared person pass (which person's box
+        the detection's center falls inside, per that person's bytetrack id)
+        — purely geometric, not a rule-layer decision, so it doesn't
+        contradict "before any heuristic" — and only available when
+        --tracker is bytetrack/botsort (ids is None under the default greedy
+        person matcher, which this command never uses for its own tracks)."""
+        for (x1, y1, x2, y2, score, label) in dets:
+            track_id = self._nearest_person_track_id((x1, y1, x2, y2), persons, ids)
+            self.calibration_writer.writerow([
+                frame_idx, f"{timestamp:.3f}" if timestamp is not None else "",
+                self.camera.id, label, f"{score:.4f}",
+                x1, y1, x2, y2, (x2 - x1) * (y2 - y1), track_id,
+            ])
+
+    @staticmethod
+    def _nearest_person_track_id(box, persons, ids):
+        if not persons or ids is None:
+            return ""
+        x1, y1, x2, y2 = box
+        cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+        for (px1, py1, px2, py2, _score), pid in zip(persons, ids):
+            if px1 <= cx <= px2 and py1 <= cy <= py2:
+                return pid
+        return ""
 
     def _apply_engine_floor(self, name, cmd, dets, conf):
         """Each engine's own per-class confidence floor, applied to its
@@ -456,15 +561,19 @@ class Command(BaseCommand):
                               if t.id in cluster.member_ids and not t.is_scene]
                 if member_dets:
                     best = max(member_dets, key=lambda d: d[4])
-                    if cluster.evidence is None or best[4] > cluster.evidence[4]:
-                        cluster.evidence = best
+                    cluster.note_evidence(best, now)
             cmd._process_cluster(
                 cluster, now, min_group, group_duration, cfg.alert_cooldown,
                 frame, debug, cfg.curfew_confidence, clean_frame,
+                evidence_max_age=cfg.drinking_evidence_max_age,
+                cooldown_center_dist=cfg.drinking_cooldown_center_dist,
             )
 
         for track, dets in per_track.items():
             cmd._process_track(
                 track, dets, now, dwell, cfg.alert_cooldown,
                 frame, debug, cfg.curfew_confidence, clean_frame,
+                held_dwell_seconds=cfg.drinking_held_dwell,
+                mouth_proximity=cfg.drinking_mouth_proximity,
+                cooldown_center_dist=cfg.drinking_cooldown_center_dist,
             )

@@ -59,11 +59,16 @@
   --text-muted: #797c82;
   --surface-raised: #ffffff;
 
-  /* violation-type chips (Violator Log) */
-  --violation-smoking-bg: #64748b1f;
-  --violation-smoking-text: #475569;
-  --violation-smoking-border: #64748b40;
-  --violation-smoking-dot: #64748b;
+  /* violation-type chips (Violator Log). Smoking used a slate/gray that read
+     as "disabled or unknown" rather than its own identity — now amber, the
+     same accent watch_smoking.py and the upload modal already use for it.
+     Theft is rust/terracotta, not red — this page's Active pills, active
+     count and header badge already use #ef4444 for STATUS, so a red
+     violation icon here would read as a status indicator instead. */
+  --violation-smoking-bg: #f59e0b1f;
+  --violation-smoking-text: #b45309;
+  --violation-smoking-border: #f59e0b40;
+  --violation-smoking-dot: #f59e0b;
 
   --violation-drinking-bg: #8b5cf61f;
   --violation-drinking-text: #7c3aed;
@@ -75,10 +80,10 @@
   --violation-parking-border: #f9731640;
   --violation-parking-dot: #f97316;
 
-  --violation-theft-bg: #ef44441f;
-  --violation-theft-text: #c0392b;
-  --violation-theft-border: #ef444440;
-  --violation-theft-dot: #ef4444;
+  --violation-theft-bg: #B7410E1f;
+  --violation-theft-text: #943308;
+  --violation-theft-border: #B7410E40;
+  --violation-theft-dot: #B7410E;
 
   --violation-unknown-bg: #7979821f;
   --violation-unknown-text: #797c82;
@@ -148,11 +153,12 @@
   --text-muted: #797c82;
   --surface-raised: #0f2030;
 
-  /* violation-type chips (Violator Log) */
-  --violation-smoking-bg: #64748b33;
-  --violation-smoking-text: #cbd5e1;
-  --violation-smoking-border: #64748b59;
-  --violation-smoking-dot: #94a3b8;
+  /* violation-type chips (Violator Log) — see the light block above for why
+     smoking is amber (not gray) and theft is rust (not red). */
+  --violation-smoking-bg: #f59e0b33;
+  --violation-smoking-text: #fde68a;
+  --violation-smoking-border: #f59e0b59;
+  --violation-smoking-dot: #fbbf24;
 
   --violation-drinking-bg: #8b5cf633;
   --violation-drinking-text: #c4b5fd;
@@ -164,10 +170,10 @@
   --violation-parking-border: #f9731659;
   --violation-parking-dot: #fb923c;
 
-  --violation-theft-bg: #ef444433;
-  --violation-theft-text: #fca5a5;
-  --violation-theft-border: #ef444459;
-  --violation-theft-dot: #f87171;
+  --violation-theft-bg: #B7410E33;
+  --violation-theft-text: #E6A688;
+  --violation-theft-border: #B7410E59;
+  --violation-theft-dot: #DD8452;
 
   --violation-unknown-bg: #79798233;
   --violation-unknown-text: #b8bcc2;

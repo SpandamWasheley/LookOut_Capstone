@@ -1,3 +1,6 @@
+import base64
+import json
+import logging
 import os
 import random
 import re
@@ -10,8 +13,12 @@ from datetime import timedelta
 import cv2
 import django_filters
 import numpy as np
+import psutil
 from django.conf import settings as django_settings
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError
 from django.core.mail import send_mail
+from django.core.validators import validate_email
 from django.db import transaction
 from django.db.models import Count
 from django.utils import timezone
@@ -54,6 +61,7 @@ from .throttling import (
 )
 
 CODE_EXPIRY_MINUTES = 10
+logger = logging.getLogger(__name__)
 from .serializers import (
     AlertSerializer,
     CameraSerializer,
@@ -103,19 +111,30 @@ def send_officer_code(request):
     email = (request.data.get("email") or "").strip().lower()
     if not email:
         return Response({"email": "Email is required."}, status=400)
+    try:
+        validate_email(email)
+    except ValidationError:
+        return Response({"email": "Enter a valid email address."}, status=400)
     if User.objects.filter(email__iexact=email).exists():
         return Response({"email": "An account with this email already exists."}, status=400)
 
     code = f"{random.randint(0, 999999):06d}"
-    EmailVerificationCode.objects.create(email=email, code=code)
+    try:
+        send_mail(
+            "Your LookOut verification code",
+            f"Your verification code is {code}. It expires in {CODE_EXPIRY_MINUTES} minutes.",
+            django_settings.DEFAULT_FROM_EMAIL,
+            [email],
+            fail_silently=False,
+        )
+    except Exception:
+        logger.exception("Failed to send verification email to %s", email)
+        return Response(
+            {"email": "We couldn't send an email to this address. Double-check it and try again."},
+            status=400,
+        )
 
-    send_mail(
-        "Your LookOut verification code",
-        f"Your verification code is {code}. It expires in {CODE_EXPIRY_MINUTES} minutes.",
-        django_settings.DEFAULT_FROM_EMAIL,
-        [email],
-        fail_silently=False,
-    )
+    EmailVerificationCode.objects.create(email=email, code=code)
     return Response({"detail": "Verification code sent."})
 
 
@@ -203,6 +222,14 @@ def register_personnel(request):
 
     display_name = f"{fields['first_name']} {fields['last_name']}".strip()
     with transaction.atomic():
+        try:
+            validate_password(fields["password"], user=User(
+                username=fields["username"], email=fields["email"],
+                first_name=fields["first_name"], last_name=fields["last_name"],
+            ))
+        except ValidationError as exc:
+            return Response({"password": exc.messages}, status=400)
+
         user = User.objects.create_user(
             username=fields["username"], email=fields["email"], password=fields["password"],
             role=_PERSONNEL_ROLES[role_key], display_name=display_name,
@@ -243,19 +270,30 @@ def forgot_password_send_code(request):
     email = (request.data.get("email") or "").strip().lower()
     if not email:
         return Response({"email": "Email is required."}, status=400)
+    try:
+        validate_email(email)
+    except ValidationError:
+        return Response({"email": "Enter a valid email address."}, status=400)
 
     user = User.objects.filter(email__iexact=email).first()
     if user:
         code = f"{random.randint(0, 999999):06d}"
-        EmailVerificationCode.objects.create(email=email, code=code)
-        send_mail(
-            "Your LookOut password reset code",
-            f"Your password reset code is {code}. It expires in {CODE_EXPIRY_MINUTES} minutes. "
-            "If you didn't request this, you can ignore this email.",
-            django_settings.DEFAULT_FROM_EMAIL,
-            [email],
-            fail_silently=False,
-        )
+        try:
+            send_mail(
+                "Your LookOut password reset code",
+                f"Your password reset code is {code}. It expires in {CODE_EXPIRY_MINUTES} minutes. "
+                "If you didn't request this, you can ignore this email.",
+                django_settings.DEFAULT_FROM_EMAIL,
+                [email],
+                fail_silently=False,
+            )
+        except Exception:
+            # Logged only — the response below stays identical either way so a
+            # delivery failure can't be used to distinguish a real account from
+            # a fake one (same anti-enumeration reasoning as the user lookup above).
+            logger.exception("Failed to send password reset email to %s", email)
+        else:
+            EmailVerificationCode.objects.create(email=email, code=code)
     # Same response whether or not the email exists, so this can't be used to enumerate accounts.
     return Response({"detail": "If an account exists for this email, a reset code has been sent."})
 
@@ -481,6 +519,66 @@ class CameraViewSet(viewsets.ModelViewSet):
         resp = HttpResponse(r.content, content_type=r.headers.get("Content-Type", "image/jpeg"))
         resp["Cache-Control"] = "no-store"
         return resp
+
+    @action(detail=True, methods=["post"], url_path="edge-frame",
+            parser_classes=[MultiPartParser, FormParser],
+            permission_classes=[permissions.IsAuthenticated, IsAdmin])
+    def edge_frame(self, request, pk=None):
+        """Grabs the first frame of an uploaded clip, for drawing obstruction
+        edges when the camera itself isn't reachable for a live snapshot.
+
+        Mirrors detection_sandbox/obstruction_web.py's /frame route, minus its
+        canonical 960px resize — the frame is returned at its native
+        resolution and that resolution is reported back so the caller can
+        record it as edges_width/edges_height. watch_parking scales from
+        whatever resolution is recorded, so there's nothing to gain from
+        downscaling here and one less thing to keep in sync.
+        """
+        self.get_object()  # 404s early, and confirms the admin may act on this camera
+
+        upload = request.FILES.get("file")
+        if upload is None:
+            return Response({"detail": "No file uploaded."}, status=400)
+
+        ext = os.path.splitext(upload.name)[1].lower()
+        if ext not in DETECTION_UPLOAD_EXTENSIONS:
+            return Response(
+                {"detail": f"Unsupported file type {ext!r}. Allowed: "
+                           f"{', '.join(sorted(DETECTION_UPLOAD_EXTENSIONS))}."},
+                status=400,
+            )
+        if upload.size > DETECTION_MAX_UPLOAD_BYTES:
+            limit_mb = DETECTION_MAX_UPLOAD_BYTES // (1024 * 1024)
+            return Response({"detail": f"File too large — limit is {limit_mb}MB."}, status=400)
+
+        upload_dir = django_settings.MEDIA_ROOT / "uploads"
+        os.makedirs(upload_dir, exist_ok=True)
+        safe_name = get_valid_filename(upload.name)
+        tmp_path = upload_dir / f"{uuid.uuid4().hex}_{safe_name}"
+        with open(tmp_path, "wb") as dest:
+            for chunk in upload.chunks():
+                dest.write(chunk)
+
+        try:
+            cap = cv2.VideoCapture(str(tmp_path))
+            ok, frame = cap.read()
+            cap.release()
+        finally:
+            os.remove(tmp_path)
+
+        if not ok:
+            return Response({"detail": "Could not read that video file."}, status=400)
+
+        ok, buf = cv2.imencode(".jpg", frame)
+        if not ok:
+            return Response({"detail": "Could not encode that frame."}, status=500)
+
+        h, w = frame.shape[:2]
+        return Response({
+            "image": "data:image/jpeg;base64," + base64.b64encode(buf).decode("ascii"),
+            "width": w,
+            "height": h,
+        })
 
 
 class OfficerViewSet(viewsets.ModelViewSet):
@@ -828,11 +926,19 @@ def _watch_detection_job(job_id, proc, log_path, source_path):
     job = DetectionJob.objects.filter(id=job_id).first()
     if job is None:
         return
-    job.status = DetectionJob.Status.DONE if returncode == 0 else DetectionJob.Status.FAILED
-    job.finished_at = timezone.now()
-    if returncode != 0:
-        job.error = _tail_log(log_path)
-    job.save(update_fields=["status", "finished_at", "error"])
+    # A cancel request kills this same subprocess, which is exactly what
+    # unblocks proc.wait() above — so this thread and DetectionJobViewSet.cancel
+    # race to write the final status for the same exit. cancel() writes
+    # CANCELLED to the DB BEFORE it signals the process, so if it got there
+    # first this thread must not clobber it with DONE/FAILED (a killed
+    # process's non-zero returncode would otherwise read as a crash, not a
+    # deliberate stop). Cleanup below still runs either way.
+    if job.status != DetectionJob.Status.CANCELLED:
+        job.status = DetectionJob.Status.DONE if returncode == 0 else DetectionJob.Status.FAILED
+        job.finished_at = timezone.now()
+        if returncode != 0:
+            job.error = _tail_log(log_path)
+        job.save(update_fields=["status", "finished_at", "error"])
     # The uploaded source clip is scratch input, not evidence — the watcher's
     # own evidence clips (media/violations/) are separate and untouched.
     try:
@@ -856,15 +962,25 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
     parser_classes = [MultiPartParser, FormParser]
     http_method_names = ["get", "post", "head"]
 
-    def create(self, request, *args, **kwargs):
-        violation_type = request.data.get("violation_type", "")
-        command = DETECTION_COMMANDS.get(violation_type)
-        if command is None:
-            return Response(
-                {"detail": f"Unknown violation_type. Choose one of: {', '.join(DETECTION_COMMANDS)}."},
-                status=400,
-            )
+    # staged_token shape: "<32 hex uuid>_<safe filename>", exactly what frame()
+    # and create()'s own direct-upload path both write below — anchoring the
+    # regex this tightly (rather than just checking for path separators) is
+    # what makes resolving it into a MEDIA_ROOT/uploads path safe from
+    # traversal, since get_valid_filename() already stripped '/'/'\\' when
+    # the token was created.
+    _STAGED_TOKEN_RE = re.compile(r"^[0-9a-f]{32}_.+$")
 
+    @action(detail=False, methods=["post"], url_path="frame",
+            parser_classes=[MultiPartParser, FormParser])
+    def frame(self, request):
+        """Saves the upload and returns its first frame, so a violation type
+        that needs spatial config (currently just parking) can have its edges
+        drawn before detection starts. Mirrors CameraViewSet.edge_frame /
+        detection_sandbox/obstruction_web.py's own /frame route, except no
+        Camera needs to exist yet — create() below resolves the returned
+        staged_token back into this same saved file rather than requiring a
+        second upload of a potentially huge clip.
+        """
         upload = request.FILES.get("file")
         if upload is None:
             return Response({"detail": "No file uploaded."}, status=400)
@@ -883,21 +999,129 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
         upload_dir = django_settings.MEDIA_ROOT / "uploads"
         os.makedirs(upload_dir, exist_ok=True)
         safe_name = get_valid_filename(upload.name)
-        saved_path = upload_dir / f"{uuid.uuid4().hex}_{safe_name}"
+        token = f"{uuid.uuid4().hex}_{safe_name}"
+        saved_path = upload_dir / token
         with open(saved_path, "wb") as dest:
             for chunk in upload.chunks():
                 dest.write(chunk)
 
-        # A matching extension can be spoofed — a quick decode check catches a
-        # corrupt or non-video file before a detector is launched against it.
         cap = cv2.VideoCapture(str(saved_path))
-        opened = cap.isOpened()
+        ok, first = cap.read()
         cap.release()
-        if not opened:
+        if not ok:
             os.remove(saved_path)
-            return Response({"detail": "File could not be read as a video."}, status=400)
+            return Response({"detail": "Could not read that video file."}, status=400)
+
+        ok, buf = cv2.imencode(".jpg", first)
+        if not ok:
+            os.remove(saved_path)
+            return Response({"detail": "Could not encode that frame."}, status=500)
+
+        h, w = first.shape[:2]
+        return Response({
+            "staged_token": token,
+            "source_filename": upload.name,
+            "image": "data:image/jpeg;base64," + base64.b64encode(buf).decode("ascii"),
+            "width": w,
+            "height": h,
+        })
+
+    def create(self, request, *args, **kwargs):
+        violation_type = request.data.get("violation_type", "")
+        command = DETECTION_COMMANDS.get(violation_type)
+        if command is None:
+            return Response(
+                {"detail": f"Unknown violation_type. Choose one of: {', '.join(DETECTION_COMMANDS)}."},
+                status=400,
+            )
+
+        # Either a clip already staged via frame() above (staged_token), or a
+        # fresh direct upload (file) — the two DetectionJobHistoryModal /
+        # UploadDetectionModal / RunDetectionPage entry points use whichever
+        # fits: RunDetectionPage always stages first (so a big clip only
+        # crosses the wire once even for non-parking types); the older
+        # upload-only modal still posts file+violation_type directly.
+        staged_token = request.data.get("staged_token", "")
+        upload = request.FILES.get("file")
+        if staged_token:
+            if not self._STAGED_TOKEN_RE.match(staged_token):
+                return Response({"detail": "Invalid staged_token."}, status=400)
+            saved_path = django_settings.MEDIA_ROOT / "uploads" / staged_token
+            if not saved_path.is_file():
+                return Response({"detail": "Staged upload expired — upload the clip again."}, status=400)
+            source_filename = request.data.get("source_filename") or staged_token
+        elif upload is not None:
+            ext = os.path.splitext(upload.name)[1].lower()
+            if ext not in DETECTION_UPLOAD_EXTENSIONS:
+                return Response(
+                    {"detail": f"Unsupported file type {ext!r}. Allowed: "
+                               f"{', '.join(sorted(DETECTION_UPLOAD_EXTENSIONS))}."},
+                    status=400,
+                )
+            if upload.size > DETECTION_MAX_UPLOAD_BYTES:
+                limit_mb = DETECTION_MAX_UPLOAD_BYTES // (1024 * 1024)
+                return Response({"detail": f"File too large — limit is {limit_mb}MB."}, status=400)
+
+            upload_dir = django_settings.MEDIA_ROOT / "uploads"
+            os.makedirs(upload_dir, exist_ok=True)
+            safe_name = get_valid_filename(upload.name)
+            saved_path = upload_dir / f"{uuid.uuid4().hex}_{safe_name}"
+            with open(saved_path, "wb") as dest:
+                for chunk in upload.chunks():
+                    dest.write(chunk)
+
+            # A matching extension can be spoofed — a quick decode check catches
+            # a corrupt or non-video file before a detector is launched against
+            # it. Skipped for the staged_token path above since frame() already
+            # proved the file decodes.
+            cap = cv2.VideoCapture(str(saved_path))
+            opened = cap.isOpened()
+            cap.release()
+            if not opened:
+                os.remove(saved_path)
+                return Response({"detail": "File could not be read as a video."}, status=400)
+            source_filename = upload.name
+        else:
+            return Response({"detail": "No file uploaded."}, status=400)
 
         camera_code = f"CAM-{violation_type.upper()}-TEST"
+
+        # Parking-only: edges drawn against the staged frame are written onto
+        # the shared CAM-PARKING-TEST camera before the subprocess starts, so
+        # watch_parking's own self.camera.edges branch (which correctly
+        # rescales from edges_width/height to whatever the clip actually
+        # decodes at — see watch_parking._build_monitors) picks them up. Two
+        # parking runs started close together will race on this shared row;
+        # accepted as a known limitation of the existing single-camera test
+        # harness rather than fixed here.
+        edges_raw = request.data.get("edges")
+        if violation_type == "parking" and edges_raw:
+            try:
+                edges = json.loads(edges_raw) if isinstance(edges_raw, str) else edges_raw
+            except ValueError:
+                return Response({"detail": "Invalid edges JSON."}, status=400)
+            camera, _ = Camera.objects.get_or_create(
+                code=camera_code,
+                defaults={"name": "Parking Monitor", "status": Camera.Status.ONLINE},
+            )
+            camera.edges = edges
+            edges_width = request.data.get("edges_width")
+            edges_height = request.data.get("edges_height")
+            if edges_width:
+                camera.edges_width = int(edges_width)
+            if edges_height:
+                camera.edges_height = int(edges_height)
+            obstruction_pct = request.data.get("obstruction_pct")
+            obstruction_minutes = request.data.get("obstruction_minutes")
+            if obstruction_pct:
+                camera.obstruction_pct = int(obstruction_pct)
+            if obstruction_minutes:
+                camera.obstruction_minutes = float(obstruction_minutes)
+            camera.save(update_fields=[
+                "edges", "edges_width", "edges_height",
+                "obstruction_pct", "obstruction_minutes",
+            ])
+
         log_path = f"{saved_path}.log"
         log_file = open(log_path, "w")
         try:
@@ -927,7 +1151,7 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
 
         job = DetectionJob.objects.create(
             violation_type=violation_type,
-            source_filename=upload.name,
+            source_filename=source_filename,
             source_path=str(saved_path),
             status=DetectionJob.Status.RUNNING,
             pid=proc.pid,
@@ -941,3 +1165,53 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
         ).start()
 
         return Response(self.get_serializer(job).data, status=201)
+
+    @action(detail=True, methods=["post"])
+    def cancel(self, request, pk=None):
+        """Stops a running job's subprocess outright — there's no cooperative
+        "please stop" flag the watch_* commands poll for, and none is needed:
+        this is a real OS process (see `create()`'s subprocess.Popen), so
+        killing it by the PID already stored on the job is immediate and
+        works identically for every detector without touching watch_*.py.
+
+        Writes CANCELLED to the DB BEFORE sending the kill signal, not after
+        — _watch_detection_job's own thread is blocked on this exact
+        process's exit and will unblock the moment it's killed, so if that
+        write happened second it could lose a race and get clobbered back to
+        FAILED (a killed process's exit code reads as a crash otherwise).
+        """
+        job = self.get_object()
+        if job.status != DetectionJob.Status.RUNNING:
+            return Response(
+                {"detail": f"Job is {job.status}, not running — nothing to cancel."},
+                status=400,
+            )
+
+        job.status = DetectionJob.Status.CANCELLED
+        job.finished_at = timezone.now()
+        job.save(update_fields=["status", "finished_at"])
+
+        if job.pid:
+            try:
+                proc = psutil.Process(job.pid)
+                # Kill children too (e.g. an in-progress ffmpeg raw-clip cut)
+                # so cancelling doesn't leave an orphaned process behind.
+                procs = proc.children(recursive=True) + [proc]
+                for p in procs:
+                    try:
+                        p.terminate()
+                    except psutil.NoSuchProcess:
+                        pass
+                _, alive = psutil.wait_procs(procs, timeout=3)
+                for p in alive:
+                    try:
+                        p.kill()
+                    except psutil.NoSuchProcess:
+                        pass
+            except psutil.NoSuchProcess:
+                # Already gone — most likely it finished naturally in the gap
+                # between the status check above and here. The DB write above
+                # already stands, which is fine either way.
+                pass
+
+        return Response(self.get_serializer(job).data)

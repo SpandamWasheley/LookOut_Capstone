@@ -1,22 +1,7 @@
 import { useRef, useState } from "react";
-import { X, Upload, FileVideo, Loader2, Cigarette, Beer, Car, ShieldAlert, AlertTriangle, Layers } from "lucide-react";
+import { X, Upload, FileVideo, Loader2, AlertTriangle } from "lucide-react";
 import { uploadDetectionJob } from "./api";
-
-// Local label/icon map for the upload flow only — deliberately NOT reusing
-// VIOLATION_CONFIG from data/mockData.js, since that file keys the theft
-// entry as "theft" while the backend's ViolationType/Alert.type value (and
-// the watch_thief command) uses "thief". That mismatch predates this feature
-// and is out of scope here; this map just uses the backend's real keys.
-const DETECTION_TYPES = [
-  { key: "smoking", label: "Smoking", icon: Cigarette, color: "#f59e0b" },
-  { key: "drinking", label: "Drinking", icon: Beer, color: "#8b5cf6" },
-  { key: "thief", label: "Theft (Holdup)", icon: ShieldAlert, color: "#ef4444" },
-  { key: "parking", label: "Parking", icon: Car, color: "#f97316" },
-  // Merged Bottle/Cigarette/knife model — one detection pass that can
-  // produce smoking, drinking AND theft alerts from a single clip (see
-  // watch_merged.py). Not a ViolationType itself, just a 5th job type.
-  { key: "merged", label: "Merged (All 3)", icon: Layers, color: "#22c55e" },
-];
+import { DETECTION_TYPES } from "./constants/detectionTypes";
 
 const ALLOWED_EXTENSIONS = [".mp4", ".mkv", ".avi"];
 const MAX_BYTES = 1024 * 1024 * 1024; // 1GB

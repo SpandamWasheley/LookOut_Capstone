@@ -7,6 +7,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
+from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
 from core.vision import recognition
@@ -77,6 +78,9 @@ class Command(BaseCommand):
         dwell = {}  # code -> {"first_seen": ts, "last_seen": ts}
         last_alert = {}  # code -> ts
 
+        if debug:
+            cv2.namedWindow("LookOut - watch_curfew (debug)", cv2.WINDOW_NORMAL)
+
         self.stdout.write(self.style.SUCCESS("Watching webcam. Press Ctrl+C to stop."))
 
         cfg = SystemSettings.load()
@@ -119,8 +123,7 @@ class Command(BaseCommand):
                     if debug:
                         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 200, 0), 2)
                         label = f"{match['name']} {score_pct:.0f}%" if match else "person"
-                        cv2.putText(frame, label, (x1, max(y1 - 8, 0)),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 0), 1)
+                        recognition.draw_label(frame, label, x1, max(y1 - 8, 0), (0, 200, 0))
 
                     if match is None:
                         continue
@@ -166,7 +169,7 @@ class Command(BaseCommand):
         ts_label = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{ts_label}_{match['code']}.jpg"
         cv2.imwrite(str(violations_dir / filename), frame)
-        image_url = f"{settings.SITE_BASE_URL}{settings.MEDIA_URL}violations/{filename}"
+        image_url = violation_media_path(filename)
 
         alert = Alert.objects.create(
             type=curfew_type,

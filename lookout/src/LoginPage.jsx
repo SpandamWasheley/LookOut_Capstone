@@ -64,7 +64,7 @@ export default function LoginPage({ onLogin, onForgotPassword }) {
             className="text-[10px] tracking-widest"
             style={{ color: "var(--sidebar-foreground)", fontFamily: "'DM Mono', monospace", opacity: 0.7 }}
           >
-            v2.4.1 · YOLOv8 + ArcFace
+            v2.4.1 · YOLOv8
           </div>
         </div>
       </div>

@@ -27,6 +27,7 @@ can be unit-tested without a database.
 """
 
 import math
+from collections import deque
 
 import cv2
 import numpy as np
@@ -199,6 +200,42 @@ PASSING_SECONDS = 5.0
 # it valid at any distance from the camera.
 MOVE_TOLERANCE_FRAC = 0.15
 
+# A single sighting past MOVE_TOLERANCE_FRAC must persist this long before the
+# accrued `held` is actually wiped. A vehicle large enough to fill much of the
+# frame (parked close to the camera, partially cropped by the bottom edge)
+# yields a YOLO box that jitters well past its own tolerance on ONE NOISY
+# FRAME alone - measured on this project's own footage, a stationary car's box
+# swung by 100-280px against a ~140px tolerance, frame to frame, with no
+# actual movement. Wiping `held` on that single frame reset it every 10-15s,
+# so a genuinely parked vehicle could never survive long enough to reach even
+# a 30-second threshold, let alone the 5-minute default.
+#
+# This debounces only the RESET, not accrual: a displaced single frame still
+# withholds new credit immediately (see `displaced` in update() below), so a
+# vehicle that is actually driving past still accrues nothing, ever - it just
+# is not PUNISHED (held zeroed) until the displacement has held for this long,
+# which a real departure clears easily by continuing to move.
+MOVE_CONFIRM_SECONDS = 2.0
+
+# How many recent sightings' ground points get averaged before comparing
+# against the anchor (see VehicleState._smoothed_ground). MOVE_CONFIRM_SECONDS
+# alone assumes the noise is an occasional single-frame OUTLIER around an
+# otherwise-steady reading; measured on a second clip, a smaller/farther
+# vehicle's box instead DRIFTS - a steady few pixels per frame in one
+# direction from ordinary detector noise (its estimated width creeping in and
+# out shifts the computed centre even though nothing moved), continuously
+# exceeding tolerance for seconds at a stretch rather than one frame. That
+# still eventually clears MOVE_CONFIRM_SECONDS and gets confirmed - correctly,
+# since the raw point really is out of tolerance - but a single-frame
+# comparison also has NO accrual during that whole stretch (`displaced` gates
+# it immediately, by design), so a vehicle drifting this way could accrue
+# almost nothing between resets and never reach the threshold despite never
+# truly moving. Averaging over a short window absorbs that drift the same way
+# it absorbs jitter, so accrual keeps flowing while it is well within reason;
+# a genuine departure still clears both this window and MOVE_CONFIRM_SECONDS
+# by continuing to move, just marginally slower than an unsmoothed reading.
+SMOOTH_WINDOW = 5
+
 # Accrued dwell survives this long without a sighting before it is written off
 # as the vehicle having left. Generously longer than the 2s used elsewhere,
 # because a five-minute rule has to outlast a passing jeepney.
@@ -333,23 +370,79 @@ class VehicleState:
         self.last_seen = now
         self.over = False           # currently past the line (hysteresis state)
         self.held = 0.0             # accrued seconds over the line AND stationary
+        # ObstructionMonitor.update() overwrites this with the monitor's own
+        # obstruction_seconds right before every state.update() call - this is
+        # only a fallback so verdict() (called from summary() too) is never
+        # comparing against an unset attribute.
+        self.obstruction_seconds = OBSTRUCTION_SECONDS
         self.last_accrued_at = None
         self.fraction = 0.0
+        # The detector's own class name for whichever sighting last updated
+        # this track (car/motorcycle/bus/truck) - set by ObstructionMonitor.
+        # update() below, same pattern as obstruction_seconds. Callers use
+        # this for the alert's "what was detected" field; the edge's own name
+        # ("left"/"right") is a separate thing entirely and must not be
+        # confused with it (see watch_parking.py's _create_alert call).
+        self.label = None
         self.alerted = False      # this track has already been reported
         self.fresh_alert = False  # ...and it became an alert on THIS frame
         self.truncated = False    # box is clipped by a frame edge -> unreliable
         self.detours = 0          # pedestrians seen stepping into the road
+        self._displaced_since = None  # when an out-of-tolerance sighting first appeared
+        self._recent_grounds = deque([self.anchor], maxlen=SMOOTH_WINDOW)
 
     @staticmethod
     def _ground(box):
         x1, y1, x2, y2 = box
         return ((x1 + x2) / 2.0, float(y2))
 
-    def _moved(self, box):
-        """True if the vehicle shifted more than a fraction of its own width."""
+    def _smoothed_ground(self, box):
+        """Rolling mean of the last SMOOTH_WINDOW ground points - see that
+        constant for why a single raw sighting isn't trusted for the
+        movement check below."""
+        self._recent_grounds.append(self._ground(box))
+        xs = [p[0] for p in self._recent_grounds]
+        ys = [p[1] for p in self._recent_grounds]
+        return (sum(xs) / len(xs), sum(ys) / len(ys))
+
+    def _reanchor(self, point):
+        """Resets the movement reference to `point` - used whenever the
+        accrual itself is also being reset, so stale pre-reset sightings
+        don't linger in the smoothing window and bias the next comparison."""
+        self.anchor = point
+        self._recent_grounds.clear()
+        self._recent_grounds.append(point)
+
+    def _moved(self, point, tol):
+        """True if `point` (the smoothed ground point) sits outside `tol` of
+        the anchor."""
+        return np.hypot(point[0] - self.anchor[0], point[1] - self.anchor[1]) > tol
+
+    def _still(self, box):
+        """Non-mutating, single-frame version of the same check - true if
+        `box`'s RAW ground point sits within tolerance of the anchor. Used
+        only by ObstructionMonitor._jammed's coarse pre-pass over every
+        vehicle in the frame, which runs before update() and must not feed
+        this box into the smoothing window that update() itself maintains."""
         gx, gy = self._ground(box)
         tol = max((box[2] - box[0]) * MOVE_TOLERANCE_FRAC, 3.0)
-        return np.hypot(gx - self.anchor[0], gy - self.anchor[1]) > tol
+        return np.hypot(gx - self.anchor[0], gy - self.anchor[1]) <= tol
+
+    def _confirmed_move(self, displaced, now):
+        """True only once an out-of-tolerance sighting has PERSISTED for
+        MOVE_CONFIRM_SECONDS - see that constant for why a single sighting is
+        not trusted as a real departure on its own. Gates the RESET of held
+        and anchor only; `displaced` (the raw, single-frame signal) still gates
+        accrual immediately below, so a vehicle that is actually driving past
+        still never accrues so much as one noisy frame's worth of dwell -
+        confirming a move takes 2s either way, only the *punishment* for it
+        (wiping held) waits that long, not the *withholding* of new credit."""
+        if not displaced:
+            self._displaced_since = None
+            return False
+        if self._displaced_since is None:
+            self._displaced_since = now
+        return (now - self._displaced_since) >= MOVE_CONFIRM_SECONDS
 
     def update(self, box, fraction, now, truncated=False, frozen=False):
         """Folds one sighting into the accrual and returns the current state.
@@ -370,15 +463,19 @@ class VehicleState:
             self.held = 0.0
             self.over = False
             self.alerted = False
-            self.anchor = self._ground(box)
+            self._reanchor(self._ground(box))
             self.first_seen = now
+            self._displaced_since = None
 
-        moving = self._moved(box)
-        if moving:
+        tol = max((box[2] - box[0]) * MOVE_TOLERANCE_FRAC, 3.0)
+        smoothed = self._smoothed_ground(box)
+        displaced = self._moved(smoothed, tol)
+        if self._confirmed_move(displaced, now):
             # Movement resets both the accrual and the reference position: a
             # vehicle that shuffles forward has started a new stay.
             self.held = 0.0
-            self.anchor = self._ground(box)
+            self._reanchor(smoothed)
+            self._displaced_since = None
 
         self.box = box
         self.fraction = fraction
@@ -400,7 +497,7 @@ class VehicleState:
             self.last_accrued_at = now if self.over else None
             return self.verdict()
 
-        if self.over and not moving:
+        if self.over and not displaced:
             # Accrue only the time actually observed. Time lost to an occlusion
             # is NOT credited - the dwell survives the gap, it does not grow
             # through it - so the five minutes remains five observed minutes.
@@ -415,7 +512,7 @@ class VehicleState:
     def verdict(self):
         if not self.over:
             return CLEAR
-        if self.held >= OBSTRUCTION_SECONDS:
+        if self.held >= self.obstruction_seconds:
             return OBSTRUCTION
         if self.held < PASSING_SECONDS:
             return PASSING
@@ -488,7 +585,7 @@ class ObstructionMonitor:
         for box in vehicles:
             vid = self._match(box)
             st = self.states.get(vid)
-            if st is not None and not st._moved(box):
+            if st is not None and st._still(box):
                 still += 1
         return still >= len(vehicles) * JAM_STATIONARY_FRACTION
 
@@ -503,18 +600,71 @@ class ObstructionMonitor:
         out = []
         seen = set()
         jam = self._jammed(vehicles, now)
-        for i, box in enumerate(vehicles):
+
+        # Pass 1: match every box to a track id (minting new ones as needed),
+        # then merge any two ids just matched THIS FRAME whose boxes overlap
+        # heavily. The near whole-frame pass and the far tiling pass can each
+        # land a box for the SAME vehicle too far apart (IoU under _match's
+        # 0.3 bar) to land on one id in a single shot — especially across
+        # frames where only one of the two passes fires that vehicle — so each
+        # box ends up anchoring its own id. Two ids whose current boxes now
+        # overlap this heavily (the bar detect_vehicles_far()'s own NMS
+        # already trusts to mean "same object") can't be two real vehicles in
+        # the same spot. Fold the younger into the older, which has the more
+        # trustworthy, continuously-observed `held` accrual — the younger's
+        # own held is discarded rather than merged in: it's an honest reading
+        # of what IT sampled, but only of the frames it happened to be fed,
+        # and taking the max would let it override a real movement/occlusion
+        # reset the older track legitimately made on a frame the younger one
+        # simply never saw. `alerted` is OR'd, not discarded: if either track
+        # already raised a real alert for this vehicle, the survivor must not
+        # raise a second one for the same event.
+        vids = []
+        for box in vehicles:
             vid = self._match(box)
             if vid is None:
                 vid = self._next_id
                 self._next_id += 1
                 self.states[vid] = VehicleState(vid, box, now)
+            vids.append(vid)
+
+        remap = {}
+        for i, vid_a in enumerate(vids):
+            if vid_a in remap:
+                continue
+            st_a = self.states[vid_a]
+            for vid_b in vids[i + 1:]:
+                if vid_b == vid_a or vid_b in remap:
+                    continue
+                st_b = self.states[vid_b]
+                if _iou(st_a.box, st_b.box) < 0.5:
+                    continue
+                older, newer = ((st_a, st_b) if st_a.first_seen <= st_b.first_seen
+                                else (st_b, st_a))
+                older.alerted = older.alerted or newer.alerted
+                remap[newer.id] = older.id
+                del self.states[newer.id]
+        vids = [remap.get(v, v) for v in vids]
+
+        # Pass 2: fold each sighting into its (now-reconciled) track. Where a
+        # duplicate box got remapped onto a track this frame already updated,
+        # skip it — vehicles is already confidence-sorted (NMS in
+        # recognition.py preserves that order), so the first sighting of a
+        # given id is the best one.
+        handled = set()
+        for i, box in enumerate(vehicles):
+            vid = vids[i]
+            if vid in handled:
+                continue
+            handled.add(vid)
             seen.add(vid)
             mask = masks[i] if masks is not None else None
             label = labels[i] if labels is not None else None
             frac = fraction_past(self.line, box, mask, label)
             state = self.states[vid]
             state.obstruction_seconds = self.obstruction_seconds
+            if label is not None:
+                state.label = label
             verdict = state.update(box, frac, now,
                                    truncated=is_truncated(box, frame_shape),
                                    frozen=jam)

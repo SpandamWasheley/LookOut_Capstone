@@ -10,11 +10,15 @@ from core.models import (
     ViolationType,
 )
 
+# Labels here must match the frontend's canonical VIOLATION_TYPES (see
+# lookout/src/constants/violationTypes.js) — this command uses
+# update_or_create below, so it silently overwrites the DB's label on every
+# reseed. See migration 0026 for the one-time rename/merge this mirrors.
 VIOLATION_TYPES = [
-    {"code": "theft", "label": "Theft Violation", "color": "#ef4444", "icon": "theft"},
-    {"code": "parking", "label": "Illegal Parking / Obstruction", "color": "#f97316", "icon": "car"},
-    {"code": "drinking", "label": "Drinking in Public Area", "color": "#8b5cf6", "icon": "beer"},
-    {"code": "smoking", "label": "Smoking in Public Places", "color": "#64748b", "icon": "smoke"},
+    {"code": "theft", "label": "Holdup in Public Area", "color": "#ef4444", "icon": "theft"},
+    {"code": "parking", "label": "Parking Obstruction in Area", "color": "#f97316", "icon": "car"},
+    {"code": "drinking", "label": "Drinking", "color": "#8b5cf6", "icon": "beer"},
+    {"code": "smoking", "label": "Smoking", "color": "#64748b", "icon": "smoke"},
 ]
 
 USERS = [

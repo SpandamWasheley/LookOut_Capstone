@@ -121,13 +121,26 @@ export interface LoginResult {
 }
 
 export async function login(username: string, password: string): Promise<LoginResult["user"]> {
-  const response = await fetch(`${API_BASE_URL}/auth/login/`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password }),
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}/auth/login/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+  } catch {
+    throw new Error("Couldn't reach the server. Check your connection and try again.");
+  }
 
   if (!response.ok) {
+    if (response.status === 429) {
+      throw new Error("Too many attempts. Please wait a moment and try again.");
+    }
+    if (response.status >= 500) {
+      throw new Error("The server ran into a problem. Please try again shortly.");
+    }
+    // 400/401/403 all stay generic — surfacing more detail here would let the
+    // message reveal whether an account exists.
     throw new Error("Invalid username or password.");
   }
 
@@ -197,6 +210,8 @@ export interface ApiAlert {
   confidence: number;
   description: string;
   image_url: string;
+  video_url: string;
+  raw_video_url: string;
   officers_assigned: number[];
   officers_assigned_names: string[];
   suspect: string;

@@ -60,6 +60,8 @@ class CameraSerializer(serializers.ModelSerializer):
         fields = [
             "id", "code", "name", "zone", "status", "fps",
             "last_motion_at", "image_url", "is_live", "stream_url",
+            "edges", "edges_width", "edges_height",
+            "obstruction_pct", "obstruction_minutes",
         ]
 
 
@@ -206,6 +208,17 @@ class AlertSerializer(serializers.ModelSerializer):
     )
     officers_assigned_names = serializers.SerializerMethodField()
     matched_person_name = serializers.SerializerMethodField()
+    # The watchers store a relative path (see core/media.py) — resolved to an
+    # absolute URL here, against THIS request, so the host always matches
+    # whatever the client actually connected through (localhost, a LAN IP, or
+    # whichever ngrok forwarding host is live this session) instead of
+    # whatever SITE_BASE_URL happened to be frozen as at write time. No
+    # client writes these three fields via the API (only the watch_* commands
+    # ever set them, directly through the ORM), so making them
+    # SerializerMethodFields — always read-only — doesn't remove a write path.
+    image_url = serializers.SerializerMethodField()
+    video_url = serializers.SerializerMethodField()
+    raw_video_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Alert
@@ -221,6 +234,31 @@ class AlertSerializer(serializers.ModelSerializer):
 
     def get_officers_assigned_names(self, obj):
         return [o.name for o in obj.officers_assigned.all()]
+
+    def _resolve_media_url(self, value):
+        if not value:
+            return value
+        # Already absolute — seed_demo.py's Unsplash CDN stills, or (pre-
+        # migration-0027) an old row that was somehow missed — pass through
+        # untouched rather than mangle a genuinely external URL.
+        if value.startswith("http://") or value.startswith("https://"):
+            return value
+        request = self.context.get("request")
+        if request is None:
+            # No request in context (e.g. a serializer used outside a view) —
+            # nothing to resolve against; return the bare path rather than
+            # raise, so this never breaks a non-HTTP caller.
+            return value
+        return request.build_absolute_uri(value)
+
+    def get_image_url(self, obj):
+        return self._resolve_media_url(obj.image_url)
+
+    def get_video_url(self, obj):
+        return self._resolve_media_url(obj.video_url)
+
+    def get_raw_video_url(self, obj):
+        return self._resolve_media_url(obj.raw_video_url)
 
     def get_matched_person_name(self, obj):
         return obj.matched_person.full_name if obj.matched_person_id else None
@@ -240,6 +278,8 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
             "smoking_enabled", "smoking_confidence", "smoking_dwell",
             "thief_enabled", "thief_confidence", "thief_dwell",
             "drinking_enabled", "drinking_confidence", "drinking_dwell",
+            "drinking_held_dwell", "drinking_evidence_max_age",
+            "drinking_mouth_proximity", "drinking_cooldown_center_dist",
             "drinking_hours_enabled", "drinking_start", "drinking_end",
             "alert_cooldown", "evidence_retention_days",
             "auto_dispatch", "email_alerts", "sms_alerts",

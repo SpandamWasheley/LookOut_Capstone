@@ -1,7 +1,12 @@
 import { Feather } from "@expo/vector-icons";
+import { useEvent } from "expo";
+import { File, Paths } from "expo-file-system";
 import * as Haptics from "expo-haptics";
 import { Image } from "expo-image";
+import * as MediaLibrary from "expo-media-library";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import * as ScreenOrientation from "expo-screen-orientation";
+import { useVideoPlayer, VideoView } from "expo-video";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -14,6 +19,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  type TextInputProps,
   useWindowDimensions,
   View,
 } from "react-native";
@@ -28,7 +34,7 @@ import * as api from "@/lib/api";
 
 const STATUS_DISPLAY: Record<Assignment["status"], string> = {
   active: "Pending",
-  dispatched: "Accepted",
+  dispatched: "Assigned",
   resolved: "Resolved",
   acknowledged: "Dismissed",
 };
@@ -177,9 +183,63 @@ const BARANGAY_OPTIONS = [
   { value: "TUMAGA", label: "Tumaga" },
 ];
 
+// A picker, not free text — a typo'd suffix is the same class of problem as a
+// duplicate violator record (name-matching downstream breaks on it). "None"
+// maps to "" so the submitted value is unchanged from what an empty free-text
+// field already produced.
+const SUFFIX_OPTIONS = ["None", "Jr.", "Sr.", "II", "III", "IV"];
+
 function normalizeName(...parts: string[]): string {
   return parts.join(" ").trim().toLowerCase().replace(/\s+/g, " ");
 }
+
+interface UnderlineInputProps extends Omit<TextInputProps, "placeholder" | "placeholderTextColor"> {
+  // Omitted (e.g. for Notes, which sits under its own section header
+  // already) rather than "" — an empty string would still reserve the
+  // label's line height and leave a blank gap above the field.
+  label?: string;
+  required?: boolean;
+}
+
+// Shared by every free-text field in ResolveModal (name parts, notes) so the
+// form reads as one style: transparent background, a 1px bottom rule, and —
+// the only strong visual weight in the section — a thicker accent-coloured
+// rule while focused. `style` (e.g. Notes' taller minHeight) is layered on
+// top of, not instead of, that base look.
+const UnderlineInput = React.forwardRef<TextInput, UnderlineInputProps>(function UnderlineInput(
+  { label, required, value, onChangeText, onFocus, onBlur, style, ...rest },
+  ref
+) {
+  const c = useColors();
+  const [focused, setFocused] = useState(false);
+
+  return (
+    <View style={cfStyles.fieldGroup}>
+      {label && <Text style={[cfStyles.fieldLabel, { color: c.mutedForeground }]}>{label}</Text>}
+      <TextInput
+        ref={ref}
+        style={[
+          cfStyles.underlineInput,
+          { color: c.foreground, borderBottomColor: focused ? c.accent : c.border, borderBottomWidth: focused ? 2 : 1 },
+          style,
+        ]}
+        placeholder={required ? "Required" : "Optional"}
+        placeholderTextColor={c.mutedForeground}
+        value={value}
+        onChangeText={onChangeText}
+        onFocus={(e) => {
+          setFocused(true);
+          onFocus?.(e);
+        }}
+        onBlur={(e) => {
+          setFocused(false);
+          onBlur?.(e);
+        }}
+        {...rest}
+      />
+    </View>
+  );
+});
 
 interface ResolveModalProps {
   visible: boolean;
@@ -221,6 +281,7 @@ function ResolveModal({
   const [notes, setNotes] = useState("");
 
   const [barangaySheetVisible, setBarangaySheetVisible] = useState(false);
+  const [suffixSheetVisible, setSuffixSheetVisible] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [reviewState, setReviewState] = useState<{ action: "finish" | "another"; duplicateName: string | null } | null>(null);
   const [formError, setFormError] = useState("");
@@ -484,49 +545,33 @@ function ResolveModal({
             )}
 
             <Text style={[cfStyles.sectionLabel, { color: c.mutedForeground, marginTop: 18 }]}>VIOLATOR NAME</Text>
-            <View style={cfStyles.nameRow}>
-              <TextInput
-                style={[cfStyles.input, cfStyles.nameInputWide, { color: c.foreground, borderColor: c.border, backgroundColor: c.muted }]}
-                placeholder="First name"
-                placeholderTextColor={c.mutedForeground}
-                value={firstName}
-                onChangeText={setFirstName}
-              />
-              <TextInput
-                style={[cfStyles.input, cfStyles.nameInputWide, { color: c.foreground, borderColor: c.border, backgroundColor: c.muted }]}
-                placeholder="Middle name (optional)"
-                placeholderTextColor={c.mutedForeground}
-                value={middleName}
-                onChangeText={setMiddleName}
-              />
-            </View>
-            <View style={cfStyles.nameRow}>
-              <TextInput
-                ref={lastNameRef}
-                style={[cfStyles.input, cfStyles.nameInputWide, { color: c.foreground, borderColor: c.border, backgroundColor: c.muted }]}
-                placeholder="Last name"
-                placeholderTextColor={c.mutedForeground}
-                value={lastName}
-                onChangeText={setLastName}
-              />
-              <TextInput
-                style={[cfStyles.input, cfStyles.nameInputNarrow, { color: c.foreground, borderColor: c.border, backgroundColor: c.muted }]}
-                placeholder="Suffix"
-                placeholderTextColor={c.mutedForeground}
-                value={suffix}
-                onChangeText={setSuffix}
-              />
+            <UnderlineInput label="First name" required value={firstName} onChangeText={setFirstName} />
+            <UnderlineInput label="Middle name" value={middleName} onChangeText={setMiddleName} />
+            <UnderlineInput label="Last name" required ref={lastNameRef} value={lastName} onChangeText={setLastName} />
+            <View style={cfStyles.fieldGroup}>
+              <Text style={[cfStyles.fieldLabel, { color: c.mutedForeground }]}>Suffix</Text>
+              <Pressable
+                onPress={() => setSuffixSheetVisible(true)}
+                style={[cfStyles.underlineInput, cfStyles.underlinePicker, { borderBottomColor: c.border }]}
+                accessibilityRole="button"
+                accessibilityLabel="Select suffix"
+              >
+                <Text style={[cfStyles.underlinePickerText, { color: suffix ? c.foreground : c.mutedForeground }]}>
+                  {suffix || "None"}
+                </Text>
+                <Feather name="chevron-down" size={16} color={c.mutedForeground} />
+              </Pressable>
             </View>
 
             <Text style={[cfStyles.sectionLabel, { color: c.mutedForeground, marginTop: 18 }]}>VIOLATOR&apos;S HOME BARANGAY</Text>
             <Pressable
               onPress={() => setBarangaySheetVisible(true)}
-              style={[cfStyles.pickerBtn, { backgroundColor: c.muted, borderColor: c.border }]}
+              style={[cfStyles.underlineInput, cfStyles.underlinePicker, { borderBottomColor: c.border }]}
               accessibilityRole="button"
               accessibilityLabel="Select violator's home barangay"
             >
               <Feather name="map-pin" size={15} color={c.mutedForeground} />
-              <Text style={[cfStyles.pickerBtnText, { color: violatorBarangay ? c.foreground : c.mutedForeground }]}>
+              <Text style={[cfStyles.underlinePickerText, { color: violatorBarangay ? c.foreground : c.mutedForeground }]}>
                 {selectedBarangayLabel ?? "Select barangay…"}
               </Text>
               {carriedBarangay && violatorBarangay && (
@@ -557,7 +602,7 @@ function ResolveModal({
               onPress={() => handlePress("another")}
               disabled={!canSubmit}
               accessibilityRole="button"
-              accessibilityLabel="Save and add another citation"
+              accessibilityLabel="Save and add more citations"
               style={[
                 cfStyles.secondaryBtn,
                 hasFiledAny
@@ -567,7 +612,7 @@ function ResolveModal({
               ]}
             >
               <Feather name="user-plus" size={15} color={hasFiledAny ? "#fff" : c.foreground} />
-              <Text style={[cfStyles.secondaryBtnText, { color: hasFiledAny ? "#fff" : c.foreground }]}>Save & add another</Text>
+              <Text style={[cfStyles.secondaryBtnText, { color: hasFiledAny ? "#fff" : c.foreground }]}>Save & add more</Text>
             </Pressable>
             <Pressable
               onPress={() => handlePress("finish")}
@@ -613,6 +658,35 @@ function ResolveModal({
               {violatorBarangay === b.value && <Feather name="check" size={16} color={c.success} />}
             </Pressable>
           ))}
+        </View>
+      </Modal>
+
+      <Modal visible={suffixSheetVisible} animationType="slide" transparent onRequestClose={() => setSuffixSheetVisible(false)}>
+        <Pressable style={rStyles.overlay} onPress={() => setSuffixSheetVisible(false)} />
+        <View style={[cfStyles.barangaySheet, { backgroundColor: c.card, borderColor: c.border }]}>
+          <View style={[rStyles.handle, { backgroundColor: c.border }]} />
+          <Text style={[rStyles.title, { color: c.foreground, marginBottom: 10 }]}>Suffix</Text>
+          {SUFFIX_OPTIONS.map((opt) => {
+            // "None" is the picker's face for the empty string the field
+            // already defaults to and submits — not a fifth real value.
+            const optValue = opt === "None" ? "" : opt;
+            const selected = suffix === optValue;
+            return (
+              <Pressable
+                key={opt}
+                onPress={() => {
+                  setSuffix(optValue);
+                  setSuffixSheetVisible(false);
+                }}
+                accessibilityRole="button"
+                accessibilityState={{ selected }}
+                style={[cfStyles.barangayRow, { backgroundColor: selected ? c.successLight : c.secondary, borderColor: c.border }]}
+              >
+                <Text style={[cfStyles.barangayRowText, { color: c.foreground }]}>{opt}</Text>
+                {selected && <Feather name="check" size={16} color={c.success} />}
+              </Pressable>
+            );
+          })}
         </View>
       </Modal>
 
@@ -681,44 +755,165 @@ function ResolveModal({
 
 function RecordingPlayer({
   imageUrl,
+  videoUrl,
+  code,
   camera,
   zone,
   timestamp,
 }: {
   imageUrl: string;
+  videoUrl: string;
+  code: string;
   camera: string | null;
   zone: string;
   timestamp: string;
 }) {
   const c = useColors();
-  const [playing, setPlaying] = useState(false);
-  const [elapsed, setElapsed] = useState(18);
+  const hasVideo = !!videoUrl;
   const [fullscreen, setFullscreen] = useState(false);
-  const duration = 45;
+  const [fetchFailed, setFetchFailed] = useState(false);
+  const [frameRendered, setFrameRendered] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const [saveSuccess, setSaveSuccess] = useState(false);
+  const [trackWidth, setTrackWidth] = useState(0);
+
+  // Landscape while fullscreen — a 16:9 clip in a portrait-locked box has no
+  // room to breathe, and "contain" would just add huge letterbox bars without
+  // this. The single effect (rather than one for enter + one for unmount)
+  // means React runs the SAME cleanup — unlockAsync — whether fullscreen
+  // toggles off normally or the screen unmounts mid-fullscreen (e.g. the
+  // officer backs out), so the app is never left stuck sideways either way.
+  useEffect(() => {
+    if (fullscreen) {
+      ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+      return () => {
+        ScreenOrientation.unlockAsync();
+      };
+    }
+    return undefined;
+  }, [fullscreen]);
+
+  // null when there's no clip at all, or once a fetch has failed. Flipping
+  // fetchFailed back to false on retry hands useVideoPlayer a fresh source
+  // identity, so it builds a brand-new player instead of reusing a dead one.
+  const source = hasVideo && !fetchFailed ? videoUrl : null;
+  const player = useVideoPlayer(source, (p) => {
+    p.loop = false;
+    p.timeUpdateEventInterval = 0.25;
+  });
+
+  const { status } = useEvent(player, "statusChange", { status: player.status });
+  const { isPlaying } = useEvent(player, "playingChange", { isPlaying: player.playing });
+  const { currentTime } = useEvent(player, "timeUpdate", {
+    currentTime: player.currentTime,
+    currentLiveTimestamp: null,
+    currentOffsetFromLive: null,
+    bufferedPosition: player.bufferedPosition,
+  });
+  // sourceLoad fires once metadata has finished loading, independent of
+  // timeUpdate (which only ticks during actual playback) — without this,
+  // player.duration is populated internally but nothing re-renders this
+  // component to show it, so the officer would see 0:00 / 0:00 until play.
+  const { duration: loadedDuration } = useEvent(player, "sourceLoad", {
+    videoSource: null, duration: 0,
+    availableVideoTracks: [], availableSubtitleTracks: [], availableAudioTracks: [],
+  });
 
   useEffect(() => {
-    if (!playing) return;
-    const iv = setInterval(() => {
-      setElapsed((p) => {
-        if (p >= duration) { setPlaying(false); return duration; }
-        return p + 0.5;
-      });
-    }, 500);
-    return () => clearInterval(iv);
-  }, [playing]);
+    if (status === "error") setFetchFailed(true);
+  }, [status]);
 
+  useEffect(() => {
+    setFrameRendered(false);
+  }, [source]);
+
+  const duration = player.duration || loadedDuration || 0;
+  const pct = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0;
   const fmtSec = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
-  const pct = (elapsed / duration) * 100;
-  const skip = (delta: number) => setElapsed((p) => Math.min(duration, Math.max(0, p + delta)));
+  const togglePlay = () => (player.playing ? player.pause() : player.play());
+  const skip = (delta: number) => player.seekBy(delta);
+  const seekToRatio = (ratio: number) => {
+    if (duration > 0) player.currentTime = Math.min(duration, Math.max(0, ratio * duration));
+  };
+  const retry = () => setFetchFailed(false);
+
+  const handleSaveClip = async () => {
+    if (!hasVideo || saving) return;
+    setSaving(true);
+    setSaveError("");
+    setSaveSuccess(false);
+    try {
+      // Write-only permission (true) — saving evidence into the gallery never
+      // needs to read the officer's existing photos.
+      const { granted, canAskAgain } = await MediaLibrary.requestPermissionsAsync(true);
+      if (!granted) {
+        setSaveError(
+          canAskAgain
+            ? "Photo library permission is needed to save the clip."
+            : "Photo library access is denied. Enable it in Settings to save clips."
+        );
+        return;
+      }
+
+      // Evidence-grade filename: the alert code, not whatever the URL's path
+      // happens to end in. Code is already filesystem-safe (ALT-#### —
+      // alphanumeric + hyphen), but strip anything else just in case.
+      const safeCode = (code || "clip").replace(/[^a-zA-Z0-9_-]/g, "_");
+      const destFile = new File(Paths.cache, `${safeCode}.mp4`);
+      // Belt-and-suspenders against "destination exists": delete any leftover
+      // from a previous save ourselves rather than relying solely on
+      // `idempotent` to overwrite cleanly on every platform.
+      if (destFile.exists) destFile.delete();
+      const downloaded = await File.downloadFileAsync(videoUrl, destFile, { idempotent: true });
+      await MediaLibrary.saveToLibraryAsync(downloaded.uri);
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 3000);
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : "Could not save the clip.");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   // Stable source object so expo-image never treats a parent re-render as a
   // source change (which would reload the image and flicker).
   const imageSource = useMemo(() => ({ uri: imageUrl }), [imageUrl]);
 
+  const showLoading = hasVideo && !fetchFailed && (status === "idle" || status === "loading") && !frameRendered;
+  const showUnavailable = !hasVideo || fetchFailed;
+  const showPlayer = hasVideo && !fetchFailed;
+
   const content = (
     <>
       <View style={[rpStyles.imageBox, fullscreen && rpStyles.imageBoxFullscreen]}>
-        <Image source={imageSource} style={[rpStyles.image, { opacity: playing ? 0.82 : 0.55 }]} contentFit="cover" />
+        <Image source={imageSource} style={[rpStyles.image, { opacity: frameRendered ? 0 : 1 }]} contentFit="cover" />
+        {showPlayer && (
+          <VideoView
+            player={player}
+            style={StyleSheet.absoluteFill}
+            nativeControls={false}
+            contentFit={fullscreen ? "contain" : "cover"}
+            onFirstFrameRender={() => setFrameRendered(true)}
+          />
+        )}
+        {showLoading && (
+          <View style={rpStyles.centerOverlay}>
+            <ActivityIndicator color="#fff" />
+          </View>
+        )}
+        {showUnavailable && (
+          <View style={rpStyles.centerOverlay}>
+            <Feather name="video-off" size={18} color="rgba(255,255,255,0.85)" />
+            <Text style={rpStyles.unavailableText}>Video unavailable</Text>
+            {hasVideo && (
+              <Pressable onPress={retry} style={rpStyles.retryBtn} hitSlop={8}>
+                <Feather name="refresh-cw" size={12} color="#fff" />
+                <Text style={rpStyles.retryText}>Retry</Text>
+              </Pressable>
+            )}
+          </View>
+        )}
         <View style={rpStyles.topOverlay}>
           <View style={rpStyles.recRow}>
             <View style={rpStyles.recBadge}>
@@ -731,33 +926,41 @@ function RecordingPlayer({
         {!!zone && <Text style={rpStyles.zoneLabel}>{zone}</Text>}
       </View>
       <View style={[rpStyles.controls, { backgroundColor: c.card }]}>
-        <View style={[rpStyles.progressTrack, { backgroundColor: c.border }]}>
+        <Pressable
+          onLayout={(e) => setTrackWidth(e.nativeEvent.layout.width)}
+          onPress={(e) => { if (showPlayer && trackWidth > 0) seekToRatio(e.nativeEvent.locationX / trackWidth); }}
+          style={[rpStyles.progressTrack, { backgroundColor: c.border }]}
+        >
           <View style={[rpStyles.progressFill, { width: `${pct}%`, backgroundColor: c.primary }]} />
-          <View style={[rpStyles.violationDot, { left: `${(18 / duration) * 100}%` }]} />
-        </View>
+        </Pressable>
         <View style={rpStyles.controlsRow}>
           <View style={rpStyles.controlsLeft}>
-            <Pressable onPress={() => skip(-5)} hitSlop={8}>
+            <Pressable onPress={() => skip(-5)} hitSlop={8} disabled={!showPlayer}>
               <Feather name="rotate-ccw" size={15} color={c.mutedForeground} />
             </Pressable>
-            <Pressable onPress={() => setPlaying(!playing)} style={[rpStyles.playPauseBtn, { backgroundColor: c.primary }]}>
-              <Feather name={playing ? "pause" : "play"} size={13} color="#0c0f16" style={playing ? undefined : { marginLeft: 1.5 }} />
+            <Pressable onPress={togglePlay} disabled={!showPlayer}
+              style={[rpStyles.playPauseBtn, { backgroundColor: showPlayer ? c.primary : c.border }]}>
+              <Feather name={isPlaying ? "pause" : "play"} size={13} color="#0c0f16" style={isPlaying ? undefined : { marginLeft: 1.5 }} />
             </Pressable>
-            <Pressable onPress={() => skip(5)} hitSlop={8}>
+            <Pressable onPress={() => skip(5)} hitSlop={8} disabled={!showPlayer}>
               <Feather name="rotate-cw" size={15} color={c.mutedForeground} />
             </Pressable>
-            <Text style={[rpStyles.timeText, { color: c.mutedForeground }]}>{fmtSec(elapsed)} / {fmtSec(duration)}</Text>
+            <Text style={[rpStyles.timeText, { color: c.mutedForeground }]}>{fmtSec(currentTime)} / {fmtSec(duration)}</Text>
           </View>
           <View style={rpStyles.controlsRight}>
             <Pressable onPress={() => setFullscreen((f) => !f)} hitSlop={8}>
               <Feather name={fullscreen ? "minimize" : "maximize"} size={14} color={c.mutedForeground} />
             </Pressable>
-            <Pressable style={rpStyles.saveClipBtn} hitSlop={8}>
-              <Feather name="download" size={11} color={c.mutedForeground} />
-              <Text style={[rpStyles.saveClipText, { color: c.mutedForeground }]}>Save clip</Text>
+            <Pressable onPress={handleSaveClip} disabled={!hasVideo || saving} style={rpStyles.saveClipBtn} hitSlop={8}>
+              {saving
+                ? <ActivityIndicator size="small" color={c.mutedForeground} />
+                : <Feather name="download" size={11} color={hasVideo ? c.mutedForeground : c.border} />}
+              <Text style={[rpStyles.saveClipText, { color: hasVideo ? c.mutedForeground : c.border }]}>Save clip</Text>
             </Pressable>
           </View>
         </View>
+        {!!saveError && <Text style={rpStyles.saveErrorText}>{saveError}</Text>}
+        {saveSuccess && <Text style={rpStyles.saveSuccessText}>Saved to gallery</Text>}
       </View>
     </>
   );
@@ -789,7 +992,12 @@ const rpStyles = StyleSheet.create({
   controls: { paddingHorizontal: 14, paddingVertical: 10, gap: 8 },
   progressTrack: { height: 4, borderRadius: 2, position: "relative" },
   progressFill: { position: "absolute", left: 0, top: 0, height: "100%", borderRadius: 2 },
-  violationDot: { position: "absolute", top: -3, width: 10, height: 10, borderRadius: 5, backgroundColor: "#ef4444" },
+  centerOverlay: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", gap: 6, backgroundColor: "rgba(0,0,0,0.25)" },
+  unavailableText: { color: "rgba(255,255,255,0.85)", fontSize: 11, fontFamily: "Inter_500Medium" },
+  retryBtn: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, backgroundColor: "rgba(255,255,255,0.15)" },
+  retryText: { color: "#fff", fontSize: 11, fontFamily: "Inter_600SemiBold" },
+  saveErrorText: { color: "#ef4444", fontSize: 10, fontFamily: "Inter_500Medium" },
+  saveSuccessText: { color: "#10b981", fontSize: 10, fontFamily: "Inter_500Medium" },
   controlsRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   controlsLeft: { flexDirection: "row", alignItems: "center", gap: 12 },
   controlsRight: { flexDirection: "row", alignItems: "center", gap: 14 },
@@ -798,7 +1006,11 @@ const rpStyles = StyleSheet.create({
   saveClipBtn: { flexDirection: "row", alignItems: "center", gap: 4 },
   saveClipText: { fontSize: 11, fontFamily: "Inter_500Medium" },
   fullscreenBackdrop: { flex: 1, backgroundColor: "#000", justifyContent: "center" },
-  fullscreenWrap: { flex: 1 },
+  // Explicit black here too (not just the backdrop) so nothing between the
+  // video's own letterbox and the Modal's edge can show var(--card)/white
+  // through a gap — e.g. safe-area insets in landscape that imageBox alone
+  // wouldn't cover.
+  fullscreenWrap: { flex: 1, backgroundColor: "#000" },
 });
 
 function NoiseViolationCard({
@@ -1010,9 +1222,11 @@ export default function AssignmentDetailScreen() {
         )}
 
         {/* Recording — evidence clip captured at the moment of detection */}
-        {!!assignment.imageUrl && (
+        {(!!assignment.imageUrl || !!assignment.videoUrl) && (
           <RecordingPlayer
             imageUrl={assignment.imageUrl}
+            videoUrl={assignment.videoUrl}
+            code={assignment.code}
             camera={assignment.cameraCode}
             zone={assignment.location}
             timestamp={assignment.dispatchedAt}
@@ -1042,7 +1256,7 @@ export default function AssignmentDetailScreen() {
         </View>
 
         <View style={[styles.card, { backgroundColor: c.card, borderColor: c.border }]}>
-          <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>DISPATCH INFO</Text>
+          <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>ASSIGNMENT INFO</Text>
           {[
             { icon: "clock" as const, label: "Detected", value: `${formatDate(assignment.dispatchedAt)} · ${timeSince(assignment.dispatchedAt)}` },
           ].map((row) => (
@@ -1227,14 +1441,19 @@ const cfStyles = StyleSheet.create({
   confirmedTypeRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 14, paddingVertical: 12, borderRadius: 12, borderWidth: 1, marginBottom: 8 },
   addAnotherLink: { flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 6 },
   addAnotherLinkText: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
-  nameRow: { flexDirection: "row", gap: 10, marginBottom: 10 },
-  input: { borderWidth: 1, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 14, fontSize: 15, fontFamily: "Inter_400Regular" },
-  nameInputWide: { flex: 1 },
-  nameInputNarrow: { width: 88 },
-  pickerBtn: { flexDirection: "row", alignItems: "center", gap: 10, borderWidth: 1, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 14 },
-  pickerBtnText: { flex: 1, fontSize: 15, fontFamily: "Inter_400Regular" },
+  // Underline treatment shared by every field in the form (name parts,
+  // suffix/barangay pickers, notes) — transparent background, no border
+  // except the 1px bottom rule. paddingVertical keeps the tap target large
+  // even though the box itself is gone (one-handed, outdoor use).
+  fieldGroup: { marginBottom: 14 },
+  fieldLabel: { fontSize: 12, fontFamily: "Inter_500Medium", marginBottom: 6 },
+  underlineInput: { borderBottomWidth: 1, paddingVertical: 14, fontSize: 15, fontFamily: "Inter_400Regular" },
+  underlinePicker: { flexDirection: "row", alignItems: "center", gap: 10 },
+  underlinePickerText: { flex: 1, fontSize: 15, fontFamily: "Inter_400Regular" },
   sameAsBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 20 },
   sameAsBadgeText: { fontSize: 10, fontFamily: "Inter_600SemiBold" },
+  // Notes stays boxed (not underline, unlike the rest of the form) —
+  // reverted per feedback: the underline treatment read worse here.
   notesInput: { borderWidth: 1, borderRadius: 12, padding: 14, fontSize: 15, fontFamily: "Inter_400Regular", minHeight: 90 },
   errorText: { fontSize: 13, fontFamily: "Inter_500Medium", marginTop: 12 },
   actionRow: { flexDirection: "row", gap: 10, marginTop: 16 },

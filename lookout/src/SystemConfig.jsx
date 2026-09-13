@@ -43,6 +43,10 @@ function fromApi(s) {
     drinkingEnabled: s.drinking_enabled,
     drinkingConf: s.drinking_confidence,
     drinkingDwell: s.drinking_dwell,
+    drinkingHeldDwell: s.drinking_held_dwell,
+    drinkingEvidenceMaxAge: s.drinking_evidence_max_age,
+    drinkingMouthProximity: s.drinking_mouth_proximity,
+    drinkingCooldownDist: s.drinking_cooldown_center_dist,
     drinkingHoursEnabled: s.drinking_hours_enabled,
     drinkingStart: trimSeconds(s.drinking_start),
     drinkingEnd: trimSeconds(s.drinking_end),
@@ -84,6 +88,10 @@ function toApi(f) {
     drinking_enabled: f.drinkingEnabled,
     drinking_confidence: f.drinkingConf,
     drinking_dwell: f.drinkingDwell,
+    drinking_held_dwell: f.drinkingHeldDwell,
+    drinking_evidence_max_age: f.drinkingEvidenceMaxAge,
+    drinking_mouth_proximity: f.drinkingMouthProximity,
+    drinking_cooldown_center_dist: f.drinkingCooldownDist,
     drinking_hours_enabled: f.drinkingHoursEnabled,
     drinking_start: f.drinkingStart,
     drinking_end: f.drinkingEnd,
@@ -96,18 +104,18 @@ function toApi(f) {
 }
 
 const sections = [
-  { id: "curfew", label: "Curfew", icon: Moon,    color: "#f59e0b" },
-  { id: "noise",  label: "Noise",  icon: Volume2, color: "#a78bfa" },
-  { id: "waste",  label: "Waste",  icon: Trash2,  color: "#84cc16" },
+  // { id: "curfew", label: "Curfew", icon: Moon,    color: "#f59e0b" },
+  // { id: "noise",  label: "Noise",  icon: Volume2, color: "#a78bfa" },
+  // { id: "waste",  label: "Waste",  icon: Trash2,  color: "#84cc16" },
   { id: "parking", label: "Parking", icon: Car,    color: "#ef4444" },
   { id: "smoking", label: "Smoking", icon: Cigarette, color: "#f97316" },
-  { id: "thief",   label: "Thief",   icon: Siren,  color: "#dc2626" },
+  { id: "thief",   label: "Holdup",   icon: Siren,  color: "#dc2626" },
   { id: "drinking", label: "Drinking", icon: Beer, color: "#8b5cf6" },
   // { id: "system", label: "System", icon: Clock,   color: "#3b82f6" },
 ];
 
 // ── Slider ────────────────────────────────────────────────────────────────────
-function Slider({ label, value, min, max, unit, desc, onChange }) {
+function Slider({ label, value, min, max, step = 1, unit, desc, onChange }) {
   const pct = ((value - min) / (max - min)) * 100;
   return (
     <div className="space-y-2.5">
@@ -123,7 +131,7 @@ function Slider({ label, value, min, max, unit, desc, onChange }) {
         <div className="absolute left-0 h-1.5 rounded-full transition-all"
           style={{ width: `${pct}%`, background: "var(--primary)" }} />
         <input
-          type="range" min={min} max={max} value={value}
+          type="range" min={min} max={max} step={step} value={value}
           onChange={(e) => onChange(Number(e.target.value))}
           className="absolute inset-0 w-full opacity-0 cursor-pointer"
           style={{ height: "100%" }}
@@ -277,6 +285,10 @@ export function SystemConfig() {
   const [drinkingEnabled, setDrinkingEnabled] = useState(true);
   const [drinkingConf, setDrinkingConf] = useState(35);
   const [drinkingDwell, setDrinkingDwell] = useState(8);
+  const [drinkingHeldDwell, setDrinkingHeldDwell] = useState(24);
+  const [drinkingEvidenceMaxAge, setDrinkingEvidenceMaxAge] = useState(12);
+  const [drinkingMouthProximity, setDrinkingMouthProximity] = useState(3.0);
+  const [drinkingCooldownDist, setDrinkingCooldownDist] = useState(1.5);
   const [drinkingHoursEnabled, setDrinkingHoursEnabled] = useState(false);
   const [drinkingStart, setDrinkingStart] = useState("22:00");
   const [drinkingEnd, setDrinkingEnd] = useState("05:00");
@@ -316,6 +328,10 @@ export function SystemConfig() {
     setDrinkingEnabled(f.drinkingEnabled);
     setDrinkingConf(f.drinkingConf);
     setDrinkingDwell(f.drinkingDwell);
+    setDrinkingHeldDwell(f.drinkingHeldDwell);
+    setDrinkingEvidenceMaxAge(f.drinkingEvidenceMaxAge);
+    setDrinkingMouthProximity(f.drinkingMouthProximity);
+    setDrinkingCooldownDist(f.drinkingCooldownDist);
     setDrinkingHoursEnabled(f.drinkingHoursEnabled);
     setDrinkingStart(f.drinkingStart);
     setDrinkingEnd(f.drinkingEnd);
@@ -356,6 +372,10 @@ export function SystemConfig() {
     drinkingEnabled !== savedSnapshot.drinkingEnabled ||
     drinkingConf !== savedSnapshot.drinkingConf ||
     drinkingDwell !== savedSnapshot.drinkingDwell ||
+    drinkingHeldDwell !== savedSnapshot.drinkingHeldDwell ||
+    drinkingEvidenceMaxAge !== savedSnapshot.drinkingEvidenceMaxAge ||
+    drinkingMouthProximity !== savedSnapshot.drinkingMouthProximity ||
+    drinkingCooldownDist !== savedSnapshot.drinkingCooldownDist ||
     drinkingHoursEnabled !== savedSnapshot.drinkingHoursEnabled ||
     drinkingStart !== savedSnapshot.drinkingStart ||
     drinkingEnd !== savedSnapshot.drinkingEnd ||
@@ -391,6 +411,7 @@ export function SystemConfig() {
         smokingEnabled, smokingConf, smokingDwell,
         thiefEnabled, thiefConf, thiefDwell,
         drinkingEnabled, drinkingConf, drinkingDwell,
+        drinkingHeldDwell, drinkingEvidenceMaxAge, drinkingMouthProximity, drinkingCooldownDist,
         drinkingHoursEnabled, drinkingStart, drinkingEnd,
         cooldown, retention, autoDispatch, emailAlerts, smsAlerts,
       }));
@@ -485,13 +506,13 @@ export function SystemConfig() {
         />
         <div className="rounded-xl p-4 text-xs leading-relaxed"
           style={{ background: "rgba(249,115,22,0.06)", border: "1px solid rgba(249,115,22,0.15)", color: "var(--muted-foreground)" }}>
-          Detects <strong style={{ color: "#f97316" }}>cigarettes and vapes</strong>. Sustained presence past the dwell time raises a <strong style={{ color: "#f97316" }}>Public Smoking</strong> alert with an evidence snapshot.
+          Detects <strong style={{ color: "#f97316" }}>cigarettes</strong>. Sustained presence past the dwell time raises a <strong style={{ color: "#f97316" }}>Public Smoking</strong> alert with an evidence snapshot.
         </div>
       </div>
     ),
     thief: (
       <div className="space-y-6">
-        <Toggle label="Thief detection enabled" desc="Detect theft/robbery indicators on the thief-monitor feed" value={thiefEnabled} onChange={setThiefEnabled} />
+        <Toggle label="Holdup detection enabled" desc="Detect Holdup indicators on the monitor feed" value={thiefEnabled} onChange={setThiefEnabled} />
         <Slider
           label="Detection confidence" value={thiefConf} min={10} max={90} unit="%"
           desc="How sure the model must be. Lower catches more (with more false hits); higher is stricter."
@@ -504,7 +525,7 @@ export function SystemConfig() {
         />
         <div className="rounded-xl p-4 text-xs leading-relaxed"
           style={{ background: "rgba(220,38,38,0.06)", border: "1px solid rgba(220,38,38,0.15)", color: "var(--muted-foreground)" }}>
-          Detects <strong style={{ color: "#dc2626" }}>gun, knife, robbery activity, stealing</strong>. Sustained presence past the dwell time raises a <strong style={{ color: "#dc2626" }}>Theft / Robbery</strong> alert with an evidence snapshot.
+          Detects <strong style={{ color: "#dc2626" }}>Knife</strong> as anchor for the potential violation. Sustained presence past the dwell time raises a <strong style={{ color: "#dc2626" }}>Holdup</strong> alert with an evidence snapshot.
         </div>
       </div>
     ),
@@ -517,9 +538,29 @@ export function SystemConfig() {
           onChange={setDrinkingConf}
         />
         <Slider
-          label="Dwell time before alert" value={drinkingDwell} min={3} max={60} unit="s"
-          desc="How long a bottle must stay with a person while raised to the mouth. Held-but-not-raised doubles this; an unattended bottle triples it."
+          label="Dwell time before alert (raised to mouth)" value={drinkingDwell} min={3} max={60} unit="s"
+          desc="How long a bottle must stay raised to the mouth before it counts as drinking, not just possession."
           onChange={setDrinkingDwell}
+        />
+        <Slider
+          label="Dwell time before alert (held, not raised)" value={drinkingHeldDwell} min={10} max={120} unit="s"
+          desc="How long a bottle merely held — or with no face visible to check posture at all, common at CCTV range — must stay with a person before it counts. Weaker evidence than a raised bottle, so this should stay well above the dwell above."
+          onChange={setDrinkingHeldDwell}
+        />
+        <Slider
+          label="Gathering evidence expiry" value={drinkingEvidenceMaxAge} min={5} max={60} unit="s"
+          desc="A gathering's bottle sighting must be this recent to still count — stops a group from staying 'armed' to alert on one old bottle no longer in frame."
+          onChange={setDrinkingEvidenceMaxAge}
+        />
+        <Slider
+          label="Mouth proximity" value={drinkingMouthProximity} min={1.5} max={5} step={0.25} unit=" face-widths"
+          desc="How close a bottle must be to the mouth to count as raised, in units of the detected face's width."
+          onChange={setDrinkingMouthProximity}
+        />
+        <Slider
+          label="Alert cooldown radius" value={drinkingCooldownDist} min={0.5} max={3} step={0.25} unit="x"
+          desc="How close (as a fraction of person height) a new alert must be to a recent one to count as 'the same spot' and get suppressed by cooldown."
+          onChange={setDrinkingCooldownDist}
         />
         <Toggle
           label="Restrict to ordinance hours"
@@ -534,7 +575,7 @@ export function SystemConfig() {
         )}
         <div className="rounded-xl p-4 text-xs leading-relaxed"
           style={{ background: "rgba(139,92,246,0.06)", border: "1px solid rgba(139,92,246,0.15)", color: "var(--muted-foreground)" }}>
-          Detects <strong style={{ color: "#8b5cf6" }}>Red Horse bottles</strong> and raises a <strong style={{ color: "#8b5cf6" }}>Public Drinking</strong> alert with an evidence snapshot. The model recognises one brand only — other alcohol is not detected unless the watcher is run with <code>--include-generic</code>, which also counts any bottle, cup or glass raised to the mouth.
+          Detects <strong style={{ color: "#8b5cf6" }}>bottles</strong>. Sustained presence past the dwell time raises a <strong style={{ color: "#8b5cf6" }}>Public Drinking</strong> alert with an evidence snapshot, reflecting inuman culture practices.
         </div>
       </div>
     ),
@@ -543,7 +584,7 @@ export function SystemConfig() {
         <Slider label="Alert cooldown period" value={cooldown} min={30} max={600} unit="s" onChange={setCooldown} />
         <Slider label="Evidence retention" value={retention} min={7} max={90} unit=" days" onChange={setRetention} />
         <div>
-          <Toggle label="Auto-dispatch on critical alert" desc="Notify nearest on-duty officer automatically" value={autoDispatch} onChange={setAutoDispatch} />
+          <Toggle label="Auto-assign officer on critical alert" desc="Notify nearest on-duty officer automatically" value={autoDispatch} onChange={setAutoDispatch} />
           <Toggle label="Email notifications" desc="Send alert emails to administrators" value={emailAlerts} onChange={setEmailAlerts} />
           <Toggle label="SMS notifications" desc="Send SMS to dispatchers and officers" value={smsAlerts} onChange={setSmsAlerts} />
         </div>

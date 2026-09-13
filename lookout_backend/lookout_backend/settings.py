@@ -43,6 +43,22 @@ DEBUG = os.environ.get('DEBUG', 'True') == 'True'
 _allowed_hosts = os.environ.get('ALLOWED_HOSTS', '*')
 ALLOWED_HOSTS = ['*'] if _allowed_hosts == '*' else [h.strip() for h in _allowed_hosts.split(',')]
 
+# ngrok terminates HTTPS at its edge and forwards plain HTTP to this dev
+# server, setting X-Forwarded-Proto: https on the way — without this, Django
+# has no way to know the original request was secure, so
+# request.build_absolute_uri() (used by AlertSerializer to resolve
+# image_url/video_url against the request) would report scheme "http" even
+# when the client is talking to an "https://...ngrok-free.app" tunnel,
+# and a browser would then refuse to load it as mixed content from an https
+# page. This also fixes a latent SECURE_SSL_REDIRECT redirect loop below:
+# without it, Django would see every ngrok-forwarded request as insecure and
+# redirect it to https, which ngrok would just forward as http again.
+# Safe only because every request here arrives either from the dev machine
+# itself or through the ngrok tunnel — never through some OTHER untrusted
+# proxy that could forge this header — the same trust boundary ALLOWED_HOSTS
+# above already assumes for this dev/demo deployment.
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
 # Hardening that only makes sense once this is served over HTTPS in production
 # — left off under DEBUG so local http://localhost development keeps working.
 if not DEBUG:
@@ -81,6 +97,10 @@ MIDDLEWARE = [
 ]
 
 AUTH_USER_MODEL = 'core.User'
+
+AUTHENTICATION_BACKENDS = [
+    'core.auth_backends.CaseInsensitiveUsernameBackend',
+]
 
 CORS_ALLOWED_ORIGINS = [
     'http://localhost:5173',

@@ -1,0 +1,241 @@
+// LookOut database schema — generated from core/models.py, 2026-09-10.
+// 15 tables: 13 model-backed + 2 explicit M2M junction tables.
+// Django-auth junction tables (user_groups, user_user_permissions) and the
+// dead "curfew" ViolationType/watcher are intentionally omitted.
+
+Table tblUser {
+  id integer [pk, increment]
+  password varchar(128) [not null]
+  last_login datetime
+  is_superuser boolean [not null]
+  username varchar(150) [not null, unique]
+  first_name varchar(150) [not null]
+  last_name varchar(150) [not null]
+  email varchar(254) [not null]
+  is_staff boolean [not null]
+  is_active boolean [not null]
+  date_joined datetime [not null]
+  role varchar(20) [not null]
+  display_name varchar(150) [not null]
+  must_change_password boolean [not null]
+}
+
+Table tblEmailVerificationCode {
+  id integer [pk, increment]
+  email varchar(254) [not null]
+  code varchar(6) [not null]
+  created_at datetime [not null]
+  verified boolean [not null]
+  used boolean [not null]
+}
+
+Table tblZone {
+  id integer [pk, increment]
+  name varchar(100) [not null, unique]
+}
+
+Table tblViolationType {
+  id integer [pk, increment]
+  code varchar(30) [not null, unique]
+  label varchar(100) [not null]
+  color varchar(7) [not null]
+  icon varchar(10) [not null]
+}
+
+Table tblCamera {
+  id integer [pk, increment]
+  code varchar(20) [not null, unique]
+  name varchar(150) [not null]
+  zone_id integer
+  status varchar(10) [not null]
+  fps smallint [not null]
+  last_motion_at datetime
+  image_url varchar(200) [not null]
+  stream_url varchar(500) [not null]
+  edges text [not null]
+  edges_width integer
+  edges_height integer
+  obstruction_pct smallint [not null]
+  obstruction_minutes float [not null]
+}
+
+Table tblOfficer {
+  id integer [pk, increment]
+  code varchar(20) [not null, unique]
+  user_id integer [unique]
+  name varchar(150) [not null]
+  badge varchar(20) [not null]
+  status varchar(15) [not null]
+  location varchar(100) [not null]
+  phone varchar(30) [not null]
+  shift varchar(50) [not null]
+  joined_date date
+}
+
+Table tblPerson {
+  id integer [pk, increment]
+  person_code varchar(20) [not null, unique]
+  full_name varchar(150) [not null]
+  status varchar(10) [not null]
+  enrolled_at datetime
+  notes text [not null]
+  created_at datetime [not null]
+}
+
+Table tblFaceEmbedding {
+  id integer [pk, increment]
+  person_id integer [not null]
+  angle varchar(10) [not null]
+  image varchar(100) [not null]
+  embedding text [not null]
+  det_score float
+  created_at datetime [not null]
+
+  indexes {
+    (person_id, angle) [unique]
+  }
+}
+
+Table tblAlert {
+  id integer [pk, increment]
+  code varchar(20) [not null, unique]
+  type_id integer [not null]
+  status varchar(15) [not null]
+  camera_id integer
+  timestamp datetime [not null]
+  confidence float [not null]
+  description text [not null]
+  image_url varchar(200) [not null]
+  video_url varchar(200) [not null]
+  raw_video_url varchar(200) [not null]
+  suspect varchar(150) [not null]
+  notes text [not null]
+  matched_person_id integer
+  match_confidence float
+}
+
+Table tblAlertOfficersAssigned {
+  id integer [pk, increment]
+  alert_id integer [not null]
+  officer_id integer [not null]
+}
+
+Table tblViolator {
+  id integer [pk, increment]
+  first_name varchar(100) [not null]
+  last_name varchar(100) [not null]
+  middle_name varchar(100) [not null]
+  suffix varchar(5) [not null]
+  normalized_name varchar(310) [not null]
+  matched_person_id integer
+  aliases text [not null]
+  first_seen datetime [not null]
+  last_seen datetime
+}
+
+Table tblCitation {
+  id integer [pk, increment]
+  alert_id integer
+  violator_id integer [not null]
+  first_name_entered varchar(100) [not null]
+  last_name_entered varchar(100) [not null]
+  middle_name_entered varchar(100) [not null]
+  suffix_entered varchar(5) [not null]
+  officer_id integer [not null]
+  barangay_of_violation varchar(30) [not null]
+  violator_barangay varchar(50) [not null]
+  matched_person_id integer
+  match_confidence float
+  notes text [not null]
+  created_by_id integer
+  created_at datetime [not null]
+  client_uuid varchar(32) [unique]
+}
+
+Table tblCitationViolations {
+  id integer [pk, increment]
+  citation_id integer [not null]
+  violationtype_id integer [not null]
+}
+
+Table tblDetectionJob {
+  id integer [pk, increment]
+  violation_type varchar(20) [not null]
+  source_filename varchar(255) [not null]
+  source_path varchar(500) [not null]
+  status varchar(10) [not null]
+  pid integer
+  started_at datetime [not null]
+  finished_at datetime
+  error text [not null]
+  created_by_id integer
+}
+
+Table tblSystemSettings {
+  id integer [pk, increment, note: 'Singleton row, always id = 1']
+  curfew_start time [not null]
+  curfew_end time [not null]
+  curfew_age smallint [not null]
+  curfew_confidence smallint [not null, note: 'Also consumed by watch_all/watch_merged as a generic face-match threshold, unrelated to curfew']
+  curfew_dwell smallint [not null]
+  guardian_check boolean [not null]
+  unknown_alert boolean [not null]
+  noise_enabled boolean [not null, note: 'No corresponding watcher implements this']
+  noise_threshold_db smallint [not null]
+  noise_duration smallint [not null]
+  waste_enabled boolean [not null, note: 'No corresponding watcher implements this']
+  waste_confidence smallint [not null]
+  waste_dwell smallint [not null]
+  waste_collection_start time [not null]
+  waste_collection_end time [not null]
+  parking_enabled boolean [not null]
+  parking_confidence smallint [not null]
+  parking_dwell smallint [not null]
+  parking_move_tolerance smallint [not null]
+  smoking_enabled boolean [not null]
+  smoking_confidence smallint [not null]
+  smoking_dwell smallint [not null]
+  thief_enabled boolean [not null]
+  thief_confidence smallint [not null]
+  thief_dwell smallint [not null]
+  drinking_enabled boolean [not null]
+  drinking_confidence smallint [not null]
+  drinking_dwell smallint [not null]
+  drinking_hours_enabled boolean [not null]
+  drinking_start time [not null]
+  drinking_end time [not null]
+  drinking_min_group smallint [not null]
+  drinking_group_duration smallint [not null]
+  drinking_held_dwell smallint [not null]
+  drinking_evidence_max_age smallint [not null]
+  drinking_mouth_proximity float [not null]
+  drinking_cooldown_center_dist float [not null]
+  alert_cooldown smallint [not null]
+  evidence_retention_days smallint [not null]
+  auto_dispatch boolean [not null]
+  email_alerts boolean [not null]
+  sms_alerts boolean [not null, note: 'No SMS-sending implementation exists anywhere in the codebase']
+  updated_at datetime [not null]
+}
+
+// Relationships
+
+Ref: tblOfficer.user_id - tblUser.id // one-to-one
+Ref: tblCamera.zone_id > tblZone.id
+Ref: tblAlert.camera_id > tblCamera.id
+Ref: tblAlert.type_id > tblViolationType.id
+Ref: tblFaceEmbedding.person_id > tblPerson.id
+Ref: tblAlert.matched_person_id > tblPerson.id
+Ref: tblViolator.matched_person_id > tblPerson.id
+Ref: tblCitation.matched_person_id > tblPerson.id
+Ref: tblCitation.alert_id > tblAlert.id
+Ref: tblCitation.violator_id > tblViolator.id
+Ref: tblCitation.officer_id > tblOfficer.id
+Ref: tblCitation.created_by_id > tblUser.id
+Ref: tblDetectionJob.created_by_id > tblUser.id
+
+// Many-to-many, expressed through their explicit junction tables
+Ref: tblAlertOfficersAssigned.alert_id > tblAlert.id
+Ref: tblAlertOfficersAssigned.officer_id > tblOfficer.id
+Ref: tblCitationViolations.citation_id > tblCitation.id
+Ref: tblCitationViolations.violationtype_id > tblViolationType.id

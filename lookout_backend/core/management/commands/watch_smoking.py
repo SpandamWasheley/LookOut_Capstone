@@ -9,6 +9,7 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from core import face_registry
+from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
 from core.vision import recognition, tracking
@@ -497,8 +498,8 @@ class Command(BaseCommand):
 
         for (x1, y1, x2, y2, score, label) in smokes:
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 165, 245), 2)
-            cv2.putText(frame, f"{label} {score * 100:.0f}%", (x1, max(y1 - 8, 0)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 245), 1)
+            recognition.draw_label(frame, f"{label} {score * 100:.0f}%",
+                                   x1, max(y1 - 8, 0), (0, 165, 245))
 
         # Alert on the highest-confidence detection; the annotated frame (all
         # boxes) is saved as evidence.
@@ -583,6 +584,9 @@ class Command(BaseCommand):
             f"reads live from Settings). Press Ctrl+C to stop."
         ))
 
+        if debug:
+            cv2.namedWindow("LookOut - watch_smoking (debug)", cv2.WINDOW_NORMAL)
+
         started_at = time.time()
         fps_warned = False
         try:
@@ -607,20 +611,30 @@ class Command(BaseCommand):
                 # Enhance dim/noisy frames before detection (daytime bypasses).
                 frame = self._preprocess(frame)
 
-                now_ts = time.time()
-                if now_ts - cfg_loaded_at >= SETTINGS_REFRESH_SECONDS:
+                wall_now = time.time()
+                if wall_now - cfg_loaded_at >= SETTINGS_REFRESH_SECONDS:
                     cfg = SystemSettings.load()
-                    cfg_loaded_at = now_ts
+                    cfg_loaded_at = wall_now
 
                 if not cfg.smoking_enabled:
                     time.sleep(0.5)
                     continue
 
-                # Track position in the SOURCE file's own timeline (not wall
-                # clock) so a raw clip cut later lines up with what the detector
-                # just saw, even if processing runs slower than real-time.
+                # Content-time clock: video position for a file source (not
+                # wall clock) so vote/dwell/cooldown measure the same seconds
+                # a human watching the clip would see, and a raw clip cut
+                # later lines up with what the detector just saw — even
+                # though processing routinely runs far slower than
+                # real-time in --far mode. Wall-clock for a live source,
+                # where video time and wall-clock time are the same thing
+                # by definition. See the false-positive-suppression brief's
+                # timing-bug finding: wall-clock badly overstated every
+                # dwell/duration figure against an uploaded file.
                 if self._source_path is not None:
                     self._video_pos_sec = reader.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+                    now_ts = self._video_pos_sec
+                else:
+                    now_ts = wall_now
 
                 self.stats["frames"] += 1
                 conf = self.conf_override or (cfg.smoking_confidence / 100)
@@ -647,8 +661,8 @@ class Command(BaseCommand):
                 for t in tracks:
                     x1, y1, x2, y2 = t.box
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (180, 180, 180), 1)
-                    cv2.putText(frame, f"person #{t.id}", (x1, max(y1 - 6, 0)),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
+                    recognition.draw_label(frame, f"person #{t.id}", x1, max(y1 - 6, 0),
+                                           (180, 180, 180), scale=0.6)
 
                 for track, dets in per_track.items():
                     self._process_track(
@@ -663,7 +677,7 @@ class Command(BaseCommand):
                 # few frames to land inside the window — below ~2 FPS that floor,
                 # not the dwell, is what decides how fast anything can alert.
                 if not fps_warned and self.stats["frames"] >= 30:
-                    fps = self.stats["frames"] / max(now_ts - started_at, 1e-6)
+                    fps = self.stats["frames"] / max(wall_now - started_at, 1e-6)
                     if fps < 2:
                         fps_warned = True
                         self.stdout.write(self.style.WARNING(
@@ -760,13 +774,25 @@ class Command(BaseCommand):
         )
 
         # Draw the violation boxes ALWAYS (green while building, orange once the
-        # dwell is met) so the evidence clip shows the cigarette being detected.
-        for (x1, y1, x2, y2, score, label) in dets:
+        # dwell is met) so the evidence clip shows the cigarette being
+        # detected. `dets` is only THIS frame's detections, but active/
+        # present_for can still be confirmed on a frame with none at all
+        # (track.accruing() tolerates brief flicker within the vote window)
+        # — draw the track's last KNOWN detections instead so the clip has
+        # something to show for a dwell/alert that built up across a gap,
+        # dashed and dimmed to mark it as historical, not live this frame.
+        draw_dets = dets if dets else track.dets
+        is_historical = not dets and bool(track.dets)
+        for (x1, y1, x2, y2, score, label) in draw_dets:
             color = (0, 165, 245) if present_for >= required else (0, 200, 0)
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(frame, f"{label} {score * 100:.0f}% {present_for:.0f}/{required:.0f}s",
-                        (x1, max(y1 - 8, 0)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+            label_text = f"{label} {score * 100:.0f}% {present_for:.0f}/{required:.0f}s"
+            if is_historical:
+                color = tuple(c // 2 for c in color)
+                recognition.draw_dashed_rect(frame, (x1, y1), (x2, y2), color, 2)
+                label_text += " (last seen)"
+            else:
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            recognition.draw_label(frame, label_text, x1, max(y1 - 8, 0), color)
 
         if present_for < required:
             self.stats[f"held back: dwell not met:{best_label}"] += 1
@@ -782,6 +808,14 @@ class Command(BaseCommand):
 
         box = track.box or best[:4]
         if "cooldown" not in self.ablate:
+            # Phase C: a cooldown timing out is not the same thing as this
+            # incident ending. Once this track has ever alerted, it must not
+            # alert again — only a genuine end (track dies, no tombstone
+            # revival) and a fresh track re-forming resets this. See
+            # tracking.Track.has_alerted.
+            if track.has_alerted:
+                self.stats["suppressed: track already alerted (same incident)"] += 1
+                return
             if track.in_cooldown(now_ts, cooldown):
                 self.stats["suppressed: track cooldown"] += 1
                 return
@@ -803,8 +837,10 @@ class Command(BaseCommand):
                 f"for {present_for:.0f}s{puff_note} on {self.camera.code} feed."
             ),
             box=box, face_threshold=face_threshold, face_frame=clean_frame,
+            now=now_ts,
         )
         track.last_alerted_at = now_ts
+        track.has_alerted = True
         self._alert_log.append((tuple(box), now_ts))
         self.stdout.write(self.style.SUCCESS(
             (f"ALERT created: {alert.code}" if alert else "ALERT suppressed (dry run)")
@@ -822,22 +858,34 @@ class Command(BaseCommand):
 
     # ---- shared alert creation --------------------------------------------
 
-    def _create_alert(self, score, label, frame, description, box=None, face_threshold=45, face_frame=None):
+    def _create_alert(self, score, label, frame, description, box=None, face_threshold=45,
+                      face_frame=None, now=None):
         ts_label = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{ts_label}_smoking_{label}.jpg"
         cv2.imwrite(str(self.violations_dir / filename), frame)
-        image_url = f"{settings.SITE_BASE_URL}{settings.MEDIA_URL}violations/{filename}"
+        image_url = violation_media_path(filename)
 
         # Write the ~10s evidence clip (annotated frames leading up to the alert).
         video_url = ""
         clip = getattr(self, "clip", None)
         if clip is not None:
-            # Add the fully-annotated current frame (with colored alert box) to the
-            # buffer at the moment the alert fires, so the evidence clip includes it.
-            self.clip.add(frame, time.time())
+            # Add the fully-annotated current frame (with colored alert box) to
+            # the buffer at the moment the alert fires, so the evidence clip
+            # includes it. MUST be the same clock the caller's been using for
+            # every other frame added this run (`now`, passed in by
+            # _process_track) — ClipRecorder.add() trims its buffer by
+            # comparing timestamps, so mixing wall-clock time.time() in here
+            # against a run using video-position time (file sources, see the
+            # timing-bug fix) makes this one frame look tens of years newer
+            # than everything already buffered, which the cutoff logic reads
+            # as "evict all of it." That's the exact regression this
+            # parameter fixes: default only covers a caller with no timeline
+            # of its own (--image test mode, which never touches self.clip
+            # anyway).
+            self.clip.add(frame, now if now is not None else time.time())
             video_name = f"{ts_label}_smoking_{label}.mp4"
             if clip.save(self.violations_dir / video_name):
-                video_url = f"{settings.SITE_BASE_URL}{settings.MEDIA_URL}violations/{video_name}"
+                video_url = violation_media_path(video_name)
 
         # RAW (unannotated, full source frame rate/resolution) clip. File
         # sources cut straight from the source file (best quality, real fps).
@@ -856,7 +904,7 @@ class Command(BaseCommand):
         else:
             cut_ok = False
         if cut_ok:
-            raw_video_url = f"{settings.SITE_BASE_URL}{settings.MEDIA_URL}violations/{raw_name}"
+            raw_video_url = violation_media_path(raw_name)
             self.stdout.write(self.style.SUCCESS(f"  raw clip: {raw_name}"))
         else:
             self.stdout.write(self.style.WARNING(

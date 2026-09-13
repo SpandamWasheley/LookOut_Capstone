@@ -9,6 +9,7 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from core import face_registry
+from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
 from core.vision import recognition, tracking
@@ -27,7 +28,8 @@ PRESENCE_GRACE_SECONDS = 2    # tolerate a couple bottle-free frames before rese
 # does) instead of requiring literal overlap.
 # More generous than TOMBSTONE_MATCH_DIST (1.2) since this spans the whole
 # cooldown, not just the ~10s tombstone gap — a person has more time to move.
-COOLDOWN_CENTER_DIST = 1.5
+# Now a SystemSettings field (drinking_cooldown_center_dist) rather than a
+# constant — see _cooldown_blocks' cooldown_center_dist param.
 
 # --- The product/behaviour gap -------------------------------------------
 # This detector has ONE class, "Red Horse": it recognises a beer brand, which is
@@ -38,40 +40,35 @@ COOLDOWN_CENTER_DIST = 1.5
 #
 # The mechanism is posture: where the bottle sits relative to the person decides
 # how long it must persist before it counts. Raising a bottle to the face is the
-# act itself and alerts at the configured dwell; a bottle merely held is weaker
-# evidence and must persist twice as long. A bottle with no person at all
-# (a "scene" track) isn't scored by posture at all — see _process_track — it's
-# discarded outright, the same as watch_smoking treats an unattributed detection.
+# act itself and alerts at the configured (at-mouth) dwell; a bottle merely
+# held — including when no face could be resolved to check posture at all,
+# common at CCTV range — is weaker evidence and must persist for the
+# separately-configured, longer `drinking_held_dwell` instead. Every bottle
+# class is judged identically here (Phase B3 follow-up) — there is no more
+# branded-vs-generic distinction; "Red Horse" and a merged-model "Bottle"
+# detection go through the exact same posture/dwell logic. A bottle with no
+# person at all (a "scene" track) isn't scored by posture at all — see
+# _process_track — it's discarded outright, the same as watch_smoking treats
+# an unattributed detection.
 #
 # Note this is an ESCALATION, not a rejection — unlike the smoking detector,
 # which rejects a cigarette far from the mouth outright. A cigarette at knee
 # height is meaningless, whereas an open bottle in someone's hand is genuine
 # evidence for this ordinance, merely weaker than one at their lips.
-POSTURE_DWELL = {
-    "at-mouth": 1.0,     # raised to the face — consumption
-    "held": 2.0,         # on the person, not raised — possession
-}
 
 # --- Generic vessels (--include-generic) ---------------------------------
 # The branded model sees one product, so a gin session, a different beer, or a
 # drink poured into a glass produces nothing at all. The COCO classes bottle /
-# wine glass / cup come free from the person detector's own pass and close that
-# gap — but they say nothing about CONTENTS: a water bottle is indistinguishable
-# from a beer.
-#
-# They are therefore admitted on stricter terms than a branded detection:
-#   * only when RAISED TO THE MOUTH — a generic bottle at someone's hip is
-#     almost certainly innocuous, whereas one repeatedly lifted to the face in a
-#     group is meaningful whatever the label says;
-#   * at twice the dwell, since the inference is weaker.
-# A branded detection on the same person always takes precedence.
+# wine glass / cup come free from the person detector's own pass and close
+# that gap — but they say nothing about CONTENTS: a water bottle is
+# indistinguishable from a beer. That used to buy them stricter admission
+# terms than a "branded" detection; Phase B3 removed that distinction (a
+# merged-model "Bottle" detection turned out to be exactly the class most
+# likely to be spurious, so exempting it from the raised-to-mouth/longer-dwell
+# treatment was backwards) — every bottle-class label is judged the same way
+# now, so GENERIC_LABELS no longer gates anything; --include-generic still
+# controls whether these COCO boxes are added as detection candidates at all.
 GENERIC_LABELS = set(recognition.VESSEL_CLASS_IDS.values())
-GENERIC_DWELL_SCALE = 2.0
-
-# Distance from the mouth, in face widths, within which a bottle counts as
-# raised. More generous than smoking's equivalent: a bottle is held further from
-# the face than a cigarette and is a much larger object.
-MOUTH_PROXIMITY = 3.0
 
 # A face pass costs ~400ms per person, so the anchor is cached per track and
 # stored relative to the person box, re-projecting as they move.
@@ -474,7 +471,7 @@ class Command(BaseCommand):
         track.face_anchor = ((mx - bx1) / bw, (my - by1) / bh, face_w / bw, now_ts)
         return mx, my, face_w
 
-    def _posture(self, frame, track, dets, now_ts):
+    def _posture(self, frame, track, dets, now_ts, mouth_proximity):
         """Classifies where the bottle sits relative to the person.
 
         Returns 'held' or 'at-mouth' — never 'unattended', since scene
@@ -494,24 +491,24 @@ class Command(BaseCommand):
             return "held"
 
         mx, my, face_w = anchor
-        limit = face_w * MOUTH_PROXIMITY
+        limit = face_w * mouth_proximity
         for d in dets:
             cx, cy = (d[0] + d[2]) / 2, (d[1] + d[3]) / 2
             if ((cx - mx) ** 2 + (cy - my) ** 2) ** 0.5 <= limit:
                 return "at-mouth"
         return "held"
 
-    def _dwell_for(self, posture, base_dwell, is_generic=False):
-        """Dwell seconds required, or None if this evidence can never alert.
-
-        A generic vessel only counts while raised to the mouth (see
-        GENERIC_LABELS); anywhere else it is contents-unknown clutter.
+    def _dwell_for(self, posture, at_mouth_dwell, held_dwell):
+        """Dwell seconds required for this posture — every bottle class is
+        judged identically now (Phase B3 follow-up, no more branded/generic
+        split). A raised bottle escalates at the shorter `at_mouth_dwell`;
+        a merely held one (including "no face resolvable to check", the
+        common CCTV-range case) still counts, but only after the longer,
+        independently-configured `held_dwell` — held-only presence is much
+        weaker evidence of ACTUAL drinking than a raised bottle is, not zero
+        evidence, so unlike before it is never rejected outright.
         """
-        if is_generic:
-            if posture != "at-mouth":
-                return None
-            return base_dwell * GENERIC_DWELL_SCALE
-        return base_dwell * POSTURE_DWELL.get(posture, 2.0)
+        return at_mouth_dwell if posture == "at-mouth" else held_dwell
 
     # ---- single-image test mode -------------------------------------------
 
@@ -546,8 +543,8 @@ class Command(BaseCommand):
 
         for (x1, y1, x2, y2, score, label) in drinks:
             cv2.rectangle(frame, (x1, y1), (x2, y2), (200, 80, 160), 2)
-            cv2.putText(frame, f"{label} {score * 100:.0f}%", (x1, max(y1 - 8, 0)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 80, 160), 1)
+            recognition.draw_label(frame, f"{label} {score * 100:.0f}%",
+                                   x1, max(y1 - 8, 0), (200, 80, 160))
 
         # A still image has no temporal signal and no posture history, so this
         # path is a far weaker bar than the live one — use --dry-run for tuning.
@@ -633,6 +630,9 @@ class Command(BaseCommand):
             + "reads live from Settings). Press Ctrl+C to stop."
         ))
 
+        if debug:
+            cv2.namedWindow("LookOut - watch_drinking (debug)", cv2.WINDOW_NORMAL)
+
         started_at = time.time()
         fps_warned = False
         try:
@@ -657,10 +657,10 @@ class Command(BaseCommand):
                 # Enhance dim/noisy frames before detection (daytime bypasses).
                 frame = self._preprocess(frame)
 
-                now_ts = time.time()
-                if now_ts - cfg_loaded_at >= SETTINGS_REFRESH_SECONDS:
+                wall_now = time.time()
+                if wall_now - cfg_loaded_at >= SETTINGS_REFRESH_SECONDS:
                     cfg = SystemSettings.load()
-                    cfg_loaded_at = now_ts
+                    cfg_loaded_at = wall_now
 
                 if not cfg.drinking_enabled:
                     time.sleep(0.5)
@@ -668,6 +668,9 @@ class Command(BaseCommand):
 
                 # Ordinance hours, when configured: outside the window public
                 # drinking isn't an offence, so don't accumulate toward one.
+                # Real-world local time-of-day, deliberately wall-clock even
+                # for a file source — an uploaded clip is being reviewed NOW,
+                # not at whatever hour it was originally recorded.
                 if (cfg.drinking_hours_enabled and "hours" not in self.ablate
                         and not _within_window(timezone.localtime().time(),
                                                cfg.drinking_start, cfg.drinking_end)):
@@ -675,11 +678,21 @@ class Command(BaseCommand):
                     time.sleep(0.5)
                     continue
 
-                # Track position in the SOURCE file's own timeline (not wall
-                # clock) so a raw clip cut later lines up with what the detector
-                # just saw, even if processing runs slower than real-time.
+                # Content-time clock: video position for a file source (not
+                # wall clock) so vote/dwell/cooldown measure the same seconds
+                # a human watching the clip would see, and a raw clip cut
+                # later lines up with what the detector just saw — even
+                # though processing routinely runs far slower than
+                # real-time in --far mode. Wall-clock for a live source,
+                # where video time and wall-clock time are the same thing
+                # by definition. See the false-positive-suppression brief's
+                # timing-bug finding: wall-clock badly overstated every
+                # dwell/duration figure against an uploaded file.
                 if self._source_path is not None:
                     self._video_pos_sec = reader.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+                    now_ts = self._video_pos_sec
+                else:
+                    now_ts = wall_now
 
                 self.stats["frames"] += 1
                 conf = self.conf_override or (cfg.drinking_confidence / 100)
@@ -702,8 +715,8 @@ class Command(BaseCommand):
                 for t in tracks:
                     x1, y1, x2, y2 = t.box
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (180, 180, 180), 1)
-                    cv2.putText(frame, f"person #{t.id}", (x1, max(y1 - 6, 0)),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
+                    recognition.draw_label(frame, f"person #{t.id}", x1, max(y1 - 6, 0),
+                                           (180, 180, 180), scale=0.6)
 
                 # Path B: group this frame's tracks into gatherings and evaluate
                 # each BEFORE Path A below, so a cluster alert that fires this
@@ -729,25 +742,29 @@ class Command(BaseCommand):
                                           if t.id in cluster.member_ids and not t.is_scene]
                             if member_dets:
                                 best = max(member_dets, key=lambda d: d[4])
-                                if cluster.evidence is None or best[4] > cluster.evidence[4]:
-                                    cluster.evidence = best
+                                cluster.note_evidence(best, now_ts)
                         self._process_cluster(
                             cluster, now_ts, min_group, group_duration,
                             cfg.alert_cooldown, frame, debug, cfg.curfew_confidence,
                             clean_frame,
+                            evidence_max_age=cfg.drinking_evidence_max_age,
+                            cooldown_center_dist=cfg.drinking_cooldown_center_dist,
                         )
 
                 for track, dets in per_track.items():
                     self._process_track(
                         track, dets, now_ts, dwell_seconds, cfg.alert_cooldown,
                         frame, debug, cfg.curfew_confidence, clean_frame,
+                        held_dwell_seconds=cfg.drinking_held_dwell,
+                        mouth_proximity=cfg.drinking_mouth_proximity,
+                        cooldown_center_dist=cfg.drinking_cooldown_center_dist,
                     )
 
                 # Buffer this annotated frame for the evidence clip.
                 self.clip.add(frame, now_ts)
 
                 if not fps_warned and self.stats["frames"] >= 30:
-                    fps = self.stats["frames"] / max(now_ts - started_at, 1e-6)
+                    fps = self.stats["frames"] / max(wall_now - started_at, 1e-6)
                     if fps < 2:
                         fps_warned = True
                         self.stdout.write(self.style.WARNING(
@@ -860,7 +877,8 @@ class Command(BaseCommand):
     # ---- per-track temporal confirmation ----------------------------------
 
     def _process_track(self, track, dets, now_ts, dwell_seconds, cooldown,
-                       frame, debug, face_threshold, clean_frame=None):
+                       frame, debug, face_threshold, clean_frame=None, *,
+                       held_dwell_seconds, mouth_proximity, cooldown_center_dist):
         """Votes, dwell-times and (maybe) alerts ONE track for this frame."""
         # Public drinking is committed by a person by definition. An
         # unattributed ("scene") detection has no person box behind it at all
@@ -885,38 +903,43 @@ class Command(BaseCommand):
                 track.reset_dwell()
             return
 
-        # A branded detection always outranks a generic vessel on the same
-        # person: "Red Horse" is known alcohol, "bottle" merely might be.
-        branded = [d for d in track.dets if d[5] not in GENERIC_LABELS]
-        best = max(branded, key=lambda d: d[4]) if branded else track.best_detection()
+        best = track.best_detection()
         if best is None:
             return
         _, _, _, _, best_score, best_label = best
-        is_generic = best_label in GENERIC_LABELS
 
         # Posture describes the object being alerted on, not the person in
         # general. Judging it from every detection would let a glass raised to
         # the mouth grant the consumption dwell to a bottle sitting at the hip.
         own = [d for d in dets if d[5] == best_label] or dets
-        posture = self._posture(frame, track, own, now_ts)
+        posture = self._posture(frame, track, own, now_ts, mouth_proximity)
         self.stats[f"posture:{posture}"] += 1
 
         if "dwell" in self.ablate:
             required = 0
         else:
-            required = self._dwell_for(posture, dwell_seconds, is_generic)
-            if required is None:
-                self.stats[f"held back: generic vessel not raised:{best_label}"] += 1
-                return
+            required = self._dwell_for(posture, dwell_seconds, held_dwell_seconds)
 
         # Draw the violation boxes ALWAYS (green while building, pink once the
         # dwell is met) so the evidence clip shows the bottle being detected.
-        for (x1, y1, x2, y2, score, label) in dets:
+        # `dets` is only THIS frame's detections, but active/present_for can
+        # still be confirmed on a frame with none at all (track.accruing()
+        # tolerates brief flicker within the vote window) — draw the
+        # track's last KNOWN detections instead so the clip has something to
+        # show for a dwell/alert that built up across a gap, dashed and
+        # dimmed to mark it as historical, not live this frame.
+        draw_dets = dets if dets else track.dets
+        is_historical = not dets and bool(track.dets)
+        for (x1, y1, x2, y2, score, label) in draw_dets:
             color = (200, 80, 160) if present_for >= required else (0, 200, 0)
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(frame, f"{posture} {present_for:.0f}/{required:.0f}s",
-                        (x1, max(y1 - 8, 0)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+            label_text = f"{label} {score * 100:.0f}% {posture} {present_for:.0f}/{required:.0f}s"
+            if is_historical:
+                color = tuple(c // 2 for c in color)
+                recognition.draw_dashed_rect(frame, (x1, y1), (x2, y2), color, 2)
+                label_text += " (last seen)"
+            else:
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            recognition.draw_label(frame, label_text, x1, max(y1 - 8, 0), color)
 
         if present_for < required:
             self.stats[f"held back: dwell not met:{posture}"] += 1
@@ -934,10 +957,15 @@ class Command(BaseCommand):
 
         box = track.box or best[:4]
         if "cooldown" not in self.ablate:
+            # Phase C: a cooldown timing out is not the same thing as this
+            # incident ending. See tracking.Track.has_alerted.
+            if track.has_alerted:
+                self.stats["suppressed: track already alerted (same incident)"] += 1
+                return
             if track.in_cooldown(now_ts, cooldown):
                 self.stats["suppressed: track cooldown"] += 1
                 return
-            if self._cooldown_blocks(box, now_ts, cooldown):
+            if self._cooldown_blocks(box, now_ts, cooldown, cooldown_center_dist):
                 self.stats["suppressed: recent alert at same spot"] += 1
                 return
 
@@ -950,26 +978,29 @@ class Command(BaseCommand):
                 f"present for {present_for:.0f}s on {self.camera.code} feed."
             ),
             box=box, face_threshold=face_threshold, face_frame=clean_frame,
+            now=now_ts,
         )
         track.last_alerted_at = now_ts
+        track.has_alerted = True
         self._alert_log.append((tuple(box), now_ts))
         self.stdout.write(self.style.SUCCESS(
             (f"ALERT created: {alert.code}" if alert else "ALERT suppressed (dry run)")
             + f" ({best_label}, {posture}, {who}, held {present_for:.0f}s)"
         ))
 
-    def _cooldown_blocks(self, box, now, cooldown):
+    def _cooldown_blocks(self, box, now, cooldown, cooldown_center_dist):
         """True if we already alerted near roughly this spot inside the
         cooldown, regardless of which track id it was at the time."""
         self._alert_log = [
             (b, ts) for b, ts in self._alert_log if now - ts < cooldown
         ]
-        return any(tracking._center_proximity(box, b, max_frac=COOLDOWN_CENTER_DIST) > 0
+        return any(tracking._center_proximity(box, b, max_frac=cooldown_center_dist) > 0
                    for b, _ in self._alert_log)
 
     # ---- Path B: gathering confirmation ------------------------------------
 
-    def _process_cluster(self, cluster, now_ts, min_group, group_duration, cooldown, frame, debug, face_threshold, clean_frame=None):
+    def _process_cluster(self, cluster, now_ts, min_group, group_duration, cooldown, frame, debug, face_threshold, clean_frame=None, *,
+                         evidence_max_age, cooldown_center_dist):
         """Fires ONE alert for a sustained gathering, independent of any one
         member's own dwell — the gathering itself is the evidence, so the
         per-person bar is lower (occasional evidence, no posture requirement).
@@ -999,20 +1030,30 @@ class Command(BaseCommand):
             return
         self._gathering_funnel["stationary"].add(cluster.id)
 
-        if cluster.evidence is None:
-            self.stats["held back: gathering no bottle evidence"] += 1
+        evidence = cluster.fresh_evidence(now_ts, evidence_max_age)
+        if evidence is None:
+            reason = ("no bottle evidence" if cluster.evidence is None
+                      else "evidence stale (no fresh sighting)")
+            self.stats[f"held back: gathering {reason}"] += 1
             return
         self._gathering_funnel["evidence"].add(cluster.id)
+        _, _, _, _, ev_score, ev_label = evidence
 
         box = tuple(int(v) for v in cluster.bbox)
         cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), GATHERING_ALERT_COLOR, 3)
-        cv2.putText(
-            frame, f"GATHERING {n}p {cluster.duration_held:.0f}/{group_duration:.0f}s",
-            (box[0], max(box[1] - 10, 0)),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.6, GATHERING_ALERT_COLOR, 2,
+        recognition.draw_label(
+            frame,
+            f"GATHERING {n}p - {ev_label} {ev_score * 100:.0f}% - "
+            f"{cluster.duration_held:.0f}/{group_duration:.0f}s",
+            box[0], max(box[1] - 10, 0), GATHERING_ALERT_COLOR,
         )
 
         if "cooldown" not in self.ablate:
+            # Phase C: a cooldown timing out is not the same thing as this
+            # gathering ending. See tracking.Cluster.has_alerted.
+            if cluster.has_alerted:
+                self.stats["suppressed: gathering already alerted (same incident)"] += 1
+                return
             if cluster.in_cooldown(now_ts, cooldown):
                 self.stats["suppressed: gathering cooldown"] += 1
                 return
@@ -1020,11 +1061,10 @@ class Command(BaseCommand):
             # here too, so a member's later solo attempt this cooldown window
             # is suppressed by the exact same check, with no separate
             # suppression logic needed. See ABLATABLE's "gathering" note.
-            if self._cooldown_blocks(box, now_ts, cooldown):
+            if self._cooldown_blocks(box, now_ts, cooldown, cooldown_center_dist):
                 self.stats["suppressed: recent alert at same spot"] += 1
                 return
 
-        _, _, _, _, ev_score, ev_label = cluster.evidence
         self.stats["ALERTS:gathering"] += 1
         alert = self._create_alert(
             ev_score, ev_label, frame,
@@ -1035,8 +1075,10 @@ class Command(BaseCommand):
             suspect=f"{ev_label} · Gathering ({n})",
             filename_tag=f"{ev_label.replace(' ', '_')}_gathering",
             box=box, face_threshold=face_threshold, face_frame=clean_frame,
+            now=now_ts,
         )
         cluster.last_alerted_at = now_ts
+        cluster.has_alerted = True
         self._alert_log.append((box, now_ts))
         self.stdout.write(self.style.SUCCESS(
             (f"ALERT created: {alert.code}" if alert else "ALERT suppressed (dry run)")
@@ -1046,23 +1088,33 @@ class Command(BaseCommand):
     # ---- shared alert creation --------------------------------------------
 
     def _create_alert(self, score, label, frame, description, suspect=None, filename_tag=None,
-                      box=None, face_threshold=45, face_frame=None):
+                      box=None, face_threshold=45, face_frame=None, now=None):
         ts_label = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         tag = filename_tag or label.replace(" ", "_")
         filename = f"{ts_label}_drinking_{tag}.jpg"
         cv2.imwrite(str(self.violations_dir / filename), frame)
-        image_url = f"{settings.SITE_BASE_URL}{settings.MEDIA_URL}violations/{filename}"
+        image_url = violation_media_path(filename)
 
         # Write the ~10s evidence clip (annotated frames leading up to the alert).
         video_url = ""
         clip = getattr(self, "clip", None)
         if clip is not None:
-            # Add the fully-annotated current frame (with colored alert box) to the
-            # buffer at the moment the alert fires, so the evidence clip includes it.
-            self.clip.add(frame, time.time())
+            # Add the fully-annotated current frame (with colored alert box) to
+            # the buffer at the moment the alert fires, so the evidence clip
+            # includes it. MUST be the same clock the caller's been using for
+            # every other frame added this run (`now`, passed in by
+            # _process_track/_process_cluster) — ClipRecorder.add() trims
+            # its buffer by comparing timestamps, so mixing wall-clock
+            # time.time() in here against a run using video-position time
+            # (file sources, see the timing-bug fix) makes this one frame
+            # look tens of years newer than everything already buffered,
+            # which the cutoff logic reads as "evict all of it." Default
+            # only covers a caller with no timeline of its own (--image
+            # test mode, which never touches self.clip anyway).
+            self.clip.add(frame, now if now is not None else time.time())
             video_name = f"{ts_label}_drinking_{tag}.mp4"
             if clip.save(self.violations_dir / video_name):
-                video_url = f"{settings.SITE_BASE_URL}{settings.MEDIA_URL}violations/{video_name}"
+                video_url = violation_media_path(video_name)
 
         # RAW (unannotated, full source frame rate/resolution) clip. File
         # sources cut straight from the source file (best quality, real fps).
@@ -1081,7 +1133,7 @@ class Command(BaseCommand):
         else:
             cut_ok = False
         if cut_ok:
-            raw_video_url = f"{settings.SITE_BASE_URL}{settings.MEDIA_URL}violations/{raw_name}"
+            raw_video_url = violation_media_path(raw_name)
             self.stdout.write(self.style.SUCCESS(f"  raw clip: {raw_name}"))
         else:
             self.stdout.write(self.style.WARNING(

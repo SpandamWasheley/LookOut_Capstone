@@ -1,5 +1,6 @@
 import datetime
 import json
+import math
 import os
 import time
 from collections import Counter
@@ -9,13 +10,20 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
+from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
 from core.vision import recognition, theft, tracking
 
 THIEF_CAMERA_CODE = "CAM-THIEF"
 SETTINGS_REFRESH_SECONDS = 5  # re-poll SystemSettings this often, not every frame
-PRESENCE_GRACE_SECONDS = 2    # tolerate a couple clean frames before resetting dwell
+# Tolerate this many clean seconds before resetting dwell. Must stay ABOVE
+# knife's stale_scale-derived accrual window (currently 0.5*6.0 = 3.0s — see
+# CLASS_POLICY below) or the two-tier "pause without resetting, THEN reset"
+# design collapses into one abrupt cutoff: accruing() would already report
+# not-active by the time this grace check ever fires, making it redundant.
+# Bumped from 2.0 -> 4.0 alongside that override for exactly this reason.
+PRESENCE_GRACE_SECONDS = 4
 
 # Temporal voting is time-based (see tracking.VOTE_WINDOW_SECONDS): a frame
 # counts as "threat present" only if enough of the last few SECONDS of frames
@@ -31,13 +39,123 @@ PRESENCE_GRACE_SECONDS = 2    # tolerate a couple clean frames before resetting 
 # So the pose-like classes must clear a higher confidence bar and hold for
 # longer before they can raise an alert, while a weapon alerts at the settings
 # dwell. Scales multiply the dashboard values, so tuning Settings still works.
+#
+# ratio_scale/stale_scale multiply tracking.VOTE_MIN_RATIO/ACCRUAL_STALE_SECONDS
+# the same way conf_scale/dwell_scale multiply the dashboard's confidence/dwell
+# — a per-class override of the shared vote-gate defaults, applied in
+# _process_track via track.accruing(target_label=...), so loosening it for one
+# class never touches the globals watch_smoking/watch_drinking's own Tracks
+# still read at their un-overridden defaults.
+#
+# knife specifically: measured on real holdup footage (see the calibration
+# writeup), a person genuinely holding a visible knife the whole time still
+# only produces a raw per-frame hit on 0.3-8% of frames — the object is small,
+# handheld, and often motion-blurred or partially occluded by the person's own
+# grip. At the shared defaults (ratio 0.4, stale 0.5s) that NEVER clears the
+# vote window regardless of how long the person is tracked, and even fully
+# disabling the ratio still can't accrue 3s of dwell, because 0.5s is stricter
+# than the typical gap between two real knife hits. ratio_scale 0.25 (0.4 ->
+# 0.1) and stale_scale 6.0 (0.5s -> 3.0s) were chosen as the smallest loosening
+# that let a real incident's dwell clear the bar; checked against
+# calibration_null_2026-09-07.csv (footage with no knife at all) replayed
+# through the identical vote+dwell state machine, this costs exactly one
+# additional false-positive track surviving to a full alert (3/17 vs the
+# 2/17 that already survive today at the shared defaults) — not zero, but far
+# from the ~374 raw phantom detections the vote gate exists to suppress in the
+# first place. Gun is left at the shared defaults: it's a comparably compact,
+# well-localised object and hasn't shown the same recall gap.
 CLASS_POLICY = {
-    "gun":              {"conf_scale": 1.0, "dwell_scale": 1.0},
-    "knife":            {"conf_scale": 1.0, "dwell_scale": 1.0},
-    "robbery activity": {"conf_scale": 1.6, "dwell_scale": 2.0},
-    "stealing":         {"conf_scale": 1.6, "dwell_scale": 2.0},
+    "gun":              {"conf_scale": 1.0, "dwell_scale": 1.0, "ratio_scale": 1.0,  "stale_scale": 1.0},
+    "knife":            {"conf_scale": 1.0, "dwell_scale": 1.0, "ratio_scale": 0.25, "stale_scale": 6.0},
+    "robbery activity": {"conf_scale": 1.6, "dwell_scale": 2.0, "ratio_scale": 1.0,  "stale_scale": 1.0},
+    "stealing":         {"conf_scale": 1.6, "dwell_scale": 2.0, "ratio_scale": 1.0,  "stale_scale": 1.0},
 }
-DEFAULT_POLICY = {"conf_scale": 1.0, "dwell_scale": 1.0}
+DEFAULT_POLICY = {"conf_scale": 1.0, "dwell_scale": 1.0, "ratio_scale": 1.0, "stale_scale": 1.0}
+
+# Spatial gating for weapon classes on a person: no rule anywhere previously
+# constrained WHERE on a person a weapon detection could sit, so a box drawn
+# around someone's head/shoulders counted exactly the same as one at their
+# hand — geometrically impossible for a knife, but nothing rejected it.
+# Mirrors watch_smoking._apply_face_rule's placement: gated on the vote
+# input (per_track), before track.vote()/tick() ever sees the detection, so
+# a geometrically implausible box can't build dwell at all — not just a
+# check at the moment of alerting.
+SPATIALLY_GATED_CLASSES = {"knife"}
+# A held knife is a hand/forearm-level object — the top ~15% of a
+# person's box (head only) is anatomically off-limits for one. Chest-height
+# holds (0.30 previously) are geometrically plausible and were being cut.
+KNIFE_HEAD_EXCLUSION_FRAC = 0.15
+# A knife spanning more than a quarter of the person's OWN height is not
+# knife-sized relative to that person — more likely a mis-localized box
+# (forearm, sleeve, shadow) than an actual blade.
+KNIFE_MAX_HEIGHT_FRAC = 0.25
+# A knife box that isn't actually near a HAND is not "this person is holding
+# a knife" no matter how confident or how plausibly placed vertically —
+# neither the head/shoulders nor the too-large check catches this, since both
+# only look at the box's OWN geometry, never whether it's anywhere near where
+# a held object would actually be.
+#
+# Two rectangle-only approaches were tried and rejected here first: excluding
+# the head/shoulders band alone left the whole rest of the person's own
+# bounding rectangle open, and requiring the knife box to sit 70%+ inside
+# that rectangle (checked in an earlier revision of this file) still passed a
+# knife box floating in the empty space beside a person's torso or bag —
+# real footage on Aug24_16 - TrimHoldupBldg.mp4 scored that case 1.0 (fully
+# "contained") despite sitting nowhere near her body. A rectangle spanning
+# head-to-feet has a lot of empty space in it; "inside the rectangle" and "on
+# the person" are different claims. The actual constraint - a held knife
+# has to be near a HAND - needs a hand, not a box.
+#
+# recognition.detect_pose() already exists for exactly this in
+# watch_smoking_pose.py, unused everywhere else in a `watch_merged` run
+# (watch_merged.py drives this class's own _apply_weapon_region_rule() via
+# its shared per-frame detection pass, never through this file's own
+# _run_stream/_detect_scene). Called here lazily, once per frame and only
+# when a spatially-gated class is actually present that frame, at ~40ms/call
+# measured against detect_persons' own ~49ms/call on this project's own
+# footage - not free, but far cheaper than the ~190ms a single tiled
+# detection pass already costs in this pipeline.
+KNIFE_MAX_WRIST_DIST_FRAC = 0.22
+
+
+def _is_spatially_gated(label):
+    return label.lower() in SPATIALLY_GATED_CLASSES
+
+
+def _iou(a, b):
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
+    inter = iw * ih
+    if inter == 0:
+        return 0.0
+    return inter / ((ax2 - ax1) * (ay2 - ay1) + (bx2 - bx1) * (by2 - by1) - inter)
+
+
+def _confident_wrists(person_box, poses):
+    """(x, y) of each confidently-visible wrist keypoint (see
+    recognition.KP_MIN_CONF) on whichever pose detection best matches
+    `person_box` — pose runs its own independent person detector, so this
+    can't just reuse the tracker's own identity. Empty list (not a fallback
+    to something looser) when no pose matched or neither wrist resolved:
+    an unresolvable case is rejected outright, not waved through — see
+    KNIFE_MAX_WRIST_DIST_FRAC's caller."""
+    best_kpts, best_iou = None, 0.2
+    for pbox, kpts in poses:
+        iou = _iou(person_box, pbox)
+        if iou > best_iou:
+            best_kpts, best_iou = kpts, iou
+    if best_kpts is None:
+        return []
+    wrists = []
+    for idx in (recognition.KP_LWRIST, recognition.KP_RWRIST):
+        x, y, c = best_kpts[idx]
+        if c >= recognition.KP_MIN_CONF:
+            wrists.append((float(x), float(y)))
+    return wrists
+
 
 # Tracks are destroyed after tracking.TRACK_MAX_GAP seconds unseen, and a new
 # track starts with a fresh cooldown — so a person who flickers out of the
@@ -52,7 +170,7 @@ COOLDOWN_IOU = 0.3
 # the true/false alert counts can be measured rather than asserted. Everything is
 # ON by default; this exists for evaluation, not for production tuning.
 ABLATABLE = (
-    ("class-floor", "vote", "dwell", "cooldown", "preprocess", "layer-e")
+    ("class-floor", "spatial", "vote", "dwell", "cooldown", "preprocess", "layer-e")
     # Layer E is ablatable per RULE as well as wholesale: E.9 of the spec calls
     # for per-cue removal so each weight can be revised against measured
     # precision instead of asserted. `--ablate e9` drops just the custody cue.
@@ -93,6 +211,15 @@ class Command(BaseCommand):
         self.weapon_alone_alerts = False
         self.observe_log = None
         self.engine = None
+        # Set only for a file source (see _run_stream) — lets _create_alert cut
+        # a RAW evidence clip straight from the source instead of the sparser
+        # annotated-frame buffer. Both stay None for webcam/RTSP sources.
+        self._source_path = None
+        self._video_pos_sec = None
+        # Set for a live source in _run_stream — stays None for --image test
+        # mode and file sources, both of which _create_alert's raw-clip
+        # fallback already guards for. Mirrors watch_smoking/watch_drinking.
+        self._raw_buffer = None
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -224,9 +351,13 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         # ViolationType/Camera aren't created by any migration, so get_or_create
         # here self-heals a fresh DB the same way watch_curfew/watch_smoking do.
+        # code="theft" (not "thief") — this used to create a SECOND row
+        # alongside seed_demo.py's "theft", splitting alerts/citations across
+        # two ViolationTypes. See migration 0026 for the one-time merge of
+        # whatever already landed on the old "thief" row.
         self.thief_type, _ = ViolationType.objects.get_or_create(
-            code="thief",
-            defaults={"label": "Theft / Robbery", "color": "#ef4444", "icon": "siren"},
+            code="theft",
+            defaults={"label": "Holdup in Public Area", "color": "#ef4444", "icon": "siren"},
         )
         self.camera, _ = Camera.objects.get_or_create(
             code=options["camera"],
@@ -348,6 +479,70 @@ class Command(BaseCommand):
                 self.stats[f"cut by class floor:{d[5]}"] += 1
         return kept
 
+    def _apply_weapon_region_rule(self, per_track, frame):
+        """Rejects a spatially-gated weapon detection (currently: knife) that
+        sits in the person's head/shoulders region, is too large relative to
+        that person's own box to plausibly be that object, or isn't actually
+        near a HAND (see KNIFE_MAX_WRIST_DIST_FRAC).
+
+        Mirrors watch_smoking._apply_face_rule's placement exactly: this runs
+        on `per_track` right after tracker.assign(), so a rejected detection
+        never reaches track.vote()/tick() at all — it can't build dwell, not
+        just get blocked at the final alert check. Unlike the face rule,
+        there's no "keep it if we can't tell" fallback for the wrist check:
+        a frame where neither wrist resolves confidently is rejected, not
+        waved through — an unresolvable case is exactly the kind of thing
+        that turned into a floating false positive before this rule existed.
+        """
+        if "spatial" in self.ablate:
+            return per_track
+
+        # Lazy and shared across every track this frame: pose only costs
+        # anything (~40ms, see KNIFE_MAX_WRIST_DIST_FRAC's comment) on a
+        # frame where a spatially-gated class was actually detected, and one
+        # call covers every person in frame, not one call per track.
+        poses = None
+
+        for track, dets in per_track.items():
+            if track.is_scene or not dets:
+                continue
+            if not any(_is_spatially_gated(d[5]) for d in dets):
+                continue
+
+            px1, py1, px2, py2 = track.box
+            person_height = max(py2 - py1, 1)
+            head_boundary = py1 + KNIFE_HEAD_EXCLUSION_FRAC * person_height
+            max_height = KNIFE_MAX_HEIGHT_FRAC * person_height
+
+            if poses is None:
+                poses = recognition.detect_pose(frame)
+            wrists = _confident_wrists(track.box, poses)
+
+            kept = []
+            for d in dets:
+                x1, y1, x2, y2, score, label = d
+                if not _is_spatially_gated(label):
+                    kept.append(d)
+                    continue
+                cy = (y1 + y2) / 2
+                if cy < head_boundary:
+                    self.stats[f"cut by spatial rule (head/shoulders):{label}"] += 1
+                    continue
+                if (y2 - y1) > max_height:
+                    self.stats[f"cut by spatial rule (too large):{label}"] += 1
+                    continue
+                if not wrists:
+                    self.stats[f"cut by spatial rule (no confident wrist):{label}"] += 1
+                    continue
+                kcx, kcy = (x1 + x2) / 2, (y1 + y2) / 2
+                dist = min(math.hypot(kcx - wx, kcy - wy) for wx, wy in wrists)
+                if dist / person_height > KNIFE_MAX_WRIST_DIST_FRAC:
+                    self.stats[f"cut by spatial rule (far from wrist):{label}"] += 1
+                    continue
+                kept.append(d)
+            per_track[track] = kept
+        return per_track
+
     def _dwell_for(self, label, base_dwell):
         """Dwell seconds required for this class, scaled up for the weak
         pose-like classes."""
@@ -408,8 +603,8 @@ class Command(BaseCommand):
 
         for (x1, y1, x2, y2, score, label) in threats:
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 220), 2)
-            cv2.putText(frame, f"{label} {score * 100:.0f}%", (x1, max(y1 - 8, 0)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 220), 1)
+            recognition.draw_label(frame, f"{label} {score * 100:.0f}%",
+                                   x1, max(y1 - 8, 0), (0, 0, 220))
 
         # A still image has no temporal signal at all — no voting, no dwell — so
         # this path is a much weaker bar than the live one. That's fine for
@@ -453,6 +648,15 @@ class Command(BaseCommand):
         # detection speed. A file is read directly.
         is_live = source.isdigit() or "://" in source
         reader = recognition.LatestFrameReader(cap) if is_live else cap
+        # A file source is seekable, so raw evidence clips can be cut straight
+        # from it later (see _create_alert) instead of relying only on the
+        # annotated buffer's sparser processed frames.
+        self._source_path = None if is_live else source
+        # Live sources can't be seeked backwards, and record_camera's segments
+        # aren't safely readable while the current one is still open (see
+        # RawFrameRecorder's docstring) — so a live source gets its own rolling
+        # buffer of RAW (unannotated) frames to cut a raw clip from instead.
+        self._raw_buffer = recognition.RawFrameRecorder() if is_live else None
 
         # Settings are re-polled every few seconds (like watch_curfew/watch_smoking)
         # so edits made in the dashboard take effect live, without a restart.
@@ -494,6 +698,9 @@ class Command(BaseCommand):
                 "evaluate at all."
             )
 
+        if debug:
+            cv2.namedWindow("LookOut - watch_thief (debug)", cv2.WINDOW_NORMAL)
+
         started_at = time.time()
         fps_warned = False
         try:
@@ -510,17 +717,38 @@ class Command(BaseCommand):
                     ))
                     break
 
+                # Buffer the frame RAW, before preprocessing or any drawing
+                # touches it — see RawFrameRecorder.
+                if self._raw_buffer is not None:
+                    self._raw_buffer.add(frame, time.time())
+
                 # Enhance dim/noisy frames before detection (daytime bypasses).
                 frame = self._preprocess(frame)
 
-                now_ts = time.time()
-                if now_ts - cfg_loaded_at >= SETTINGS_REFRESH_SECONDS:
+                wall_now = time.time()
+                if wall_now - cfg_loaded_at >= SETTINGS_REFRESH_SECONDS:
                     cfg = SystemSettings.load()
-                    cfg_loaded_at = now_ts
+                    cfg_loaded_at = wall_now
 
                 if not cfg.thief_enabled:
                     time.sleep(0.5)
                     continue
+
+                # Content-time clock: video position for a file source (not
+                # wall clock) so vote/dwell/cooldown measure the same seconds
+                # a human watching the clip would see, and a raw clip cut
+                # later lines up with what the detector just saw — even
+                # though processing routinely runs far slower than
+                # real-time in --far mode. Wall-clock for a live source,
+                # where video time and wall-clock time are the same thing
+                # by definition. See the false-positive-suppression brief's
+                # timing-bug finding: wall-clock badly overstated every
+                # dwell/duration figure against an uploaded file.
+                if self._source_path is not None:
+                    self._video_pos_sec = reader.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+                    now_ts = self._video_pos_sec
+                else:
+                    now_ts = wall_now
 
                 self.stats["frames"] += 1
                 conf = self.conf_override or (cfg.thief_confidence / 100)
@@ -532,20 +760,30 @@ class Command(BaseCommand):
                 persons, ids, carriables, vehicles = self._detect_scene(frame)
                 threats = self._detect(frame, conf, persons=persons)
 
+                # Raw model output ALWAYS, thin yellow, before spatial/vote/dwell
+                # gating touches it — so a detection that gets cut (spatial rule)
+                # or never confirmed (vote/dwell) is still visible for sanity
+                # checking, not just the green/red confirmed boxes below.
+                for (x1, y1, x2, y2, score, label) in threats:
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 220, 220), 1)
+                    recognition.draw_label(frame, f"{label} {score * 100:.0f}%",
+                                           x1, max(y1 - 8, 0), (0, 220, 220), scale=0.5)
+
                 # frame.shape feeds the E25 edge-truncation guard: a box clipped
                 # by the frame border has a wrong centroid and height, which
                 # corrupts every normalized quantity in E1-E3.
                 tracks = tracker.update(persons, now_ts, ids=ids,
                                         frame_shape=frame.shape)
                 per_track = tracker.assign(threats, now_ts)
+                per_track = self._apply_weapon_region_rule(per_track, frame)
 
                 # Draw person boxes ALWAYS (not just in debug) so the evidence
                 # clip shows the context, not only the debug window.
                 for t in tracks:
                     x1, y1, x2, y2 = t.box
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (180, 180, 180), 1)
-                    cv2.putText(frame, f"person #{t.id}", (x1, max(y1 - 6, 0)),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
+                    recognition.draw_label(frame, f"person #{t.id}", x1, max(y1 - 6, 0),
+                                           (180, 180, 180), scale=0.6)
 
                 # Layer E: pattern rules over the tracks, scored and banded.
                 if self.layer_e:
@@ -575,7 +813,7 @@ class Command(BaseCommand):
                 # few frames to land inside the window — below ~2 FPS that floor,
                 # not the dwell, is what decides how fast anything can alert.
                 if not fps_warned and self.stats["frames"] >= 30:
-                    fps = self.stats["frames"] / max(now_ts - started_at, 1e-6)
+                    fps = self.stats["frames"] / max(wall_now - started_at, 1e-6)
                     if fps < 2:
                         fps_warned = True
                         self.stdout.write(self.style.WARNING(
@@ -641,10 +879,28 @@ class Command(BaseCommand):
             return
 
         track.vote(dets, now_ts)
+
+        # Which class's confirmation policy applies — the one most represented
+        # in the window so far, same resolution best_detection() below uses to
+        # pick what to REPORT, resolved here too since a per-class vote/dwell
+        # override (CLASS_POLICY's ratio_scale/stale_scale — currently just
+        # knife, see its comment) has to be known before the active/accruing
+        # check, not after. None when the window is still empty; _policy()
+        # falls back to DEFAULT_POLICY (scale 1.0, i.e. the shared default)
+        # for that and for any class without its own override.
+        label_votes = track.label_votes()
+        policy_label = max(label_votes, key=label_votes.get) if label_votes else None
+        policy = self._policy(policy_label)
+        vote_ratio = tracking.VOTE_MIN_RATIO * policy["ratio_scale"]
+        accrual_stale = tracking.ACCRUAL_STALE_SECONDS * policy["stale_scale"]
+
         # Ablating the vote removes temporal confirmation entirely: a detection
         # in THIS frame is taken at face value, which is the no-heuristics
         # baseline the evaluation compares against.
-        active = bool(dets) if "vote" in self.ablate else track.accruing(now_ts)
+        active = bool(dets) if "vote" in self.ablate else track.accruing(
+            now_ts, min_ratio=vote_ratio, stale_seconds=accrual_stale,
+            target_label=policy_label,
+        )
         present_for = track.tick(now_ts, active)
 
         if not active:
@@ -672,12 +928,24 @@ class Command(BaseCommand):
         # Draw the violation boxes ALWAYS (green while building, red once the
         # dwell is met) — not just in debug — so the evidence clip shows the
         # weapon/pose being detected. Matches watch_smoking/watch_drinking.
-        for (x1, y1, x2, y2, score, label) in dets:
+        # `dets` is only THIS frame's detections, but active/present_for can
+        # still be confirmed on a frame with none at all (track.accruing()
+        # tolerates brief flicker within the vote window) — draw the
+        # track's last KNOWN detections instead so the clip has something to
+        # show for a dwell/alert that built up across a gap, dashed and
+        # dimmed to mark it as historical, not live this frame.
+        draw_dets = dets if dets else track.dets
+        is_historical = not dets and bool(track.dets)
+        for (x1, y1, x2, y2, score, label) in draw_dets:
             color = (0, 0, 220) if present_for >= required else (0, 200, 0)
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(frame, f"{label} {present_for:.0f}/{required:.0f}s",
-                        (x1, max(y1 - 8, 0)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+            label_text = f"{label} {score * 100:.0f}% {present_for:.0f}/{required:.0f}s"
+            if is_historical:
+                color = tuple(c // 2 for c in color)
+                recognition.draw_dashed_rect(frame, (x1, y1), (x2, y2), color, 2)
+                label_text += " (last seen)"
+            else:
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            recognition.draw_label(frame, label_text, x1, max(y1 - 8, 0), color)
 
         if present_for < required:
             self.stats[f"held back: dwell not met:{best_label}"] += 1
@@ -685,6 +953,11 @@ class Command(BaseCommand):
 
         box = track.box or best[:4]
         if "cooldown" not in self.ablate:
+            # Phase C: a cooldown timing out is not the same thing as this
+            # incident ending. See tracking.Track.has_alerted.
+            if track.has_alerted:
+                self.stats["suppressed: track already alerted (same incident)"] += 1
+                return
             if track.in_cooldown(now_ts, cooldown):
                 self.stats["suppressed: track cooldown"] += 1
                 return
@@ -701,8 +974,10 @@ class Command(BaseCommand):
                 f"Theft/robbery indicator detected: {summary} on {who}, "
                 f"present for {present_for:.0f}s on {self.camera.code} feed."
             ),
+            now=now_ts,
         )
         track.last_alerted_at = now_ts
+        track.has_alerted = True
         self._alert_log.append((tuple(box), now_ts))
         self.stdout.write(self.style.SUCCESS(
             (f"ALERT created: {alert.code}" if alert else "ALERT suppressed (dry run)")
@@ -723,9 +998,8 @@ class Command(BaseCommand):
             color = {theft.CANDIDATE: (0, 0, 220),
                      theft.OBSERVE: (0, 165, 255)}.get(ev.band, (120, 120, 120))
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(frame, f"{ev.kind} {ev.score:.2f} {ev.band}",
-                        (x1, max(y1 - 8, 0)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+            recognition.draw_label(frame, f"{ev.kind} {ev.score:.2f} {ev.band}",
+                                   x1, max(y1 - 8, 0), color)
 
         if ev.band == theft.DISCARD:
             return
@@ -749,6 +1023,7 @@ class Command(BaseCommand):
                 f"Layer E score {ev.score:.2f} "
                 f"[{', '.join(ev.rules)}] on {self.camera.code} feed."
             ),
+            now=now_ts,
         )
         self._alert_log.append((tuple(ev.box), now_ts))
         self.stdout.write(self.style.SUCCESS(
@@ -800,12 +1075,12 @@ class Command(BaseCommand):
 
     # ---- shared alert creation --------------------------------------------
 
-    def _create_alert(self, score, label, frame, description):
+    def _create_alert(self, score, label, frame, description, now=None):
         ts_label = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         safe_label = label.replace(" ", "_")
         filename = f"{ts_label}_thief_{safe_label}.jpg"
         cv2.imwrite(str(self.violations_dir / filename), frame)
-        image_url = f"{settings.SITE_BASE_URL}{settings.MEDIA_URL}violations/{filename}"
+        image_url = violation_media_path(filename)
 
         # Write the ~30s evidence clip (annotated frames leading up to the
         # alert). getattr guards --image test mode, which never creates
@@ -814,11 +1089,45 @@ class Command(BaseCommand):
         clip = getattr(self, "clip", None)
         if clip is not None:
             # Add the fully-annotated current frame (with the alert box) to
-            # the buffer at the moment the alert fires, so the clip includes it.
-            clip.add(frame, time.time())
+            # the buffer at the moment the alert fires, so the clip includes
+            # it. MUST be the same clock the caller's been using for every
+            # other frame added this run (`now`, passed in by
+            # _process_track/_handle_evidence) — ClipRecorder.add() trims
+            # its buffer by comparing timestamps, so mixing wall-clock
+            # time.time() in here against a run using video-position time
+            # (file sources, see the timing-bug fix) makes this one frame
+            # look tens of years newer than everything already buffered,
+            # which the cutoff logic reads as "evict all of it." Default
+            # only covers a caller with no timeline of its own (--image
+            # test mode, which never touches self.clip anyway).
+            clip.add(frame, now if now is not None else time.time())
             video_name = f"{ts_label}_thief_{safe_label}.mp4"
             if clip.save(self.violations_dir / video_name):
-                video_url = f"{settings.SITE_BASE_URL}{settings.MEDIA_URL}violations/{video_name}"
+                video_url = violation_media_path(video_name)
+
+        # RAW (unannotated, full source frame rate/resolution) clip. File
+        # sources cut straight from the source file (best quality, real fps).
+        # Live sources can't be seeked, so they fall back to the rolling
+        # RawFrameRecorder buffer of raw frames instead (see its docstring for
+        # why record_camera's segments aren't usable for this).
+        raw_video_url = ""
+        raw_name = f"{ts_label}_thief_{safe_label}_raw.mp4"
+        raw_path = self.violations_dir / raw_name
+        if self._source_path is not None and self._video_pos_sec is not None:
+            start = max(0.0, self._video_pos_sec - recognition.RAW_CLIP_PRE_SECONDS)
+            duration = recognition.RAW_CLIP_PRE_SECONDS + recognition.RAW_CLIP_POST_SECONDS
+            cut_ok = recognition.cut_raw_clip(self._source_path, start, duration, raw_path)
+        elif self._raw_buffer is not None:
+            cut_ok = self._raw_buffer.save(raw_path)
+        else:
+            cut_ok = False
+        if cut_ok:
+            raw_video_url = violation_media_path(raw_name)
+            self.stdout.write(self.style.SUCCESS(f"  raw clip: {raw_name}"))
+        else:
+            self.stdout.write(self.style.WARNING(
+                "  raw clip not produced (see ffmpeg log above if one was attempted)"
+            ))
 
         if self.dry_run:
             return None
@@ -832,5 +1141,6 @@ class Command(BaseCommand):
             description=description,
             image_url=image_url,
             video_url=video_url,
+            raw_video_url=raw_video_url,
             suspect=label,
         )

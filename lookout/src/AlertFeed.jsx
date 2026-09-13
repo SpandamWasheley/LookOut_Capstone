@@ -1,8 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Bell, Clock, AlertTriangle, Radio, CheckCircle, X, Camera as CameraIcon, Moon, Sun, Sunset, Filter, ChevronDown, ChevronRight } from "lucide-react";
-import { VIOLATION_CONFIG } from "../data/mockData";
+import { Bell, Clock, AlertTriangle, Radio, CheckCircle, X, Camera as CameraIcon, Moon, Sun, Sunset, ChevronRight, Search } from "lucide-react";
+import { resolveViolationType, violationDisplay } from "./constants/violationTypes";
 import { ViolationModal } from "./ViolationModal";
 import { DispatchModal } from "./DispatchModal";
+import { TypeFilterDropdown } from "./TypeFilterDropdown";
 import { getAlerts, getOfficers, getCameras, getHouseholds, getResidents, updateAlert } from "./api";
 
 function mapAlert(raw) {
@@ -37,10 +38,58 @@ function formatTime(ts) {
   return new Date(ts).toLocaleTimeString("en-PH", { hour: "numeric", minute: "2-digit", hour12: true });
 }
 
+// Lightweight fuzzy match: every character of the query must appear in order
+// somewhere in the target (gaps allowed), so a typo or partial ID like
+// "alt42" or "0042" still finds "ALT-0042" without needing an exact
+// substring. An exact substring still wins outright and short-circuits the
+// common case. Returns -1 when the query doesn't match at all.
+// Collapses hyphens/spaces/underscores so "ALT 0042", "alt-0042" and
+// "alt0042" are all treated as the same separator, matching how people
+// actually type IDs — punctuation differences shouldn't be the reason a
+// search misses.
+const normalizeSeparators = (s) => s.replace(/[-_\s]+/g, " ").trim();
+
+function fuzzyScore(query, text) {
+  const q = normalizeSeparators(query.toLowerCase());
+  const t = normalizeSeparators((text ?? "").toLowerCase());
+  if (!q) return 0;
+  if (!t) return -1;
+
+  const idx = t.indexOf(q);
+  if (idx !== -1) return 1000 - idx;
+
+  let qi = 0, score = 0, gap = 0;
+  for (let ti = 0; ti < t.length && qi < q.length; ti++) {
+    if (t[ti] === q[qi]) {
+      score += 10 - Math.min(gap, 8); // tighter runs score higher than scattered ones
+      if (ti === 0 || /\W/.test(t[ti - 1])) score += 5; // bonus for landing on a word boundary
+      gap = 0;
+      qi++;
+    } else {
+      gap++;
+    }
+  }
+  return qi === q.length ? score : -1;
+}
+
+// Best fuzzy score for an alert across the fields an operator would actually
+// search by — ID first (it's the whole point of this search box), then type,
+// description, zone, and suspect.
+function alertSearchScore(alert, typeLabel, query) {
+  const fields = [alert.id, typeLabel, alert.description, alert.cameraZone, alert.suspect];
+  let best = -1;
+  for (const f of fields) {
+    if (!f) continue;
+    const s = fuzzyScore(query, f);
+    if (s > best) best = s;
+  }
+  return best;
+}
+
 const statusConfig = {
   active:       { label: "Active",     color: "#ef4444", bg: "rgba(239,68,68,0.1)"   },
   acknowledged: { label: "Dismissed",  color: "#64748b", bg: "rgba(100,116,139,0.1)" },
-  dispatched:   { label: "Dispatched", color: "#3b82f6", bg: "rgba(59,130,246,0.1)"  },
+  dispatched:   { label: "Assigned",   color: "#3b82f6", bg: "rgba(59,130,246,0.1)"  },
   resolved:     { label: "Resolved",   color: "#10b981", bg: "rgba(16,185,129,0.1)"  },
 };
 
@@ -48,7 +97,7 @@ const dismissReasons = [
   "False positive — no violation present",
   "Duplicate alert — already handled",
   "Outside barangay jurisdiction",
-  "Manually handled before dispatch",
+  "Handled before an officer was assigned",
   "Technical glitch / sensor error",
   "Other",
 ];
@@ -57,7 +106,7 @@ const dismissReasons = [
 function DismissModal({ alert, onConfirm, onClose }) {
   const [reason, setReason] = useState("");
   const [notes, setNotes] = useState("");
-  const vcfg = VIOLATION_CONFIG[alert.type] ?? { label: alert.type, color: "#f59e0b", icon: AlertTriangle };
+  const vcfg = violationDisplay(alert.type);
   const VIcon = vcfg.icon;
 
   return (
@@ -73,8 +122,8 @@ function DismissModal({ alert, onConfirm, onClose }) {
           style={{ borderBottom: "1px solid var(--border)" }}>
           <div className="flex items-center gap-2.5">
             <div className="w-7 h-7 rounded-md flex items-center justify-center"
-              style={{ background: `${vcfg.color}18` }}>
-              <VIcon size={14} color={vcfg.color} />
+              style={{ background: vcfg.bg }}>
+              <VIcon size={14} style={{ color: vcfg.color }} />
             </div>
             <div>
               <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Dismiss Alert</div>
@@ -167,8 +216,10 @@ function DismissModal({ alert, onConfirm, onClose }) {
 }
 
 // ── Alert card ────────────────────────────────────────────────────────────────
-function AlertCard({ alert, onView, thin = false }) {
-  const vcfg = VIOLATION_CONFIG[alert.type] ?? { label: alert.type, color: "#f59e0b", icon: AlertTriangle };
+const THIN_CARD_H = 56;
+
+function AlertCard({ alert, onView, thin = false, extraPad = 0 }) {
+  const vcfg = violationDisplay(alert.type);
   const VIcon = vcfg.icon;
   const scfg = statusConfig[alert.status] ?? statusConfig.acknowledged;
   const officerCount = alert.officersAssignedNames.length;
@@ -177,9 +228,16 @@ function AlertCard({ alert, onView, thin = false }) {
     <div
       onClick={onView}
       data-alert-card
-      className={`group rounded-2xl cursor-pointer transition-all duration-150 overflow-hidden flex ${thin ? "mb-1.5" : "mb-3"} min-h-[56px]`}
-      style={{ background: "var(--card)", border: "1px solid var(--border)" }}
-      onMouseEnter={(e) => { e.currentTarget.style.borderColor = `${vcfg.color}50`; }}
+      className={`group rounded-2xl cursor-pointer transition-all duration-150 overflow-hidden flex flex-shrink-0 ${thin ? "mb-1.5 h-[56px]" : "mb-3 min-h-[56px]"}`}
+      style={{
+        background: "var(--card)",
+        border: "1px solid var(--border)",
+        // Compact panel only: grows the card past its base 56px to soak up
+        // leftover space that wouldn't otherwise fit another card — inline
+        // style wins over the Tailwind h-[56px] class above.
+        ...(thin && extraPad > 0 ? { height: THIN_CARD_H + extraPad } : {}),
+      }}
+      onMouseEnter={(e) => { e.currentTarget.style.borderColor = vcfg.border; }}
       onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border)"; }}
     >
       {/* Left color stripe */}
@@ -187,29 +245,32 @@ function AlertCard({ alert, onView, thin = false }) {
       <div className="flex items-center flex-1 min-w-0 gap-2.5 px-3.5 py-2">
         {/* Icon box */}
         <div className="rounded-lg flex items-center justify-center flex-shrink-0 w-8 h-8"
-          style={{ background: `${vcfg.color}18` }}>
-          <VIcon size={14} color={vcfg.color} />
+          style={{ background: vcfg.bg }}>
+          <VIcon size={14} style={{ color: vcfg.color }} />
         </div>
 
         {thin ? (
           <>
             {/* Left content */}
             <div className="flex-1 min-w-0">
-              {/* Row 1: title + status dot */}
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-[13px] font-semibold" style={{ color: "var(--foreground)" }}>
+              {/* Row 1: title only — the active count in the panel header above
+                  already covers what the per-card "Active" dot used to say,
+                  and dropping it keeps this row to one line so every card in
+                  the list stays the same height regardless of title length
+                  (e.g. "Parking Obstruction in Area" vs "Smoking"). */}
+              <div className="flex items-center gap-2">
+                <span className="text-[13px] font-semibold truncate" style={{ color: "var(--foreground)" }}>
                   {vcfg.label}
                 </span>
-                <span className="flex items-center gap-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full" style={{ background: scfg.color }} />
-                  <span className="text-[11px] font-medium" style={{ color: scfg.color }}>{scfg.label}</span>
-                </span>
               </div>
-              {/* Row 2: reported time + optional officers */}
-              <div className="flex items-center gap-2 text-[10px]" style={{ color: "var(--muted-foreground)" }}>
-                <span className="flex items-center gap-1"><Clock size={11} /> Reported {formatTime(alert.timestamp)}</span>
+              {/* Row 2: alert ID + reported time + optional officers */}
+              <div className="flex items-center gap-2 text-[10px] overflow-hidden" style={{ color: "var(--muted-foreground)" }}>
+                <span className="font-medium flex-shrink-0" style={{ fontFamily: "'DM Mono', monospace", color: "var(--foreground)" }}>
+                  {alert.id}
+                </span>
+                <span className="flex items-center gap-1 flex-shrink-0"><Clock size={11} /> Reported {formatTime(alert.timestamp)}</span>
                 {officerCount > 0 && (
-                  <span className="flex items-center gap-1" style={{ color: "#3b82f6" }}>
+                  <span className="flex items-center gap-1 flex-shrink-0" style={{ color: "#3b82f6" }}>
                     · <Radio size={10} /> {officerCount} officer{officerCount !== 1 ? "s" : ""}
                   </span>
                 )}
@@ -236,8 +297,11 @@ function AlertCard({ alert, onView, thin = false }) {
                   {scfg.label}
                 </span>
               </div>
-              {/* Row 2: time */}
+              {/* Row 2: alert ID + time */}
               <div className="flex items-center gap-3 text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+                <span className="font-medium" style={{ fontFamily: "'DM Mono', monospace", color: "var(--foreground)" }}>
+                  {alert.id}
+                </span>
                 <span className="flex items-center gap-1"><Clock size={9} /> {formatTime(alert.timestamp)}</span>
               </div>
             </div>
@@ -364,7 +428,7 @@ function RightPanel({ alerts, cameras }) {
           {[
             { label: "Total",           value: allTimeTotal,    color: "#a855f7" },
             { label: "Total today",     value: todayTotal,      color: "#f59e0b" },
-            { label: "Dispatched",      value: dispatchedCount, color: "#3b82f6" },
+            { label: "Assigned",        value: dispatchedCount, color: "#3b82f6" },
             { label: "Active",          value: activeCount,     color: "#ef4444" },
             { label: "Resolve today",   value: todayResolved,   color: "#10b981" },
             { label: "Dismissed today", value: todayDismissed,  color: "#64748b" },
@@ -389,7 +453,7 @@ function RightPanel({ alerts, cameras }) {
         ) : (
           <div className="scrollbar-visible flex flex-col gap-2 overflow-y-auto flex-1 min-h-0">
             {recentAlerts.slice(0, 5).map((a) => {
-              const vcfg = VIOLATION_CONFIG[a.type] ?? { label: a.type, color: "#ef4444", icon: AlertTriangle };
+              const vcfg = violationDisplay(a.type);
               const scfg = statusConfig[a.status] ?? statusConfig.active;
               return (
                 <div key={a.id} className="rounded-lg p-2.5 flex-shrink-0"
@@ -430,7 +494,8 @@ export function AlertFeed({ showFilters = false, user }) {
   const [dismissTarget, setDismissTarget] = useState(null);
   const [statusFilter, setStatusFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState(new Set());
-  const [typeMenuOpen, setTypeMenuOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const [sortOrder, setSortOrder] = useState("newest"); // "newest" | "oldest"
   const [actionError, setActionError] = useState("");
   const [toast, setToast] = useState(null);
   // Compact (overview) panel: fit as many cards as the space allows; the rest collapse
@@ -438,6 +503,7 @@ export function AlertFeed({ showFilters = false, user }) {
   const compactListRef = useRef(null);
   const [compactMax, setCompactMax] = useState(Infinity);
   const [compactMaxH, setCompactMaxH] = useState(null);
+  const [compactExtraPad, setCompactExtraPad] = useState(0);
   const [showAllRecent, setShowAllRecent] = useState(false);
 
   const showToast = (msg) => {
@@ -447,20 +513,27 @@ export function AlertFeed({ showFilters = false, user }) {
 
   const ongoing = alerts.filter((a) => a.status === "active" || a.status === "dispatched");
   const filtered = ongoing.filter((a) => {
-    if (typeFilter.size > 0 && !typeFilter.has(a.type)) return false;
+    // Match on the RESOLVED canonical code, not the raw one — a "thief"-coded
+    // alert must still match a "theft" filter selection (the checkboxes
+    // below are built from VIOLATION_TYPES' canonical codes).
+    if (typeFilter.size > 0 && !typeFilter.has(resolveViolationType({ code: a.type }).code)) return false;
     if (!showFilters) return a.status === "active";
     if (statusFilter === "active")     return a.status === "active";
     if (statusFilter === "dispatched") return a.status === "dispatched";
     return true;
   });
-  // Alerts tab only: active violations first, dispatched below; newest first within each group.
-  // The compact overview panel keeps its original ordering untouched.
+  // Alerts tab only: fuzzy-searchable by ID/type/description/zone/suspect, then
+  // sorted purely by the visible Latest/Oldest toggle — no hidden secondary sort,
+  // so the order on screen is exactly what the toggle says it is.
+  const searched = showFilters && search.trim()
+    ? filtered.filter((a) => alertSearchScore(a, violationDisplay(a.type).label, search) >= 0)
+    : filtered;
   const visible = showFilters
-    ? [...filtered].sort((a, b) => {
-        const rank = (s) => (s === "active" ? 0 : 1);
-        if (rank(a.status) !== rank(b.status)) return rank(a.status) - rank(b.status);
-        return new Date(b.timestamp) - new Date(a.timestamp);
-      })
+    ? [...searched].sort((a, b) =>
+        sortOrder === "oldest"
+          ? new Date(a.timestamp) - new Date(b.timestamp)
+          : new Date(b.timestamp) - new Date(a.timestamp)
+      )
     : filtered;
 
   // Responsive fit for the compact overview panel: measure the available height and a
@@ -477,9 +550,15 @@ export function AlertFeed({ showFilters = false, user }) {
       const card = el.querySelector("[data-alert-card]");
       if (!card) return;
       const cs = window.getComputedStyle(card);
-      const cardH = card.offsetHeight
-        + parseFloat(cs.marginTop || "0")
-        + parseFloat(cs.marginBottom || "0");
+      const marginH = parseFloat(cs.marginTop || "0") + parseFloat(cs.marginBottom || "0");
+      // Use the known base card height rather than measuring card.offsetHeight:
+      // this same effect mutates that height (via extraPad below), and a stray
+      // ResizeObserver callback can fire before React has painted our last
+      // update, reading a stale height and corrupting the count. THIN_CARD_H
+      // is authoritative and never changes, so every invocation — no matter
+      // when it lands relative to a pending render — computes the same answer.
+      const boxH = THIN_CARD_H;
+      const cardH = boxH + marginH;
       if (cardH <= 0) return;
 
       // Measure the available height from the STABLE parent, not from `el` itself:
@@ -497,11 +576,35 @@ export function AlertFeed({ showFilters = false, user }) {
       if (visible.length <= fitAll) {
         setCompactMax(visible.length);
         setCompactMaxH(visible.length * cardH);
+        setCompactExtraPad(0);
       } else {
         const MORE_ROW_H = 34; // the "…more" row
         const shown = Math.max(1, Math.floor((containerH - MORE_ROW_H) / cardH));
         setCompactMax(shown);
-        setCompactMaxH(shown * cardH + MORE_ROW_H);
+
+        // Rather than stranding the floor()'d remainder as a gap (either
+        // trailing below the "…more" row or, worse, between the last card and
+        // that row), grow the `shown` cards themselves to soak it up: split
+        // the leftover evenly across them as extra height, capped so no card
+        // exceeds ~80px total — past that, a "card" starts reading as a fat
+        // block rather than a list row. If the cap binds, the residual
+        // leftover is left as an (expected, reported) trailing gap.
+        const CAP_TOTAL_H = 80;
+        const maxExtraPerCard = Math.max(0, CAP_TOTAL_H - boxH);
+        const usedBase = shown * cardH + MORE_ROW_H;
+        const leftover = Math.max(0, containerH - usedBase);
+        let extraPerCard = shown > 0 ? leftover / shown : 0;
+        if (extraPerCard > maxExtraPerCard) {
+          const strandedPerSize = Math.round(leftover - shown * maxExtraPerCard);
+          console.warn(
+            `[AlertFeed] compact card padding capped at ${CAP_TOTAL_H}px/card ` +
+            `(would need +${Math.round(extraPerCard)}px/card); ${strandedPerSize}px of ` +
+            `leftover space remains below the "more" row at this size.`
+          );
+          extraPerCard = maxExtraPerCard;
+        }
+        setCompactExtraPad(extraPerCard);
+        setCompactMaxH(shown * (cardH + extraPerCard) + MORE_ROW_H);
       }
     };
 
@@ -517,11 +620,14 @@ export function AlertFeed({ showFilters = false, user }) {
   const compactShown = Number.isFinite(compactMax) ? compactMax : visible.length;
   const compactHidden = Math.max(0, visible.length - compactShown);
 
+  // The "at most N-1 selected" cap lives in TypeFilterDropdown (it disables
+  // the checkbox), not here — a plain toggle keeps this in one place instead
+  // of two copies of the same limit that could drift apart.
   const toggleType = (type) => {
     setTypeFilter((prev) => {
       const next = new Set(prev);
       if (next.has(type)) next.delete(type);
-      else if (next.size < 2) next.add(type);
+      else next.add(type);
       return next;
     });
   };
@@ -586,7 +692,7 @@ export function AlertFeed({ showFilters = false, user }) {
       });
       setDispatchingAlert(null);
       await refresh();
-      if (!removing) showToast(`Officers dispatched to ${dispatchingAlert.cameraZone}`);
+      if (!removing) showToast(`${officerIds.length} officer${officerIds.length !== 1 ? "s" : ""} assigned`);
     } catch (err) {
       setActionError(err.message || "Failed to assign officers.");
     }
@@ -678,7 +784,7 @@ export function AlertFeed({ showFilters = false, user }) {
           <div ref={compactListRef} className="flex-1 min-h-0 overflow-hidden flex flex-col"
             style={compactMaxH ? { maxHeight: compactMaxH } : undefined}>
             {visible.slice(0, compactShown).map((a) => (
-              <AlertCard key={a.id} alert={a} onView={() => setSelectedAlert(a)} thin />
+              <AlertCard key={a.id} alert={a} onView={() => setSelectedAlert(a)} thin extraPad={compactExtraPad} />
             ))}
             {compactHidden > 0 && (
               <button
@@ -762,7 +868,7 @@ export function AlertFeed({ showFilters = false, user }) {
             <div className="flex items-center gap-3">
               <h1 className="text-xl font-bold transition-colors duration-200"
                 style={{ color: headerColor ?? "var(--foreground)" }}>
-                Violations
+                Potential Violations
               </h1>
               {activeCount > 0 && (
                 <span className="flex items-center gap-1.5 text-[12px] font-medium px-2.5 py-1 rounded-full"
@@ -784,8 +890,8 @@ export function AlertFeed({ showFilters = false, user }) {
         {/* Left column: filter bar + alert list */}
         <div className="flex-1 min-w-0 flex flex-col overflow-hidden px-6">
           {/* Filter row */}
-          <div className="flex items-center justify-between py-3 flex-shrink-0">
-            <div className="flex items-center gap-1.5">
+          <div className="flex items-center justify-between flex-wrap gap-x-4 gap-y-2 py-3 flex-shrink-0">
+            <div className="flex items-center gap-1.5 flex-shrink-0">
               {(["all", "active", "dispatched"]).map((s) => {
                 const isActive = statusFilter === s;
                 const scfg = statusConfig[s];
@@ -805,75 +911,58 @@ export function AlertFeed({ showFilters = false, user }) {
                 );
               })}
 
-              {/* Type filter */}
-              <div className="relative ml-1">
-                <button
-                  onClick={() => setTypeMenuOpen((v) => !v)}
-                  className="flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-full transition-all"
-                  style={{
-                    background: typeFilter.size > 0 ? "var(--primary)" : "var(--secondary)",
-                    color: typeFilter.size > 0 ? "var(--primary-foreground)" : "var(--muted-foreground)",
-                    border: `1px solid ${typeFilter.size > 0 ? "var(--primary)" : "var(--border)"}`,
-                  }}
-                >
-                  <Filter size={11} /> Type
-                  {typeFilter.size > 0 && (
-                    <span className="w-4 h-4 flex items-center justify-center rounded-full text-[10px] font-semibold"
-                      style={{ background: "var(--primary-foreground)", color: "var(--primary)" }}>
-                      {typeFilter.size}
-                    </span>
-                  )}
-                  <ChevronDown size={11} style={{ transform: typeMenuOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
-                </button>
-
-                {typeMenuOpen && (
-                  <>
-                    <div className="fixed inset-0 z-40" onClick={() => setTypeMenuOpen(false)} />
-                    <div className="absolute left-0 top-full mt-2 w-fit rounded-xl overflow-hidden shadow-2xl z-50 py-1"
-                      style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
-                      {Object.entries(VIOLATION_CONFIG).map(([type, cfg]) => {
-                        const checked = typeFilter.has(type);
-                        const disabled = !checked && typeFilter.size >= 2;
-                        const TypeIcon = cfg.icon;
-                        return (
-                          <label
-                            key={type}
-                            className="flex items-center gap-2.5 px-3.5 py-1 transition-colors"
-                            style={{ cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.4 : 1 }}
-                            onMouseEnter={(e) => { if (!disabled) e.currentTarget.style.background = "var(--secondary)"; }}
-                            onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              disabled={disabled}
-                              onChange={() => toggleType(type)}
-                              className="w-3.5 h-3.5 rounded"
-                              style={{ accentColor: cfg.color }}
-                            />
-                            <TypeIcon size={13} style={{ color: cfg.color }} />
-                            <span className="text-[13px] font-medium" style={{ color: "var(--foreground)" }}>
-                              {cfg.label.split(" ")[0]}
-                            </span>
-                          </label>
-                        );
-                      })}
-                      <button
-                        onClick={() => setTypeFilter(new Set())}
-                        disabled={typeFilter.size === 0}
-                        className="w-full text-left px-3.5 py-1 text-[12px] font-medium transition-colors disabled:opacity-40 disabled:cursor-default"
-                        style={{ color: "var(--primary)", borderTop: "1px solid var(--border)" }}
-                      >
-                        Clear all
-                      </button>
-                    </div>
-                  </>
-                )}
+              {/* Type filter — shared with the Violator Log's, so the two
+                  can't drift into different rules/looks again. Checkbox
+                  values are canonical codes, matched in `filtered` above via
+                  resolveViolationType so a "thief"-coded alert still counts
+                  under "Theft". */}
+              <div className="ml-1">
+                <TypeFilterDropdown
+                  selected={typeFilter}
+                  onToggle={toggleType}
+                  onClear={() => setTypeFilter(new Set())}
+                />
               </div>
             </div>
-            <span className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>
-              {visible.length} record{visible.length !== 1 ? "s" : ""}
-            </span>
+
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="relative w-56 min-w-0">
+                <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2"
+                  style={{ color: "var(--muted-foreground)" }} />
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search by Alert ID, type, zone…"
+                  className="w-full pl-8 pr-3 py-1.5 rounded-lg text-xs outline-none"
+                  style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
+                />
+              </div>
+
+              <div className="flex items-center gap-0.5 p-0.5 rounded-full flex-shrink-0"
+                style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
+                {[{ key: "newest", label: "Latest first" }, { key: "oldest", label: "Oldest first" }].map((o) => {
+                  const isActive = sortOrder === o.key;
+                  return (
+                    <button
+                      key={o.key}
+                      onClick={() => setSortOrder(o.key)}
+                      className="px-2.5 py-1 text-[11px] font-medium rounded-full transition-all whitespace-nowrap"
+                      style={{
+                        background: isActive ? "var(--card)" : "transparent",
+                        color: isActive ? "var(--foreground)" : "var(--muted-foreground)",
+                        boxShadow: isActive ? "0 1px 2px rgba(0,0,0,0.08)" : "none",
+                      }}
+                    >
+                      {o.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <span className="text-[12px] whitespace-nowrap flex-shrink-0" style={{ color: "var(--muted-foreground)" }}>
+                {visible.length} record{visible.length !== 1 ? "s" : ""}
+              </span>
+            </div>
           </div>
 
           {/* Alert list */}
@@ -883,9 +972,15 @@ export function AlertFeed({ showFilters = false, user }) {
               <div className="flex flex-col items-center justify-center py-12 gap-2">
                 <CheckCircle size={28} style={{ color: "#10b981" }} />
                 <div className="text-sm font-medium" style={{ color: "var(--foreground)" }}>
-                  {ongoing.length === 0 ? "No active violations" : "No violations match this filter"}
+                  {ongoing.length === 0
+                    ? "No active violations"
+                    : search.trim()
+                      ? "No violations match your search"
+                      : "No violations match this filter"}
                 </div>
-                <div className="text-xs" style={{ color: "var(--muted-foreground)" }}>All zones clear</div>
+                <div className="text-xs" style={{ color: "var(--muted-foreground)" }}>
+                  {search.trim() ? `Try a different Alert ID or keyword than "${search.trim()}"` : "All zones clear"}
+                </div>
               </div>
             ) : (
               visible.map((a) => <AlertCard key={a.id} alert={a} onView={() => setSelectedAlert(a)} />)

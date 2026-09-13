@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { CheckCircle, X, MapPin, Clock, Shield, Search, FileText, AlertTriangle } from "lucide-react";
-import { VIOLATION_CONFIG } from "../data/mockData";
+import { CheckCircle, X, MapPin, Clock, Shield, Search, FileText } from "lucide-react";
+import { violationDisplay } from "./constants/violationTypes";
 import { ViolationModal } from "./ViolationModal";
 import { getAlerts } from "./api";
 
@@ -57,7 +57,7 @@ export function RecordsPage() {
 
   const records = finishedAlerts.filter((a) => {
     const matchFilter = filter === "all" || a.status === filter;
-    const typeLabel = VIOLATION_CONFIG[a.type]?.label ?? a.type;
+    const typeLabel = violationDisplay(a.type).label;
     const matchSearch =
       !search ||
       typeLabel.toLowerCase().includes(search.toLowerCase()) ||
@@ -158,7 +158,7 @@ export function RecordsPage() {
           </div>
 
           {records.map((alert, idx) => {
-            const vcfg = VIOLATION_CONFIG[alert.type] ?? { label: alert.type, color: "#f59e0b", icon: AlertTriangle };
+            const vcfg = violationDisplay(alert.type);
             const oc = outcomeConfig[alert.status] ?? outcomeConfig["acknowledged"];
             const OcIcon = oc.icon;
             return (
@@ -175,11 +175,11 @@ export function RecordsPage() {
                 {/* Type */}
                 <div className="flex items-center gap-2.5">
                   <div className="w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0"
-                    style={{ background: vcfg.bgColor ?? `${vcfg.color}22` }}>
-                    <vcfg.icon size={14} color={vcfg.color} />
+                    style={{ background: vcfg.bg }}>
+                    <vcfg.icon size={14} style={{ color: vcfg.color }} />
                   </div>
                   <div>
-                    <div className="text-[12px] font-medium text-white leading-none">{vcfg.label}</div>
+                    <div className="text-[12px] font-medium leading-none" style={{ color: "var(--foreground)" }}>{vcfg.label}</div>
                     <div className="text-[10px] mt-0.5"
                       style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>{alert.id}</div>
                   </div>

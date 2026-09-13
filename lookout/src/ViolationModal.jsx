@@ -1,10 +1,10 @@
 import { useRef, useEffect, useState, useMemo } from "react";
 import {
-  X, MapPin, Clock, User, Shield, Play, Pause,
+  X, User, Shield, Play, Pause,
   SkipBack, Download, Radio, CheckCircle, AlertTriangle,
   MessageSquare, Phone, ChevronDown, ChevronRight, Home, Loader2, Search, Send, Info,
 } from "lucide-react";
-import { VIOLATION_CONFIG } from "../data/mockData";
+import { violationDisplay } from "./constants/violationTypes";
 import { sendSms, getViolationTypes, getBarangays, createCitation, searchViolators } from "./api";
 
 const SUFFIX_OPTIONS = ["", "Jr.", "Sr.", "II", "III", "IV"];
@@ -24,7 +24,7 @@ function splitFullName(fullName) {
 const statusConfig = {
   active:       { label: "Active",     color: "#ef4444", bg: "rgba(239,68,68,0.1)" },
   acknowledged: { label: "Dismissed",  color: "#64748b", bg: "rgba(100,116,139,0.1)" },
-  dispatched:   { label: "Dispatched", color: "#3b82f6", bg: "rgba(59,130,246,0.1)" },
+  dispatched:   { label: "Assigned",   color: "#3b82f6", bg: "rgba(59,130,246,0.1)" },
   resolved:     { label: "Resolved",   color: "#10b981", bg: "rgba(16,185,129,0.1)" },
 };
 
@@ -46,7 +46,7 @@ function formatShort(ts) {
 // Evidence clips have no audio track (frame-only capture, no microphone
 // anywhere in this pipeline), so there's no mute/volume control here — it
 // would be a dead control implying an audio path that doesn't exist.
-function RecordingPlayer({ alert }) {
+export function RecordingPlayer({ alert }) {
   const videoRef = useRef(null);
   const hasRaw = !!alert.rawVideoUrl;
   const hasAnnotated = !!alert.videoUrl;
@@ -56,6 +56,12 @@ function RecordingPlayer({ alert }) {
   const [playing, setPlaying] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [duration, setDuration] = useState(0);
+  // Sized from the actual clip's own dimensions once metadata loads, rather
+  // than assumed — annotated clips are scaled to whatever the source's
+  // aspect ratio was (ffmpeg -vf scale=1280:-2) and raw clips are a verbatim
+  // copy, so neither is guaranteed to be 16:9 for every camera/upload. 16:9
+  // is just the pre-metadata default so the box doesn't jump from 0 height.
+  const [aspectRatio, setAspectRatio] = useState(16 / 9);
 
   const src = useRaw && hasRaw ? alert.rawVideoUrl : (hasAnnotated ? alert.videoUrl : alert.rawVideoUrl);
 
@@ -63,6 +69,7 @@ function RecordingPlayer({ alert }) {
     setPlaying(false);
     setElapsed(0);
     setDuration(0);
+    setAspectRatio(16 / 9);
   }, [src]);
 
   const fmtSec = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
@@ -77,7 +84,7 @@ function RecordingPlayer({ alert }) {
   if (!hasVideo) {
     return (
       <div className="rounded-xl overflow-hidden" style={{ background: "#000", border: "1px solid var(--border)" }}>
-        <div className="relative" style={{ paddingTop: "56.25%" }}>
+        <div className="relative w-full" style={{ aspectRatio: 16 / 9 }}>
           <img src={alert.imageUrl} alt="Evidence" className="absolute inset-0 w-full h-full object-cover" />
           <div className="absolute bottom-3 left-3 right-3 text-[11px] text-center py-1.5 rounded-lg"
             style={{ background: "rgba(0,0,0,0.6)", color: "var(--muted-foreground)" }}>
@@ -90,14 +97,18 @@ function RecordingPlayer({ alert }) {
 
   return (
     <div className="rounded-xl overflow-hidden" style={{ background: "#000", border: "1px solid var(--border)" }}>
-      <div className="relative" style={{ paddingTop: "56.25%" }}>
+      <div className="relative w-full" style={{ aspectRatio: aspectRatio }}>
         <video
           key={src}
           ref={videoRef}
           src={src}
           playsInline
           className="absolute inset-0 w-full h-full object-contain bg-black"
-          onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)}
+          onLoadedMetadata={(e) => {
+            const v = e.currentTarget;
+            setDuration(v.duration || 0);
+            if (v.videoWidth && v.videoHeight) setAspectRatio(v.videoWidth / v.videoHeight);
+          }}
           onTimeUpdate={(e) => setElapsed(e.currentTarget.currentTime)}
           onEnded={() => setPlaying(false)}
           onClick={togglePlay}
@@ -1337,12 +1348,47 @@ function SetCandidateModal({ alert, households: rawHH, residents: rawRes, onSave
   );
 }
 
+// ── Quiet reference-detail card ───────────────────────────────────────────────
+// Used for the redesigned modal's right-column metadata (Camera, Confidence,
+// What was detected, Detected object, Assigned officers) — an 11px muted
+// label above a 13px value, on a quiet surface so these read as reference
+// details rather than competing with the video or footer actions.
+export function QuietCard({ label, value, mono, valueColor, tooltip }) {
+  return (
+    <div className="rounded-lg px-3 py-2.5 min-w-0"
+      style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
+      <div className="flex items-center gap-1">
+        <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>{label}</div>
+        {tooltip && (
+          <div className="relative group flex items-center">
+            <Info size={10} style={{ color: "var(--muted-foreground)", cursor: "pointer" }} />
+            <div className="absolute bottom-full left-0 mb-2 w-52 rounded-xl px-3 py-2.5 text-[11px] leading-relaxed pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity z-50 shadow-xl"
+              style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--muted-foreground)" }}>
+              {tooltip}
+            </div>
+          </div>
+        )}
+      </div>
+      <div className={`text-[13px] font-medium mt-0.5 ${mono ? "truncate" : "break-words"}`}
+        style={{ color: valueColor || "var(--foreground)", fontFamily: mono ? "'DM Mono', monospace" : undefined }}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
 // ── Main modal ─────────────────────────────────────────────────────────────────
 export function ViolationModal({
   alert, assignedOfficerNames, households, residents, officers = [], currentOfficerId,
   onDismiss, onDispatch, onResolved, onClose, onUpdateSuspect, verifierName,
 }) {
-  const vcfg = VIOLATION_CONFIG[alert.type] ?? { label: alert.type, color: "#f59e0b", icon: AlertTriangle };
+  // Icon + color identity from violationTypes.js (same source the rest of
+  // the app's chips use). It's deliberately scoped to smoking/drinking/
+  // parking/theft, so curfew/waste/noise fall through to
+  // violationDisplay's own humanized fallback (e.g. "Curfew") — never the
+  // raw db code, and never (as watch_thief.py's now-fixed code split used
+  // to cause) something as opaque as "thief".
+  const vcfg = violationDisplay(alert.type);
   const scfg = statusConfig[alert.status] ?? statusConfig.acknowledged;
   const VIcon = vcfg.icon;
   const [showContact, setShowContact] = useState(false);
@@ -1357,6 +1403,78 @@ export function ViolationModal({
   const isNoiseViolation = alert.type === "noise";
   const candidates = useMemo(() => buildCandidates(households, residents), [households, residents]);
 
+  // Assigned officers card — built once so it can be dropped in either
+  // paired with "Detected object" (smoking/drinking/thief/parking) or full
+  // width alone (curfew/waste/noise, which have their own detail card).
+  const officersCard = (
+    <div className="rounded-lg px-3 py-2.5 min-w-0"
+      style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
+      <div className="text-[11px] mb-1" style={{ color: "var(--muted-foreground)" }}>
+        Assigned officers {assignedOfficerNames.length > 0 && `(${assignedOfficerNames.length})`}
+      </div>
+      {assignedOfficerNames.length === 0 ? (
+        <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>None assigned</div>
+      ) : (
+        <div className="flex items-center gap-1.5 text-[13px]">
+          <Shield size={10} style={{ color: "#10b981", flexShrink: 0 }} />
+          <span className="truncate" style={{ color: "var(--foreground)" }}>
+            {assignedOfficerNames[0].split(" ")[0]}
+          </span>
+          {assignedOfficerNames.length > 1 && (
+            <button
+              onClick={() => setShowAllOfficers(true)}
+              className="text-[11px] font-medium flex-shrink-0"
+              style={{ color: "#3b82f6" }}>
+              …more
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Officers popup modal */}
+      {showAllOfficers && (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center p-4"
+          style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)" }}
+          onClick={() => setShowAllOfficers(false)}
+        >
+          <div
+            className="w-full max-w-xs rounded-2xl overflow-hidden shadow-2xl"
+            style={{ background: "var(--card)", border: "1px solid var(--border)" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-4 py-3"
+              style={{ borderBottom: "1px solid var(--border)" }}>
+              <div className="flex items-center gap-2">
+                <Shield size={13} style={{ color: "#10b981" }} />
+                <span className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>
+                  Assigned Officers ({assignedOfficerNames.length})
+                </span>
+              </div>
+              <button onClick={() => setShowAllOfficers(false)}
+                className="p-1 rounded-lg"
+                style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}>
+                <X size={13} />
+              </button>
+            </div>
+            <div className="px-4 py-3 space-y-2">
+              {assignedOfficerNames.map((name) => (
+                <div key={name} className="flex items-center gap-2.5 px-3 py-2 rounded-lg"
+                  style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
+                  <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0"
+                    style={{ background: "rgba(16,185,129,0.15)", color: "#10b981" }}>
+                    {name[0]}
+                  </div>
+                  <span className="text-[12px] font-medium" style={{ color: "var(--foreground)" }}>{name}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <>
       <div
@@ -1365,14 +1483,15 @@ export function ViolationModal({
         onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
       >
         <div
-          className="w-full max-w-2xl rounded-2xl overflow-hidden shadow-2xl flex flex-col"
+          className="w-full max-w-6xl rounded-2xl overflow-hidden shadow-2xl flex flex-col"
           style={{ background: "var(--card)", border: "1px solid var(--border)", maxHeight: "90vh" }}
         >
-          {/* Header */}
+          {/* Header — camera name, timestamp and alert ID collapse into one
+              muted metadata line instead of three separate chips. */}
           <div className="flex items-center justify-between px-6 py-4 flex-shrink-0"
             style={{ borderBottom: "1px solid var(--border)" }}>
             <div className="flex items-center gap-3">
-              <VIcon size={22} color={vcfg.color} />
+              <VIcon size={22} style={{ color: vcfg.color }} />
               <div>
                 <div className="flex items-center gap-2">
                   <span className="text-[15px] font-semibold" style={{ color: "var(--foreground)" }}>{vcfg.label}</span>
@@ -1381,10 +1500,9 @@ export function ViolationModal({
                     {scfg.label}
                   </span>
                 </div>
-                <div className="flex items-center gap-3 mt-0.5 text-[11px]" style={{ color: "var(--muted-foreground)" }}>
-                  <span className="flex items-center gap-1"><MapPin size={9} /> {alert.cameraZone}</span>
-                  <span className="flex items-center gap-1"><Clock size={9} /> {formatFull(alert.timestamp)}</span>
+                <div className="mt-0.5 text-[11px]" style={{ color: "var(--muted-foreground)" }}>
                   <span style={{ fontFamily: "'DM Mono', monospace" }}>{alert.id}</span>
+                  {" · "}{alert.cameraZone}{" · "}{formatFull(alert.timestamp)}
                 </div>
               </div>
             </div>
@@ -1394,51 +1512,18 @@ export function ViolationModal({
             </button>
           </div>
 
-          {/* Body */}
-          <div className="overflow-y-auto flex-1 p-6 space-y-5">
-            <RecordingPlayer alert={alert} />
+          {/* Body — video left (60%), stacked reference cards right (40%);
+              this one region scrolls if content overflows a shorter screen. */}
+          <div className="overflow-y-auto flex-1 p-6">
+            <div className="grid grid-cols-[3fr_2fr] gap-5" style={{ alignItems: "start" }}>
+              {/* Left: video, scales with the column */}
+              <div className="min-w-0">
+                <RecordingPlayer alert={alert} />
+              </div>
 
-            <div className="grid grid-cols-2 gap-4" style={{ alignItems: "stretch" }}>
-              {/* Left: detail grid */}
-              <div className="flex flex-col gap-3">
-                <div className={`gap-2 flex-1 ${isCandidateViolation || isNoiseViolation ? "flex flex-col" : "grid grid-cols-2"}`} style={isCandidateViolation || isNoiseViolation ? {} : { gridTemplateRows: "1fr 1fr" }}>
-                  {/* Camera — hidden for curfew/waste/noise */}
-                  {!isCandidateViolation && !isNoiseViolation && (
-                    <div className="rounded-lg px-3 py-3 flex flex-col justify-center"
-                      style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-                      <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Camera</div>
-                      <div className="text-[12px] font-medium mt-0.5"
-                        style={{ color: "var(--foreground)", fontFamily: "'DM Mono', monospace" }}>
-                        {alert.camera}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Confidence — hidden for curfew/waste/noise */}
-                  {!isCandidateViolation && !isNoiseViolation && (
-                    <div className="rounded-lg px-3 py-3 flex flex-col justify-center"
-                      style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-                      <div className="flex items-center gap-1">
-                        <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Confidence</div>
-                        <div className="relative group flex items-center">
-                          <Info size={10} style={{ color: "var(--muted-foreground)", cursor: "pointer" }} />
-                          <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-52 rounded-xl px-3 py-2.5 text-[11px] leading-relaxed pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity z-50 shadow-xl"
-                            style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--muted-foreground)" }}>
-                            <div className="font-semibold mb-1" style={{ color: "var(--foreground)" }}>AI Confidence Score</div>
-                            How certain the YOLOv8 model is that a violation was detected. A higher score means the AI is more confident in its detection.
-                            <div className="absolute top-full left-1/2 -translate-x-1/2 w-0 h-0"
-                              style={{ borderLeft: "5px solid transparent", borderRight: "5px solid transparent", borderTop: "5px solid var(--border)" }} />
-                          </div>
-                        </div>
-                      </div>
-                      <div className="text-[12px] font-medium mt-0.5" style={{ color: vcfg.color }}>
-                        {(alert.confidence * 100).toFixed(0)}% conf
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Potential Candidate / Noise card */}
-                  {isNoiseViolation ? (
+              {/* Right: stacked reference-detail cards */}
+              <div className="flex flex-col gap-3 min-w-0">
+                {isNoiseViolation ? (
                     /* Noise violation card */
                     (() => {
                       const loudnessPct = Math.round((alert.confidence ?? 0) * 100);
@@ -1627,117 +1712,46 @@ export function ViolationModal({
                       );
                     })()
                   ) : (
-                    /* Default chip style for other violations */
-                    <div className="col-span-2 rounded-lg px-3 py-2.5"
-                      style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-                      <div className="flex items-center justify-between mb-1.5">
-                        <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Potential Candidate</div>
-                        <button
-                          onClick={() => setShowSetCandidate(true)}
-                          className="flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full transition-all"
-                          style={{ background: "rgba(59,130,246,0.1)", color: "#3b82f6", border: "1px solid rgba(59,130,246,0.2)" }}>
-                          <User size={9} /> {alert.suspect ? "Edit" : "+ Add"}
-                        </button>
-                      </div>
-                      {alert.suspect ? (
-                        <div className="flex flex-wrap gap-1">
-                          {alert.suspect.split(";").map((n) => n.trim()).filter(Boolean).map((name) => (
-                            <span key={name} className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium"
-                              style={{ background: "rgba(59,130,246,0.1)", color: "#3b82f6", border: "1px solid rgba(59,130,246,0.2)" }}>
-                              <User size={9} /> {name}
-                            </span>
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>—</div>
-                      )}
-                    </div>
+                    /* Camera · Confidence — stacked one-per-row: monospace
+                       camera codes (e.g. CAM-DRINKING-TEST) truncate a value
+                       badly at half the column width two-up, so this pair
+                       gets the full row each rather than risk it. */
+                    <>
+                      <QuietCard label="Camera" value={alert.camera} mono />
+                      <QuietCard
+                        label="Confidence"
+                        value={`${(alert.confidence * 100).toFixed(0)}%`}
+                        valueColor={vcfg.color}
+                        tooltip={
+                          <>
+                            <div className="font-semibold mb-1" style={{ color: "var(--foreground)" }}>AI Confidence Score</div>
+                            How certain the YOLOv8 model is that a violation was detected. A higher score means the AI is more confident in its detection.
+                          </>
+                        }
+                      />
+                    </>
                   )}
-                </div>
-              </div>
 
-              {/* Right: officers + description */}
-              <div className="flex flex-col gap-3">
-                {/* Officers — compact with expandable */}
-                <div className="rounded-lg px-3 py-2.5 flex-shrink-0"
-                  style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-                  <div className="text-[10px] mb-1" style={{ color: "var(--muted-foreground)" }}>
-                    Assigned officers {assignedOfficerNames.length > 0 && `(${assignedOfficerNames.length})`}
+                {/* What was detected — the alert's own description, full width */}
+                <QuietCard label="What was detected" value={alert.description || "—"} />
+
+                {/* Detected object (the model's class label — NOT a resident
+                    match; see the module notes above SetCandidateModal) paired
+                    with Assigned officers. Curfew/waste/noise have no "detected
+                    object" concept — their own card above already covers it —
+                    so officers stands alone, full width, for those. */}
+                {isCandidateViolation || isNoiseViolation ? (
+                  officersCard
+                ) : (
+                  <div className="grid grid-cols-2 gap-3">
+                    <QuietCard label="Detected object" value={alert.suspect || "—"} />
+                    {officersCard}
                   </div>
-                  {assignedOfficerNames.length === 0 ? (
-                    <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>None assigned</div>
-                  ) : (
-                    <div className="flex items-center gap-1.5 text-[12px]">
-                      <Shield size={10} style={{ color: "#10b981", flexShrink: 0 }} />
-                      <span style={{ color: "var(--foreground)" }}>
-                        {assignedOfficerNames[0].split(" ")[0]}
-                      </span>
-                      {assignedOfficerNames.length > 1 && (
-                        <button
-                          onClick={() => setShowAllOfficers(true)}
-                          className="text-[11px] font-medium"
-                          style={{ color: "#3b82f6" }}>
-                          …more
-                        </button>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Officers popup modal */}
-                  {showAllOfficers && (
-                    <div
-                      className="fixed inset-0 z-[80] flex items-center justify-center p-4"
-                      style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)" }}
-                      onClick={() => setShowAllOfficers(false)}
-                    >
-                      <div
-                        className="w-full max-w-xs rounded-2xl overflow-hidden shadow-2xl"
-                        style={{ background: "var(--card)", border: "1px solid var(--border)" }}
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <div className="flex items-center justify-between px-4 py-3"
-                          style={{ borderBottom: "1px solid var(--border)" }}>
-                          <div className="flex items-center gap-2">
-                            <Shield size={13} style={{ color: "#10b981" }} />
-                            <span className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>
-                              Assigned Officers ({assignedOfficerNames.length})
-                            </span>
-                          </div>
-                          <button onClick={() => setShowAllOfficers(false)}
-                            className="p-1 rounded-lg"
-                            style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}>
-                            <X size={13} />
-                          </button>
-                        </div>
-                        <div className="px-4 py-3 space-y-2">
-                          {assignedOfficerNames.map((name) => (
-                            <div key={name} className="flex items-center gap-2.5 px-3 py-2 rounded-lg"
-                              style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-                              <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0"
-                                style={{ background: "rgba(16,185,129,0.15)", color: "#10b981" }}>
-                                {name[0]}
-                              </div>
-                              <span className="text-[12px] font-medium" style={{ color: "var(--foreground)" }}>{name}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Description */}
-                <div className="rounded-lg px-3 py-2.5 flex-1"
-                  style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-                  <div className="text-[10px] mb-1" style={{ color: "var(--muted-foreground)" }}>Description</div>
-                  <p className="text-[12px] leading-relaxed" style={{ color: "var(--muted-foreground)" }}>
-                    {alert.description || "—"}
-                  </p>
-                </div>
+                )}
               </div>
             </div>
 
-            {/* Dismissal reason — full-width block below the description */}
+            {/* Dismissal reason — full-width block below the cards */}
             {alert.status === "acknowledged" && (
               <div className="flex items-start gap-2.5 w-full rounded-lg px-4 py-3"
                 style={{ border: "1px solid rgba(239,68,68,0.25)", background: "rgba(239,68,68,0.06)" }}>
@@ -1795,7 +1809,7 @@ export function ViolationModal({
                     className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all"
                     style={{ background: "rgba(245,158,11,0.22)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.5)" }}>
                     <Radio size={14} />
-                    {assignedOfficerNames.length > 0 ? "Reassign officers" : "Dispatch officers"}
+                    {assignedOfficerNames.length > 0 ? "Reassign officers" : "Assign officers"}
                   </button>
                 </>
               )}

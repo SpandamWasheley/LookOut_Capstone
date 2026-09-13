@@ -27,6 +27,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
+from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
 from core.vision import recognition, tracking
@@ -196,7 +197,9 @@ class Command(BaseCommand):
             cmd.group_duration_override = None
         # violation types each command's _create_alert references
         cmd.smoking_type = self._vtype("smoking", "Public Smoking", "#f59e0b", "cigarette")
-        cmd.thief_type = self._vtype("thief", "Theft / Robbery", "#ef4444", "siren")
+        # code="theft" (not "thief") — matches watch_thief.py's own fix; see
+        # migration 0026 for why the two codes must never diverge again.
+        cmd.thief_type = self._vtype("theft", "Holdup in Public Area", "#ef4444", "siren")
         cmd.drinking_type = self._vtype("drinking", "Public Drinking", "#8b5cf6", "beer")
 
     def _vtype(self, code, label, color, icon):
@@ -244,6 +247,9 @@ class Command(BaseCommand):
         names = ", ".join(list(self.engines) + ["parking"])
         self.stdout.write(self.style.SUCCESS(
             f"Watching {source} [{mode}] for: {names}. Ctrl+C to stop."))
+
+        if debug:
+            cv2.namedWindow("LookOut - watch_all (debug)", cv2.WINDOW_NORMAL)
 
         started = time.time()
         frames = 0
@@ -420,8 +426,8 @@ class Command(BaseCommand):
             if debug:
                 col = (0, 0, 220) if parked_for >= dwell else (0, 200, 0)
                 cv2.rectangle(frame, (x1, y1), (x2, y2), col, 2)
-                cv2.putText(frame, f"{label} {parked_for:.0f}s", (x1, max(y1 - 8, 0)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 1)
+                recognition.draw_label(frame, f"{label} {score * 100:.0f}% {parked_for:.0f}s",
+                                       x1, max(y1 - 8, 0), col)
 
             if parked_for >= dwell and now - tr["alerted_at"] >= cfg.alert_cooldown:
                 self._parking_alert(score, label, frame, parked_for)
@@ -436,7 +442,7 @@ class Command(BaseCommand):
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         fn = f"{ts}_parking_{label}.jpg"
         cv2.imwrite(str(self.violations_dir / fn), frame)
-        url = f"{settings.SITE_BASE_URL}{settings.MEDIA_URL}violations/{fn}"
+        url = violation_media_path(fn)
         if self.dry_run:
             self.stdout.write(self.style.SUCCESS(f"parking: {label} {parked_for:.0f}s (dry run)"))
             return

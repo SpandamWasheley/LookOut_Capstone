@@ -239,6 +239,14 @@ class Track:
         # the watchers happen to pass epoch timestamps, so any caller using a
         # relative clock would silently be inside the cooldown from frame one.
         self.last_alerted_at = None       # per-person alert cooldown
+        # Phase C dedup: once True, this track can NEVER alert again for its
+        # own lifetime, regardless of `cooldown` elapsing — a cooldown timing
+        # out is not the same thing as the incident ending. Only a genuine
+        # end (this track dies past TRACK_MAX_GAP/TOMBSTONE_SECONDS with no
+        # revival) and a fresh Track re-forming resets this; a tombstone
+        # revival (adopt, below) is the SAME continuous incident resuming
+        # after an occlusion, so it carries this flag forward, not reset it.
+        self.has_alerted = False
         # Puff-cycle state (smoking): which zone the cigarette is in relative to
         # the mouth, and the timestamps of completed raise-then-lower puffs.
         self.puff_zone = None             # 'raised' | 'lowered' | None
@@ -458,6 +466,7 @@ class Track:
         self.dets = other.dets
         self.position_history = other.position_history
         self.last_alerted_at = other.last_alerted_at
+        self.has_alerted = other.has_alerted
         # Layer E history rides along: an occlusion is exactly the case E27 and
         # the tombstone mechanism exist for, so a person who walked behind a
         # jeepney must keep their loiter age (E10) and path shape (E3) instead of
@@ -488,24 +497,60 @@ class Track:
             self.dets = dets
             self.last_threat_seen = now
 
-    def present(self):
+    def _last_seen_for(self, target_label):
+        """Timestamp of the most recent window frame containing `target_label`
+        specifically, or None if it never appeared. Scans backward through
+        `votes` (bounded by the window, so this stays cheap) rather than
+        tracking a per-label timestamp on every vote() call, since only a
+        caller using a per-class override (see present/accruing below) ever
+        needs it — everyone else keeps using the cheap self.last_threat_seen."""
+        for ts, dets in reversed(self.votes):
+            if any(d[5] == target_label for d in dets):
+                return ts
+        return None
+
+    def present(self, min_ratio=None, target_label=None):
         """True when enough of the window's frames were positive.
 
         A ratio rather than a raw count, so the bar is the same whether the
         window holds 45 near-mode frames or 3 far-mode ones; VOTE_MIN_FRAMES
         stops a freshly created track from confirming off its first hit.
+
+        `min_ratio` overrides the module default VOTE_MIN_RATIO for this one
+        call. `target_label`, when given, counts hits of just that class (via
+        label_votes) instead of "any detection at all" — a per-class override
+        (see watch_thief.CLASS_POLICY's ratio_scale) must judge that class's
+        OWN presence, not get satisfied by frames where only some other class
+        in the window fired instead (e.g. a robbery-activity pose hit
+        propping up a loosened knife ratio it never earned).
         """
-        hits = sum(1 for _, dets in self.votes if dets)
+        ratio = VOTE_MIN_RATIO if min_ratio is None else min_ratio
+        if target_label is None:
+            hits = sum(1 for _, dets in self.votes if dets)
+        else:
+            hits = self.label_votes().get(target_label, 0)
         if hits < VOTE_MIN_FRAMES:
             return False
-        return hits >= len(self.votes) * VOTE_MIN_RATIO
+        return hits >= len(self.votes) * ratio
 
-    def accruing(self, now):
+    def accruing(self, now, min_ratio=None, stale_seconds=None, target_label=None):
         """True when the vote window says present AND a detection is current, so
-        the dwell clock should be running."""
-        if not self.dets or now - self.last_threat_seen > ACCRUAL_STALE_SECONDS:
-            return False
-        return self.present()
+        the dwell clock should be running.
+
+        `min_ratio`/`stale_seconds`/`target_label` all default to the shared
+        globals (current behaviour, what watch_smoking/watch_drinking still
+        get) and only diverge when a caller passes a per-class override —
+        see watch_thief.py's _process_track for the one that does.
+        """
+        stale = ACCRUAL_STALE_SECONDS if stale_seconds is None else stale_seconds
+        if target_label is None:
+            if not self.dets or now - self.last_threat_seen > stale:
+                return False
+        else:
+            last = self._last_seen_for(target_label)
+            if last is None or now - last > stale:
+                return False
+        return self.present(min_ratio=min_ratio, target_label=target_label)
 
     def seen_at(self, now):
         """True if this track was matched to a box in the frame at `now`.
@@ -846,12 +891,43 @@ class Cluster:
         # only counted while active, not raw wall-clock since creation.
         self.duration_held = 0.0
         self._last_tick = None
-        # Best (x1,y1,x2,y2,score,label) bottle detection ever seen among
-        # members. Sticky — sightings don't need to be current or per-frame,
-        # per the "occasional, not per-frame" evidence requirement.
+        # Highest-confidence (x1,y1,x2,y2,score,label) bottle detection seen
+        # among members — kept even if a later sighting scores lower, per the
+        # "occasional, not per-frame" evidence requirement. NOT sticky forever
+        # though (Phase B3): `last_evidence_seen_at` is stamped on every
+        # sighting regardless of score, and `fresh_evidence` refuses to hand
+        # back `evidence` once too long has passed since ANY sighting — a
+        # cluster must not stay armed indefinitely on one old bottle that's
+        # long gone from frame.
         self.evidence = None
+        self.last_evidence_seen_at = None
         # None = never alerted — see Track.last_alerted_at for why not 0.0.
         self.last_alerted_at = None
+        # Phase C dedup — see Track.has_alerted for the full reasoning: once
+        # True, this cluster can never alert again regardless of `cooldown`
+        # elapsing, only a genuine end (expiry with no tombstone revival) and
+        # a fresh Cluster re-forming resets it.
+        self.has_alerted = False
+
+    def note_evidence(self, det, now):
+        """Records a bottle sighting attributed to a member this frame.
+        `evidence` keeps the best-scoring sighting seen (for the alert's
+        reported score/label); `last_evidence_seen_at` is stamped on every
+        sighting regardless of score, so recency reflects presence, not just
+        confidence — see `fresh_evidence`."""
+        if self.evidence is None or det[4] > self.evidence[4]:
+            self.evidence = det
+        self.last_evidence_seen_at = now
+
+    def fresh_evidence(self, now, max_age):
+        """This cluster's bottle evidence, or None if no member has produced
+        a bottle detection in the last `max_age` seconds (Phase B3 — see
+        note_evidence)."""
+        if self.evidence is None or self.last_evidence_seen_at is None:
+            return None
+        if now - self.last_evidence_seen_at > max_age:
+            return None
+        return self.evidence
 
     def tick(self, now, active):
         """Advances the duration clock, crediting only confirmed (>= min_group)
@@ -893,6 +969,7 @@ class Cluster:
         self.position_history = other.position_history
         self.evidence = other.evidence
         self.last_alerted_at = other.last_alerted_at
+        self.has_alerted = other.has_alerted
         if other.duration_held > 0:
             # Carry the duration progress across the gap. Set last_active_seen
             # to now (not other's stale value) so GROUP_PRESENCE_GRACE_SECONDS'
@@ -930,8 +1007,23 @@ class GroupTracker:
         """Returns this frame's live clusters, INCLUDING ones currently below
         min_group — a shrinking gathering isn't dropped the instant
         membership dips; see GROUP_PRESENCE_GRACE_SECONDS. Scene (unattributed)
-        tracks never participate — a gathering is people, not objects."""
-        people = [t for t in tracks if not t.is_scene]
+        tracks never participate — a gathering is people, not objects.
+
+        Only tracks actually SEEN this frame (t.seen_at(now)) count as
+        members — `tracks` also includes ones PersonTracker is still
+        remembering through a brief occlusion gap (TRACK_MAX_GAP), at their
+        last-known box position. Counting those toward membership meant a
+        person who had already left frame could keep a cluster's member
+        count (and therefore its union bbox) inflated on their stale
+        position alone — a GATHERING box drawn around what a viewer sees as
+        a single person, because the "second member" was a memory, not a
+        detection. Excluding them here means member_ids and the drawn bbox
+        both shrink the instant someone actually leaves, not after
+        TRACK_MAX_GAP catches up — while duration_held still tolerates a
+        brief real flicker via GROUP_PRESENCE_GRACE_SECONDS below, so this
+        isn't as strict as it sounds for genuine occlusion.
+        """
+        people = [t for t in tracks if not t.is_scene and t.seen_at(now)]
         groups = self._group_by_proximity(people)
 
         matched_ids, seen = set(), []

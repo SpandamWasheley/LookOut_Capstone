@@ -25,6 +25,7 @@ export interface Assignment {
   status: "active" | "dispatched" | "acknowledged" | "resolved";
   notes: string;
   imageUrl: string;
+  videoUrl: string;
 }
 
 const DEFAULT_TYPE: ViolationTypeMeta = { code: "unknown", label: "Violation", color: "#f59e0b", icon: "alert" };
@@ -45,6 +46,7 @@ function mapAlert(raw: api.ApiAlert, typesByCode: Record<string, ViolationTypeMe
     status: raw.status,
     notes: raw.notes,
     imageUrl: raw.image_url,
+    videoUrl: raw.video_url,
   };
 }
 

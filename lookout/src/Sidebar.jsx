@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import {
   LayoutDashboard, Camera, Bell, Users, Settings,
   ChevronLeft, ChevronRight, Eye, LogOut, Shield,
-  Archive, TrendingUp, Sun, Moon,
+  Archive, TrendingUp, Sun, Moon, PlayCircle,
 } from "lucide-react";
 
 const navGroups = [
@@ -19,7 +19,9 @@ const navGroups = [
   {
     label: "Manage",
     items: [
-      { id: "residents", label: "Face Registry", icon: Users,    roles: ["admin"] },
+      // Registry tab hidden from the UI — keep entry disabled rather than deleted.
+      // { id: "residents", label: "", icon: Users,    roles: ["admin"] },
+      { id: "rundetection", label: "Run Detection", icon: PlayCircle, roles: ["admin"] },
       { id: "officers",  label: "Personnel", icon: Shield,   roles: ["admin"] },
       { id: "config",    label: "Settings",  icon: Settings, roles: ["admin"] },
     ],

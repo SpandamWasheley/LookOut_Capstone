@@ -3,7 +3,7 @@
     "name": "LookOut Officer",
     "slug": "lookout-officer",
     "version": "1.0.0",
-    "orientation": "portrait",
+    "orientation": "default",
     "icon": "./assets/icon.png",
     "scheme": "lookoutofficer",
     "userInterfaceStyle": "automatic",
@@ -27,7 +27,16 @@
       "expo-router",
       "expo-font",
       "expo-splash-screen",
-      "expo-secure-store"
+      "expo-secure-store",
+      "expo-video",
+      [
+        "expo-media-library",
+        {
+          "photosPermission": false,
+          "savePhotosPermission": "LookOut saves evidence clips to your photo gallery so you can review them without a signal.",
+          "isAccessMediaLocationEnabled": false
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

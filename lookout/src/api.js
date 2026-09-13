@@ -178,6 +178,17 @@ export const stopRecording = () => apiFetch("/recording/stop/", { method: "POST"
 export const getRecordingStatus = () => apiFetch("/recording/status/");
 
 export const getCameras = () => apiFetch("/cameras/");
+export const updateCamera = (id, payload) =>
+  apiFetch(`/cameras/${id}/`, { method: "PATCH", body: JSON.stringify(payload) });
+
+// Grabs the first frame of an uploaded clip (as a data URL) plus its native
+// pixel size, for drawing obstruction edges when the camera has no live feed
+// to snapshot from. See CameraViewSet.edge_frame.
+export const uploadCameraEdgeFrame = (id, file) => {
+  const formData = new FormData();
+  formData.append("file", file);
+  return apiUpload(`/cameras/${id}/edge-frame/`, formData);
+};
 
 // Admin test harness: run an existing detector against an uploaded clip
 // instead of the terminal. Launches a subprocess server-side; this call
@@ -189,6 +200,41 @@ export const uploadDetectionJob = (file, violationType) => {
   formData.append("violation_type", violationType);
   return apiUpload("/detection-jobs/", formData);
 };
+
+// Stages a clip server-side and returns its first frame (native resolution)
+// plus a staged_token — for the "upload -> draw edges -> start" flow, where
+// the clip should only cross the wire once even though drawing happens
+// before the job itself is created. See DetectionJobViewSet.frame.
+export const stageDetectionFrame = (file) => {
+  const formData = new FormData();
+  formData.append("file", file);
+  return apiUpload("/detection-jobs/frame/", formData);
+};
+
+// Starts a job from an already-staged clip (see stageDetectionFrame) instead
+// of re-uploading it. `edges` (parking only) is the same {left,right} spec
+// EdgeEditorModal writes via updateCamera, plus the frame size it was drawn
+// against so the backend can rescale it correctly at analysis time.
+export const startStagedDetectionJob = (
+  { stagedToken, sourceFilename, violationType, edges, edgesWidth, edgesHeight, obstructionPct, obstructionMinutes },
+) => {
+  const formData = new FormData();
+  formData.append("staged_token", stagedToken);
+  formData.append("source_filename", sourceFilename);
+  formData.append("violation_type", violationType);
+  if (edges) {
+    formData.append("edges", JSON.stringify(edges));
+    formData.append("edges_width", edgesWidth);
+    formData.append("edges_height", edgesHeight);
+    formData.append("obstruction_pct", obstructionPct);
+    formData.append("obstruction_minutes", obstructionMinutes);
+  }
+  return apiUpload("/detection-jobs/", formData);
+};
+// Kills the job's subprocess server-side and marks it cancelled. Only valid
+// while the job is still running — see DetectionJobViewSet.cancel.
+export const cancelDetectionJob = (id) =>
+  apiFetch(`/detection-jobs/${id}/cancel/`, { method: "POST" });
 
 // Fetches one JPEG frame from a live camera's snapshot proxy as an object URL.
 // The access token lives only in memory, so an <img src> can't carry it — we

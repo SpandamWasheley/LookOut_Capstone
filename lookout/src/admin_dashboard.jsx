@@ -1,13 +1,15 @@
 import { useState, useEffect } from "react";
-import { AlertTriangle, Camera, Users, Zap, ArrowUpRight } from "lucide-react";
+import { AlertTriangle, Camera, Users, Zap, ArrowUpRight, Radio } from "lucide-react";
 import { AlertFeed } from "./AlertFeed";
 import { CameraGrid } from "./CameraGrid";
 import { RecordsPage } from "./RecordsPage";
 import { Sidebar } from "./Sidebar";
 import { OfficersPage } from "./OfficersPage";
-import { ResidentDatabase } from "./ResidentDatabase";
+// Registry tab hidden from the UI
+// import { ResidentDatabase } from "./ResidentDatabase";
 import { SystemConfig } from "./SystemConfig";
 import { ResidentLog } from "./ResidentLog";
+import { RunDetectionPage } from "./RunDetectionPage";
 import { getAlerts, getCameras, getOfficers } from "./api";
 
 function useLiveOverviewData() {
@@ -30,7 +32,7 @@ function useLiveOverviewData() {
 }
 
 const ROLE_PAGES = {
-  admin:      ["dashboard", "cameras", "alerts", "records", "residentlog", "residents", "officers", "config"],
+  admin:      ["dashboard", "cameras", "alerts", "records", "residentlog", /* "residents", */ "rundetection", "officers", "config"],
   dispatcher: ["dashboard", "cameras", "alerts", "records", "residentlog"],
   officer:    ["cameras", "alerts", "records"],
   both:       ["dashboard", "cameras", "alerts", "records"],
@@ -68,15 +70,14 @@ function AdminDashboard({ user, onLogout }) {
   const { alerts, cameras, officers } = useLiveOverviewData();
 
   const activeAlerts = alerts.filter((a) => a.status === "active");
-  const onlineCount = cameras.filter((c) => c.status === "online").length;
-  const degradedCount = cameras.filter((c) => c.status === "degraded").length;
+  const dispatchedAlerts = alerts.filter((a) => a.status === "dispatched");
   const officersOnDuty = officers.filter((o) => o.status !== "off-duty").length;
   const responding = officers.filter((o) => o.status === "responding").length;
   const alertCount = activeAlerts.length;
 
   const kpis = [
     { label: "Active Violations", value: alertCount, sub: "Requires review", accent: "#ef4444", icon: AlertTriangle },
-    { label: "Cameras Online", value: `${onlineCount} / ${cameras.length}`, sub: `${degradedCount} degraded`, accent: "#f59e0b", icon: Camera },
+    { label: "Assigned", value: dispatchedAlerts.length, sub: `${activeAlerts.length} awaiting assignment`, accent: "#3b82f6", icon: Radio },
     { label: "Officers on Duty", value: officersOnDuty, sub: `${responding} responding`, accent: "#3b82f6", icon: Users },
     { label: "Total Alerts", value: alerts.length, sub: `${alerts.filter((a) => a.status === "resolved").length} resolved`, accent: "#a855f7", icon: Zap },
   ];
@@ -116,7 +117,7 @@ function AdminDashboard({ user, onLogout }) {
               <div className="flex items-center gap-6">
                 <div className="flex items-center gap-1.5 text-xs" style={{ color: "var(--muted-foreground)" }}>
                   {statusDot("#10b981")}
-                  <span>AI running · YOLOv8 + InsightFace</span>
+                  <span>AI running · YOLOv8</span>
                 </div>
                 <LiveClock />
               </div>
@@ -230,7 +231,9 @@ function AdminDashboard({ user, onLogout }) {
           </div>
         )}
 
-        {safePage === "residents" && <div className="h-full"><ResidentDatabase /></div>}
+        {/* Registry tab hidden from the UI */}
+        {/* {safePage === "residents" && <div className="h-full"><ResidentDatabase /></div>} */}
+        {safePage === "rundetection" && <RunDetectionPage />}
         {safePage === "officers" && <div className="h-full"><OfficersPage /></div>}
         {safePage === "config" && <div className="h-full"><SystemConfig /></div>}
         {safePage === "residentlog" && <div className="h-full"><ResidentLog /></div>}

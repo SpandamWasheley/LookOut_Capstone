@@ -4,6 +4,7 @@ const STATUS_COLOR = {
   running: "#f59e0b",
   done: "#10b981",
   failed: "#ef4444",
+  cancelled: "#6b7280",
 };
 
 function formatDateTime(iso) {
@@ -15,7 +16,7 @@ function formatDateTime(iso) {
 // and DetectionJobsPanel, which only ever shows a running/recently-finished
 // subset). Jobs themselves are never deleted — this just reads the same list
 // the floating panel does, unfiltered.
-export function DetectionJobHistoryModal({ jobs, onClose }) {
+export function DetectionJobHistoryModal({ jobs, onClose, onCancel }) {
   return (
     <div
       className="fixed inset-0 z-[70] flex items-center justify-center p-4"
@@ -56,8 +57,8 @@ export function DetectionJobHistoryModal({ jobs, onClose }) {
             <table className="w-full text-[12px]" style={{ borderCollapse: "collapse" }}>
               <thead>
                 <tr style={{ borderBottom: "1px solid var(--border)" }}>
-                  {["File", "Type", "Status", "Started", "Finished"].map((h) => (
-                    <th key={h} className="text-left px-5 py-2 font-semibold uppercase tracking-wide text-[10px]"
+                  {["File", "Type", "Status", "Started", "Finished", ""].map((h, i) => (
+                    <th key={i} className="text-left px-5 py-2 font-semibold uppercase tracking-wide text-[10px]"
                       style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
                       {h}
                     </th>
@@ -83,6 +84,17 @@ export function DetectionJobHistoryModal({ jobs, onClose }) {
                     </td>
                     <td className="px-5 py-2.5" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
                       {formatDateTime(job.finishedAt)}
+                    </td>
+                    <td className="px-5 py-2.5 text-right">
+                      {job.status === "running" && onCancel && (
+                        <button
+                          onClick={() => onCancel(job.id)}
+                          className="text-[11px] font-medium px-2.5 py-1 rounded-lg"
+                          style={{ color: "#ef4444", background: "rgba(239,68,68,0.1)" }}
+                        >
+                          Cancel
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}

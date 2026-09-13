@@ -49,7 +49,7 @@ const formatPhone = (raw) => {
 const blockNumbers = (v) => v.replace(/[0-9]/g, "");
 
 function generateUsername(firstName, lastName) {
-  const base = `${firstName}.${lastName}`.replace(/[^a-zA-Z.]/g, "");
+  const base = `${firstName}.${lastName}`.replace(/[^a-zA-Z.]/g, "").toLowerCase();
   const suffix = Math.floor(100 + Math.random() * 900);
   return `${base}${suffix}`;
 }
@@ -115,6 +115,8 @@ function AddAccountModal({ role, onAdd, onClose }) {
 
   const set = (k, v) => setForm((p) => ({ ...p, [k]: v }));
 
+  const isValidEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim());
+
   const step1Valid = form.firstName.trim() && form.lastName.trim() && form.username.trim() && (!cfg.requirePhone || form.phone.trim());
   const step2Valid = form.emailVerified;
   const step3Valid = form.password.trim().length >= 8;
@@ -126,6 +128,10 @@ function AddAccountModal({ role, onAdd, onClose }) {
 
   const handleSendCode = async () => {
     if (!form.email.trim()) return;
+    if (!isValidEmail(form.email)) {
+      setError("Enter a valid email address.");
+      return;
+    }
     setError("");
     setSendingCode(true);
     try {
@@ -271,7 +277,7 @@ function AddAccountModal({ role, onAdd, onClose }) {
                     placeholder="officer@example.com"
                     className="flex-1 px-3 py-2.5 rounded-xl text-sm outline-none disabled:opacity-60"
                     style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
-                  <button onClick={handleSendCode} type="button" disabled={!form.email.trim() || sendingCode || form.emailVerified}
+                  <button onClick={handleSendCode} type="button" disabled={!isValidEmail(form.email) || sendingCode || form.emailVerified}
                     className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-medium flex-shrink-0 disabled:opacity-50"
                     style={{ background: "rgba(11,84,113,0.1)", color: "var(--primary)", border: "1px solid rgba(11,84,113,0.2)" }}>
                     {sendingCode ? <Loader2 size={12} className="animate-spin" /> : <Mail size={12} />}
@@ -321,6 +327,9 @@ function AddAccountModal({ role, onAdd, onClose }) {
                     <Shuffle size={12} /> Generate
                   </button>
                 </div>
+                <p className="text-[10.5px] mt-1.5 leading-relaxed" style={{ color: "var(--muted-foreground)" }}>
+                  At least 8 characters, not all numbers, not a commonly used password, and not too close to the officer's name, username, or email.
+                </p>
               </div>
               <div className="rounded-xl p-3.5 flex items-start gap-2.5" style={{ background: "rgba(59,130,246,0.06)", border: "1px solid rgba(59,130,246,0.12)" }}>
                 <Lock size={13} style={{ color: "#3b82f6", flexShrink: 0, marginTop: 1 }} />

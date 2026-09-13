@@ -24,6 +24,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
+from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
 from core.vision import recognition, tracking
@@ -108,6 +109,9 @@ class Command(BaseCommand):
             f"review). Ctrl+C to stop."
         ))
 
+        if debug:
+            cv2.namedWindow("LookOut - watch_smoking_pose (debug)", cv2.WINDOW_NORMAL)
+
         try:
             while True:
                 ok, frame = reader.read()
@@ -149,8 +153,8 @@ class Command(BaseCommand):
                     g = track.gesture_count(now)
                     col = (0, 165, 245) if g >= self.min_cycles else (180, 180, 180)
                     cv2.rectangle(frame, (x1, y1), (x2, y2), col, 2)
-                    cv2.putText(frame, f"person #{track.id}  hand-to-mouth x{g}",
-                                (x1, max(y1 - 6, 0)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 2)
+                    recognition.draw_label(frame, f"person #{track.id}  hand-to-mouth x{g}",
+                                           x1, max(y1 - 6, 0), col)
                 self.clip.add(frame, now)
 
                 if debug:
@@ -216,14 +220,14 @@ class Command(BaseCommand):
         ts_label = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{ts_label}_smoking_pose.jpg"
         cv2.imwrite(str(self.violations_dir / filename), frame)
-        image_url = f"{settings.SITE_BASE_URL}{settings.MEDIA_URL}violations/{filename}"
+        image_url = violation_media_path(filename)
 
         video_url = ""
         clip = getattr(self, "clip", None)
         if clip is not None:
             vname = f"{ts_label}_smoking_pose.mp4"
             if clip.save(self.violations_dir / vname):
-                video_url = f"{settings.SITE_BASE_URL}{settings.MEDIA_URL}violations/{vname}"
+                video_url = violation_media_path(vname)
 
         if self.dry_run:
             return None

@@ -99,6 +99,18 @@ class Camera(models.Model):
     # from the camera, and streams that to the grid. Credentials therefore stay
     # on the backend and are never exposed by the serializer.
     stream_url = models.CharField(max_length=500, blank=True)
+    # Road-edge lines for parking-obstruction monitoring: {"left": {"points":
+    # [[x,y],...], "side": 1}, "right": {...}}, in the pixel coordinates of
+    # whatever frame size they were drawn against (edges_width/edges_height).
+    # Empty dict means no obstruction config — watch_parking falls back to
+    # plain dwell detection. watch_parking scales these to the camera's actual
+    # capture resolution at read time, since that resolution is not
+    # guaranteed to match what the edges were drawn on.
+    edges = models.JSONField(default=dict, blank=True)
+    edges_width = models.PositiveIntegerField(null=True, blank=True)
+    edges_height = models.PositiveIntegerField(null=True, blank=True)
+    obstruction_pct = models.PositiveSmallIntegerField(default=50)
+    obstruction_minutes = models.FloatField(default=5.0)
 
     class Meta:
         ordering = ["code"]
@@ -330,6 +342,7 @@ class DetectionJob(models.Model):
         RUNNING = "running", "Running"
         DONE = "done", "Done"
         FAILED = "failed", "Failed"
+        CANCELLED = "cancelled", "Cancelled"
 
     violation_type = models.CharField(max_length=20)      # key into views.DETECTION_COMMANDS
     source_filename = models.CharField(max_length=255)    # original upload name, for display
@@ -430,6 +443,34 @@ class SystemSettings(models.Model):
     # (10-15 minutes), so a few people briefly standing near each other isn't
     # mistaken for a drinking session.
     drinking_group_duration = models.PositiveSmallIntegerField(default=25)
+
+    # A bottle merely HELD (not raised to the mouth, or no face resolvable to
+    # check) still counts as evidence, but only after this much longer than
+    # drinking_dwell (which now means the AT-MOUTH requirement specifically —
+    # see watch_drinking._dwell_for). Replaces the old fixed 2x-of-dwell
+    # scaling: possession alone is much weaker evidence of ACTUAL drinking
+    # than a raised bottle is, so it needs its own, independently-tunable
+    # bar rather than being pegged to whatever drinking_dwell happens to be.
+    drinking_held_dwell = models.PositiveSmallIntegerField(default=24)
+    # A gathering's bottle evidence (Cluster.evidence) must have been seen
+    # within this many seconds, or it no longer counts — a cluster must not
+    # stay armed indefinitely on one old sighting (Phase B3). Kept short:
+    # null-footage calibration produced Bottle false positives up to 0.87
+    # confidence, so a long eligibility window per spurious detection would
+    # just reintroduce the sticky-evidence problem this exists to close.
+    # Raise it in Settings if real gatherings start getting missed between
+    # bottle sightings.
+    drinking_evidence_max_age = models.PositiveSmallIntegerField(default=12)
+    # Distance from the mouth, in FACE WIDTHS, within which a bottle counts
+    # as raised (watch_drinking._posture). Larger than smoking's equivalent:
+    # a bottle is held further from the face and is a much larger object.
+    drinking_mouth_proximity = models.FloatField(default=3.0)
+    # Radius (as a fraction of person-box height) within which a later alert
+    # is considered "the same spot" for cooldown purposes, regardless of
+    # which track id it came from (watch_drinking._cooldown_blocks) — keeps
+    # the cooldown pinned to a place in the frame instead of a track id that
+    # can churn.
+    drinking_cooldown_center_dist = models.FloatField(default=1.5)
 
     alert_cooldown = models.PositiveSmallIntegerField(default=120)
     evidence_retention_days = models.PositiveSmallIntegerField(default=30)
