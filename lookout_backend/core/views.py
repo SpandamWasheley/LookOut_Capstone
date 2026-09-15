@@ -343,12 +343,23 @@ class SystemSettingsView(generics.RetrieveUpdateAPIView):
 @api_view(["POST"])
 @permission_classes([permissions.IsAuthenticated])
 def recording_start(request):
-    """Starts the continuous CCTV recorder — called on dashboard login. Uses the
-    stream URL of whichever camera has one configured. Idempotent: a second call
-    while it's already running is a no-op."""
+    """Starts the continuous CCTV recorder — called on dashboard login. Records
+    from the dedicated recording.RECORD_CAMERA_CODE ("CCTV") camera's
+    stream_url specifically, falling back to whichever camera has one
+    configured if that row isn't set up yet. Idempotent: a second call while
+    it's already running is a no-op.
+
+    Deliberately NOT "whichever camera has a stream_url" any more: now that
+    admins can set stream_url on any camera (for live detection, which may
+    target a different, higher-resolution stream on the same physical camera
+    than what's good for continuous recording — see CAMERA_SETUP.md), picking
+    the first one found would record from an arbitrary, possibly-wrong camera
+    the moment more than one row has a stream_url configured.
+    """
     from . import recording
 
-    cam = Camera.objects.exclude(stream_url="").first()
+    cam = Camera.objects.filter(code=recording.RECORD_CAMERA_CODE).exclude(stream_url="").first() \
+        or Camera.objects.exclude(stream_url="").first()
     if cam is None:
         return Response(
             {"recording": False,
@@ -940,11 +951,14 @@ def _watch_detection_job(job_id, proc, log_path, source_path):
             job.error = _tail_log(log_path)
         job.save(update_fields=["status", "finished_at", "error"])
     # The uploaded source clip is scratch input, not evidence — the watcher's
-    # own evidence clips (media/violations/) are separate and untouched.
-    try:
-        os.remove(source_path)
-    except OSError:
-        pass
+    # own evidence clips (media/violations/) are separate and untouched. A
+    # live job's source_path is the camera's stream URL, not a file — nothing
+    # to clean up, and it's never a real path to begin with.
+    if job.camera_id is None:
+        try:
+            os.remove(source_path)
+        except OSError:
+            pass
 
 
 class DetectionJobViewSet(viewsets.ModelViewSet):
@@ -1035,94 +1049,119 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
                 status=400,
             )
 
-        # Either a clip already staged via frame() above (staged_token), or a
-        # fresh direct upload (file) — the two DetectionJobHistoryModal /
-        # UploadDetectionModal / RunDetectionPage entry points use whichever
-        # fits: RunDetectionPage always stages first (so a big clip only
-        # crosses the wire once even for non-parking types); the older
-        # upload-only modal still posts file+violation_type directly.
-        staged_token = request.data.get("staged_token", "")
-        upload = request.FILES.get("file")
-        if staged_token:
-            if not self._STAGED_TOKEN_RE.match(staged_token):
-                return Response({"detail": "Invalid staged_token."}, status=400)
-            saved_path = django_settings.MEDIA_ROOT / "uploads" / staged_token
-            if not saved_path.is_file():
-                return Response({"detail": "Staged upload expired — upload the clip again."}, status=400)
-            source_filename = request.data.get("source_filename") or staged_token
-        elif upload is not None:
-            ext = os.path.splitext(upload.name)[1].lower()
-            if ext not in DETECTION_UPLOAD_EXTENSIONS:
-                return Response(
-                    {"detail": f"Unsupported file type {ext!r}. Allowed: "
-                               f"{', '.join(sorted(DETECTION_UPLOAD_EXTENSIONS))}."},
-                    status=400,
-                )
-            if upload.size > DETECTION_MAX_UPLOAD_BYTES:
-                limit_mb = DETECTION_MAX_UPLOAD_BYTES // (1024 * 1024)
-                return Response({"detail": f"File too large — limit is {limit_mb}MB."}, status=400)
-
-            upload_dir = django_settings.MEDIA_ROOT / "uploads"
-            os.makedirs(upload_dir, exist_ok=True)
-            safe_name = get_valid_filename(upload.name)
-            saved_path = upload_dir / f"{uuid.uuid4().hex}_{safe_name}"
-            with open(saved_path, "wb") as dest:
-                for chunk in upload.chunks():
-                    dest.write(chunk)
-
-            # A matching extension can be spoofed — a quick decode check catches
-            # a corrupt or non-video file before a detector is launched against
-            # it. Skipped for the staged_token path above since frame() already
-            # proved the file decodes.
-            cap = cv2.VideoCapture(str(saved_path))
-            opened = cap.isOpened()
-            cap.release()
-            if not opened:
-                os.remove(saved_path)
-                return Response({"detail": "File could not be read as a video."}, status=400)
-            source_filename = upload.name
-        else:
-            return Response({"detail": "No file uploaded."}, status=400)
-
-        camera_code = f"CAM-{violation_type.upper()}-TEST"
-
-        # Parking-only: edges drawn against the staged frame are written onto
-        # the shared CAM-PARKING-TEST camera before the subprocess starts, so
-        # watch_parking's own self.camera.edges branch (which correctly
-        # rescales from edges_width/height to whatever the clip actually
-        # decodes at — see watch_parking._build_monitors) picks them up. Two
-        # parking runs started close together will race on this shared row;
-        # accepted as a known limitation of the existing single-camera test
-        # harness rather than fixed here.
-        edges_raw = request.data.get("edges")
-        if violation_type == "parking" and edges_raw:
+        # A live camera runs the same watch_* command against its stream_url
+        # instead of an uploaded file: no staging, no decode check, and
+        # --camera is the real camera's own code (not a synthetic "-TEST"
+        # one), so alerts land where a live-camera alert belongs. Parking
+        # edges for a live camera are set separately via CameraViewSet's Edge
+        # Zones (EdgeEditorModal) — that already draws against this exact
+        # camera's live snapshot and writes to camera.edges directly, so
+        # there's nothing to stage here; watch_parking picks it up the same
+        # way it does for any other --camera.
+        camera_id = request.data.get("camera_id")
+        camera = None
+        if camera_id:
             try:
-                edges = json.loads(edges_raw) if isinstance(edges_raw, str) else edges_raw
-            except ValueError:
-                return Response({"detail": "Invalid edges JSON."}, status=400)
-            camera, _ = Camera.objects.get_or_create(
-                code=camera_code,
-                defaults={"name": "Parking Monitor", "status": Camera.Status.ONLINE},
-            )
-            camera.edges = edges
-            edges_width = request.data.get("edges_width")
-            edges_height = request.data.get("edges_height")
-            if edges_width:
-                camera.edges_width = int(edges_width)
-            if edges_height:
-                camera.edges_height = int(edges_height)
-            obstruction_pct = request.data.get("obstruction_pct")
-            obstruction_minutes = request.data.get("obstruction_minutes")
-            if obstruction_pct:
-                camera.obstruction_pct = int(obstruction_pct)
-            if obstruction_minutes:
-                camera.obstruction_minutes = float(obstruction_minutes)
-            camera.save(update_fields=[
-                "edges", "edges_width", "edges_height",
-                "obstruction_pct", "obstruction_minutes",
-            ])
+                camera = Camera.objects.get(pk=camera_id)
+            except (Camera.DoesNotExist, ValueError, TypeError):
+                return Response({"detail": "Camera not found."}, status=400)
+            if not camera.stream_url:
+                return Response({"detail": "Camera has no stream_url configured."}, status=400)
+            source_arg = camera.stream_url
+            source_filename = f"Live — {camera.name}"
+            camera_code = camera.code
+        else:
+            # Either a clip already staged via frame() above (staged_token), or a
+            # fresh direct upload (file) — the two DetectionJobHistoryModal /
+            # UploadDetectionModal / RunDetectionPage entry points use whichever
+            # fits: RunDetectionPage always stages first (so a big clip only
+            # crosses the wire once even for non-parking types); the older
+            # upload-only modal still posts file+violation_type directly.
+            staged_token = request.data.get("staged_token", "")
+            upload = request.FILES.get("file")
+            if staged_token:
+                if not self._STAGED_TOKEN_RE.match(staged_token):
+                    return Response({"detail": "Invalid staged_token."}, status=400)
+                saved_path = django_settings.MEDIA_ROOT / "uploads" / staged_token
+                if not saved_path.is_file():
+                    return Response({"detail": "Staged upload expired — upload the clip again."}, status=400)
+                source_filename = request.data.get("source_filename") or staged_token
+            elif upload is not None:
+                ext = os.path.splitext(upload.name)[1].lower()
+                if ext not in DETECTION_UPLOAD_EXTENSIONS:
+                    return Response(
+                        {"detail": f"Unsupported file type {ext!r}. Allowed: "
+                                   f"{', '.join(sorted(DETECTION_UPLOAD_EXTENSIONS))}."},
+                        status=400,
+                    )
+                if upload.size > DETECTION_MAX_UPLOAD_BYTES:
+                    limit_mb = DETECTION_MAX_UPLOAD_BYTES // (1024 * 1024)
+                    return Response({"detail": f"File too large — limit is {limit_mb}MB."}, status=400)
 
-        log_path = f"{saved_path}.log"
+                upload_dir = django_settings.MEDIA_ROOT / "uploads"
+                os.makedirs(upload_dir, exist_ok=True)
+                safe_name = get_valid_filename(upload.name)
+                saved_path = upload_dir / f"{uuid.uuid4().hex}_{safe_name}"
+                with open(saved_path, "wb") as dest:
+                    for chunk in upload.chunks():
+                        dest.write(chunk)
+
+                # A matching extension can be spoofed — a quick decode check catches
+                # a corrupt or non-video file before a detector is launched against
+                # it. Skipped for the staged_token path above since frame() already
+                # proved the file decodes.
+                cap = cv2.VideoCapture(str(saved_path))
+                opened = cap.isOpened()
+                cap.release()
+                if not opened:
+                    os.remove(saved_path)
+                    return Response({"detail": "File could not be read as a video."}, status=400)
+                source_filename = upload.name
+            else:
+                return Response({"detail": "No file uploaded."}, status=400)
+
+            source_arg = str(saved_path)
+            camera_code = f"CAM-{violation_type.upper()}-TEST"
+
+            # Parking-only: edges drawn against the staged frame are written onto
+            # the shared CAM-PARKING-TEST camera before the subprocess starts, so
+            # watch_parking's own self.camera.edges branch (which correctly
+            # rescales from edges_width/height to whatever the clip actually
+            # decodes at — see watch_parking._build_monitors) picks them up. Two
+            # parking runs started close together will race on this shared row;
+            # accepted as a known limitation of the existing single-camera test
+            # harness rather than fixed here.
+            edges_raw = request.data.get("edges")
+            if violation_type == "parking" and edges_raw:
+                try:
+                    edges = json.loads(edges_raw) if isinstance(edges_raw, str) else edges_raw
+                except ValueError:
+                    return Response({"detail": "Invalid edges JSON."}, status=400)
+                test_camera, _ = Camera.objects.get_or_create(
+                    code=camera_code,
+                    defaults={"name": "Parking Monitor", "status": Camera.Status.ONLINE},
+                )
+                test_camera.edges = edges
+                edges_width = request.data.get("edges_width")
+                edges_height = request.data.get("edges_height")
+                if edges_width:
+                    test_camera.edges_width = int(edges_width)
+                if edges_height:
+                    test_camera.edges_height = int(edges_height)
+                obstruction_pct = request.data.get("obstruction_pct")
+                obstruction_minutes = request.data.get("obstruction_minutes")
+                if obstruction_pct:
+                    test_camera.obstruction_pct = int(obstruction_pct)
+                if obstruction_minutes:
+                    test_camera.obstruction_minutes = float(obstruction_minutes)
+                test_camera.save(update_fields=[
+                    "edges", "edges_width", "edges_height",
+                    "obstruction_pct", "obstruction_minutes",
+                ])
+
+        log_dir = django_settings.MEDIA_ROOT / "uploads"
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = f"{source_arg}.log" if camera is None else str(log_dir / f"{uuid.uuid4().hex}_live.log")
         log_file = open(log_path, "w")
         try:
             # Anaconda's numpy/MKL and PyTorch both bundle libiomp5md.dll; when
@@ -1140,7 +1179,7 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
             cascade_args = ["--cascade"] if violation_type == "smoking" else []
             proc = subprocess.Popen(
                 [sys.executable, "manage.py", command,
-                 "--source", str(saved_path), "--camera", camera_code, *cascade_args],
+                 "--source", source_arg, "--camera", camera_code, *cascade_args],
                 cwd=str(django_settings.BASE_DIR),
                 stdout=log_file, stderr=subprocess.STDOUT,
                 env=env,
@@ -1152,7 +1191,8 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
         job = DetectionJob.objects.create(
             violation_type=violation_type,
             source_filename=source_filename,
-            source_path=str(saved_path),
+            source_path=source_arg,
+            camera=camera,
             status=DetectionJob.Status.RUNNING,
             pid=proc.pid,
             created_by=request.user,
@@ -1160,7 +1200,7 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
 
         threading.Thread(
             target=_watch_detection_job,
-            args=(job.id, proc, log_path, str(saved_path)),
+            args=(job.id, proc, log_path, source_arg),
             daemon=True,
         ).start()
 

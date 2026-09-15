@@ -231,8 +231,21 @@ export const startStagedDetectionJob = (
   }
   return apiUpload("/detection-jobs/", formData);
 };
+// Starts a job against a live camera's stream_url instead of a file — no
+// staging, no edges payload: for parking, draw/save edges on the camera
+// itself first via EdgeEditorModal (updateCamera), which already writes
+// camera.edges directly and is picked up the same way any other run does.
+// The resulting job never reaches EOF on its own; see cancelDetectionJob.
+export const startLiveDetectionJob = ({ violationType, cameraId }) => {
+  const formData = new FormData();
+  formData.append("violation_type", violationType);
+  formData.append("camera_id", cameraId);
+  return apiUpload("/detection-jobs/", formData);
+};
+
 // Kills the job's subprocess server-side and marks it cancelled. Only valid
-// while the job is still running — see DetectionJobViewSet.cancel.
+// while the job is still running — see DetectionJobViewSet.cancel. Doubles as
+// "Stop" for a live job (isLive), which has no natural end of its own.
 export const cancelDetectionJob = (id) =>
   apiFetch(`/detection-jobs/${id}/cancel/`, { method: "POST" });
 

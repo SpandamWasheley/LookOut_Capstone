@@ -290,15 +290,23 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
 
 class DetectionJobSerializer(serializers.ModelSerializer):
     created_by_name = serializers.CharField(source="created_by.display_name", read_only=True, default="")
+    camera_code = serializers.CharField(source="camera.code", read_only=True, default="")
+    # True for a job running against a live camera's stream_url — it has no
+    # natural end (no EOF), so the dashboard should treat "Cancel" as "Stop"
+    # rather than implying an in-progress run that will finish on its own.
+    is_live = serializers.SerializerMethodField()
 
     class Meta:
         model = DetectionJob
         fields = [
             "id", "violation_type", "source_filename", "status", "started_at",
-            "finished_at", "error", "created_by_name",
+            "finished_at", "error", "created_by_name", "camera_code", "is_live",
         ]
         # Every field here is set by the server (upload handling / the watcher
-        # thread) — the client only ever POSTs the file + violation_type, which
-        # the view's create() reads straight off request.data/request.FILES,
-        # not through this serializer.
+        # thread) — the client only ever POSTs the file + violation_type (or
+        # camera_id for a live job), which the view's create() reads straight
+        # off request.data/request.FILES, not through this serializer.
         read_only_fields = fields
+
+    def get_is_live(self, obj):
+        return obj.camera_id is not None

@@ -239,7 +239,10 @@ class Command(BaseCommand):
         # never falls behind the stream; a video file is read directly so every
         # frame is seen.
         is_live = source.isdigit() or "://" in source
-        reader = recognition.LatestFrameReader(cap) if is_live else cap
+        reader = recognition.LatestFrameReader(
+            cap, open_fn=lambda: self._open(source),
+            log=lambda m: self.stdout.write(self.style.WARNING(m)),
+        ) if is_live else cap
 
         cfg = SystemSettings.load()
         cfg_at = time.time()

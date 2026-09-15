@@ -1,8 +1,8 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
-  Upload, FileVideo, Loader2, AlertTriangle, CheckCircle2, RotateCcw, Play,
+  Upload, FileVideo, Loader2, AlertTriangle, CheckCircle2, RotateCcw, Play, Video, Radio,
 } from "lucide-react";
-import { stageDetectionFrame, startStagedDetectionJob } from "./api";
+import { stageDetectionFrame, startStagedDetectionJob, startLiveDetectionJob, getCameras } from "./api";
 import { DETECTION_TYPES, TYPES_WITH_EDGES } from "./constants/detectionTypes";
 import { EdgeCanvas } from "./EdgeCanvas";
 
@@ -23,14 +23,23 @@ function validateFile(file) {
   return null;
 }
 
-// The single "upload a video -> draw edge lines -> start detection" screen,
+// The single "pick a source -> (draw edge lines) -> start detection" screen,
 // reachable directly from the sidebar rather than buried behind a camera
-// tile. Edge drawing (step 3) only appears for violation types that judge
-// against a drawn line (currently just parking, see TYPES_WITH_EDGES) —
-// every other detector skips straight from the upload to starting the job.
+// tile. Source is either an uploaded clip (staged first so edges can be
+// drawn against its first frame) or a live camera with a stream_url
+// configured (see CameraGrid's Stream button) — a live run has no natural
+// end, so it only stops via the Cancel/Stop control in DetectionJobsPanel.
+// Edge drawing only appears for violation types that judge against a drawn
+// line (currently just parking, see TYPES_WITH_EDGES), and only for the file
+// source — a live camera's edges are drawn separately via its own Edge Zones
+// modal (EdgeEditorModal), which already works against that camera's live
+// snapshot and writes camera.edges directly; watch_parking picks it up the
+// same way it does for any other --camera.
 export function RunDetectionPage() {
   const [violationType, setViolationType] = useState(DETECTION_TYPES[0].key);
   const needsEdges = TYPES_WITH_EDGES.has(violationType);
+
+  const [source, setSource] = useState("file"); // "file" | "camera"
 
   const [file, setFile] = useState(null);
   const [fileError, setFileError] = useState("");
@@ -43,6 +52,11 @@ export function RunDetectionPage() {
   const [staging, setStaging] = useState(false);
   const [stageError, setStageError] = useState("");
 
+  const [cameras, setCameras] = useState([]);
+  const [camerasLoading, setCamerasLoading] = useState(false);
+  const [camerasError, setCamerasError] = useState("");
+  const [cameraId, setCameraId] = useState("");
+
   const [edgeSpec, setEdgeSpec] = useState({});
   const [canSaveEdges, setCanSaveEdges] = useState(false);
   const [pct, setPct] = useState(50);
@@ -51,6 +65,24 @@ export function RunDetectionPage() {
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState("");
   const [job, setJob] = useState(null);
+
+  useEffect(() => {
+    if (source !== "camera" || cameras.length || camerasLoading) return;
+    let cancelled = false;
+    (async () => {
+      setCamerasLoading(true);
+      setCamerasError("");
+      try {
+        const list = await getCameras();
+        if (!cancelled) setCameras((list || []).filter((c) => c.is_live));
+      } catch (err) {
+        if (!cancelled) setCamerasError(err.message || "Could not load cameras.");
+      } finally {
+        if (!cancelled) setCamerasLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [source, cameras.length, camerasLoading]);
 
   const pickFile = (f) => {
     if (!f) return;
@@ -86,25 +118,29 @@ export function RunDetectionPage() {
     }
   };
 
-  const canStart = staged && (!needsEdges || canSaveEdges);
+  const canStart = source === "camera"
+    ? !!cameraId
+    : staged && (!needsEdges || canSaveEdges);
 
   const handleStart = async () => {
     if (!canStart || starting) return;
     setStarting(true);
     setStartError("");
     try {
-      const started = await startStagedDetectionJob({
-        stagedToken: staged.stagedToken,
-        sourceFilename: staged.sourceFilename,
-        violationType,
-        ...(needsEdges ? {
-          edges: edgeSpec,
-          edgesWidth: staged.frame.width,
-          edgesHeight: staged.frame.height,
-          obstructionPct: Number(pct),
-          obstructionMinutes: Number(minutes),
-        } : {}),
-      });
+      const started = source === "camera"
+        ? await startLiveDetectionJob({ violationType, cameraId })
+        : await startStagedDetectionJob({
+            stagedToken: staged.stagedToken,
+            sourceFilename: staged.sourceFilename,
+            violationType,
+            ...(needsEdges ? {
+              edges: edgeSpec,
+              edgesWidth: staged.frame.width,
+              edgesHeight: staged.frame.height,
+              obstructionPct: Number(pct),
+              obstructionMinutes: Number(minutes),
+            } : {}),
+          });
       setJob(started);
     } catch (err) {
       setStartError(err.message || "Could not start detection.");
@@ -118,6 +154,7 @@ export function RunDetectionPage() {
     setFileError("");
     setStaged(null);
     setStageError("");
+    setCameraId("");
     setEdgeSpec({});
     setCanSaveEdges(false);
     setPct(50);
@@ -125,6 +162,19 @@ export function RunDetectionPage() {
     setStartError("");
     setJob(null);
   };
+
+  const changeSource = (next) => {
+    if (next === source) return;
+    setSource(next);
+    setFile(null);
+    setFileError("");
+    setStaged(null);
+    setStageError("");
+    setCameraId("");
+  };
+
+  const detectorLocked = staging || !!staged || (source === "camera" && starting);
+  const selectedCamera = cameras.find((c) => String(c.id) === String(cameraId));
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -141,8 +191,9 @@ export function RunDetectionPage() {
               <CheckCircle2 size={28} style={{ color: "#22c55e" }} />
               <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Detection started</div>
               <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>
-                Running in the background and may take a few minutes. Any alerts it produces will appear in the
-                Violations tab as detection runs.
+                {source === "camera"
+                  ? "Running continuously against the live camera until you stop it from the running-jobs panel. Any alerts it produces will appear in the Violations tab."
+                  : "Running in the background and may take a few minutes. Any alerts it produces will appear in the Violations tab as detection runs."}
               </div>
               <button onClick={reset}
                 className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium mt-2"
@@ -165,7 +216,7 @@ export function RunDetectionPage() {
                     return (
                       <button
                         key={t.key}
-                        disabled={staging || !!staged}
+                        disabled={detectorLocked}
                         onClick={() => setViolationType(t.key)}
                         className="flex items-center gap-2 px-3 py-2.5 rounded-xl text-left transition-all disabled:opacity-60"
                         style={{
@@ -189,14 +240,41 @@ export function RunDetectionPage() {
                 )}
               </div>
 
-              {/* Step 2: upload */}
+              {/* Step 2: source */}
               <div className="rounded-xl p-4" style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
                 <div className="text-[11px] font-semibold uppercase tracking-wide mb-2"
                   style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
-                  2. Upload clip
+                  2. Source
                 </div>
 
-                {!staged && (
+                <div className="flex gap-2 mb-3">
+                  <button
+                    disabled={detectorLocked}
+                    onClick={() => changeSource("file")}
+                    className="flex items-center gap-2 px-3 py-2 rounded-xl text-[12px] font-medium transition-all disabled:opacity-60"
+                    style={{
+                      background: source === "file" ? "rgba(245,158,11,0.12)" : "var(--secondary)",
+                      border: `1px solid ${source === "file" ? "rgba(245,158,11,0.4)" : "var(--border)"}`,
+                      color: source === "file" ? "#f59e0b" : "var(--foreground)",
+                    }}
+                  >
+                    <Upload size={13} /> Upload file
+                  </button>
+                  <button
+                    disabled={detectorLocked}
+                    onClick={() => changeSource("camera")}
+                    className="flex items-center gap-2 px-3 py-2 rounded-xl text-[12px] font-medium transition-all disabled:opacity-60"
+                    style={{
+                      background: source === "camera" ? "rgba(245,158,11,0.12)" : "var(--secondary)",
+                      border: `1px solid ${source === "camera" ? "rgba(245,158,11,0.4)" : "var(--border)"}`,
+                      color: source === "camera" ? "#f59e0b" : "var(--foreground)",
+                    }}
+                  >
+                    <Radio size={13} /> Live camera
+                  </button>
+                </div>
+
+                {source === "file" && !staged && (
                   <>
                     <div
                       onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
@@ -268,16 +346,63 @@ export function RunDetectionPage() {
                   </>
                 )}
 
-                {staged && (
+                {source === "file" && staged && (
                   <div className="flex items-center gap-2 text-[12px]" style={{ color: "var(--muted-foreground)" }}>
                     <FileVideo size={14} style={{ color: "#22c55e" }} />
                     <span style={{ color: "var(--foreground)" }}>{staged.sourceFilename}</span> staged and ready.
                   </div>
                 )}
+
+                {source === "camera" && (
+                  <>
+                    {camerasLoading && (
+                      <div className="flex items-center gap-2 text-[12px] py-3" style={{ color: "var(--muted-foreground)" }}>
+                        <Loader2 size={13} className="animate-spin" /> Loading cameras…
+                      </div>
+                    )}
+                    {camerasError && (
+                      <div className="flex items-start gap-2 text-[12px] px-3 py-2.5 rounded-xl"
+                        style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", color: "#ef4444" }}>
+                        <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
+                        <span>{camerasError}</span>
+                      </div>
+                    )}
+                    {!camerasLoading && !camerasError && cameras.length === 0 && (
+                      <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>
+                        No camera has a stream URL configured yet. Set one from the Cameras page (Stream button) first.
+                      </div>
+                    )}
+                    {!camerasLoading && cameras.length > 0 && (
+                      <select
+                        value={cameraId}
+                        onChange={(e) => setCameraId(e.target.value)}
+                        disabled={starting}
+                        className="w-full px-3 py-2.5 rounded-xl text-[12px]"
+                        style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
+                      >
+                        <option value="">Choose a camera…</option>
+                        {cameras.map((c) => (
+                          <option key={c.id} value={c.id}>{c.name} ({c.code})</option>
+                        ))}
+                      </select>
+                    )}
+                    {needsEdges && cameraId && (
+                      <div className="flex items-start gap-2 text-[11px] px-3 py-2.5 rounded-xl mt-3"
+                        style={{ background: "rgba(59,130,246,0.08)", border: "1px solid rgba(59,130,246,0.2)", color: "#60a5fa" }}>
+                        <Video size={13} className="flex-shrink-0 mt-0.5" />
+                        <span>
+                          Parking edges for a live camera are drawn separately — use the "Edge Zones" button on{" "}
+                          {selectedCamera?.name || "this camera"} in the Cameras page before starting, if you haven't already.
+                        </span>
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
 
-              {/* Step 3: edges — parking only */}
-              {needsEdges && staged && (
+              {/* Step 3: edges — parking, file source only (a live camera's
+                  edges are drawn on the Cameras page instead, see above) */}
+              {needsEdges && source === "file" && staged && (
                 <div className="rounded-xl p-4 space-y-3.5" style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
                   <div className="text-[11px] font-semibold uppercase tracking-wide"
                     style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
@@ -299,7 +424,8 @@ export function RunDetectionPage() {
                 <div className="rounded-xl p-4 flex items-center justify-between gap-3"
                   style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
                   <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>
-                    Ready — {DETECTION_TYPES.find((t) => t.key === violationType)?.label} on {staged.sourceFilename}.
+                    Ready — {DETECTION_TYPES.find((t) => t.key === violationType)?.label} on{" "}
+                    {source === "camera" ? `${selectedCamera?.name} (live)` : staged.sourceFilename}.
                   </div>
                   <button
                     disabled={starting}

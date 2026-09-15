@@ -346,7 +346,13 @@ class DetectionJob(models.Model):
 
     violation_type = models.CharField(max_length=20)      # key into views.DETECTION_COMMANDS
     source_filename = models.CharField(max_length=255)    # original upload name, for display
-    source_path = models.CharField(max_length=500)        # saved temp path — subprocess arg + cleanup
+    source_path = models.CharField(max_length=500)        # saved temp path (or a live camera's
+                                                            # stream_url) — subprocess arg + cleanup
+    # Set when this job runs against a live camera's stream_url instead of an
+    # uploaded file — never cleaned up as a temp file (see _watch_detection_job),
+    # and alerts land on this real camera rather than a synthetic "-TEST" one.
+    camera = models.ForeignKey("Camera", on_delete=models.SET_NULL, null=True, blank=True,
+                               related_name="detection_jobs")
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.RUNNING)
     pid = models.IntegerField(null=True, blank=True)
     started_at = models.DateTimeField(auto_now_add=True)

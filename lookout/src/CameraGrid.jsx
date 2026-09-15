@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { Maximize2, WifiOff, LayoutGrid, Check, X, Upload, Loader2, CheckCircle2, AlertTriangle, History, Shapes, Ban } from "lucide-react";
+import { Maximize2, WifiOff, LayoutGrid, Check, X, Upload, Loader2, CheckCircle2, AlertTriangle, History, Shapes, Ban, Link2 } from "lucide-react";
 import { getAlerts, getCameras, getCameraSnapshotUrl, getDetectionJobs, cancelDetectionJob } from "./api";
 import { UploadDetectionModal } from "./UploadDetectionModal";
 import { DetectionJobHistoryModal } from "./DetectionJobHistoryModal";
 import { EdgeEditorModal } from "./EdgeEditorModal";
+import { CameraStreamModal } from "./CameraStreamModal";
 
 // Polls a live camera's snapshot proxy and returns the latest frame as an
 // object URL, or null for a non-live camera. Object URLs are revoked as they're
@@ -106,6 +107,10 @@ function mapDetectionJob(raw) {
     startedAt: raw.started_at,
     finishedAt: raw.finished_at,
     error: raw.error,
+    // True for a job running against a live camera's stream_url — it has no
+    // EOF of its own, so it only ever leaves "running" via Stop or a crash.
+    isLive: raw.is_live,
+    cameraCode: raw.camera_code,
   };
 }
 
@@ -194,7 +199,8 @@ function DetectionJobsPanel({ jobs, onDismiss, onCancel }) {
                   </span>
                   {job.status === "running" && onCancel ? (
                     <button onClick={() => onCancel(job.id)} className="flex-shrink-0"
-                      title="Cancel this detection job" style={{ color: "#ef4444" }}>
+                      title={job.isLive ? "Stop this live detection run" : "Cancel this detection job"}
+                      style={{ color: "#ef4444" }}>
                       <Ban size={13} />
                     </button>
                   ) : (
@@ -391,6 +397,7 @@ function CameraTile({ cam, alert, isSelected, onSelect, onExpand, fill }) {
 function ExpandedCamera({ cam, alert, onClose, isAdmin, onCameraUpdated }) {
   const liveUrl = useLiveSnapshot(cam);
   const [showEdgeEditor, setShowEdgeEditor] = useState(false);
+  const [showStreamModal, setShowStreamModal] = useState(false);
 
   useEffect(() => {
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
@@ -452,6 +459,16 @@ function ExpandedCamera({ cam, alert, onClose, isAdmin, onCameraUpdated }) {
             {isAdmin && (
               <button
                 type="button"
+                onClick={() => setShowStreamModal(true)}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium"
+                style={{ background: "var(--secondary)", color: "var(--foreground)", border: "1px solid var(--border)" }}
+              >
+                <Link2 size={12} /> Stream
+              </button>
+            )}
+            {isAdmin && (
+              <button
+                type="button"
                 onClick={() => setShowEdgeEditor(true)}
                 className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium"
                 style={{ background: "var(--secondary)", color: "var(--foreground)", border: "1px solid var(--border)" }}
@@ -471,6 +488,14 @@ function ExpandedCamera({ cam, alert, onClose, isAdmin, onCameraUpdated }) {
       <EdgeEditorModal
         camera={cam}
         onClose={() => setShowEdgeEditor(false)}
+        onSaved={(updated) => onCameraUpdated?.(updated)}
+      />
+    )}
+
+    {showStreamModal && (
+      <CameraStreamModal
+        camera={cam}
+        onClose={() => setShowStreamModal(false)}
         onSaved={(updated) => onCameraUpdated?.(updated)}
       />
     )}

@@ -521,7 +521,10 @@ class Command(BaseCommand):
         # Live sources get the always-latest reader so slow far-mode processing
         # never falls behind the stream; a file is read directly.
         is_live = source.isdigit() or "://" in source
-        reader = recognition.LatestFrameReader(cap) if is_live else cap
+        reader = recognition.LatestFrameReader(
+            cap, open_fn=lambda: self._open_capture(source),
+            log=lambda m: self.stdout.write(self.style.WARNING(m)),
+        ) if is_live else cap
         # A file source is seekable, so raw evidence clips can be cut straight
         # from it later (see _create_alert) instead of relying only on the
         # annotated buffer's sparser processed frames.
