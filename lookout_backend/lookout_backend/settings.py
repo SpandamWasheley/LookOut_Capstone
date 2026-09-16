@@ -13,6 +13,8 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 import os
 from pathlib import Path
 
+from django.core.exceptions import ImproperlyConfigured
+
 from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -62,12 +64,37 @@ SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 # Hardening that only makes sense once this is served over HTTPS in production
 # — left off under DEBUG so local http://localhost development keeps working.
 if not DEBUG:
-    SECURE_SSL_REDIRECT = True
+    SECURE_SSL_REDIRECT = os.environ.get('SECURE_SSL_REDIRECT', 'True') == 'True'
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
-    SECURE_HSTS_SECONDS = 31536000
+    SECURE_HSTS_SECONDS = int(os.environ.get('SECURE_HSTS_SECONDS', '31536000'))
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
     SECURE_CONTENT_TYPE_NOSNIFF = True
+    X_FRAME_OPTIONS = 'DENY'
+
+    # The dashboard is served from a different origin than the API, so its
+    # origin must be trusted explicitly for any session-authenticated POST
+    # (the JWT endpoints do not need this; the Django admin does).
+    CSRF_TRUSTED_ORIGINS = [
+        o.strip() for o in os.environ.get('CSRF_TRUSTED_ORIGINS', '').split(',')
+        if o.strip()
+    ]
+
+    # Fail loudly rather than shipping the development fallbacks to production.
+    # Both of these are safe in development and dangerous in the cloud, and
+    # neither announces itself when wrong - the site simply runs with a public
+    # signing key, or accepts any Host header.
+    if SECRET_KEY.startswith('django-insecure-'):
+        raise ImproperlyConfigured(
+            'SECRET_KEY is still the development fallback. Set a real '
+            'SECRET_KEY in the environment before deploying with DEBUG=False.'
+        )
+    if ALLOWED_HOSTS == ['*']:
+        raise ImproperlyConfigured(
+            'ALLOWED_HOSTS is "*" with DEBUG=False. Set it to your real '
+            'hostnames, e.g. ALLOWED_HOSTS=api.example.com'
+        )
 
 
 # Application definition
@@ -87,6 +114,10 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    # Serves Django's own static files (admin CSS, DRF's browsable API) straight
+    # from the app process, so the cloud deploy needs no nginx in front of it.
+    # Must sit immediately after SecurityMiddleware, per WhiteNoise's docs.
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -157,12 +188,34 @@ WSGI_APPLICATION = 'lookout_backend.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
+# SQLite by default so a fresh clone runs with no setup. In the cloud it is the
+# wrong choice and quietly so: PaaS filesystems are EPHEMERAL, so every restart
+# or redeploy would silently discard the database - alerts, officers, residents
+# and all. Setting DATABASE_URL switches to Postgres.
+#
+# The on-site detection PC sets the SAME DATABASE_URL, which is what lets the
+# watchers write alerts straight into the cloud database while running next to
+# the cameras.
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': BASE_DIR / 'db.sqlite3',
     }
 }
+
+_database_url = os.environ.get('DATABASE_URL', '')
+if _database_url:
+    import dj_database_url
+
+    DATABASES['default'] = dj_database_url.parse(
+        _database_url,
+        conn_max_age=600,          # reuse connections; PaaS latency is real
+        conn_health_checks=True,   # drop connections the provider killed
+        ssl_require=os.environ.get('DATABASE_SSL', 'True') == 'True',
+    )
+
+
+
 
 
 # Password validation
@@ -200,10 +253,45 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = 'static/'
+# collectstatic target. Required in production: WhiteNoise serves from here, and
+# without it `manage.py collectstatic` has nowhere to write.
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+STORAGES = {
+    'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
+    'staticfiles': {
+        'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
+    },
+}
 
 # Media files (violation snapshots saved by the curfew detection pipeline)
 MEDIA_URL = 'media/'
 MEDIA_ROOT = BASE_DIR / 'media'
+
+# --- evidence media: shared object storage ----------------------------------
+# THIS IS NOT OPTIONAL IN A CLOUD DEPLOYMENT, and the reason is the split
+# architecture. The detectors run on a PC at the barangay (they need the
+# cameras); the API runs in the cloud. A watcher that saves a violation JPG to
+# its own local MEDIA_ROOT writes it to a disk the cloud server cannot read, so
+# the dashboard would show a broken image for every alert. Pointing both at one
+# S3-compatible bucket is what makes the evidence reachable.
+#
+# Works with AWS S3, Cloudflare R2, Backblaze B2, Supabase Storage - anything
+# S3-compatible. Set AWS_STORAGE_BUCKET_NAME to switch it on; leave it unset and
+# Django keeps using the local folder, which is correct for development.
+AWS_STORAGE_BUCKET_NAME = os.environ.get('AWS_STORAGE_BUCKET_NAME', '')
+if AWS_STORAGE_BUCKET_NAME:
+    AWS_ACCESS_KEY_ID = os.environ.get('AWS_ACCESS_KEY_ID', '')
+    AWS_SECRET_ACCESS_KEY = os.environ.get('AWS_SECRET_ACCESS_KEY', '')
+    AWS_S3_REGION_NAME = os.environ.get('AWS_S3_REGION_NAME', 'auto')
+    # R2/B2/Supabase need an explicit endpoint; plain AWS S3 does not.
+    AWS_S3_ENDPOINT_URL = os.environ.get('AWS_S3_ENDPOINT_URL') or None
+    # Public read URL base, e.g. an R2 public bucket domain or a CDN.
+    AWS_S3_CUSTOM_DOMAIN = os.environ.get('AWS_S3_CUSTOM_DOMAIN') or None
+    AWS_QUERYSTRING_AUTH = False      # evidence URLs are stored in Alert rows,
+                                      # so they must not expire
+    AWS_S3_FILE_OVERWRITE = False
+    AWS_DEFAULT_ACL = None
+    STORAGES['default'] = {'BACKEND': 'storages.backends.s3.S3Storage'}
 
 # Used to build absolute Alert.image_url values from the curfew detection
 # management command (it runs outside any HTTP request, so there's no

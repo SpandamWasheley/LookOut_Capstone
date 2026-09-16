@@ -1,3 +1,11 @@
+# API/web dependencies ONLY - this is what the cloud host installs.
+#
+# The computer-vision stack lives in requirements-detection.txt and is
+# DELIBERATELY not here. torch + insightface + onnxruntime run to several GB,
+# which exceeds the build limits of every free PaaS tier, and the detectors
+# cannot run in the cloud anyway: they read RTSP streams from cameras on the
+# barangay LAN, which a datacentre cannot reach. Installing them on the API
+# host would mean a failed build in exchange for code that could never run.
 asgiref==3.11.1
 Django==6.0.6
 django-cors-headers==4.9.0
@@ -10,12 +18,12 @@ python-dotenv==1.2.2
 requests>=2.31.0
 sqlparse==0.5.5
 tzdata==2026.2
-insightface
-numpy
-onnxruntime
-opencv-python
-torch
-ultralytics
-lap  # ultralytics' ByteTrack/BoT-SORT (watch_* --tracker); auto-installs otherwise
 rapidfuzz
 psutil  # DetectionJobViewSet.cancel — kills a running job's subprocess (+ children) by PID
+
+# --- production serving -----------------------------------------------------
+gunicorn==23.0.0           # WSGI server; `manage.py runserver` is dev-only
+dj-database-url==2.3.0     # DATABASE_URL -> Django DATABASES
+psycopg[binary]==3.2.3     # PostgreSQL driver
+whitenoise==6.8.2          # serves Django's own static files without nginx
+django-storages[s3]==1.14.4  # evidence media -> S3-compatible bucket

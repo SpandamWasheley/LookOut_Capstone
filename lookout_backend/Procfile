@@ -1,0 +1,2 @@
+web: gunicorn lookout_backend.wsgi:application --workers 2 --timeout 120
+release: python manage.py migrate --noinput

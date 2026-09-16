@@ -1,0 +1,13 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+# SPA fallback. App.jsx uses react-router-dom, so /dashboard and
+# /forgot-password exist only in the browser - the host has no such files.
+# Without this rewrite a visitor who RELOADS on those paths gets a hard 404,
+# and since api.js deliberately keeps the token in memory only, every reload
+# already forces re-login. Missing this makes the app look broken after login.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
