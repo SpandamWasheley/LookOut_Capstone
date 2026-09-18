@@ -10,6 +10,10 @@
 insightface
 numpy
 onnxruntime
+# Replaces the headless build in requirements.txt - watch_* --debug opens a
+# cv2.imshow preview window, which headless cannot do. Both wheels install the
+# same cv2 module, so uninstall the other one first:
+#     pip uninstall -y opencv-python-headless && pip install opencv-python
 opencv-python
 torch
 ultralytics

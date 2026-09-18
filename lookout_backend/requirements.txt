@@ -21,6 +21,14 @@ tzdata==2026.2
 rapidfuzz
 psutil  # DetectionJobViewSet.cancel — kills a running job's subprocess (+ children) by PID
 
+# Needed by the API itself, not only by the detectors: core/views.py imports
+# cv2/numpy at module level (thumbnail + upload decoding), and core/urls.py
+# imports views, so a missing cv2 does not fail at startup - it fails on the
+# FIRST request, including the health check. Headless is the server build: the
+# normal opencv-python wheel needs libGL.so.1, which slim containers lack.
+numpy
+opencv-python-headless
+
 # --- production serving -----------------------------------------------------
 gunicorn==23.0.0           # WSGI server; `manage.py runserver` is dev-only
 dj-database-url==2.3.0     # DATABASE_URL -> Django DATABASES
