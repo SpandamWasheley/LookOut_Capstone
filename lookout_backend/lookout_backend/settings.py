@@ -13,12 +13,17 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 import os
 from pathlib import Path
 
-from dotenv import load_dotenv
+from decouple import AutoConfig, Csv
+from django.core.exceptions import ImproperlyConfigured
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-load_dotenv(BASE_DIR / ".env")
+# search_path is given explicitly rather than relying on decouple's caller
+# inspection: .env sits at the project root, one level above this file, and the
+# implicit search behaves differently depending on the working directory a
+# management command was launched from.
+config = AutoConfig(search_path=BASE_DIR)
 
 
 # Quick-start development settings - unsuitable for production
@@ -27,21 +32,25 @@ load_dotenv(BASE_DIR / ".env")
 # SECURITY WARNING: keep the secret key used in production secret!
 # Falls back to a dev-only key so `manage.py` still works out of the box if
 # .env is missing, but any real deployment must set SECRET_KEY in the env.
-SECRET_KEY = os.environ.get(
+SECRET_KEY = config(
     'SECRET_KEY',
-    'django-insecure-u_t@(tpkhtw&!b0)_&zlo58=k#8%(dr8835qq(0uv245^id=o0',
+    default='django-insecure-u_t@(tpkhtw&!b0)_&zlo58=k#8%(dr8835qq(0uv245^id=o0',
 )
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.environ.get('DEBUG', 'True') == 'True'
+DEBUG = config('DEBUG', default=True, cast=bool)
 
-# '*' is fine here only because DEBUG=True (dev-only settings) — it lets the
-# Expo app reach this server over the LAN using the dev machine's IP address,
-# since "localhost" from a phone refers to the phone itself, not this machine.
-# A real deployment must set ALLOWED_HOSTS to a comma-separated list of real
-# hostnames in the env.
-_allowed_hosts = os.environ.get('ALLOWED_HOSTS', '*')
-ALLOWED_HOSTS = ['*'] if _allowed_hosts == '*' else [h.strip() for h in _allowed_hosts.split(',')]
+# FAILS CLOSED. A missing or empty ALLOWED_HOSTS yields an EMPTY list, so Django
+# rejects every request, rather than the old behaviour of defaulting to ['*'] and
+# accepting any Host header. That default was the dangerous kind of convenience:
+# it worked silently, so a deployment that simply forgot the variable would look
+# perfectly healthy while being open to Host-header poisoning and cache attacks.
+# An outage is obvious and gets fixed in a minute; an open server is not.
+#
+# Under DEBUG Django already permits localhost/127.0.0.1 on its own, so local
+# development needs nothing here. For the Expo app on a LAN, add the dev
+# machine's IP, e.g. ALLOWED_HOSTS=192.168.1.10
+ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='', cast=Csv())
 
 # ngrok terminates HTTPS at its edge and forwards plain HTTP to this dev
 # server, setting X-Forwarded-Proto: https on the way — without this, Django
@@ -62,12 +71,34 @@ SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 # Hardening that only makes sense once this is served over HTTPS in production
 # — left off under DEBUG so local http://localhost development keeps working.
 if not DEBUG:
-    SECURE_SSL_REDIRECT = True
+    SECURE_SSL_REDIRECT = config('SECURE_SSL_REDIRECT', default=True, cast=bool)
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
-    SECURE_HSTS_SECONDS = 31536000
+    SECURE_HSTS_SECONDS = config('SECURE_HSTS_SECONDS', default=31536000, cast=int)
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
     SECURE_CONTENT_TYPE_NOSNIFF = True
+    X_FRAME_OPTIONS = 'DENY'
+
+    # The dashboard is served from a different origin than the API, so its
+    # origin must be trusted explicitly for any session-authenticated POST
+    # (the JWT endpoints do not need this; the Django admin does).
+    CSRF_TRUSTED_ORIGINS = config('CSRF_TRUSTED_ORIGINS', default='', cast=Csv())
+
+    # Fail loudly rather than shipping the development fallbacks to production.
+    # Both of these are safe in development and dangerous in the cloud, and
+    # neither announces itself when wrong - the site simply runs with a public
+    # signing key, or accepts any Host header.
+    if SECRET_KEY.startswith('django-insecure-'):
+        raise ImproperlyConfigured(
+            'SECRET_KEY is still the development fallback. Set a real '
+            'SECRET_KEY in the environment before deploying with DEBUG=False.'
+        )
+    if ALLOWED_HOSTS == ['*']:
+        raise ImproperlyConfigured(
+            'ALLOWED_HOSTS is "*" with DEBUG=False. Set it to your real '
+            'hostnames, e.g. ALLOWED_HOSTS=api.example.com'
+        )
 
 
 # Application definition
@@ -87,6 +118,10 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    # Serves Django's own static files (admin CSS, DRF's browsable API) straight
+    # from the app process, so the cloud deploy needs no nginx in front of it.
+    # Must sit immediately after SecurityMiddleware, per WhiteNoise's docs.
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -102,17 +137,39 @@ AUTHENTICATION_BACKENDS = [
     'core.auth_backends.CaseInsensitiveUsernameBackend',
 ]
 
-CORS_ALLOWED_ORIGINS = [
-    'http://localhost:5173',
-    'http://127.0.0.1:5173',
-    'http://localhost:5174',
-    'http://127.0.0.1:5174',
-]
-# A real deployment must add its actual frontend origin(s) here via the env,
-# e.g. ALLOWED_CORS_ORIGINS=https://app.example.com,https://admin.example.com
-CORS_ALLOWED_ORIGINS += [
-    o.strip() for o in os.environ.get('ALLOWED_CORS_ORIGINS', '').split(',') if o.strip()
-]
+# Entirely env-driven, and empty by default. The Vite dev server origins are no
+# longer hardcoded: a production deployment has no business trusting
+# localhost:5173, and baking it in meant the list could never be fully audited
+# from configuration alone.
+#
+# e.g. CORS_ALLOWED_ORIGINS=https://lookout-bice.vercel.app,http://localhost:5173
+CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', default='', cast=Csv())
+
+# Headers the browser may SEND on a cross-origin request. Defaults to
+# django-cors-headers' own standard set plus Authorization, which this API needs
+# for every JWT call. Extend via the env only if a client starts sending a
+# custom header.
+CORS_ALLOW_HEADERS = config(
+    'CORS_ALLOW_HEADERS',
+    default=(
+        'accept,accept-encoding,authorization,content-type,dnt,origin,'
+        'user-agent,x-csrftoken,x-requested-with'
+    ),
+    cast=Csv(),
+)
+
+# Methods permitted cross-origin. The API is a full CRUD surface, so all of them.
+CORS_ALLOW_METHODS = config(
+    'CORS_ALLOW_METHODS',
+    default='DELETE,GET,OPTIONS,PATCH,POST,PUT',
+    cast=Csv(),
+)
+
+# NEVER enabled from configuration. CORS_ALLOW_ALL_ORIGINS would let any website
+# a logged-in dispatcher visits call this API with their browser, so it is fixed
+# to False here instead of being exposed as an env var somebody could flip while
+# debugging and forget to turn back off.
+CORS_ALLOW_ALL_ORIGINS = False
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
@@ -157,12 +214,59 @@ WSGI_APPLICATION = 'lookout_backend.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+# PostgreSQL, configured entirely from the environment.
+#
+# SQLite is no longer the hardcoded default. Two reasons it had to go: PaaS
+# filesystems are EPHEMERAL, so a forgotten DATABASE_URL meant the deployment
+# silently ran on a database that was wiped on every restart; and SQLite locks
+# the whole file on write, which the detection watchers would hit constantly
+# once several of them write alerts at once.
+#
+# Two supported shapes, checked in this order:
+#   1. DATABASE_URL  - what Render and DigitalOcean inject automatically
+#   2. DB_NAME/DB_USER/DB_PASSWORD/DB_HOST/DB_PORT - discrete values in .env
+#
+# Set USE_SQLITE=True to opt back into a local SQLite file for offline work.
+# It is opt-in on purpose: a deliberate choice, never a silent fallback.
+if config('USE_SQLITE', default=False, cast=bool):
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
     }
-}
+elif config('DATABASE_URL', default=''):
+    import dj_database_url
+
+    DATABASES = {
+        'default': dj_database_url.parse(
+            config('DATABASE_URL'),
+            conn_max_age=config('DB_CONN_MAX_AGE', default=600, cast=int),
+            conn_health_checks=True,   # drop connections the provider killed
+            ssl_require=config('DB_SSL_REQUIRE', default=True, cast=bool),
+        )
+    }
+else:
+    # No default for NAME/USER/PASSWORD/HOST: decouple raises
+    # UndefinedValueError naming the missing key, which is a far better failure
+    # than starting up against the wrong database.
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': config('DB_NAME'),
+            'USER': config('DB_USER'),
+            'PASSWORD': config('DB_PASSWORD'),
+            'HOST': config('DB_HOST'),
+            'PORT': config('DB_PORT', default='5432'),
+            'CONN_MAX_AGE': config('DB_CONN_MAX_AGE', default=600, cast=int),
+            'OPTIONS': {
+                'sslmode': config('DB_SSLMODE', default='require'),
+            },
+        }
+    }
+
+
+
 
 
 # Password validation
@@ -200,15 +304,50 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = 'static/'
+# collectstatic target. Required in production: WhiteNoise serves from here, and
+# without it `manage.py collectstatic` has nowhere to write.
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+STORAGES = {
+    'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
+    'staticfiles': {
+        'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
+    },
+}
 
 # Media files (violation snapshots saved by the curfew detection pipeline)
 MEDIA_URL = 'media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
+# --- evidence media: shared object storage ----------------------------------
+# THIS IS NOT OPTIONAL IN A CLOUD DEPLOYMENT, and the reason is the split
+# architecture. The detectors run on a PC at the barangay (they need the
+# cameras); the API runs in the cloud. A watcher that saves a violation JPG to
+# its own local MEDIA_ROOT writes it to a disk the cloud server cannot read, so
+# the dashboard would show a broken image for every alert. Pointing both at one
+# S3-compatible bucket is what makes the evidence reachable.
+#
+# Works with AWS S3, Cloudflare R2, Backblaze B2, Supabase Storage - anything
+# S3-compatible. Set AWS_STORAGE_BUCKET_NAME to switch it on; leave it unset and
+# Django keeps using the local folder, which is correct for development.
+AWS_STORAGE_BUCKET_NAME = config('AWS_STORAGE_BUCKET_NAME', default='')
+if AWS_STORAGE_BUCKET_NAME:
+    AWS_ACCESS_KEY_ID = config('AWS_ACCESS_KEY_ID', default='')
+    AWS_SECRET_ACCESS_KEY = config('AWS_SECRET_ACCESS_KEY', default='')
+    AWS_S3_REGION_NAME = config('AWS_S3_REGION_NAME', default='auto')
+    # R2/B2/Supabase need an explicit endpoint; plain AWS S3 does not.
+    AWS_S3_ENDPOINT_URL = config('AWS_S3_ENDPOINT_URL', default='') or None
+    # Public read URL base, e.g. an R2 public bucket domain or a CDN.
+    AWS_S3_CUSTOM_DOMAIN = config('AWS_S3_CUSTOM_DOMAIN', default='') or None
+    AWS_QUERYSTRING_AUTH = False      # evidence URLs are stored in Alert rows,
+                                      # so they must not expire
+    AWS_S3_FILE_OVERWRITE = False
+    AWS_DEFAULT_ACL = None
+    STORAGES['default'] = {'BACKEND': 'storages.backends.s3.S3Storage'}
+
 # Used to build absolute Alert.image_url values from the curfew detection
 # management command (it runs outside any HTTP request, so there's no
 # request object to build an absolute URL from).
-SITE_BASE_URL = os.environ.get('SITE_BASE_URL', 'http://localhost:8000')
+SITE_BASE_URL = config('SITE_BASE_URL', default='http://localhost:8000')
 
 
 # Email (used for officer account email verification codes)
@@ -217,11 +356,11 @@ EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True
-EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
-EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
-DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', EMAIL_HOST_USER)
+EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
+EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
+DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default=EMAIL_HOST_USER)
 
 
 # SMS (Semaphore — Philippine SMS gateway)
-SEMAPHORE_API_KEY    = os.environ.get('SEMAPHORE_API_KEY', '')
-SEMAPHORE_SENDER_NAME = os.environ.get('SEMAPHORE_SENDER_NAME', 'LookOut')
+SEMAPHORE_API_KEY    = config('SEMAPHORE_API_KEY', default='')
+SEMAPHORE_SENDER_NAME = config('SEMAPHORE_SENDER_NAME', default='LookOut')

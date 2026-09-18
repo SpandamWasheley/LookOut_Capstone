@@ -1,0 +1,102 @@
+# DigitalOcean App Platform spec for the LookOut API.
+#
+# Same scope as render.yaml: API + database only. The detection watchers read
+# RTSP streams from cameras on the barangay LAN and carry a multi-GB CV stack,
+# so they run on a PC beside the cameras, pointed at this app's DATABASE_URL.
+# See DEPLOYMENT.md.
+name: lookout
+region: sgp                      # Singapore - closest region to the Philippines
+
+databases:
+  - name: lookout-db
+    engine: PG
+    version: "16"
+    production: false            # dev database; cheapest tier
+
+services:
+  - name: api
+    github:
+      repo: SpandamWasheley/LookOut_Capstone
+      branch: deploy/hosting
+      deploy_on_push: true
+    source_dir: lookout_backend
+    environment_slug: python
+    instance_size_slug: basic-xxs
+    instance_count: 1
+    http_port: 8080
+    build_command: |
+      pip install -r requirements.txt
+      python manage.py collectstatic --noinput
+    # App Platform routes to $PORT (8080 by default); gunicorn must bind to it
+    # explicitly or the health check never passes and the deploy rolls back.
+    run_command: gunicorn lookout_backend.wsgi:application --workers 2 --timeout 120 --bind 0.0.0.0:8080
+    health_check:
+      http_path: /api/health/
+    envs:
+      - key: DEBUG
+        value: "False"
+      - key: SECRET_KEY
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+      - key: ALLOWED_HOSTS
+        value: ".ondigitalocean.app"
+      - key: ALLOWED_CORS_ORIGINS
+        value: "https://lookout-bice.vercel.app"
+      - key: CSRF_TRUSTED_ORIGINS
+        value: "https://lookout-bice.vercel.app"
+      - key: DATABASE_URL
+        scope: RUN_AND_BUILD_TIME
+        value: "${lookout-db.DATABASE_URL}"
+      # Evidence media - must match what the on-site detection PC uses.
+      - key: AWS_STORAGE_BUCKET_NAME
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+      - key: AWS_ACCESS_KEY_ID
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+      - key: AWS_SECRET_ACCESS_KEY
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+      - key: AWS_S3_ENDPOINT_URL
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+      - key: AWS_S3_CUSTOM_DOMAIN
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+      - key: EMAIL_HOST_USER
+        type: SECRET
+      - key: EMAIL_HOST_PASSWORD
+        type: SECRET
+      - key: DEFAULT_FROM_EMAIL
+        type: SECRET
+      - key: SEMAPHORE_API_KEY
+        type: SECRET
+
+# Migrations run as a PRE_DEPLOY job rather than in build_command: the build
+# step has no database attached, so `migrate` there would fail. A pre-deploy job
+# runs with the app's full environment and blocks the release if it errors,
+# which is what you want - better a failed deploy than a live app whose schema
+# does not match its code.
+jobs:
+  - name: migrate
+    kind: PRE_DEPLOY
+    github:
+      repo: SpandamWasheley/LookOut_Capstone
+      branch: deploy/hosting
+    source_dir: lookout_backend
+    environment_slug: python
+    instance_size_slug: basic-xxs
+    instance_count: 1
+    build_command: pip install -r requirements.txt
+    run_command: python manage.py migrate --noinput
+    envs:
+      - key: DEBUG
+        value: "False"
+      - key: SECRET_KEY
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+      - key: ALLOWED_HOSTS
+        value: ".ondigitalocean.app"
+      - key: DATABASE_URL
+        scope: RUN_AND_BUILD_TIME
+        value: "${lookout-db.DATABASE_URL}"

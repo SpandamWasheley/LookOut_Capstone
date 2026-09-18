@@ -1,0 +1,62 @@
+# Render blueprint for the LookOut API.
+#
+# NOTE ON SCOPE: this deploys the API and database ONLY. The detection watchers
+# (watch_parking, watch_curfew, ...) are not here and cannot be - they read RTSP
+# streams from cameras on the barangay LAN, which no datacentre can reach, and
+# their CV stack is several GB. They run on a PC beside the cameras, pointed at
+# this service's DATABASE_URL. See DEPLOYMENT.md.
+services:
+  - type: web
+    name: lookout-api
+    runtime: python
+    plan: free
+    rootDir: lookout_backend
+    buildCommand: |
+      pip install -r requirements.txt
+      python manage.py collectstatic --noinput
+      python manage.py migrate
+    startCommand: gunicorn lookout_backend.wsgi:application --workers 2 --timeout 120
+    healthCheckPath: /api/health/
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      - key: SECRET_KEY
+        generateValue: true          # Render creates a strong key
+      - key: DEBUG
+        value: "False"
+      - key: ALLOWED_HOSTS
+        sync: false                  # set to your Render hostname
+      - key: ALLOWED_CORS_ORIGINS
+        sync: false                  # your dashboard origin
+      - key: CSRF_TRUSTED_ORIGINS
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: lookout-db
+          property: connectionString
+      # Evidence media bucket - required so the on-site watchers and this API
+      # read and write the SAME files. Leave unset only for a local trial.
+      - key: AWS_STORAGE_BUCKET_NAME
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_S3_ENDPOINT_URL
+        sync: false
+      - key: AWS_S3_CUSTOM_DOMAIN
+        sync: false
+      # Email (OTP codes) and SMS - see .env.example
+      - key: EMAIL_HOST_USER
+        sync: false
+      - key: EMAIL_HOST_PASSWORD
+        sync: false
+      - key: DEFAULT_FROM_EMAIL
+        sync: false
+      - key: SEMAPHORE_API_KEY
+        sync: false
+
+databases:
+  - name: lookout-db
+    plan: free
+    databaseName: lookout

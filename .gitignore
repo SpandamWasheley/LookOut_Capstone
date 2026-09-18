@@ -66,3 +66,6 @@ lookout_backend/_*.jpg
 *.mkv
 *.mp4
 *.avi
+
+# Django collectstatic output (regenerated on every deploy)
+staticfiles/

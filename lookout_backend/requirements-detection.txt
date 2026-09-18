@@ -1,0 +1,16 @@
+# Computer-vision stack for the ON-SITE detection machine only.
+#
+# Install this ON TOP of requirements.txt on the PC that sits with the cameras:
+#
+#     pip install -r requirements.txt -r requirements-detection.txt
+#
+# Not installed on the cloud API host - see the note in requirements.txt.
+# First run additionally downloads model weights (yolov8n ~6MB, the insightface
+# buffalo_l pack ~280MB), so allow for that on a metered connection.
+insightface
+numpy
+onnxruntime
+opencv-python
+torch
+ultralytics
+lap  # ultralytics' ByteTrack/BoT-SORT (watch_* --tracker); auto-installs otherwise

@@ -18,6 +18,9 @@ router.register("dispatchers", views.DispatcherViewSet)
 router.register("detection-jobs", views.DetectionJobViewSet)
 
 urlpatterns = [
+    # Kept FIRST and outside the router: the platform's health check must not
+    # depend on any of the routing below resolving correctly.
+    path("health/", views.health, name="health"),
     path("auth/login/", views.LoginView.as_view(), name="login"),
     path("auth/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
     path("auth/me/", views.me, name="me"),
