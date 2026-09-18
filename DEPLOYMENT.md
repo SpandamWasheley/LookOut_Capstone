@@ -91,11 +91,26 @@ Migrations and `collectstatic` run automatically on every deploy.
 > next request takes ~50 seconds to wake it. Fine for a demo, painful for a
 > live barangay. $7/month removes it.
 
-Then create your first admin:
+Then create your first admin. `migrate` creates tables, not rows, so a new
+deployment has an empty `User` table and no way to log in. Two things rule out
+the obvious `createsuperuser`: Render's Shell is a paid feature, and the command
+never prompts for `role`, so the account it makes defaults to `role="officer"` -
+which `lookout/src/api.js` rejects at login, locking the superuser out of the
+dashboard it was made for.
+
+So it runs from the build instead. Set these three, then deploy:
 
 ```
-python manage.py createsuperuser        # from Render's shell tab
+ADMIN_USERNAME   brgyadmin
+ADMIN_PASSWORD   <a strong temporary password>
+ADMIN_EMAIL      you@example.com
 ```
+
+`bootstrap_admin` creates one account with `role="admin"` and
+`must_change_password=True`, so the dashboard forces a real password at first
+login. It is idempotent and skips itself when the variables are unset - once the
+account exists and you have changed the password, clear all three from the
+environment.
 
 ## Step 3 — Web dashboard
 
