@@ -272,11 +272,25 @@ class Command(BaseCommand):
                 if self.preprocess:
                     frame = preproc.preprocess(frame, mode="near", sharpen=self.sharpen)
 
-                now = time.time()
-                if now - cfg_at >= SETTINGS_REFRESH_SECONDS:
+                wall_now = time.time()
+                if wall_now - cfg_at >= SETTINGS_REFRESH_SECONDS:
                     cfg = SystemSettings.load()
-                    cfg_at = now
+                    cfg_at = wall_now
                 frames += 1
+
+                # Content-time clock: video position for a file source (not
+                # wall clock) so every dwell/duration/cooldown figure measures
+                # the same seconds a human watching the clip would see, even
+                # though processing routinely runs far slower than real-time.
+                # Wall-clock for a live source, where video time and
+                # wall-clock time are the same thing by definition. Mirrors
+                # watch_parking.py's and watch_merged.py's identical fix —
+                # this loop was the one left measuring CPU seconds instead of
+                # footage seconds, which inflated every parking dwell reading
+                # on a file source by however far behind real-time processing
+                # fell (e.g. "61s stationary" reported while only ~11s of the
+                # clip had actually played).
+                now = wall_now if is_live else reader.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
 
                 # Which detectors run THIS frame. In 'rotate' mode only one heavy
                 # model runs per frame (cycled), so the loop stays fast; in 'all'
@@ -308,7 +322,7 @@ class Command(BaseCommand):
                     self._run_parking(frame, now, cfg, debug)
 
                 if not fps_warned and frames >= 20:
-                    fps = frames / max(now - started, 1e-6)
+                    fps = frames / max(wall_now - started, 1e-6)
                     if fps < 1.5:
                         fps_warned = True
                         self.stdout.write(self.style.WARNING(
