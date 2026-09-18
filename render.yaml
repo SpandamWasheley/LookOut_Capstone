@@ -26,7 +26,7 @@ services:
         value: "False"
       - key: ALLOWED_HOSTS
         sync: false                  # set to your Render hostname
-      - key: ALLOWED_CORS_ORIGINS
+      - key: CORS_ALLOWED_ORIGINS
         sync: false                  # your dashboard origin
       - key: CSRF_TRUSTED_ORIGINS
         sync: false
