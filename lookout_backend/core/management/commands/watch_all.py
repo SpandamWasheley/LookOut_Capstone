@@ -1,22 +1,33 @@
 """Run every violation detector on ONE camera feed, frame by frame.
 
-Instead of four separate processes each opening the camera and each running its
-own YOLO pass, this opens the stream once and, per frame:
+Smoking, drinking and theft (knife) share the MERGED Bottle/Cigarette/knife
+model (see core/vision/recognition.py's MERGED_MODEL_PATH) — one inference
+pass per frame, routed by class name to each rule engine, exactly as
+watch_merged.py already does. Parking is unrelated (vehicles, not the merged
+model's classes) and keeps its own separate yolov8n vehicle detection and
+dwell/obstruction logic entirely — see _run_parking.
 
-  * detects people ONCE and shares those boxes with smoking, thief and drinking
-    (their most expensive pass, so sharing it is the main saving);
-  * runs each detector's own model, tracker, voting, dwell and cooldown by
-    reusing the existing watch_<x> Command classes unchanged — so behaviour is
-    identical to the standalone watchers, just driven from one loop;
+Per frame:
+  * detects people ONCE and shares those boxes with smoking, thief and
+    drinking's tracking (their rule layers still run independently);
+  * runs ONE merged-model pass, routes each detected class (Cigarette/
+    Bottle/knife) to its owning engine, then reuses that engine's existing
+    watch_<x> Command methods (voting, dwell, cooldown, alert creation)
+    unchanged — see _process_merged_frame and watch_merged.py's identical
+    approach, including why gun/robbery-activity/stealing classes (the old
+    standalone thief.pt's other classes) cannot appear here: the merged
+    model was never trained on them, and ROUTE_ENGINE only ever maps
+    "knife" to the thief engine;
   * detects vehicles for parking with its own movement/dwell logic.
 
 Alerts are attributed to one shared Camera (the real CCTV), each carrying its own
 ViolationType, so the dashboard shows "Public Smoking", "Theft / Robbery" etc.
 from the single feed.
 
-This is CPU-heavy: four models per frame. On CPU expect ~1-3 FPS, less with
---far. That is the cost of one-feed-all-violations; the per-detector temporal
-rules are time-based, so they stay correct at low frame rates (see tracking.py).
+CPU cost is now the merged model's ONE pass (when any of smoking/drinking/
+thief is active) plus parking's separate vehicle-tiling pass — see
+--schedule, which rotates between those two units, not between four
+separate models as it did when each engine ran its own weights.
 """
 import os
 import time
@@ -40,13 +51,20 @@ SETTINGS_REFRESH_SECONDS = 5
 PARKING_TRACK_GRACE = 2.0
 PARKING_MATCH_IOU = 0.3
 
+# Merged model class name -> which rule engine owns it. Matched
+# case-insensitively; anything the model returns that isn't one of these
+# three is dropped (and counted), never silently misrouted to the wrong
+# engine. Identical to watch_merged.py's ROUTE_ENGINE — see its module
+# docstring for the renamed-class failure mode this guards against.
+ROUTE_ENGINE = {"cigarette": "smoking", "bottle": "drinking", "knife": "thief"}
+
 
 class Command(BaseCommand):
     help = (
         "Runs smoking, theft, drinking and illegal-parking detection together on "
-        "a single camera feed. Use --source for an RTSP/CCTV URL. Person "
-        "detection is shared across the person-based detectors, so this is much "
-        "cheaper than four separate processes."
+        "a single camera feed. Smoking/drinking/theft share one merged-model pass "
+        "per frame (see ROUTE_ENGINE); parking keeps its own separate vehicle "
+        "detection. Use --source for an RTSP/CCTV URL."
     )
 
     # Person-based detectors that share the person-detection pass and the
@@ -76,12 +94,13 @@ class Command(BaseCommand):
                                  "smoking/thief/drinking/parking. Default: all enabled "
                                  "in Settings.")
         parser.add_argument("--schedule", default="rotate", choices=["rotate", "all"],
-                            help="'rotate' (default) runs ONE violation model per frame, "
-                                 "cycling through them, so the feed stays responsive on "
-                                 "CPU — safe because the temporal rules are time-based, "
-                                 "not frame-based, so each detector still confirms within "
-                                 "its window. 'all' runs every model every frame "
-                                 "(accurate but ~4x slower; use only on a GPU).")
+                            help="'rotate' (default) alternates per frame between the "
+                                 "merged smoking/drinking/thief pass and parking's own "
+                                 "vehicle pass, so the feed stays responsive on CPU — safe "
+                                 "because the temporal rules are time-based, not "
+                                 "frame-based, so each engine still confirms within its "
+                                 "window. 'all' runs both every frame (accurate but "
+                                 "roughly 2x slower; use only on a GPU).")
         preproc.add_cli_flags(parser, ablatable=False)
 
     def handle(self, *args, **options):
@@ -115,18 +134,35 @@ class Command(BaseCommand):
             return
         self.enabled = only or None  # None => decide per-frame from Settings
 
+        # Smoking/drinking/thief now all come from ONE merged model instead of
+        # three separate weights files — see the module docstring and
+        # watch_merged.py, which this mirrors. Checked eagerly (and loaded
+        # eagerly, not on first detection call) so a missing model or a
+        # renamed class fails loudly here, before opening a camera or
+        # touching the DB — see _check_route_coverage's own docstring for why
+        # a silent routing gap is worse than refusing to start.
+        if not recognition.merged_model_available():
+            self.stdout.write(self.style.ERROR(
+                f"Merged model not found at {recognition.MERGED_MODEL_PATH}. "
+                "Copy the trained best.pt there, or set the MERGED_MODEL env var."
+            ))
+            return
+        merged_model = recognition.load_merged_model()
+        uncovered = self._check_route_coverage(merged_model)
+        if uncovered:
+            self.stdout.write(self.style.ERROR(uncovered))
+            return
+
         # Build and configure a sub-command per person-based detector, reusing
-        # its exact detection + confirmation logic. Each gets its own tracker.
+        # its rule-layer methods (voting, dwell, cooldown, alert creation)
+        # unchanged. Each gets its own tracker. Detection itself is never
+        # delegated to these — see _process_merged_frame.
         self.engines = {}
         for name, cls in (("smoking", SmokingCommand),
                           ("thief", ThiefCommand),
                           ("drinking", DrinkingCommand)):
             cmd = cls()
             self._share_setup(cmd)
-            if not self._model_ok(name, cmd):
-                self.stdout.write(self.style.WARNING(
-                    f"{name}: model not available, skipping this detector."))
-                continue
             self.engines[name] = {"cmd": cmd, "tracker": tracking.PersonTracker()}
             if name == "drinking":
                 # Path B (gathering) needs its own group-level tracker,
@@ -207,13 +243,44 @@ class Command(BaseCommand):
             code=code, defaults={"label": label, "color": color, "icon": icon})
         return vt
 
-    def _model_ok(self, name, cmd):
-        checks = {
-            "smoking": recognition.smoking_model_available,
-            "thief": recognition.thief_model_available,
-            "drinking": recognition.drinking_model_available,
-        }
-        return checks[name]()
+    def _check_route_coverage(self, model):
+        """None if safe, else an error message: does every rule engine
+        (smoking/drinking/thief) have at least one merged-model class routed
+        to it via ROUTE_ENGINE? Identical check to watch_merged.py's own —
+        see its docstring for the renamed-class failure mode this guards
+        against (an engine goes silently quiet, nothing looks broken)."""
+        names = model.names.values() if isinstance(model.names, dict) else model.names
+        covered = {ROUTE_ENGINE[label.lower()] for label in names
+                  if label.lower() in ROUTE_ENGINE}
+        missing = set(ROUTE_ENGINE.values()) - covered
+        if missing:
+            return (
+                f"Merged model's classes {sorted(names)!r} route (via ROUTE_ENGINE) to "
+                f"{sorted(covered)!r}, leaving {sorted(missing)!r} with NO class at all. "
+                "That engine would silently never produce a detection for the rest of "
+                "the run — refusing to start rather than run one or two engines short "
+                "with no visible error. Update ROUTE_ENGINE to match the model's actual "
+                "class names, or re-export the model with the expected ones."
+            )
+        return None
+
+    def _apply_engine_floor(self, name, cmd, dets, conf):
+        """Each engine's own per-class confidence floor, applied to its
+        routed slice of the merged model's output — the same stage each
+        standalone command's own _detect() runs internally. Identical to
+        watch_merged.py's _apply_engine_floor."""
+        if name == "drinking":
+            # watch_drinking has no CLASS_POLICY (its branded model was
+            # always single-class) — just its own configured floor.
+            kept = []
+            for d in dets:
+                cmd.stats[f"detected:{d[5]}"] += 1
+                if d[4] >= conf:
+                    kept.append(d)
+                else:
+                    cmd.stats[f"cut by confidence:{d[5]}"] += 1
+            return kept
+        return cmd._apply_class_floors(dets, conf)  # smoking / thief
 
     def _active(self, name, cfg):
         if self.enabled is not None:
@@ -262,9 +329,15 @@ class Command(BaseCommand):
             while True:
                 ok, frame = reader.read()
                 if not ok:
-                    # Live reader may not have its first frame yet; wait briefly.
-                    time.sleep(0.02)
-                    continue
+                    if is_live:
+                        # Live reader may not have its first frame yet; wait briefly.
+                        time.sleep(0.02)
+                        continue
+                    # A file source hits EOF here and cap.read() will keep
+                    # returning False forever — without this branch the loop
+                    # never terminates (see watch_merged.py's identical check).
+                    self.stdout.write(self.style.SUCCESS(f"End of {source} — done."))
+                    break
 
                 # One enhancement pass for the whole frame, before the shared
                 # person detection — every detector this frame sees the same
@@ -292,31 +365,28 @@ class Command(BaseCommand):
                 # clip had actually played).
                 now = wall_now if is_live else reader.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
 
-                # Which detectors run THIS frame. In 'rotate' mode only one heavy
-                # model runs per frame (cycled), so the loop stays fast; in 'all'
-                # mode they all run. The person pass is shared either way.
-                active = [n for n in list(self.engines) + ["parking"] if self._active(n, cfg)]
-                if not active:
+                # Which of the two independent-cost UNITS run THIS frame: the
+                # merged smoking/drinking/thief pass (one model regardless of
+                # how many of the three are enabled, so there is nothing left
+                # to gain by rotating within it) and parking's own separate
+                # vehicle pass. In 'rotate' mode they alternate, so the loop
+                # stays fast; in 'all' mode both run. The person pass is
+                # shared with the merged unit either way.
+                active_engines = [n for n in self.engines if self._active(n, cfg)]
+                parking_due_candidate = self._active("parking", cfg)
+                slots = (["merged"] if active_engines else []) + \
+                        (["parking"] if parking_due_candidate else [])
+                if not slots:
                     continue
                 if self.schedule == "rotate":
-                    due = {active[rot % len(active)]}
+                    due = {slots[rot % len(slots)]}
                     rot += 1
                 else:
-                    due = set(active)
+                    due = set(slots)
 
-                # Shared person pass — computed once, fed to whichever person-based
-                # detectors are due this frame.
-                need_persons = any(n in due for n in self.engines)
-                persons = recognition.detect_persons(frame) if need_persons else []
-                # Snapshot before any engine draws a violation box on `frame` —
-                # face recognition (smoking/drinking's citation-prefill match)
-                # must run against a clean copy, same reasoning as each
-                # standalone command's own loop.
-                clean_frame = frame.copy() if need_persons else None
-
-                for name, eng in self.engines.items():
-                    if name in due:
-                        self._run_person_detector(name, eng, frame, persons, now, cfg, debug, clean_frame)
+                if "merged" in due:
+                    persons = recognition.detect_persons(frame)
+                    self._process_merged_frame(frame, persons, now, cfg, active_engines, debug)
 
                 if "parking" in due:
                     self._run_parking(frame, now, cfg, debug)
@@ -326,8 +396,9 @@ class Command(BaseCommand):
                     if fps < 1.5:
                         fps_warned = True
                         self.stdout.write(self.style.WARNING(
-                            f"Running at {fps:.1f} FPS — four models per frame on CPU is "
-                            "heavy. Use --only to run fewer, drop --far, or use a GPU."))
+                            f"Running at {fps:.1f} FPS — the merged model + parking's "
+                            "vehicle detector on CPU is not free. Use --only to run "
+                            "fewer, drop --far, or use a GPU."))
 
                 if debug:
                     cv2.imshow("LookOut - watch_all (debug)", frame)
@@ -341,42 +412,78 @@ class Command(BaseCommand):
                 cv2.destroyAllWindows()
             self.stdout.write(self.style.SUCCESS("Stopped."))
 
-    # ---- per-detector drivers (reuse each command's own methods) ---------
+    # ---- merged-model driver (reuse each command's own rule-layer methods) -
 
-    def _run_person_detector(self, name, eng, frame, persons, now, cfg, debug, clean_frame):
-        cmd, tracker = eng["cmd"], eng["tracker"]
-        conf = getattr(cfg, f"{name}_confidence") / 100
-        dwell = getattr(cfg, f"{name}_dwell")
-
-        if name == "drinking":
-            dets = cmd._detect(frame, conf, persons=persons, vessels=[])
+    def _process_merged_frame(self, frame, persons, now, cfg, active, debug):
+        """ONE merged-model pass, routed by class name to whichever of
+        smoking/drinking/thief are active this frame — mirrors
+        watch_merged.py's _process_frame exactly, reusing each engine's own
+        rule-layer methods (voting, dwell, cooldown, alert creation)
+        unchanged. `active` is the list of engine names currently enabled
+        (from Settings or --only); detections for a disabled engine's class
+        are still produced by the model but simply never routed anywhere.
+        """
+        # The merged model's own inference floor must be at or below every
+        # active engine's configured confidence — otherwise a detection a
+        # more permissive engine would have kept could be discarded before
+        # engine-specific class floors ever see it. Each engine's own floor
+        # is still applied afterward, per class, exactly as it would run
+        # standalone (see _apply_engine_floor).
+        conf_floor = min(getattr(cfg, f"{n}_confidence") for n in active) / 100
+        if self.far:
+            dets = recognition.detect_merged_far(
+                frame, conf=conf_floor, tiles=self.tiles, person_boxes=persons)
         else:
-            dets = cmd._detect(frame, conf, persons=persons)
+            dets = recognition.detect_merged(frame, conf=conf_floor)
 
-        tracks = tracker.update(persons, now)
-        per_track = tracker.assign(dets, now)
-        if name == "smoking":
-            per_track = cmd._apply_face_rule(frame, per_track, now)
+        routed = {"smoking": [], "drinking": [], "thief": []}
+        for d in dets:
+            engine = ROUTE_ENGINE.get(d[5].lower())
+            if engine is not None:
+                routed[engine].append(d)
 
-        if name == "drinking":
-            self._run_gathering(eng, tracks, per_track, now, cfg, frame, debug, clean_frame)
-            for track, td in per_track.items():
-                cmd._process_track(track, td, now, dwell, cfg.alert_cooldown,
-                                   frame, debug, cfg.curfew_confidence, clean_frame)
-        elif name == "smoking":
-            for track, td in per_track.items():
-                cmd._process_track(track, td, now, dwell, cfg.alert_cooldown,
-                                   frame, debug, cfg.curfew_confidence, clean_frame)
-        else:  # thief — no face_threshold/clean_frame param on this one
-            for track, td in per_track.items():
-                cmd._process_track(track, td, now, dwell, cfg.alert_cooldown, frame, debug)
+        # Snapshot before any engine draws a violation box on `frame` — face
+        # recognition (smoking/drinking's citation-prefill match) must run
+        # against a clean copy, same reasoning as each standalone command's
+        # own loop.
+        clean_frame = frame.copy()
 
-        # Buffer this annotated frame into the engine's own evidence clip —
-        # cmd.clip is created in _share_setup but nothing else fills it;
-        # without this call it stays effectively empty and every alert's
-        # clip is a near-blank few-hundred-ms stub, not the ~30s of context
-        # the standalone commands' own _run_stream loops buffer every frame.
-        cmd.clip.add(frame, now)
+        for name in active:
+            eng = self.engines[name]
+            cmd, tracker = eng["cmd"], eng["tracker"]
+            dwell = getattr(cfg, f"{name}_dwell")
+            conf = getattr(cfg, f"{name}_confidence") / 100
+
+            filtered = self._apply_engine_floor(name, cmd, routed[name], conf)
+            tracks = tracker.update(persons, now)
+            per_track = tracker.assign(filtered, now)
+            if name == "smoking":
+                per_track = cmd._apply_face_rule(frame, per_track, now)
+            elif name == "thief":
+                per_track = cmd._apply_weapon_region_rule(per_track, frame)
+
+            if name == "drinking":
+                self._run_gathering(eng, tracks, per_track, now, cfg, frame, debug, clean_frame)
+                for track, td in per_track.items():
+                    cmd._process_track(track, td, now, dwell, cfg.alert_cooldown,
+                                       frame, debug, cfg.curfew_confidence, clean_frame,
+                                       held_dwell_seconds=cfg.drinking_held_dwell,
+                                       mouth_proximity=cfg.drinking_mouth_proximity,
+                                       cooldown_center_dist=cfg.drinking_cooldown_center_dist)
+            elif name == "smoking":
+                for track, td in per_track.items():
+                    cmd._process_track(track, td, now, dwell, cfg.alert_cooldown,
+                                       frame, debug, cfg.curfew_confidence, clean_frame)
+            else:  # thief — no face_threshold/clean_frame param on this one
+                for track, td in per_track.items():
+                    cmd._process_track(track, td, now, dwell, cfg.alert_cooldown, frame, debug)
+
+            # Buffer this annotated frame into the engine's own evidence clip —
+            # cmd.clip is created in _share_setup but nothing else fills it;
+            # without this call it stays effectively empty and every alert's
+            # clip is a near-blank few-hundred-ms stub, not the ~30s of context
+            # the standalone commands' own _run_stream loops buffer every frame.
+            cmd.clip.add(frame, now)
 
     def _run_gathering(self, eng, tracks, per_track, now, cfg, frame, debug, clean_frame):
         """Drinking's Path B (gathering) — previously never invoked here, so a
@@ -402,6 +509,8 @@ class Command(BaseCommand):
             cmd._process_cluster(
                 cluster, now, min_group, group_duration, cfg.alert_cooldown,
                 frame, debug, cfg.curfew_confidence, clean_frame,
+                evidence_max_age=cfg.drinking_evidence_max_age,
+                cooldown_center_dist=cfg.drinking_cooldown_center_dist,
             )
 
     def _run_parking(self, frame, now, cfg, debug):
