@@ -31,7 +31,7 @@ services:
     # explicitly or the health check never passes and the deploy rolls back.
     run_command: gunicorn lookout_backend.wsgi:application --workers 2 --timeout 120 --bind 0.0.0.0:8080
     health_check:
-      http_path: /api/
+      http_path: /api/health/
     envs:
       - key: DEBUG
         value: "False"

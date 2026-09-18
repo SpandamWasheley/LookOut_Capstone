@@ -24,6 +24,7 @@ from django.db.models import Count
 from django.utils import timezone
 from django.utils.text import get_valid_filename
 from rapidfuzz import process as rapidfuzz_process
+from django.db import connection
 from rest_framework import generics, permissions, viewsets
 from rest_framework.decorators import action, api_view, permission_classes, throttle_classes
 from rest_framework.parsers import FormParser, MultiPartParser
@@ -96,6 +97,42 @@ class LookoutTokenObtainPairSerializer(TokenObtainPairSerializer):
 class LoginView(TokenObtainPairView):
     serializer_class = LookoutTokenObtainPairSerializer
     throttle_classes = [LoginThrottle]
+
+
+@api_view(["GET"])
+@permission_classes([permissions.AllowAny])
+def health(request):
+    """Liveness/readiness probe for the hosting platform and uptime monitors.
+
+    Deliberately checks the DATABASE, not just that Python is running. A Django
+    process stays perfectly responsive after its database has gone away, so a
+    probe that only proves the web server answers would keep a broken instance
+    in the load balancer, serving 500s to every real request.
+
+    Returns 200 when healthy and 503 when not, which is what platform health
+    checks and uptime monitors act on. Unauthenticated on purpose - the probe
+    runs before anything has a token - so it reports component status only and
+    never version numbers, settings or connection strings.
+    """
+    checks = {}
+    healthy = True
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+        checks["database"] = "ok"
+    except Exception as exc:                      # noqa: BLE001 - report any failure
+        # Class name only: the message can contain the host, user and password
+        # from the connection string, and this endpoint is public.
+        checks["database"] = f"error: {type(exc).__name__}"
+        healthy = False
+        logger.exception("Health check: database unreachable")
+
+    return Response(
+        {"status": "ok" if healthy else "degraded", "checks": checks},
+        status=200 if healthy else 503,
+    )
 
 
 @api_view(["GET"])
