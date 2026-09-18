@@ -75,7 +75,7 @@ setup itself.
 
 ```
 ALLOWED_HOSTS          lookout-api.onrender.com
-ALLOWED_CORS_ORIGINS   https://your-dashboard.vercel.app
+CORS_ALLOWED_ORIGINS   https://your-dashboard.vercel.app
 CSRF_TRUSTED_ORIGINS   https://your-dashboard.vercel.app
 ```
 
@@ -186,7 +186,7 @@ Use Task Scheduler (Windows) or systemd (Linux) to start them on boot.
 | `DEBUG` | all | `False` in production |
 | `ALLOWED_HOSTS` | API | Deploy refuses to start if left as `*` |
 | `DATABASE_URL` | API, detection PC | Unset = SQLite (development only) |
-| `ALLOWED_CORS_ORIGINS` | API | Dashboard origin, or the browser blocks every call |
+| `CORS_ALLOWED_ORIGINS` | API | Dashboard origin, or the browser blocks every call |
 | `CSRF_TRUSTED_ORIGINS` | API | Needed for the Django admin |
 | `AWS_*` | API, detection PC | Must match on both, or evidence images break |
 | `VITE_API_URL` | dashboard | Build-time only |
@@ -201,7 +201,7 @@ they fail loudly instead.
 
 ## When something breaks
 
-**Dashboard loads, every request fails.** `ALLOWED_CORS_ORIGINS` does not
+**Dashboard loads, every request fails.** `CORS_ALLOWED_ORIGINS` does not
 include the dashboard's exact origin. It must match scheme and host with no
 trailing slash.
 
