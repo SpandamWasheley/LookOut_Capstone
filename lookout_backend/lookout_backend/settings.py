@@ -30,15 +30,15 @@ config = AutoConfig(search_path=BASE_DIR)
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-# Falls back to a dev-only key so `manage.py` still works out of the box if
-# .env is missing, but any real deployment must set SECRET_KEY in the env.
-SECRET_KEY = config(
-    'SECRET_KEY',
-    default='django-insecure-u_t@(tpkhtw&!b0)_&zlo58=k#8%(dr8835qq(0uv245^id=o0',
-)
+# NO DEFAULT, on purpose. A committed fallback key is a signing key anyone with
+# the repo can forge sessions and password-reset tokens with, and it works
+# silently - nothing about a running server tells you it is using it. Missing
+# SECRET_KEY now raises UndefinedValueError at import, naming the variable.
+# For local work, put one in lookout_backend/.env (see .env.example).
+SECRET_KEY = config('SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = config('DEBUG', default=True, cast=bool)
+DEBUG = config('DEBUG', default=False, cast=bool)
 
 # FAILS CLOSED. A missing or empty ALLOWED_HOSTS yields an EMPTY list, so Django
 # rejects every request, rather than the old behaviour of defaulting to ['*'] and
