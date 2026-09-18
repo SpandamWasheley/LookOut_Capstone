@@ -274,7 +274,7 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
             "waste_enabled", "waste_confidence", "waste_dwell",
             "waste_collection_start", "waste_collection_end",
             "parking_enabled", "parking_confidence", "parking_dwell",
-            "parking_move_tolerance",
+            "parking_move_tolerance", "obstruction_pct", "obstruction_minutes",
             "smoking_enabled", "smoking_confidence", "smoking_dwell",
             "thief_enabled", "thief_confidence", "thief_dwell",
             "drinking_enabled", "drinking_confidence", "drinking_dwell",

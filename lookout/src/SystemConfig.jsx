@@ -34,6 +34,8 @@ function fromApi(s) {
     parkingConf: s.parking_confidence,
     parkingDwell: s.parking_dwell,
     parkingMove: s.parking_move_tolerance,
+    obstructionPct: s.obstruction_pct,
+    obstructionMinutes: s.obstruction_minutes,
     smokingEnabled: s.smoking_enabled,
     smokingConf: s.smoking_confidence,
     smokingDwell: s.smoking_dwell,
@@ -79,6 +81,8 @@ function toApi(f) {
     parking_confidence: f.parkingConf,
     parking_dwell: f.parkingDwell,
     parking_move_tolerance: f.parkingMove,
+    obstruction_pct: f.obstructionPct,
+    obstruction_minutes: f.obstructionMinutes,
     smoking_enabled: f.smokingEnabled,
     smoking_confidence: f.smokingConf,
     smoking_dwell: f.smokingDwell,
@@ -276,6 +280,8 @@ export function SystemConfig() {
   const [parkingConf, setParkingConf] = useState(35);
   const [parkingDwell, setParkingDwell] = useState(60);
   const [parkingMove, setParkingMove] = useState(40);
+  const [obstructionPct, setObstructionPct] = useState(50);
+  const [obstructionMinutes, setObstructionMinutes] = useState(5);
   const [smokingEnabled, setSmokingEnabled] = useState(true);
   const [smokingConf, setSmokingConf] = useState(30);
   const [smokingDwell, setSmokingDwell] = useState(3);
@@ -319,6 +325,8 @@ export function SystemConfig() {
     setParkingConf(f.parkingConf);
     setParkingDwell(f.parkingDwell);
     setParkingMove(f.parkingMove);
+    setObstructionPct(f.obstructionPct);
+    setObstructionMinutes(f.obstructionMinutes);
     setSmokingEnabled(f.smokingEnabled);
     setSmokingConf(f.smokingConf);
     setSmokingDwell(f.smokingDwell);
@@ -363,6 +371,8 @@ export function SystemConfig() {
     parkingConf !== savedSnapshot.parkingConf ||
     parkingDwell !== savedSnapshot.parkingDwell ||
     parkingMove !== savedSnapshot.parkingMove ||
+    obstructionPct !== savedSnapshot.obstructionPct ||
+    obstructionMinutes !== savedSnapshot.obstructionMinutes ||
     smokingEnabled !== savedSnapshot.smokingEnabled ||
     smokingConf !== savedSnapshot.smokingConf ||
     smokingDwell !== savedSnapshot.smokingDwell ||
@@ -408,6 +418,7 @@ export function SystemConfig() {
         guardianCheck, unknownAlert, noiseEnabled, noiseSensitivity, noiseDur,
         wasteEnabled, wasteConf, wasteDwell, wasteCollectionStart, wasteCollectionEnd,
         parkingEnabled, parkingConf, parkingDwell, parkingMove,
+        obstructionPct, obstructionMinutes,
         smokingEnabled, smokingConf, smokingDwell,
         thiefEnabled, thiefConf, thiefDwell,
         drinkingEnabled, drinkingConf, drinkingDwell,
@@ -488,6 +499,23 @@ export function SystemConfig() {
         <div className="rounded-xl p-4 text-xs leading-relaxed"
           style={{ background: "rgba(239,68,68,0.06)", border: "1px solid rgba(239,68,68,0.15)", color: "var(--muted-foreground)" }}>
           Detects <strong style={{ color: "#ef4444" }}>car, motorcycle, bus, truck</strong> (tricycles register as motorcycle). A vehicle stationary past the dwell time raises an <strong style={{ color: "#ef4444" }}>Illegal Parking</strong> alert.
+        </div>
+        <div className="pt-2 space-y-6">
+          <div className="text-sm font-medium">Road-edge obstruction (Ordinance 601)</div>
+          <Slider
+            label="Obstruction threshold" value={obstructionPct} min={10} max={90} step={5} unit="%"
+            desc="Share of the vehicle's footprint that must sit past the drawn edge line to count as obstructing."
+            onChange={setObstructionPct}
+          />
+          <Slider
+            label="Obstruction dwell" value={obstructionMinutes} min={0.5} max={30} step={0.5} unit="min"
+            desc="How long that footprint must be held before it counts as an obstruction alert. Ordinance 601 sets this at 5 minutes."
+            onChange={setObstructionMinutes}
+          />
+          <div className="rounded-xl p-4 text-xs leading-relaxed"
+            style={{ background: "rgba(239,68,68,0.06)", border: "1px solid rgba(239,68,68,0.15)", color: "var(--muted-foreground)" }}>
+            This is the global default used by every camera with a road-edge line drawn on it. A camera can still override it individually from its edge editor — this only changes cameras left on the default.
+          </div>
         </div>
       </div>
     ),

@@ -109,8 +109,13 @@ class Camera(models.Model):
     edges = models.JSONField(default=dict, blank=True)
     edges_width = models.PositiveIntegerField(null=True, blank=True)
     edges_height = models.PositiveIntegerField(null=True, blank=True)
-    obstruction_pct = models.PositiveSmallIntegerField(default=50)
-    obstruction_minutes = models.FloatField(default=5.0)
+    # Per-camera override of SystemSettings.obstruction_pct/obstruction_minutes.
+    # Null means "use the global default from Settings" — most cameras should
+    # be left null so one ordinance-wide change in Settings reaches every
+    # camera at once; set these only for a site whose geometry or local rule
+    # genuinely needs a different threshold than the rest.
+    obstruction_pct = models.PositiveSmallIntegerField(null=True, blank=True)
+    obstruction_minutes = models.FloatField(null=True, blank=True)
 
     class Meta:
         ordering = ["code"]
@@ -399,6 +404,13 @@ class SystemSettings(models.Model):
     # Pixels a vehicle may drift and still count as "stationary" (resets the
     # dwell timer if exceeded, so a car merely driving through never alerts).
     parking_move_tolerance = models.PositiveSmallIntegerField(default=40)
+    # Global defaults for the road-edge OBSTRUCTION rule (Ordinance 601: half
+    # the vehicle past the line for 5 minutes) — the plain dwell fields above
+    # are a separate fallback rule for cameras with no edges drawn. Any Camera
+    # may override these via its own obstruction_pct/obstruction_minutes;
+    # null on the camera means "use these Settings values instead."
+    obstruction_pct = models.PositiveSmallIntegerField(default=50)
+    obstruction_minutes = models.FloatField(default=5.0)
 
     smoking_enabled = models.BooleanField(default=True)
     # Detection confidence as a 0-100 percent (watch_smoking divides by 100).

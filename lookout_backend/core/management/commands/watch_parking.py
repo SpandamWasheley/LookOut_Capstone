@@ -177,7 +177,8 @@ class Command(BaseCommand):
         self.far = not options["fast"]
         self.preprocess = options["preprocess"]
         self.sharpen = options["sharpen"]
-        self.obstruction_mode = self._load_edges(options)
+        cfg = SystemSettings.load()
+        self.obstruction_mode = self._load_edges(options, cfg)
         try:
             rows, cols = (int(v) for v in options["tiles"].lower().split("x"))
             self.tiles = (rows, cols)
@@ -187,7 +188,6 @@ class Command(BaseCommand):
             ))
             return
 
-        cfg = SystemSettings.load()
         if not cfg.parking_enabled:
             self.stdout.write(self.style.WARNING(
                 "Parking detection is disabled in Settings (parking_enabled=False). "
@@ -205,14 +205,15 @@ class Command(BaseCommand):
 
     # ---- obstruction mode --------------------------------------------------
 
-    def _load_edges(self, options):
+    def _load_edges(self, options, cfg):
         """Resolves the edge specs, their source resolution, and the pct/minutes
-        thresholds — CLI flags override the camera record, same pattern as
-        --confidence/--dwell. Returns True if this puts the command into
-        OBSTRUCTION mode. The actual ObstructionMonitors are built lazily by
-        _build_monitors() once a real frame size is known, since --edges (a
-        file) and the camera record (self.camera.edges) may have been drawn
-        against a different resolution than the live source turns out to be."""
+        thresholds — CLI flags override the camera record, which overrides the
+        SystemSettings global default, same pattern as --confidence/--dwell.
+        Returns True if this puts the command into OBSTRUCTION mode. The
+        actual ObstructionMonitors are built lazily by _build_monitors() once
+        a real frame size is known, since --edges (a file) and the camera
+        record (self.camera.edges) may have been drawn against a different
+        resolution than the live source turns out to be."""
         if options.get("edges"):
             try:
                 with open(options["edges"], encoding="utf-8") as fh:
@@ -238,12 +239,19 @@ class Command(BaseCommand):
         }
         self._edge_source_size = source_size
 
+        # CLI overrides win outright; otherwise the camera's own override
+        # (null meaning "no override") wins; otherwise the SystemSettings
+        # global default (Ordinance 601: 50%/5min) applies.
         pct = options["obstruction_pct"]
         if pct is None:
             pct = self.camera.obstruction_pct
+        if pct is None:
+            pct = cfg.obstruction_pct
         minutes = options["obstruction_minutes"]
         if minutes is None:
             minutes = self.camera.obstruction_minutes
+        if minutes is None:
+            minutes = cfg.obstruction_minutes
 
         enter = max(min(pct, 90), 10) / 100.0
         obs.ENTER_FRACTION = enter
