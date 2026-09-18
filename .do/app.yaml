@@ -88,7 +88,7 @@ jobs:
     instance_size_slug: basic-xxs
     instance_count: 1
     build_command: pip install -r requirements.txt
-    run_command: python manage.py migrate --noinput
+    run_command: python manage.py migrate --noinput && python manage.py bootstrap_admin
     envs:
       - key: DEBUG
         value: "False"
@@ -100,3 +100,11 @@ jobs:
       - key: DATABASE_URL
         scope: RUN_AND_BUILD_TIME
         value: "${lookout-db.DATABASE_URL}"
+      # First admin on an empty database - see render.yaml. Idempotent, and
+      # skips itself when unset, so clear these once the account exists.
+      - key: ADMIN_USERNAME
+        type: SECRET
+      - key: ADMIN_PASSWORD
+        type: SECRET
+      - key: ADMIN_EMAIL
+        type: SECRET

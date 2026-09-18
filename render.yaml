@@ -15,6 +15,7 @@ services:
       pip install -r requirements.txt
       python manage.py collectstatic --noinput
       python manage.py migrate
+      python manage.py bootstrap_admin
     startCommand: gunicorn lookout_backend.wsgi:application --workers 2 --timeout 120
     healthCheckPath: /api/health/
     envVars:
@@ -34,6 +35,16 @@ services:
         fromDatabase:
           name: lookout-db
           property: connectionString
+      # First admin on an empty database. `migrate` creates tables, not rows,
+      # and Render's free tier has no shell to run createsuperuser from. The
+      # command is idempotent and skips itself when these are unset, so clear
+      # them once the account exists and the password has been changed.
+      - key: ADMIN_USERNAME
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
       # Evidence media bucket - required so the on-site watchers and this API
       # read and write the SAME files. Leave unset only for a local trial.
       - key: AWS_STORAGE_BUCKET_NAME
