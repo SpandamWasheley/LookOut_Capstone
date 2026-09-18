@@ -239,28 +239,64 @@ class Command(BaseCommand):
         }
         self._edge_source_size = source_size
 
-        # CLI overrides win outright; otherwise the camera's own override
-        # (null meaning "no override") wins; otherwise the SystemSettings
-        # global default (Ordinance 601: 50%/5min) applies.
-        pct = options["obstruction_pct"]
+        # CLI overrides are fixed for the process's lifetime; the camera and
+        # Settings values underneath them are re-resolved on every call to
+        # _refresh_obstruction_threshold() (see _run_stream), so an edit made
+        # in the dashboard reaches an already-running detector without a
+        # restart, the same as the plain-dwell fields already do.
+        self._obstruction_pct_override = options["obstruction_pct"]
+        self._obstruction_minutes_override = options["obstruction_minutes"]
+        self._enter_fraction = None
+        self._obstruction_seconds = None
+        self.monitors = None  # built once the first real frame size is known
+        self._refresh_obstruction_threshold(cfg)
+
+        return bool(self._edge_specs)
+
+    def _refresh_obstruction_threshold(self, cfg):
+        """(Re-)resolves the effective pct/minutes — CLI override, else the
+        camera's own override (Camera.obstruction_pct/obstruction_minutes,
+        null meaning "no override"), else the SystemSettings global default
+        (Ordinance 601: 50%/5min) — and applies them to every place the
+        obstruction rule actually reads them: the hysteresis band in
+        core/vision/obstruction.py, this command's own _obstruction_seconds
+        (read by _build_monitors the first time a monitor is constructed),
+        and any ALREADY-BUILT ObstructionMonitor's obstruction_seconds. That
+        last part matters for a live edit: obstruction_seconds is read fresh
+        by VehicleState on every update() call (see ObstructionMonitor.update
+        in obstruction.py), so a vehicle already mid-dwell keeps counting
+        toward the new threshold instead of losing its progress or needing
+        the process restarted.
+        """
+        pct = self._obstruction_pct_override
         if pct is None:
             pct = self.camera.obstruction_pct
         if pct is None:
             pct = cfg.obstruction_pct
-        minutes = options["obstruction_minutes"]
+        minutes = self._obstruction_minutes_override
         if minutes is None:
             minutes = self.camera.obstruction_minutes
         if minutes is None:
             minutes = cfg.obstruction_minutes
 
         enter = max(min(pct, 90), 10) / 100.0
+        seconds = max(minutes, 0.1) * 60
+        changed = (self._enter_fraction != enter or self._obstruction_seconds != seconds)
+
         obs.ENTER_FRACTION = enter
         obs.EXIT_FRACTION = max(enter - 0.10, 0.05)
         self._enter_fraction = enter
-        self._obstruction_seconds = max(minutes, 0.1) * 60
+        self._obstruction_seconds = seconds
+        if self.monitors:
+            for _, monitor in self.monitors.values():
+                monitor.obstruction_seconds = seconds
 
-        self.monitors = None  # built once the first real frame size is known
-        return bool(self._edge_specs)
+        if changed and getattr(self, "_obstruction_threshold_announced", False):
+            self.stdout.write(self.style.SUCCESS(
+                f"Obstruction threshold updated live: {enter*100:.0f}% past "
+                f"the line held for {seconds/60:.1f} min."
+            ))
+        self._obstruction_threshold_announced = True
 
     def _build_monitors(self, frame_shape):
         """Builds one ObstructionMonitor per edge, scaling stored points from
@@ -593,6 +629,14 @@ class Command(BaseCommand):
                 if wall_now - cfg_loaded_at >= SETTINGS_REFRESH_SECONDS:
                     cfg = SystemSettings.load()
                     cfg_loaded_at = wall_now
+                    if self.obstruction_mode:
+                        # self.camera was fetched once in handle() and never
+                        # refreshed since — without this, a per-camera
+                        # override edited via the dashboard's edge editor
+                        # while this process is running would never be seen.
+                        self.camera.refresh_from_db(
+                            fields=["obstruction_pct", "obstruction_minutes"])
+                        self._refresh_obstruction_threshold(cfg)
 
                 if not cfg.parking_enabled:
                     time.sleep(0.5)
