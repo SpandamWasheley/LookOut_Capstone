@@ -190,7 +190,7 @@ export function RunDetectionPage() {
               style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
               <CheckCircle2 size={28} style={{ color: "#22c55e" }} />
               <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Detection started</div>
-              <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>
+              <div className="text-[14px]" style={{ color: "var(--muted-foreground)" }}>
                 {source === "camera"
                   ? "Running continuously against the live camera until you stop it from the running-jobs panel. Any alerts it produces will appear in the Violations tab."
                   : "Running in the background and may take a few minutes. Any alerts it produces will appear in the Violations tab as detection runs."}
@@ -205,7 +205,7 @@ export function RunDetectionPage() {
             <>
               {/* Step 1: detector */}
               <div className="rounded-xl p-4" style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
-                <div className="text-[11px] font-semibold uppercase tracking-wide mb-2"
+                <div className="text-[13px] font-semibold uppercase tracking-wide mb-2"
                   style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
                   1. Detector
                 </div>
@@ -225,7 +225,7 @@ export function RunDetectionPage() {
                         }}
                       >
                         <Icon size={14} style={{ color: isActive ? t.color : "var(--muted-foreground)" }} />
-                        <span className="text-[12px] font-medium" style={{ color: isActive ? t.color : "var(--foreground)" }}>
+                        <span className="text-[14px] font-medium" style={{ color: isActive ? t.color : "var(--foreground)" }}>
                           {t.label}
                         </span>
                       </button>
@@ -233,7 +233,7 @@ export function RunDetectionPage() {
                   })}
                 </div>
                 {staged && (
-                  <div className="text-[11px] mt-2" style={{ color: "var(--muted-foreground)" }}>
+                  <div className="text-[13px] mt-2" style={{ color: "var(--muted-foreground)" }}>
                     Locked in once a clip is staged below —{" "}
                     <button onClick={reset} className="underline">start over</button> to change it.
                   </div>
@@ -242,7 +242,7 @@ export function RunDetectionPage() {
 
               {/* Step 2: source */}
               <div className="rounded-xl p-4" style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
-                <div className="text-[11px] font-semibold uppercase tracking-wide mb-2"
+                <div className="text-[13px] font-semibold uppercase tracking-wide mb-2"
                   style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
                   2. Source
                 </div>
@@ -251,7 +251,7 @@ export function RunDetectionPage() {
                   <button
                     disabled={detectorLocked}
                     onClick={() => changeSource("file")}
-                    className="flex items-center gap-2 px-3 py-2 rounded-xl text-[12px] font-medium transition-all disabled:opacity-60"
+                    className="flex items-center gap-2 px-3 py-2 rounded-xl text-[14px] font-medium transition-all disabled:opacity-60"
                     style={{
                       background: source === "file" ? "rgba(245,158,11,0.12)" : "var(--secondary)",
                       border: `1px solid ${source === "file" ? "rgba(245,158,11,0.4)" : "var(--border)"}`,
@@ -263,7 +263,7 @@ export function RunDetectionPage() {
                   <button
                     disabled={detectorLocked}
                     onClick={() => changeSource("camera")}
-                    className="flex items-center gap-2 px-3 py-2 rounded-xl text-[12px] font-medium transition-all disabled:opacity-60"
+                    className="flex items-center gap-2 px-3 py-2 rounded-xl text-[14px] font-medium transition-all disabled:opacity-60"
                     style={{
                       background: source === "camera" ? "rgba(245,158,11,0.12)" : "var(--secondary)",
                       border: `1px solid ${source === "camera" ? "rgba(245,158,11,0.4)" : "var(--border)"}`,
@@ -299,16 +299,16 @@ export function RunDetectionPage() {
                       {file ? (
                         <>
                           <FileVideo size={22} style={{ color: "#f59e0b" }} />
-                          <div className="text-[12px] font-medium text-center" style={{ color: "var(--foreground)" }}>{file.name}</div>
-                          <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>{formatBytes(file.size)}</div>
+                          <div className="text-[14px] font-medium text-center" style={{ color: "var(--foreground)" }}>{file.name}</div>
+                          <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>{formatBytes(file.size)}</div>
                         </>
                       ) : (
                         <>
                           <Upload size={22} style={{ color: "var(--muted-foreground)" }} />
-                          <div className="text-[12px] text-center" style={{ color: "var(--muted-foreground)" }}>
+                          <div className="text-[14px] text-center" style={{ color: "var(--muted-foreground)" }}>
                             Drag a clip here, or click to browse
                           </div>
-                          <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>
+                          <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>
                             .mp4, .mkv, .avi — up to 1GB
                           </div>
                         </>
@@ -316,14 +316,14 @@ export function RunDetectionPage() {
                     </div>
 
                     {fileError && (
-                      <div className="flex items-start gap-2 text-[12px] px-3 py-2.5 rounded-xl mt-3"
+                      <div className="flex items-start gap-2 text-[14px] px-3 py-2.5 rounded-xl mt-3"
                         style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", color: "#ef4444" }}>
                         <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
                         <span>{fileError}</span>
                       </div>
                     )}
                     {stageError && (
-                      <div className="flex items-start gap-2 text-[12px] px-3 py-2.5 rounded-xl mt-3"
+                      <div className="flex items-start gap-2 text-[14px] px-3 py-2.5 rounded-xl mt-3"
                         style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", color: "#ef4444" }}>
                         <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
                         <span>{stageError}</span>
@@ -347,7 +347,7 @@ export function RunDetectionPage() {
                 )}
 
                 {source === "file" && staged && (
-                  <div className="flex items-center gap-2 text-[12px]" style={{ color: "var(--muted-foreground)" }}>
+                  <div className="flex items-center gap-2 text-[14px]" style={{ color: "var(--muted-foreground)" }}>
                     <FileVideo size={14} style={{ color: "#22c55e" }} />
                     <span style={{ color: "var(--foreground)" }}>{staged.sourceFilename}</span> staged and ready.
                   </div>
@@ -356,19 +356,19 @@ export function RunDetectionPage() {
                 {source === "camera" && (
                   <>
                     {camerasLoading && (
-                      <div className="flex items-center gap-2 text-[12px] py-3" style={{ color: "var(--muted-foreground)" }}>
+                      <div className="flex items-center gap-2 text-[14px] py-3" style={{ color: "var(--muted-foreground)" }}>
                         <Loader2 size={13} className="animate-spin" /> Loading cameras…
                       </div>
                     )}
                     {camerasError && (
-                      <div className="flex items-start gap-2 text-[12px] px-3 py-2.5 rounded-xl"
+                      <div className="flex items-start gap-2 text-[14px] px-3 py-2.5 rounded-xl"
                         style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", color: "#ef4444" }}>
                         <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
                         <span>{camerasError}</span>
                       </div>
                     )}
                     {!camerasLoading && !camerasError && cameras.length === 0 && (
-                      <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>
+                      <div className="text-[14px]" style={{ color: "var(--muted-foreground)" }}>
                         No camera has a stream URL configured yet. Set one from the Cameras page (Stream button) first.
                       </div>
                     )}
@@ -377,7 +377,7 @@ export function RunDetectionPage() {
                         value={cameraId}
                         onChange={(e) => setCameraId(e.target.value)}
                         disabled={starting}
-                        className="w-full px-3 py-2.5 rounded-xl text-[12px]"
+                        className="w-full px-3 py-2.5 rounded-xl text-[14px]"
                         style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
                       >
                         <option value="">Choose a camera…</option>
@@ -387,7 +387,7 @@ export function RunDetectionPage() {
                       </select>
                     )}
                     {needsEdges && cameraId && (
-                      <div className="flex items-start gap-2 text-[11px] px-3 py-2.5 rounded-xl mt-3"
+                      <div className="flex items-start gap-2 text-[13px] px-3 py-2.5 rounded-xl mt-3"
                         style={{ background: "rgba(59,130,246,0.08)", border: "1px solid rgba(59,130,246,0.2)", color: "#60a5fa" }}>
                         <Video size={13} className="flex-shrink-0 mt-0.5" />
                         <span>
@@ -404,7 +404,7 @@ export function RunDetectionPage() {
                   edges are drawn on the Cameras page instead, see above) */}
               {needsEdges && source === "file" && staged && (
                 <div className="rounded-xl p-4 space-y-3.5" style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
-                  <div className="text-[11px] font-semibold uppercase tracking-wide"
+                  <div className="text-[13px] font-semibold uppercase tracking-wide"
                     style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
                     3. Draw road-edge lines
                   </div>
@@ -423,7 +423,7 @@ export function RunDetectionPage() {
               {canStart && (
                 <div className="rounded-xl p-4 flex items-center justify-between gap-3"
                   style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
-                  <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>
+                  <div className="text-[14px]" style={{ color: "var(--muted-foreground)" }}>
                     Ready — {DETECTION_TYPES.find((t) => t.key === violationType)?.label} on{" "}
                     {source === "camera" ? `${selectedCamera?.name} (live)` : staged.sourceFilename}.
                   </div>
@@ -444,7 +444,7 @@ export function RunDetectionPage() {
               )}
 
               {startError && (
-                <div className="flex items-start gap-2 text-[12px] px-3 py-2.5 rounded-xl"
+                <div className="flex items-start gap-2 text-[14px] px-3 py-2.5 rounded-xl"
                   style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", color: "#ef4444" }}>
                   <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
                   <span>{startError}</span>

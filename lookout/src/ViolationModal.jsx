@@ -1,8 +1,9 @@
-import { useRef, useEffect, useState, useMemo } from "react";
+import { useRef, useEffect, useState, useMemo , Check, Minus} from "react";
 import {
   X, User, Shield, Play, Pause,
   SkipBack, Download, Radio, CheckCircle, AlertTriangle,
   MessageSquare, Phone, ChevronDown, ChevronRight, Home, Loader2, Search, Send, Info,
+  Clock,
 } from "lucide-react";
 import { violationDisplay } from "./constants/violationTypes";
 import { sendSms, getViolationTypes, getBarangays, createCitation, searchViolators } from "./api";
@@ -34,6 +35,22 @@ function formatFull(ts) {
     hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
   });
 }
+
+// Header stamp: when the violation happened, written the way someone would
+// say it out loud. A middot separates the date from the time -- the
+// comma-comma form ("Tue, Sep 15, 2026, 12:23 PM") runs the two together and
+// the eye has to find the boundary itself.
+function formatStamp(ts) {
+  const d = new Date(ts);
+  const date = d.toLocaleDateString("en-PH", {
+    weekday: "short", month: "short", day: "numeric", year: "numeric",
+  });
+  const time = d.toLocaleTimeString("en-PH", {
+    hour: "numeric", minute: "2-digit", hour12: true,
+  });
+  return { date, time };
+}
+
 
 function formatShort(ts) {
   return new Date(ts).toLocaleString("en-PH", {
@@ -86,7 +103,7 @@ export function RecordingPlayer({ alert }) {
       <div className="rounded-xl overflow-hidden" style={{ background: "#000", border: "1px solid var(--border)" }}>
         <div className="relative w-full" style={{ aspectRatio: 16 / 9 }}>
           <img src={alert.imageUrl} alt="Evidence" className="absolute inset-0 w-full h-full object-cover" />
-          <div className="absolute bottom-3 left-3 right-3 text-[11px] text-center py-1.5 rounded-lg"
+          <div className="absolute bottom-3 left-3 right-3 text-[13px] text-center py-1.5 rounded-lg"
             style={{ background: "rgba(0,0,0,0.6)", color: "var(--muted-foreground)" }}>
             No evidence clip available for this alert — still image only.
           </div>
@@ -116,15 +133,15 @@ export function RecordingPlayer({ alert }) {
         <div className="absolute top-0 left-0 right-0 px-3 py-2 flex items-center justify-between pointer-events-none"
           style={{ background: "linear-gradient(to bottom, rgba(0,0,0,0.72), transparent)" }}>
           <div className="flex items-center gap-2">
-            <span className="text-[10px] font-medium px-1.5 py-0.5 rounded"
+            <span className="text-[12px] font-medium px-1.5 py-0.5 rounded"
               style={{ background: "rgba(239,68,68,0.85)", color: "#fff", fontFamily: "'DM Mono', monospace" }}>
               ● {useRaw && hasRaw ? "RAW" : "ANNOTATED"}
             </span>
-            <span className="text-[10px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+            <span className="text-[12px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
               {alert.camera}
             </span>
           </div>
-          <span className="text-[10px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+          <span className="text-[12px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
             {formatFull(alert.timestamp)}
           </span>
         </div>
@@ -144,7 +161,7 @@ export function RecordingPlayer({ alert }) {
           <div className="flex items-center gap-1.5 mb-3">
             <button
               onClick={() => setUseRaw(true)}
-              className="flex-1 text-[11px] font-medium py-1.5 rounded-lg transition-all"
+              className="flex-1 text-[13px] font-medium py-1.5 rounded-lg transition-all"
               style={{
                 background: useRaw ? "var(--primary)" : "var(--secondary)",
                 color: useRaw ? "#0c0f16" : "var(--muted-foreground)",
@@ -153,7 +170,7 @@ export function RecordingPlayer({ alert }) {
             </button>
             <button
               onClick={() => setUseRaw(false)}
-              className="flex-1 text-[11px] font-medium py-1.5 rounded-lg transition-all"
+              className="flex-1 text-[13px] font-medium py-1.5 rounded-lg transition-all"
               style={{
                 background: !useRaw ? "var(--primary)" : "var(--secondary)",
                 color: !useRaw ? "#0c0f16" : "var(--muted-foreground)",
@@ -196,7 +213,7 @@ export function RecordingPlayer({ alert }) {
                 ? <Pause size={13} color="#0c0f16" fill="#0c0f16" />
                 : <Play  size={13} color="#0c0f16" fill="#0c0f16" style={{ marginLeft: 1 }} />}
             </button>
-            <span className="text-[11px] tabular-nums"
+            <span className="text-[13px] tabular-nums"
               style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
               {fmtSec(elapsed)} / {fmtSec(duration)}
             </span>
@@ -204,7 +221,7 @@ export function RecordingPlayer({ alert }) {
           <a
             href={src}
             download
-            className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-md"
+            className="flex items-center gap-1 text-[13px] px-2 py-1 rounded-md"
             style={{ color: "var(--muted-foreground)" }}
             onMouseEnter={(e) => { e.currentTarget.style.color = "var(--foreground)"; e.currentTarget.style.background = "var(--border)"; }}
             onMouseLeave={(e) => { e.currentTarget.style.color = "var(--muted-foreground)"; e.currentTarget.style.background = "transparent"; }}
@@ -223,15 +240,15 @@ function PhoneRow({ label, sublabel, phone, isSelected, onToggle, accent }) {
     <div className="flex items-center gap-2.5 px-3 py-2 rounded-lg"
       style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
       <div className="flex-1 min-w-0">
-        <div className="text-[12px] font-medium truncate" style={{ color: "var(--foreground)" }}>{label}</div>
+        <div className="text-[14px] font-medium truncate" style={{ color: "var(--foreground)" }}>{label}</div>
         {sublabel && (
-          <div className="text-[10px] capitalize" style={{ color: "var(--muted-foreground)" }}>{sublabel}</div>
+          <div className="text-[12px] capitalize" style={{ color: "var(--muted-foreground)" }}>{sublabel}</div>
         )}
       </div>
       {phone ? (
         <button
           onClick={onToggle}
-          className="flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1 rounded-lg transition-all flex-shrink-0"
+          className="flex items-center gap-1.5 text-[13px] font-medium px-2.5 py-1 rounded-lg transition-all flex-shrink-0"
           style={{
             background: isSelected ? "rgba(16,185,129,0.15)" : accent ? "rgba(245,158,11,0.1)" : "var(--secondary)",
             color: isSelected ? "#10b981" : accent ? "#f59e0b" : "var(--muted-foreground)",
@@ -242,7 +259,7 @@ function PhoneRow({ label, sublabel, phone, isSelected, onToggle, accent }) {
           {phone}
         </button>
       ) : (
-        <span className="text-[11px] italic flex-shrink-0" style={{ color: "var(--muted-foreground)" }}>
+        <span className="text-[13px] italic flex-shrink-0" style={{ color: "var(--muted-foreground)" }}>
           No number
         </span>
       )}
@@ -347,20 +364,20 @@ function BarangaySelect({ options, value, onChange, error }) {
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Search barangay…"
-                className="w-full pl-7 pr-2 py-1.5 rounded-lg text-[12px] outline-none"
+                className="w-full pl-7 pr-2 py-1.5 rounded-lg text-[14px] outline-none"
                 style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
               />
             </div>
           </div>
           <div className="max-h-48 overflow-y-auto py-1">
             {filtered.length === 0 ? (
-              <div className="px-3 py-3 text-[12px] text-center" style={{ color: "var(--muted-foreground)" }}>No matches</div>
+              <div className="px-3 py-3 text-[14px] text-center" style={{ color: "var(--muted-foreground)" }}>No matches</div>
             ) : filtered.map((o) => (
               <button
                 key={o.value}
                 type="button"
                 onClick={() => { onChange(o.value); setOpen(false); setSearch(""); }}
-                className="w-full text-left px-3 py-1.5 text-[12px] transition-colors"
+                className="w-full text-left px-3 py-1.5 text-[14px] transition-colors"
                 style={{ color: o.value === value ? "var(--primary)" : "var(--foreground)", background: o.value === value ? "rgba(11,84,113,0.08)" : "transparent" }}
               >
                 {o.label}
@@ -536,8 +553,8 @@ function CitationFormModal({ alert, vcfg, officers = [], currentOfficerId, onRes
               <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Confirm Resolution</div>
               <div className="flex items-center gap-1.5 mt-0.5">
                 <VIcon size={10} style={{ color: vcfg.color }} />
-                <span className="text-[11px] font-medium" style={{ color: vcfg.color }}>{vcfg.label}</span>
-                <span className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>· {alert.id}</span>
+                <span className="text-[13px] font-medium" style={{ color: vcfg.color }}>{vcfg.label}</span>
+                <span className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>· {alert.id}</span>
               </div>
             </div>
           </div>
@@ -552,13 +569,13 @@ function CitationFormModal({ alert, vcfg, officers = [], currentOfficerId, onRes
         {/* Form body */}
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4" style={{ minHeight: 0 }}>
           {loadError && (
-            <div className="flex items-center gap-2 text-[11px] px-3 py-2 rounded-lg"
+            <div className="flex items-center gap-2 text-[13px] px-3 py-2 rounded-lg"
               style={{ background: "rgba(239,68,68,0.08)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.2)" }}>
               <AlertTriangle size={12} /> {loadError}
             </div>
           )}
           {formError && (
-            <div className="flex items-center gap-2 text-[11px] px-3 py-2 rounded-lg"
+            <div className="flex items-center gap-2 text-[13px] px-3 py-2 rounded-lg"
               style={{ background: "rgba(239,68,68,0.08)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.2)" }}>
               <AlertTriangle size={12} /> {formError}
             </div>
@@ -579,7 +596,7 @@ function CitationFormModal({ alert, vcfg, officers = [], currentOfficerId, onRes
                   style={{ background: "var(--secondary)", border: `1px solid ${fieldError("first_name_entered") ? "#ef4444" : "var(--border)"}`, color: "var(--foreground)" }}
                 />
                 {fieldError("first_name_entered") && (
-                  <div className="text-[11px] mt-1" style={{ color: "#ef4444" }}>{fieldError("first_name_entered")}</div>
+                  <div className="text-[13px] mt-1" style={{ color: "#ef4444" }}>{fieldError("first_name_entered")}</div>
                 )}
               </div>
               <div>
@@ -600,7 +617,7 @@ function CitationFormModal({ alert, vcfg, officers = [], currentOfficerId, onRes
                   style={{ background: "var(--secondary)", border: `1px solid ${fieldError("last_name_entered") ? "#ef4444" : "var(--border)"}`, color: "var(--foreground)" }}
                 />
                 {fieldError("last_name_entered") && (
-                  <div className="text-[11px] mt-1" style={{ color: "#ef4444" }}>{fieldError("last_name_entered")}</div>
+                  <div className="text-[13px] mt-1" style={{ color: "#ef4444" }}>{fieldError("last_name_entered")}</div>
                 )}
               </div>
               <div className="relative">
@@ -618,19 +635,19 @@ function CitationFormModal({ alert, vcfg, officers = [], currentOfficerId, onRes
 
             {/* "Did you mean" suggestions from /api/violators/search */}
             {searchingViolators && (
-              <div className="flex items-center gap-1.5 mt-1.5 text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+              <div className="flex items-center gap-1.5 mt-1.5 text-[13px]" style={{ color: "var(--muted-foreground)" }}>
                 <Loader2 size={11} className="animate-spin" /> Checking existing violators…
               </div>
             )}
             {!searchingViolators && !selectedViolatorId && suggestions.length > 0 && (
               <div className="mt-1.5 rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
-                <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide"
+                <div className="px-2.5 py-1 text-[12px] font-semibold uppercase tracking-wide"
                   style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}>
                   Did you mean?
                 </div>
                 {suggestions.map((s) => (
                   <button key={s.id} type="button" onClick={() => pickSuggestion(s)}
-                    className="w-full flex items-center justify-between px-2.5 py-1.5 text-[12px] text-left transition-colors"
+                    className="w-full flex items-center justify-between px-2.5 py-1.5 text-[14px] text-left transition-colors"
                     style={{ color: "var(--foreground)", background: "var(--card)" }}>
                     <span>{s.full_name}</span>
                     <span style={{ color: "var(--muted-foreground)" }}>
@@ -641,14 +658,14 @@ function CitationFormModal({ alert, vcfg, officers = [], currentOfficerId, onRes
               </div>
             )}
             {selectedViolatorId && (
-              <div className="text-[11px] mt-1.5" style={{ color: "#10b981" }}>
+              <div className="text-[13px] mt-1.5" style={{ color: "#10b981" }}>
                 Linked to an existing violator record.
               </div>
             )}
 
             {isFaceMatch && !matchCleared && (
               <div className="flex items-center justify-between gap-2 mt-1.5">
-                <span className="text-[11px]" style={{ color: "#10b981" }}>
+                <span className="text-[13px]" style={{ color: "#10b981" }}>
                   Matched: {matchedName} (confidence {Math.round(matchConfidencePct)}%)
                 </span>
                 <button
@@ -658,7 +675,7 @@ function CitationFormModal({ alert, vcfg, officers = [], currentOfficerId, onRes
                     setFirstName(""); setMiddleName(""); setLastName(""); setSuffix("");
                     setSelectedViolatorId(null);
                   }}
-                  className="text-[11px] font-medium underline flex-shrink-0"
+                  className="text-[13px] font-medium underline flex-shrink-0"
                   style={{ color: "var(--muted-foreground)" }}>
                   clear
                 </button>
@@ -684,7 +701,7 @@ function CitationFormModal({ alert, vcfg, officers = [], currentOfficerId, onRes
               <ChevronDown size={13} className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: "var(--muted-foreground)" }} />
             </div>
             {fieldError("officer") && (
-              <div className="text-[11px] mt-1" style={{ color: "#ef4444" }}>{fieldError("officer")}</div>
+              <div className="text-[13px] mt-1" style={{ color: "#ef4444" }}>{fieldError("officer")}</div>
             )}
           </div>
 
@@ -708,7 +725,7 @@ function CitationFormModal({ alert, vcfg, officers = [], currentOfficerId, onRes
             </label>
             <BarangaySelect options={barangayOptions} value={violatorBarangay} onChange={setViolatorBarangay} error={fieldError("violator_barangay")} />
             {fieldError("violator_barangay") && (
-              <div className="text-[11px] mt-1" style={{ color: "#ef4444" }}>{fieldError("violator_barangay")}</div>
+              <div className="text-[13px] mt-1" style={{ color: "#ef4444" }}>{fieldError("violator_barangay")}</div>
             )}
           </div>
 
@@ -718,7 +735,7 @@ function CitationFormModal({ alert, vcfg, officers = [], currentOfficerId, onRes
               Violation(s) <span style={{ color: "#ef4444" }}>*</span>
             </label>
             {loadingOptions ? (
-              <div className="flex items-center gap-2 py-2 text-[12px]" style={{ color: "var(--muted-foreground)" }}>
+              <div className="flex items-center gap-2 py-2 text-[14px]" style={{ color: "var(--muted-foreground)" }}>
                 <Loader2 size={13} className="animate-spin" /> Loading violation types…
               </div>
             ) : (
@@ -733,14 +750,14 @@ function CitationFormModal({ alert, vcfg, officers = [], currentOfficerId, onRes
                         style={{ background: checked ? "#10b981" : "transparent", border: `1.5px solid ${checked ? "#10b981" : "var(--muted-foreground)"}` }}>
                         {checked && <CheckCircle size={10} color="#fff" strokeWidth={3} />}
                       </div>
-                      <span className="text-[12px] font-medium" style={{ color: "var(--foreground)" }}>{t.label}</span>
+                      <span className="text-[14px] font-medium" style={{ color: "var(--foreground)" }}>{t.label}</span>
                     </button>
                   );
                 })}
               </div>
             )}
             {fieldError("violations") && (
-              <div className="text-[11px] mt-1" style={{ color: "#ef4444" }}>{fieldError("violations")}</div>
+              <div className="text-[13px] mt-1" style={{ color: "#ef4444" }}>{fieldError("violations")}</div>
             )}
           </div>
 
@@ -914,7 +931,7 @@ function ContactGuardianModal({ alert, violationType, households: rawHouseholds,
           </div>
           <div>
             <div className="text-sm font-semibold mb-1" style={{ color: "var(--foreground)" }}>SMS Sent</div>
-            <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>
+            <div className="text-[14px]" style={{ color: "var(--muted-foreground)" }}>
               Message dispatched to {selected.size} recipient{selected.size !== 1 ? "s" : ""}.
             </div>
           </div>
@@ -944,7 +961,7 @@ function ContactGuardianModal({ alert, violationType, households: rawHouseholds,
             </div>
             <div>
               <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Contact Guardian</div>
-              <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+              <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>
                 {alert.id} · {alert.suspect ?? "Unknown subject"}
               </div>
             </div>
@@ -1007,24 +1024,24 @@ function ContactGuardianModal({ alert, violationType, households: rawHouseholds,
                       <Home size={13} style={{ color: isPotential ? "#f59e0b" : "var(--muted-foreground)", flexShrink: 0 }} />
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-[13px] font-semibold" style={{ color: "var(--foreground)" }}>
+                          <span className="text-[15px] font-semibold" style={{ color: "var(--foreground)" }}>
                             {hh.familyName} household
                           </span>
                           {isPotential && (
-                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full"
+                            <span className="text-[12px] font-bold px-2 py-0.5 rounded-full"
                               style={{ background: "rgba(245,158,11,0.15)", color: "#f59e0b" }}>
                               Potential guardian
                             </span>
                           )}
                           {selCount > 0 && (
-                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full"
+                            <span className="text-[12px] font-bold px-2 py-0.5 rounded-full"
                               style={{ background: "rgba(16,185,129,0.12)", color: "#10b981" }}>
                               {selCount} selected
                             </span>
                           )}
                         </div>
                         {hh.address && (
-                          <div className="text-[10px] mt-0.5 truncate" style={{ color: "var(--muted-foreground)" }}>
+                          <div className="text-[12px] mt-0.5 truncate" style={{ color: "var(--muted-foreground)" }}>
                             {hh.address}, Brgy. Tetuan
                           </div>
                         )}
@@ -1034,7 +1051,7 @@ function ContactGuardianModal({ alert, violationType, households: rawHouseholds,
                     {phones.length > 0 && (
                       <button
                         onClick={() => { if (!isOpen) toggleExpand(hh.id); toggleAllInHH(hh); }}
-                        className="flex-shrink-0 text-[10px] font-semibold px-2.5 py-1 rounded-lg transition-all"
+                        className="flex-shrink-0 text-[12px] font-semibold px-2.5 py-1 rounded-lg transition-all"
                         style={{
                           background: allSel ? "rgba(16,185,129,0.15)" : "rgba(245,158,11,0.1)",
                           color: allSel ? "#10b981" : "var(--primary)",
@@ -1070,7 +1087,7 @@ function ContactGuardianModal({ alert, violationType, households: rawHouseholds,
                           />
                         ))}
                         {hh.members.length === 0 && !hh.contact && (
-                          <div className="text-[11px] py-2 text-center" style={{ color: "var(--muted-foreground)" }}>
+                          <div className="text-[13px] py-2 text-center" style={{ color: "var(--muted-foreground)" }}>
                             No contact numbers on file
                           </div>
                         )}
@@ -1089,24 +1106,24 @@ function ContactGuardianModal({ alert, violationType, households: rawHouseholds,
           {/* Selected recipient chips */}
           {selected.size > 0 && (
             <div className="flex flex-wrap gap-1.5 items-center">
-              <span className="text-[11px] font-semibold" style={{ color: "var(--muted-foreground)" }}>To:</span>
+              <span className="text-[13px] font-semibold" style={{ color: "var(--muted-foreground)" }}>To:</span>
               {[...selected].map((p) => (
                 <span key={p}
-                  className="flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full"
+                  className="flex items-center gap-1 text-[13px] font-medium px-2 py-0.5 rounded-full"
                   style={{ background: "rgba(16,185,129,0.12)", color: "#10b981", border: "1px solid rgba(16,185,129,0.25)" }}>
                   <Phone size={9} /> {p}
                   <button onClick={() => togglePhone(p)} className="ml-0.5 opacity-60 hover:opacity-100">×</button>
                 </span>
               ))}
               <button onClick={() => setSelected(new Set())}
-                className="text-[10px] ml-1 underline"
+                className="text-[12px] ml-1 underline"
                 style={{ color: "var(--muted-foreground)" }}>
                 Clear all
               </button>
             </div>
           )}
           {selected.size === 0 && (
-            <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+            <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>
               Click a phone number above to add recipients.
             </div>
           )}
@@ -1116,7 +1133,7 @@ function ContactGuardianModal({ alert, violationType, households: rawHouseholds,
             value={message}
             onChange={(e) => setMessage(e.target.value)}
             placeholder="Type your message here…"
-            className="w-full px-3 py-2.5 rounded-xl text-[12px] resize-none outline-none"
+            className="w-full px-3 py-2.5 rounded-xl text-[14px] resize-none outline-none"
             style={{
               background: "var(--secondary)",
               border: "1px solid var(--border)",
@@ -1126,7 +1143,7 @@ function ContactGuardianModal({ alert, violationType, households: rawHouseholds,
           />
 
           <div className="flex items-center justify-between gap-3">
-            <span className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+            <span className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>
               {message.length} chars · {selected.size} recipient{selected.size !== 1 ? "s" : ""}
             </span>
             <button
@@ -1205,7 +1222,7 @@ function SetCandidateModal({ alert, households: rawHH, residents: rawRes, onSave
             </div>
             <div>
               <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Select Match</div>
-              <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>Select one or more residents involved</div>
+              <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>Select one or more residents involved</div>
             </div>
           </div>
           {!saving && (
@@ -1228,12 +1245,12 @@ function SetCandidateModal({ alert, households: rawHH, residents: rawRes, onSave
 
         {/* Count */}
         <div className="px-5 pb-1 flex items-center justify-between flex-shrink-0">
-          <span className="text-[10px] font-semibold uppercase tracking-wide"
+          <span className="text-[12px] font-semibold uppercase tracking-wide"
             style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
             Residents · {sorted.length}
           </span>
           {checkedIds.size > 0 && (
-            <span className="text-[10px] font-semibold" style={{ color: "#3b82f6" }}>{checkedIds.size} selected</span>
+            <span className="text-[12px] font-semibold" style={{ color: "#3b82f6" }}>{checkedIds.size} selected</span>
           )}
         </div>
 
@@ -1265,11 +1282,11 @@ function SetCandidateModal({ alert, households: rawHH, residents: rawRes, onSave
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="text-[12px] font-medium" style={{ color: "var(--foreground)" }}>{c.name}</span>
-                    {c.isMinor && <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: "rgba(224,151,42,0.15)", color: "#e0972a" }}>Minor</span>}
-                    {isPossible && <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: "rgba(59,130,246,0.15)", color: "#3b82f6" }}>AI match</span>}
+                    <span className="text-[14px] font-medium" style={{ color: "var(--foreground)" }}>{c.name}</span>
+                    {c.isMinor && <span className="text-[11px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: "rgba(224,151,42,0.15)", color: "#e0972a" }}>Minor</span>}
+                    {isPossible && <span className="text-[11px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: "rgba(59,130,246,0.15)", color: "#3b82f6" }}>AI match</span>}
                   </div>
-                  <div className="flex items-center gap-1.5 mt-0.5 text-[10px]" style={{ color: "var(--muted-foreground)" }}>
+                  <div className="flex items-center gap-1.5 mt-0.5 text-[12px]" style={{ color: "var(--muted-foreground)" }}>
                     <span style={{ fontFamily: "'DM Mono', monospace" }}>{c.barangayId}</span>
                     {c.age != null && <><span>·</span><span>Age {c.age}</span></>}
                     {c.household && <><span>·</span><span className="truncate">{c.household}</span></>}
@@ -1283,7 +1300,7 @@ function SetCandidateModal({ alert, households: rawHH, residents: rawRes, onSave
         {/* Footer */}
         <div className="px-5 py-4 flex items-center justify-between gap-3 flex-shrink-0"
           style={{ borderTop: "1px solid var(--border)" }}>
-          <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+          <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>
             {checkedIds.size === 0 ? "Select at least one resident to continue" : `${checkedIds.size} candidate${checkedIds.size !== 1 ? "s" : ""} will be set`}
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
@@ -1324,7 +1341,7 @@ function SetCandidateModal({ alert, households: rawHH, residents: rawRes, onSave
               </div>
               <div>
                 <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Set this candidate match?</div>
-                <div className="text-[12px] mt-1" style={{ color: "var(--muted-foreground)" }}>
+                <div className="text-[14px] mt-1" style={{ color: "var(--muted-foreground)" }}>
                   {checkedIds.size} resident{checkedIds.size !== 1 ? "s" : ""} will be linked to this violation.
                 </div>
               </div>
@@ -1353,26 +1370,57 @@ function SetCandidateModal({ alert, households: rawHH, residents: rawRes, onSave
 // What was detected, Detected object, Assigned officers) — an 11px muted
 // label above a 13px value, on a quiet surface so these read as reference
 // details rather than competing with the video or footer actions.
-export function QuietCard({ label, value, mono, valueColor, tooltip }) {
+export function QuietCard({ label, value, mono, valueColor, tooltip,
+                           tooltipAlign = "left", tooltipSpan = "auto" }) {
+  // A fixed-width tooltip overflows a narrow card. These sit in the 2fr side of
+  // a 3fr/2fr split and then again in a 2-column grid -- roughly 20% of the
+  // modal, about 120px -- so a 208px tooltip hangs ~90px outside the card and
+  // the panel's overflow-y-auto clips it.
+  //
+  // `tooltipSpan="row"` sizes it to the two-card row instead: 200% of this card
+  // plus the gap-2 between them. The percentage is why the tooltip has to be
+  // positioned against the CARD rather than against the little icon wrapper it
+  // used to live in -- 200% of a 10px icon is 20px, not a row.
+  const widthClass = tooltipSpan === "row"
+    ? "w-[calc(200%+0.5rem)]"
+    : "w-52 max-w-[min(13rem,60vw)]";
+
+  // Where the tooltip hangs from. Edge-anchoring (left-0 / right-0) put the
+  // box against one card's edge, which on a ~120px card meant it stuck out and
+  // the panel's overflow clipped it.
+  //
+  // For a row-width tooltip, centre it on the ROW instead. Each card's inner
+  // edge plus half the gap IS the row's midpoint, so hanging the box there and
+  // pulling it back by half its own width lands it exactly over the pair --
+  // symmetrical, and with nothing protruding on either side to be cut.
+  const positionClass = tooltipSpan === "row"
+    ? (tooltipAlign === "right"
+        ? "right-[calc(100%+0.25rem)] translate-x-1/2"
+        : "left-[calc(100%+0.25rem)] -translate-x-1/2")
+    : (tooltipAlign === "right" ? "right-0" : "left-0");
   return (
-    <div className="rounded-lg px-3 py-2.5 min-w-0"
+    // `relative group` on the card, not the icon: the card is the positioning
+    // context the tooltip's width and edge-anchoring are measured against, and
+    // hovering anywhere on the card is a larger, easier target than a 10px
+    // glyph.
+    <div className="rounded-lg px-3 py-2.5 min-w-0 relative group"
       style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
       <div className="flex items-center gap-1">
-        <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>{label}</div>
+        <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>{label}</div>
         {tooltip && (
-          <div className="relative group flex items-center">
-            <Info size={10} style={{ color: "var(--muted-foreground)", cursor: "pointer" }} />
-            <div className="absolute bottom-full left-0 mb-2 w-52 rounded-xl px-3 py-2.5 text-[11px] leading-relaxed pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity z-50 shadow-xl"
-              style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--muted-foreground)" }}>
-              {tooltip}
-            </div>
-          </div>
+          <Info size={10} style={{ color: "var(--muted-foreground)", cursor: "pointer" }} />
         )}
       </div>
-      <div className={`text-[13px] font-medium mt-0.5 ${mono ? "truncate" : "break-words"}`}
+      <div className={`text-[15px] font-medium mt-0.5 ${mono ? "truncate" : "break-words"}`}
         style={{ color: valueColor || "var(--foreground)", fontFamily: mono ? "'DM Mono', monospace" : undefined }}>
         {value}
       </div>
+      {tooltip && (
+        <div className={`absolute bottom-full mb-2 ${widthClass} rounded-xl px-3 py-2.5 text-[13px] leading-relaxed pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity z-50 shadow-xl ${positionClass}`}
+          style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--muted-foreground)" }}>
+          {tooltip}
+        </div>
+      )}
     </div>
   );
 }
@@ -1381,7 +1429,15 @@ export function QuietCard({ label, value, mono, valueColor, tooltip }) {
 export function ViolationModal({
   alert, assignedOfficerNames, households, residents, officers = [], currentOfficerId,
   onDismiss, onDispatch, onResolved, onClose, onUpdateSuspect, verifierName,
+  userRole,
 }) {
+  // Resolving closes a violation and is what a citation is filed against, so
+  // it belongs to whoever actually attended the scene. A dispatcher assigns
+  // officers and dismisses false alarms; they do not attend, so they are not
+  // in a position to say an incident was dealt with.
+  //
+  // "both" (Officer & Dispatcher) keeps it -- that role IS an officer.
+  const canResolve = userRole !== "dispatcher";
   // Icon + color identity from violationTypes.js (same source the rest of
   // the app's chips use). It's deliberately scoped to smoking/drinking/
   // parking/theft, so curfew/waste/noise fall through to
@@ -1409,13 +1465,13 @@ export function ViolationModal({
   const officersCard = (
     <div className="rounded-lg px-3 py-2.5 min-w-0"
       style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-      <div className="text-[11px] mb-1" style={{ color: "var(--muted-foreground)" }}>
+      <div className="text-[13px] mb-1" style={{ color: "var(--muted-foreground)" }}>
         Assigned officers {assignedOfficerNames.length > 0 && `(${assignedOfficerNames.length})`}
       </div>
       {assignedOfficerNames.length === 0 ? (
-        <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>None assigned</div>
+        <div className="text-[15px]" style={{ color: "var(--muted-foreground)" }}>None assigned</div>
       ) : (
-        <div className="flex items-center gap-1.5 text-[13px]">
+        <div className="flex items-center gap-1.5 text-[15px]">
           <Shield size={10} style={{ color: "#10b981", flexShrink: 0 }} />
           <span className="truncate" style={{ color: "var(--foreground)" }}>
             {assignedOfficerNames[0].split(" ")[0]}
@@ -1423,7 +1479,7 @@ export function ViolationModal({
           {assignedOfficerNames.length > 1 && (
             <button
               onClick={() => setShowAllOfficers(true)}
-              className="text-[11px] font-medium flex-shrink-0"
+              className="text-[13px] font-medium flex-shrink-0"
               style={{ color: "#3b82f6" }}>
               …more
             </button>
@@ -1461,11 +1517,11 @@ export function ViolationModal({
               {assignedOfficerNames.map((name) => (
                 <div key={name} className="flex items-center gap-2.5 px-3 py-2 rounded-lg"
                   style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-                  <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0"
+                  <div className="w-6 h-6 rounded-full flex items-center justify-center text-[12px] font-bold flex-shrink-0"
                     style={{ background: "rgba(16,185,129,0.15)", color: "#10b981" }}>
                     {name[0]}
                   </div>
-                  <span className="text-[12px] font-medium" style={{ color: "var(--foreground)" }}>{name}</span>
+                  <span className="text-[14px] font-medium" style={{ color: "var(--foreground)" }}>{name}</span>
                 </div>
               ))}
             </div>
@@ -1494,15 +1550,23 @@ export function ViolationModal({
               <VIcon size={22} style={{ color: vcfg.color }} />
               <div>
                 <div className="flex items-center gap-2">
-                  <span className="text-[15px] font-semibold" style={{ color: "var(--foreground)" }}>{vcfg.label}</span>
-                  <span className="text-[11px] font-medium px-2 py-0.5 rounded-full"
+                  <span className="text-[17px] font-semibold" style={{ color: "var(--foreground)" }}>{vcfg.label}</span>
+                  <span className="text-[13px] font-medium px-2 py-0.5 rounded-full"
                     style={{ background: scfg.bg, color: scfg.color }}>
                     {scfg.label}
                   </span>
                 </div>
-                <div className="mt-0.5 text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+                <div className="mt-1.5 flex items-center gap-2">
+                  <Clock size={17} style={{ color: "var(--muted-foreground)", flexShrink: 0 }} />
+                  <span className="text-[20px] leading-tight" style={{ color: "var(--foreground)" }}>
+                    <span style={{ fontWeight: 500 }}>{formatStamp(alert.timestamp).date}</span>
+                    <span style={{ color: "var(--muted-foreground)", margin: "0 7px" }}>·</span>
+                    <span style={{ fontWeight: 700 }}>{formatStamp(alert.timestamp).time}</span>
+                  </span>
+                </div>
+                <div className="mt-1 text-[13px]" style={{ color: "var(--muted-foreground)" }}>
                   <span style={{ fontFamily: "'DM Mono', monospace" }}>{alert.id}</span>
-                  {" · "}{alert.cameraZone}{" · "}{formatFull(alert.timestamp)}
+                  {" · "}{alert.cameraZone}
                 </div>
               </div>
             </div>
@@ -1533,31 +1597,31 @@ export function ViolationModal({
                         <div className="rounded-lg overflow-hidden flex-1 flex flex-col"
                           style={{ border: "1px solid var(--border)", borderLeft: `3px solid ${accentColor}`, background: "var(--secondary)" }}>
                           {/* Label */}
-                          <div className="px-3 pt-2.5 pb-1 text-[10px]" style={{ color: "var(--muted-foreground)" }}>
+                          <div className="px-3 pt-2.5 pb-1 text-[12px]" style={{ color: "var(--muted-foreground)" }}>
                             Noise violation — no facial recognition, loudness only
                           </div>
                           {/* Source + Duration */}
                           <div className="flex px-3 pb-2.5" style={{ borderBottom: "1px solid var(--border)" }}>
                             <div className="flex-1">
-                              <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Source</div>
-                              <div className="text-[12px] font-bold mt-0.5" style={{ color: "var(--foreground)", fontFamily: "'DM Mono', monospace" }}>
+                              <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>Source</div>
+                              <div className="text-[14px] font-bold mt-0.5" style={{ color: "var(--foreground)", fontFamily: "'DM Mono', monospace" }}>
                                 {alert.camera} · mic
                               </div>
                             </div>
                             <div style={{ width: 1, background: "var(--border)", margin: "0 12px" }} />
                             <div className="flex-1">
-                              <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Duration above threshold</div>
-                              <div className="text-[12px] font-bold mt-0.5" style={{ color: accentColor }}>— s</div>
+                              <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>Duration above threshold</div>
+                              <div className="text-[14px] font-bold mt-0.5" style={{ color: accentColor }}>— s</div>
                             </div>
                           </div>
                           {/* Loudness section */}
                           <div className="px-3 py-2.5 flex-1 flex flex-col justify-center">
                             <div className="flex items-center justify-between mb-2">
                               <div className="flex items-center gap-1">
-                                <span className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Relative loudness</span>
+                                <span className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>Relative loudness</span>
                                 <div className="relative group flex items-center">
                                   <Info size={10} style={{ color: "var(--muted-foreground)", cursor: "pointer" }} />
-                                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 rounded-xl px-3 py-2 text-[11px] leading-relaxed pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity z-50 shadow-xl"
+                                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 rounded-xl px-3 py-2 text-[13px] leading-relaxed pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity z-50 shadow-xl"
                                     style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--muted-foreground)" }}>
                                     How loud the detected sound is relative to the noise threshold. Values above 0 dBFS indicate clipping.
                                   </div>
@@ -1572,8 +1636,8 @@ export function ViolationModal({
                                 style={{ left: "75%", background: "var(--foreground)" }} />
                             </div>
                             <div className="flex items-center justify-between mt-1 relative">
-                              <span className="absolute text-[9px] -translate-x-1/2 whitespace-nowrap" style={{ left: "75%", color: "var(--muted-foreground)" }}>threshold</span>
-                              <span className="ml-auto text-[10px] font-semibold" style={{ color: accentColor }}>{dBFS} dBFS</span>
+                              <span className="absolute text-[11px] -translate-x-1/2 whitespace-nowrap" style={{ left: "75%", color: "var(--muted-foreground)" }}>threshold</span>
+                              <span className="ml-auto text-[12px] font-semibold" style={{ color: accentColor }}>{dBFS} dBFS</span>
                             </div>
                           </div>
                         </div>
@@ -1599,16 +1663,16 @@ export function ViolationModal({
                           <div className="rounded-lg flex items-stretch flex-shrink-0"
                             style={{ border: "1px solid var(--border)", background: "var(--secondary)" }}>
                             <div className="flex-1 px-3 py-2.5">
-                              <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Camera</div>
-                              <div className="text-[12px] font-bold mt-1" style={{ color: "var(--foreground)", fontFamily: "'DM Mono', monospace" }}>{alert.camera}</div>
+                              <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>Camera</div>
+                              <div className="text-[14px] font-bold mt-1" style={{ color: "var(--foreground)", fontFamily: "'DM Mono', monospace" }}>{alert.camera}</div>
                             </div>
                             <div style={{ width: 1, background: "var(--border)" }} />
                             <div className="flex-1 px-3 py-2.5">
                               <div className="flex items-center gap-1">
-                                <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Confidence</div>
+                                <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>Confidence</div>
                                 <div className="relative group flex items-center">
                                   <Info size={10} style={{ color: "var(--muted-foreground)", cursor: "pointer" }} />
-                                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-52 rounded-xl px-3 py-2.5 text-[11px] leading-relaxed pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity z-50 shadow-xl"
+                                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-52 rounded-xl px-3 py-2.5 text-[13px] leading-relaxed pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity z-50 shadow-xl"
                                     style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--muted-foreground)" }}>
                                     <div className="font-semibold mb-1" style={{ color: "var(--foreground)" }}>AI Confidence Score</div>
                                     How certain the YOLOv8 model is that a violation was detected. A higher score means the AI is more confident in its detection.
@@ -1617,7 +1681,7 @@ export function ViolationModal({
                                   </div>
                                 </div>
                               </div>
-                              <div className="text-[12px] font-bold mt-1" style={{ color: vcfg.color, fontFamily: "'DM Mono', monospace" }}>
+                              <div className="text-[14px] font-bold mt-1" style={{ color: vcfg.color, fontFamily: "'DM Mono', monospace" }}>
                                 {alert.confidence ? `${(alert.confidence * 100).toFixed(0)}%` : "—"}
                               </div>
                             </div>
@@ -1630,11 +1694,11 @@ export function ViolationModal({
                               /* State 1 — no candidate */
                               <div className="flex items-center justify-between">
                                 <div>
-                                  <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Candidate match</div>
-                                  <div className="text-[12px] font-semibold mt-0.5" style={{ color: "var(--foreground)" }}>No match found</div>
+                                  <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>Candidate match</div>
+                                  <div className="text-[14px] font-semibold mt-0.5" style={{ color: "var(--foreground)" }}>No match found</div>
                                 </div>
                                 <button onClick={() => setShowSetCandidate(true)}
-                                  className="flex items-center gap-1 text-[11px] font-semibold px-3 py-1.5 rounded-lg"
+                                  className="flex items-center gap-1 text-[13px] font-semibold px-3 py-1.5 rounded-lg"
                                   style={{ background: "var(--muted)", border: "1px solid var(--border)", color: "var(--foreground)" }}>
                                   <User size={10} /> Select
                                 </button>
@@ -1643,15 +1707,15 @@ export function ViolationModal({
                               /* State 3 — confirmed */
                               <div className="flex flex-col gap-2 flex-1">
                                 <div className="flex items-center gap-2 flex-shrink-0">
-                                  <div className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold flex-shrink-0"
+                                  <div className="w-7 h-7 rounded-full flex items-center justify-center text-[13px] font-bold flex-shrink-0"
                                     style={{ background: "rgba(16,185,129,0.18)", color: "#10b981" }}>{initials}</div>
                                   <div className="flex-1 min-w-0">
-                                    <div className="text-[12px] font-semibold truncate" style={{ color: "var(--foreground)" }}>{candidateName}</div>
-                                    <div className="text-[10px] truncate" style={{ color: "var(--muted-foreground)" }}>
+                                    <div className="text-[14px] font-semibold truncate" style={{ color: "var(--foreground)" }}>{candidateName}</div>
+                                    <div className="text-[12px] truncate" style={{ color: "var(--muted-foreground)" }}>
                                       {matchedCandidate ? `Resident ID · ${matchedCandidate.barangayId}` : "Confirmed match"}
                                     </div>
                                   </div>
-                                  <span className="flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0"
+                                  <span className="flex items-center gap-1 text-[12px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0"
                                     style={{ background: "rgba(16,185,129,0.15)", color: "#10b981" }}>
                                     <CheckCircle size={9} /> Confirmed
                                   </span>
@@ -1663,14 +1727,14 @@ export function ViolationModal({
                                     <CheckCircle size={11} color="#fff" strokeWidth={3} />
                                   </div>
                                   <div className="flex-1 min-w-0">
-                                    <div className="text-[11px] font-semibold" style={{ color: "var(--foreground)" }}>Match confirmed</div>
-                                    <div className="text-[10px] truncate" style={{ color: "var(--muted-foreground)" }}>
+                                    <div className="text-[13px] font-semibold" style={{ color: "var(--foreground)" }}>Match confirmed</div>
+                                    <div className="text-[12px] truncate" style={{ color: "var(--muted-foreground)" }}>
                                       by {verifierName || "officer"}{confirmedAt ? ` · ${formatConfirmedAt(confirmedAt)}` : ""}
                                     </div>
                                   </div>
                                   <button
                                     onClick={() => setPendingAction("candidateUndo")}
-                                    className="text-[10px] font-semibold px-2.5 py-1 rounded-lg flex-shrink-0"
+                                    className="text-[12px] font-semibold px-2.5 py-1 rounded-lg flex-shrink-0"
                                     style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--foreground)" }}>
                                     Undo
                                   </button>
@@ -1680,27 +1744,27 @@ export function ViolationModal({
                               /* State 2 — pending verification */
                               <div className="flex flex-col gap-2">
                                 <div className="flex items-center gap-2">
-                                  <div className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold flex-shrink-0"
+                                  <div className="w-7 h-7 rounded-full flex items-center justify-center text-[13px] font-bold flex-shrink-0"
                                     style={{ background: "rgba(245,158,11,0.18)", color: "#f59e0b" }}>{initials}</div>
                                   <div className="flex-1 min-w-0">
-                                    <div className="text-[12px] font-semibold truncate" style={{ color: "var(--foreground)" }}>{candidateName}</div>
-                                    <div className="text-[10px] truncate" style={{ color: "var(--muted-foreground)" }}>
+                                    <div className="text-[14px] font-semibold truncate" style={{ color: "var(--foreground)" }}>{candidateName}</div>
+                                    <div className="text-[12px] truncate" style={{ color: "var(--muted-foreground)" }}>
                                       {matchedCandidate ? `Resident ID · ${matchedCandidate.barangayId}` : "Potential match"}
                                     </div>
                                   </div>
-                                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0"
+                                  <span className="text-[12px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0"
                                     style={{ background: "rgba(245,158,11,0.15)", color: "#f59e0b" }}>Pending verification</span>
                                 </div>
                                 <div className="flex gap-2">
                                   <button
                                     onClick={() => { setCandidateConfirmed(false); setConfirmedAt(null); setShowSetCandidate(true); }}
-                                    className="flex-1 text-[11px] font-semibold py-1.5 rounded-lg"
+                                    className="flex-1 text-[13px] font-semibold py-1.5 rounded-lg"
                                     style={{ background: "var(--muted)", border: "1px solid var(--border)", color: "var(--foreground)" }}>
                                     Not a match
                                   </button>
                                   <button
                                     onClick={() => setPendingAction("candidateConfirm")}
-                                    className="flex-1 flex items-center justify-center gap-1 text-[11px] font-semibold py-1.5 rounded-lg"
+                                    className="flex-1 flex items-center justify-center gap-1 text-[13px] font-semibold py-1.5 rounded-lg"
                                     style={{ background: "#f59e0b", color: "#fff" }}>
                                     <CheckCircle size={10} /> Confirm
                                   </button>
@@ -1712,23 +1776,72 @@ export function ViolationModal({
                       );
                     })()
                   ) : (
-                    /* Camera · Confidence — stacked one-per-row: monospace
-                       camera codes (e.g. CAM-DRINKING-TEST) truncate a value
-                       badly at half the column width two-up, so this pair
-                       gets the full row each rather than risk it. */
+                    /* Camera on its own row — monospace camera codes (e.g.
+                       CAM-DRINKING-TEST) truncate badly at half width — then
+                       the two confidences side by side.
+
+                       They are SEPARATE cards on purpose. One number used to
+                       carry both meanings, and they answer different questions:
+                       "how sure is the model that this is a bottle?" is not
+                       "how likely is it that this is a drinking violation?".
+                       A crisp bottle detection on a man walking home is high on
+                       the first and low on the second, and showing a single
+                       figure hid exactly that gap. */
                     <>
                       <QuietCard label="Camera" value={alert.camera} mono />
+                      {/* v3 2: the level and the evidence, not the number.
+                          "A score of 68 versus 73 means nothing to a tanod and
+                          reads like a percentage, which it is not." The score
+                          is still stored; it is simply not what an officer is
+                          asked to act on. */}
                       <QuietCard
-                        label="Confidence"
-                        value={`${(alert.confidence * 100).toFixed(0)}%`}
+                        label="Assessment"
+                        value={alert.levelLabel || "Possible"}
                         valueColor={vcfg.color}
                         tooltip={
                           <>
-                            <div className="font-semibold mb-1" style={{ color: "var(--foreground)" }}>AI Confidence Score</div>
-                            How certain the YOLOv8 model is that a violation was detected. A higher score means the AI is more confident in its detection.
+                            <div className="font-semibold mb-1" style={{ color: "var(--foreground)" }}>How this is assessed</div>
+                            Each piece of evidence below adds points, and the total decides the
+                            level. The system proposes; you confirm.
+                            <div className="mt-1.5" style={{ opacity: 0.85 }}>
+                              Possible - listed and notified.<br />
+                              Likely - full alert with video evidence.
+                            </div>
                           </>
                         }
                       />
+                      {alert.checklist && (
+                        <div className="rounded-lg px-3 py-2.5 min-w-0"
+                          style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
+                          <div className="text-[13px] mb-1.5" style={{ color: "var(--muted-foreground)" }}>
+                            Evidence found
+                          </div>
+                          {alert.checklist.found?.map((line) => (
+                            <div key={line} className="flex items-start gap-1.5 text-[14px] leading-snug mt-0.5"
+                              style={{ color: "var(--foreground)" }}>
+                              <Check size={13} className="flex-shrink-0 mt-0.5" style={{ color: vcfg.color }} />
+                              <span className="break-words">{line}</span>
+                            </div>
+                          ))}
+                          {alert.checklist.reduced_by?.length > 0 && (
+                            /* Shown because it explains why an alert the
+                               indicators would have raised was held back --
+                               the single most useful line when it fires. */
+                            <div className="mt-2 pt-2" style={{ borderTop: "1px solid var(--border)" }}>
+                              <div className="text-[13px] mb-1" style={{ color: "var(--muted-foreground)" }}>
+                                Score reduced by
+                              </div>
+                              {alert.checklist.reduced_by.map((line) => (
+                                <div key={line} className="flex items-start gap-1.5 text-[14px] leading-snug"
+                                  style={{ color: "var(--muted-foreground)" }}>
+                                  <Minus size={13} className="flex-shrink-0 mt-0.5" />
+                                  <span className="break-words">{line}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </>
                   )}
 
@@ -1757,10 +1870,10 @@ export function ViolationModal({
                 style={{ border: "1px solid rgba(239,68,68,0.25)", background: "rgba(239,68,68,0.06)" }}>
                 <X size={15} style={{ color: "#ef4444", flexShrink: 0, marginTop: 1 }} />
                 <div className="flex-1 min-w-0">
-                  <div className="text-[10px] font-semibold uppercase tracking-wider mb-1" style={{ color: "#ef4444" }}>
+                  <div className="text-[12px] font-semibold uppercase tracking-wider mb-1" style={{ color: "#ef4444" }}>
                     Dismissal reason
                   </div>
-                  <p className="text-[12px] leading-relaxed" style={{ color: "var(--foreground)" }}>
+                  <p className="text-[14px] leading-relaxed" style={{ color: "var(--foreground)" }}>
                     {alert.notes || "No reason provided."}
                   </p>
                 </div>
@@ -1827,12 +1940,14 @@ export function ViolationModal({
                     style={{ background: "rgba(59,130,246,0.22)", color: "#3b82f6", border: "1px solid rgba(59,130,246,0.45)" }}>
                     <Radio size={14} /> Reassign officers
                   </button>
-                  <button
-                    onClick={() => setShowResolveChecklist(true)}
-                    className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all"
-                    style={{ background: "rgba(16,185,129,0.22)", color: "#10b981", border: "1px solid rgba(16,185,129,0.45)" }}>
-                    <CheckCircle size={14} /> Mark resolved
-                  </button>
+                  {canResolve && (
+                    <button
+                      onClick={() => setShowResolveChecklist(true)}
+                      className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all"
+                      style={{ background: "rgba(16,185,129,0.22)", color: "#10b981", border: "1px solid rgba(16,185,129,0.45)" }}>
+                      <CheckCircle size={14} /> Mark resolved
+                    </button>
+                  )}
                 </>
               )}
             </div>
@@ -1919,7 +2034,7 @@ export function ViolationModal({
                 </div>
                 <div>
                   <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>{cfg.title}</div>
-                  <div className="text-[12px] mt-1" style={{ color: "var(--muted-foreground)" }}>{cfg.message}</div>
+                  <div className="text-[14px] mt-1" style={{ color: "var(--muted-foreground)" }}>{cfg.message}</div>
                 </div>
               </div>
               <div className="flex items-center gap-2 px-5 pb-5">

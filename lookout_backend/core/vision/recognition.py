@@ -240,12 +240,13 @@ class RawFrameRecorder:
     200KB/frame (~45MB for the same window). Encode cost is paid once per frame
     on capture; decode only happens if save() is actually called.
 
-    Segment files from record_camera were considered as a source for this
-    instead, but its cv2.VideoWriter-based mp4 muxing doesn't finalize the
-    moov atom until the segment rolls over/closes (the same class of problem
-    fixed for the annotated clip's own mp4v output) — the currently-open
-    segment, which always covers "right now", isn't safely readable by a
-    second process. This buffer sidesteps that entirely.
+    A continuous segment recorder was considered as a source for this instead
+    of an in-process buffer, and rejected: cv2.VideoWriter-based mp4 muxing
+    doesn't finalize the moov atom until the segment rolls over and closes (the
+    same class of problem fixed for the annotated clip's own mp4v output), so
+    the currently-open segment — which is always the one covering "right now" —
+    isn't safely readable by a second process. This buffer sidesteps that, and
+    is why no continuous recorder is needed for evidence capture.
     """
 
     def __init__(self, seconds=RAW_CLIP_PRE_SECONDS + RAW_CLIP_POST_SECONDS,
@@ -324,7 +325,7 @@ class LatestFrameReader:
     Also reconnects: a dropped RTSP connection otherwise leaves cap.read()
     returning False forever — the process stays alive, burning CPU, silently
     producing zero detections. After max_consecutive_failures failed reads
-    (same threshold record_camera.py uses to decide a stream is "really gone"),
+    (the point past which a stream is treated as "really gone"),
     this releases the dead capture and calls open_fn() in a retry loop until a
     fresh one opens, logging every attempt and the eventual recovery via `log`.
     Pass open_fn=None to opt out and keep the old non-reconnecting behavior.

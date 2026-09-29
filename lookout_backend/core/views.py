@@ -377,54 +377,6 @@ class SystemSettingsView(generics.RetrieveUpdateAPIView):
         return SystemSettings.load()
 
 
-@api_view(["POST"])
-@permission_classes([permissions.IsAuthenticated])
-def recording_start(request):
-    """Starts the continuous CCTV recorder — called on dashboard login. Records
-    from the dedicated recording.RECORD_CAMERA_CODE ("CCTV") camera's
-    stream_url specifically, falling back to whichever camera has one
-    configured if that row isn't set up yet. Idempotent: a second call while
-    it's already running is a no-op.
-
-    Deliberately NOT "whichever camera has a stream_url" any more: now that
-    admins can set stream_url on any camera (for live detection, which may
-    target a different, higher-resolution stream on the same physical camera
-    than what's good for continuous recording — see CAMERA_SETUP.md), picking
-    the first one found would record from an arbitrary, possibly-wrong camera
-    the moment more than one row has a stream_url configured.
-    """
-    from . import recording
-
-    cam = Camera.objects.filter(code=recording.RECORD_CAMERA_CODE).exclude(stream_url="").first() \
-        or Camera.objects.exclude(stream_url="").first()
-    if cam is None:
-        return Response(
-            {"recording": False,
-             "detail": "No camera has a stream_url configured to record."},
-            status=400,
-        )
-    started = recording.start_recording(cam.stream_url)
-    return Response({"recording": True, "started": started, "camera": cam.code})
-
-
-@api_view(["POST"])
-@permission_classes([permissions.IsAuthenticated])
-def recording_stop(request):
-    """Stops the continuous CCTV recorder — called on dashboard logout."""
-    from . import recording
-
-    stopped = recording.stop_recording()
-    return Response({"recording": False, "stopped": stopped})
-
-
-@api_view(["GET"])
-@permission_classes([permissions.IsAuthenticated])
-def recording_status(request):
-    from . import recording
-
-    return Response({"recording": recording.is_recording()})
-
-
 @api_view(["GET"])
 @permission_classes([permissions.IsAuthenticated])
 def dashboard_stats(request):
@@ -902,9 +854,52 @@ def barangays(request):
 
 
 class AlertViewSet(viewsets.ModelViewSet):
-    queryset = Alert.objects.select_related("type", "camera").prefetch_related("officers_assigned").all()
+    queryset = (
+        Alert.objects
+        .select_related("type", "camera", "reviewed_by")
+        .prefetch_related("officers_assigned")
+        .all()
+    )
     serializer_class = AlertSerializer
     filterset_fields = ["status", "type", "camera"]
+
+    # Statuses that mean somebody has looked at the footage and closed the
+    # matter: resolved (attended and dealt with) or acknowledged (judged a
+    # false alarm and dismissed). These are exactly the alerts the Records
+    # page lists, which is where the reviewer needs to be shown.
+    REVIEWED_STATUSES = (Alert.Status.RESOLVED, Alert.Status.ACKNOWLEDGED)
+
+    def perform_update(self, serializer):
+        """Records WHO closed the alert, whenever it reaches a reviewed status.
+
+        The reviewer is not a separate thing a user declares -- it is whoever
+        dismissed the alert or marked it resolved. Those are the actions that
+        already exist and the ones that actually constitute reviewing the
+        footage, so the audit trail is a by-product of the normal workflow
+        rather than an extra step somebody has to remember.
+
+        Taken from the authenticated request, never from the payload: a client
+        that could name the reviewer could attribute its own call to somebody
+        else, which would make the record worse than having none.
+        """
+        previous_status = serializer.instance.status
+        alert = serializer.save()
+
+        if alert.status == previous_status:
+            # Nothing closed here. A PATCH that edits notes or reassigns
+            # officers must not silently reattribute an existing review.
+            return
+
+        if alert.status in self.REVIEWED_STATUSES:
+            user = self.request.user
+            alert.reviewed_by = user if user and user.is_authenticated else None
+            alert.reviewed_at = timezone.now()
+        else:
+            # Reopened -- back to active or dispatched. The previous reviewer
+            # no longer closed anything, so their name goes with the status.
+            alert.reviewed_by = None
+            alert.reviewed_at = None
+        alert.save(update_fields=["reviewed_by", "reviewed_at"])
 
     @action(detail=True, methods=["post"])
     def accept(self, request, pk=None):

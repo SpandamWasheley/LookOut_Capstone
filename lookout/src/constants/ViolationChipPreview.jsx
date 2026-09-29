@@ -8,7 +8,7 @@ function Chip({ type }) {
   const Icon = type.icon;
   return (
     <span
-      className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[13px] font-medium border"
+      className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[15px] font-medium border"
       style={violationChipStyle(type)}
     >
       <Icon size={13} style={{ color: `var(--violation-${type.code}-dot)` }} />

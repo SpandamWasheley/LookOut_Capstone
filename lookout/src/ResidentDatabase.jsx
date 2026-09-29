@@ -53,7 +53,7 @@ function RemovePersonModal({ person, onConfirm, onClose }) {
             <Trash2 size={18} style={{ color: "#ef4444" }} />
           </div>
           <div className="text-sm font-semibold mb-1" style={{ color: "var(--foreground)" }}>Remove from registry?</div>
-          <div className="text-[12px] leading-relaxed" style={{ color: "var(--muted-foreground)" }}>
+          <div className="text-[14px] leading-relaxed" style={{ color: "var(--muted-foreground)" }}>
             Are you sure you want to delete{" "}
             <span className="font-semibold" style={{ color: "var(--foreground)" }}>{person.name}</span>{" "}
             and their enrolled face photos? This cannot be undone.
@@ -92,10 +92,10 @@ function PersonCard({ person, onEnroll, onRemove }) {
     <div className="rounded-xl p-4 flex flex-col gap-3" style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <div className="text-[13px] font-semibold truncate" style={{ color: "var(--foreground)" }}>{person.name}</div>
-          <div className="text-[11px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>{person.id}</div>
+          <div className="text-[15px] font-semibold truncate" style={{ color: "var(--foreground)" }}>{person.name}</div>
+          <div className="text-[13px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>{person.id}</div>
         </div>
-        <span className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium flex-shrink-0" style={{ background: st.bg, color: st.color }}>
+        <span className="flex items-center gap-1 px-2 py-1 rounded-md text-[13px] font-medium flex-shrink-0" style={{ background: st.bg, color: st.color }}>
           <StatusIcon size={10} /> {st.label}
         </span>
       </div>
@@ -111,7 +111,7 @@ function PersonCard({ person, onEnroll, onRemove }) {
                   : <ScanFace size={16} style={{ color: "var(--muted-foreground)", opacity: 0.35 }} />
                 }
               </div>
-              <div className="text-[9px] text-center uppercase tracking-wide" style={{ color: "var(--muted-foreground)" }}>{angleLabel(angle)}</div>
+              <div className="text-[11px] text-center uppercase tracking-wide" style={{ color: "var(--muted-foreground)" }}>{angleLabel(angle)}</div>
             </div>
           );
         })}
@@ -120,14 +120,14 @@ function PersonCard({ person, onEnroll, onRemove }) {
       <div className="flex items-center gap-2 pt-1">
         <button
           onClick={onEnroll}
-          className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium transition-all"
+          className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium transition-all"
           style={{ background: "var(--primary)", color: "var(--primary-foreground)" }}
         >
           <ScanFace size={11} /> Enroll faces
         </button>
         <button
           onClick={onRemove}
-          className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium transition-all"
+          className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium transition-all"
           style={{ background: "rgba(239,68,68,0.1)", color: "#ef4444" }}
         >
           <Trash2 size={11} /> Remove
@@ -200,7 +200,7 @@ export function ResidentDatabase() {
           </div>
           <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>
             ArcFace biometrics ·{" "}
-            <span className="px-1.5 py-0.5 rounded text-[10px] font-medium" style={{ background: "rgba(16,185,129,0.1)", color: "#10b981" }}>
+            <span className="px-1.5 py-0.5 rounded text-[12px] font-medium" style={{ background: "rgba(16,185,129,0.1)", color: "#10b981" }}>
               RA 10173 compliant
             </span>
           </span>
@@ -224,7 +224,7 @@ export function ResidentDatabase() {
           ].map((s) => (
             <div key={s.label} className="rounded-xl p-4 text-center" style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
               <div className="text-2xl font-semibold leading-none" style={{ color: s.color }}>{s.value}</div>
-              <div className="text-[11px] mt-1.5" style={{ color: "var(--muted-foreground)" }}>{s.label}</div>
+              <div className="text-[13px] mt-1.5" style={{ color: "var(--muted-foreground)" }}>{s.label}</div>
             </div>
           ))}
         </div>
@@ -264,7 +264,7 @@ export function ResidentDatabase() {
             <div className="flex flex-col items-center justify-center py-16 gap-2">
               <AlertTriangle size={24} style={{ color: "#ef4444" }} />
               <div className="text-sm font-medium" style={{ color: "var(--foreground)" }}>Failed to load data</div>
-              <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>{loadError}</div>
+              <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>{loadError}</div>
             </div>
           ) : filteredPersons.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 gap-2">

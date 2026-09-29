@@ -19,6 +19,9 @@ function formatFull(ts) {
 function mapAlert(raw) {
   return {
     id: raw.code,
+    // Needed by the review control in ViolationModal: the label is PATCHed by
+    // numeric pk, while `id` above is the business code (ALT-0042).
+    dbId: raw.id,
     type: raw.type,
     status: raw.status,
     camera: raw.camera,
@@ -31,6 +34,23 @@ function mapAlert(raw) {
     officersAssignedNames: raw.officers_assigned_names ?? [],
     suspect: raw.suspect,
     notes: raw.notes,
+    level: raw.level,
+    levelLabel: raw.level_label || "",
+    // What the OBJECT DETECTOR was sure of, kept apart from `confidence`
+    // (the violation likelihood). Null on alerts filed before the two were
+    // separated, which is why every read of it is guarded.
+    objectConfidence: raw.object_confidence,
+    // v3 2: the evidence the tanod reads instead of the score. Built
+    // server-side so both clients show the same words.
+    checklist: raw.cues?.checklist ?? null,
+    cues: raw.cues,
+    reviewedValid: raw.reviewed_valid,
+    // VLM second stage. `vlmReason` is the sentence worth showing a reviewer.
+    vlmVerdict: raw.vlm_verdict,
+    vlmConfidence: raw.vlm_confidence,
+    vlmReason: raw.vlm_reason,
+    reviewedBy: raw.reviewed_by_name,
+    reviewedAt: raw.reviewed_at,
   };
 }
 
@@ -96,7 +116,7 @@ export function RecordsPage() {
             <div key={s.label} className="rounded-xl p-4 text-center"
               style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
               <div className="text-2xl font-semibold leading-none" style={{ color: s.color }}>{s.value}</div>
-              <div className="text-[11px] mt-1.5" style={{ color: "var(--muted-foreground)" }}>{s.label}</div>
+              <div className="text-[13px] mt-1.5" style={{ color: "var(--muted-foreground)" }}>{s.label}</div>
             </div>
           ))}
         </div>
@@ -141,7 +161,7 @@ export function RecordsPage() {
         <div className="flex-1 overflow-y-auto rounded-xl" style={{ border: "1px solid var(--border)" }}>
           {/* Header */}
           <div
-            className="grid px-4 py-2.5 text-[11px] font-semibold sticky top-0"
+            className="grid px-4 py-2.5 text-[13px] font-semibold sticky top-0"
             style={{
               gridTemplateColumns: "2fr 2fr 1.5fr 1fr 0.5fr",
               color: "var(--muted-foreground)",
@@ -179,26 +199,42 @@ export function RecordsPage() {
                     <vcfg.icon size={14} style={{ color: vcfg.color }} />
                   </div>
                   <div>
-                    <div className="text-[12px] font-medium leading-none" style={{ color: "var(--foreground)" }}>{vcfg.label}</div>
-                    <div className="text-[10px] mt-0.5"
+                    <div className="text-[14px] font-medium leading-none" style={{ color: "var(--foreground)" }}>{vcfg.label}</div>
+                    <div className="text-[12px] mt-0.5"
                       style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>{alert.id}</div>
                   </div>
                 </div>
 
                 {/* Zone + time */}
                 <div>
-                  <div className="text-[12px] text-white flex items-center gap-1">
+                  <div className="text-[14px] text-white flex items-center gap-1">
                     <MapPin size={9} style={{ color: "var(--muted-foreground)", flexShrink: 0 }} />
                     {alert.cameraZone}
                   </div>
-                  <div className="text-[10px] mt-0.5 flex items-center gap-1"
+                  <div className="text-[12px] mt-0.5 flex items-center gap-1"
                     style={{ color: "var(--muted-foreground)" }}>
                     <Clock size={9} /> {formatFull(alert.timestamp)}
                   </div>
+                  {/* Who reviewed the footage and closed this alert. A record
+                      saying a violation was dismissed, without saying who
+                      dismissed it, is not an audit trail. */}
+                  {alert.reviewedBy && (
+                    <div className="text-[12px] mt-0.5 flex items-center gap-1"
+                      style={{ color: "var(--muted-foreground)" }}>
+                      <Shield size={11} style={{ flexShrink: 0 }} />
+                      <span>
+                        Reviewed by{" "}
+                        <span style={{ color: "var(--foreground)", fontWeight: 500 }}>
+                          {alert.reviewedBy}
+                        </span>
+                        {alert.reviewedAt ? ` · ${formatFull(alert.reviewedAt)}` : ""}
+                      </span>
+                    </div>
+                  )}
                 </div>
 
                 {/* Officer */}
-                <div className="text-[12px] flex items-center gap-1.5" style={{ color: "var(--muted-foreground)" }}>
+                <div className="text-[14px] flex items-center gap-1.5" style={{ color: "var(--muted-foreground)" }}>
                   {alert.officersAssignedNames.length > 0
                     ? <>
                         <Shield size={10} style={{ color: "#3b82f6", flexShrink: 0 }} />
@@ -211,7 +247,7 @@ export function RecordsPage() {
 
                 {/* Outcome */}
                 <div>
-                  <span className="flex items-center gap-1.5 w-fit text-[11px] font-medium px-2 py-1 rounded-md"
+                  <span className="flex items-center gap-1.5 w-fit text-[13px] font-medium px-2 py-1 rounded-md"
                     style={{ background: oc.bg, color: oc.color }}>
                     <OcIcon size={10} /> {oc.label}
                   </span>
@@ -219,7 +255,7 @@ export function RecordsPage() {
 
                 {/* View */}
                 <div className="flex justify-end">
-                  <span className="text-[11px] opacity-0 group-hover:opacity-100 flex items-center gap-1 px-2 py-1 rounded-md"
+                  <span className="text-[13px] opacity-0 group-hover:opacity-100 flex items-center gap-1 px-2 py-1 rounded-md"
                     style={{ color: "#f59e0b", background: "rgba(245,158,11,0.08)" }}>
                     <FileText size={10} /> View
                   </span>

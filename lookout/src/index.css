@@ -241,6 +241,21 @@
 
 /* ── Tailwind @theme mappings ─────────────────────────────────────────────── */
 @theme inline {
+  /* Every named size is Tailwind's default plus 2px, matching the +2 applied
+     to the arbitrary text-[Npx] classes throughout src/. Both had to move:
+     an arbitrary value is a literal and ignores this scale, while text-sm and
+     friends only ever read from it. Changing one without the other would have
+     left the interface at two different type scales. */
+  --text-xs: 14px;      /* was 12 */
+  --text-sm: 16px;      /* was 14 */
+  --text-base: 18px;    /* was 16 */
+  --text-lg: 20px;      /* was 18 */
+  --text-xl: 22px;      /* was 20 */
+  --text-2xl: 26px;     /* was 24 */
+  --text-3xl: 32px;     /* was 30 */
+  /* Line heights are left at their defaults deliberately: Tailwind's are
+     unitless ratios, so they scale with the font size on their own. */
+
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);

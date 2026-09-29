@@ -47,7 +47,7 @@ export function CameraStreamModal({ camera, onClose, onSaved }) {
             <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>
               Stream URL
             </div>
-            <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+            <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>
               {camera.name} ({camera.id})
             </div>
           </div>
@@ -60,14 +60,14 @@ export function CameraStreamModal({ camera, onClose, onSaved }) {
         </div>
 
         <div className="px-5 py-4 space-y-3.5">
-          <div className="flex items-center gap-2 text-[12px]"
+          <div className="flex items-center gap-2 text-[14px]"
             style={{ color: camera.isLive ? "#22c55e" : "var(--muted-foreground)" }}>
             {camera.isLive ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
             {camera.isLive ? "Stream configured" : "Not configured"}
           </div>
 
           <div>
-            <label className="text-[11px] font-medium block mb-1.5" style={{ color: "var(--muted-foreground)" }}>
+            <label className="text-[13px] font-medium block mb-1.5" style={{ color: "var(--muted-foreground)" }}>
               RTSP URL {camera.isLive && "(enter a new one to replace it)"}
             </label>
             <input
@@ -76,16 +76,16 @@ export function CameraStreamModal({ camera, onClose, onSaved }) {
               onChange={(e) => setValue(e.target.value)}
               placeholder="rtsp://user:pass@192.168.1.64:554/Streaming/Channels/101"
               disabled={saving}
-              className="w-full px-3 py-2.5 rounded-xl text-[12px]"
+              className="w-full px-3 py-2.5 rounded-xl text-[14px]"
               style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
             />
-            <div className="text-[10px] mt-1.5" style={{ color: "var(--muted-foreground)" }}>
+            <div className="text-[12px] mt-1.5" style={{ color: "var(--muted-foreground)" }}>
               Never shown back once saved — credentials stay server-side only. Leaving this blank changes nothing.
             </div>
           </div>
 
           {error && (
-            <div className="flex items-start gap-2 text-[12px] px-3 py-2.5 rounded-xl"
+            <div className="flex items-start gap-2 text-[14px] px-3 py-2.5 rounded-xl"
               style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", color: "#ef4444" }}>
               <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
               <span>{error}</span>

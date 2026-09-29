@@ -36,7 +36,7 @@ export function DetectionJobHistoryModal({ jobs, onClose, onCancel }) {
             </div>
             <div>
               <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Detection Job History</div>
-              <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+              <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>
                 {jobs.length} job{jobs.length === 1 ? "" : "s"}
               </div>
             </div>
@@ -50,15 +50,15 @@ export function DetectionJobHistoryModal({ jobs, onClose, onCancel }) {
         {/* Table */}
         <div className="flex-1 overflow-y-auto">
           {jobs.length === 0 ? (
-            <div className="px-5 py-10 text-center text-[12px]" style={{ color: "var(--muted-foreground)" }}>
+            <div className="px-5 py-10 text-center text-[14px]" style={{ color: "var(--muted-foreground)" }}>
               No detection jobs yet.
             </div>
           ) : (
-            <table className="w-full text-[12px]" style={{ borderCollapse: "collapse" }}>
+            <table className="w-full text-[14px]" style={{ borderCollapse: "collapse" }}>
               <thead>
                 <tr style={{ borderBottom: "1px solid var(--border)" }}>
                   {["File", "Type", "Status", "Started", "Finished", ""].map((h, i) => (
-                    <th key={i} className="text-left px-5 py-2 font-semibold uppercase tracking-wide text-[10px]"
+                    <th key={i} className="text-left px-5 py-2 font-semibold uppercase tracking-wide text-[12px]"
                       style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
                       {h}
                     </th>
@@ -89,7 +89,7 @@ export function DetectionJobHistoryModal({ jobs, onClose, onCancel }) {
                       {job.status === "running" && onCancel && (
                         <button
                           onClick={() => onCancel(job.id)}
-                          className="text-[11px] font-medium px-2.5 py-1 rounded-lg"
+                          className="text-[13px] font-medium px-2.5 py-1 rounded-lg"
                           style={{ color: "#ef4444", background: "rgba(239,68,68,0.1)" }}
                         >
                           Cancel

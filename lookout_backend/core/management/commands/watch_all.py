@@ -30,7 +30,7 @@ from django.utils import timezone
 from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
-from core.vision import recognition, tracking
+from core.vision import recognition, tracking, vlm
 
 from .watch_smoking import Command as SmokingCommand
 from .watch_thief import Command as ThiefCommand
@@ -56,6 +56,15 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument("--source", default="0",
                             help="Webcam index or RTSP/stream URL / video file.")
+        parser.add_argument(
+            "--pose", action="store_true",
+            help="Also run YOLOv8-pose and score the hand-to-mouth GESTURE for "
+                 "smoking. This indicator reaches far past the range where a "
+                 "cigarette is still detectable, but it is a FIFTH model on top "
+                 "of the four this command already runs — expect a noticeably "
+                 "lower frame rate. The temporal rules are time-based, so they "
+                 "stay correct at the reduced rate.",
+        )
         parser.add_argument("--camera", default="CAM-ALL",
                             help="Camera code all alerts attach to (default CAM-ALL).")
         parser.add_argument("--far", action="store_true",
@@ -99,6 +108,29 @@ class Command(BaseCommand):
         self.schedule = options["schedule"]
         self.preprocess = options["preprocess"]
         self.sharpen = options["sharpen"]
+        # One VLM verifier shared by every detector this runner drives. Built
+        # here so the connection is created once; build_verifier returns an
+        # inert verifier for any unusable configuration, so a missing key or a
+        # missing package degrades to "no VLM" and never to a crash.
+        _vlm_cfg = SystemSettings.load()
+        self.vlm = vlm.build_verifier(
+            enabled=_vlm_cfg.vlm_enabled,
+            provider=_vlm_cfg.vlm_provider,
+            api_key=_vlm_cfg.vlm_api_key or None,
+            model=_vlm_cfg.vlm_model,
+            timeout=_vlm_cfg.vlm_timeout,
+            endpoint=_vlm_cfg.vlm_endpoint,
+        )
+        self.vlm_min_confidence = _vlm_cfg.vlm_min_confidence
+        self.stdout.write(vlm.describe(self.vlm, _vlm_cfg.vlm_model))
+
+        self.pose = options["pose"]
+        if self.pose:
+            self.stdout.write(self.style.WARNING(
+                "Pose gesture cue: ON — a fifth model on top of four. "
+                "Expect a noticeably lower frame rate."
+            ))
+
         try:
             rows, cols = (int(v) for v in options["tiles"].lower().split("x"))
             self.tiles = (rows, cols)
@@ -178,6 +210,16 @@ class Command(BaseCommand):
             cmd.layer_e = False
             cmd.layer_e_only = False
         cmd.ablate = set()
+        # ONE verifier shared by every detector in this runner: a single
+        # connection and a single settings read. verify_frame() picks the prompt
+        # spec per call, so sharing costs nothing in specificity.
+        cmd.vlm = self.vlm
+        cmd.vlm_min_confidence = self.vlm_min_confidence
+        # The pose gesture cue -- the reason this flag exists. watch_smoking_pose
+        # is a standalone command this runner never invokes, so before this the
+        # "Strong" hand-to-mouth indicator scored nothing in any real deployment.
+        if hasattr(cmd, "pose"):
+            cmd.pose = self.pose
         cmd.stats = Counter()
         cmd._alert_log = []
         cmd.stdout = self.stdout

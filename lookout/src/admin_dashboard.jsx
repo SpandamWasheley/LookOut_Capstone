@@ -142,7 +142,7 @@ function AdminDashboard({ user, onLogout }) {
                     <div className="min-w-0">
                       <div className="text-xl font-semibold leading-none" style={{ color: "var(--foreground)" }}>{kpi.value}</div>
                       <div className="text-xs font-medium mt-1" style={{ color: "var(--muted-foreground)" }}>{kpi.label}</div>
-                      <div className="text-[11px] mt-0.5" style={{ color: kpi.accent, opacity: 0.85 }}>{kpi.sub}</div>
+                      <div className="text-[13px] mt-0.5" style={{ color: kpi.accent, opacity: 0.85 }}>{kpi.sub}</div>
                     </div>
                   </div>
                 );
@@ -165,7 +165,7 @@ function AdminDashboard({ user, onLogout }) {
                     <span className="text-sm font-medium" style={{ color: "var(--foreground)" }}>Live Feeds</span>
                   </div>
                   <div className="flex items-center gap-2">
-                    <div className="flex items-center gap-1.5 text-[11px]" style={{ color: "#ef4444" }}>
+                    <div className="flex items-center gap-1.5 text-[13px]" style={{ color: "#ef4444" }}>
                       <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse inline-block" />
                       REC
                     </div>
@@ -198,7 +198,7 @@ function AdminDashboard({ user, onLogout }) {
                   </div>
                   {alertCount > 0 && (
                     <span
-                      className="text-[11px] font-medium px-2 py-0.5 rounded-full"
+                      className="text-[13px] font-medium px-2 py-0.5 rounded-full"
                       style={{ background: "rgba(239,68,68,0.12)", color: "#ef4444" }}
                     >
                       {alertCount} active

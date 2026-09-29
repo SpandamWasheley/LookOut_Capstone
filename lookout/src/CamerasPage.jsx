@@ -1,4 +1,3 @@
-import { Activity } from "lucide-react";
 import { CameraGrid } from "./CameraGrid";
 import { mockCameras } from "../data/mockData";
 
@@ -12,7 +11,7 @@ export function CamerasPage() {
         style={{ borderBottom: "1px solid var(--border)" }}
       >
         <div className="flex items-center gap-3">
-          <h1 className="text-[15px] font-semibold text-white">Live Feeds</h1>
+          <h1 className="text-[17px] font-semibold text-white">Live Feeds</h1>
           <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>
             RTSP · YOLOv8 inference · 4 zones
           </span>
@@ -28,10 +27,6 @@ export function CamerasPage() {
               {s.count} {s.label}
             </div>
           ))}
-          <div className="flex items-center gap-1.5 text-xs" style={{ color: "#ef4444" }}>
-            <Activity size={11} className="animate-pulse" />
-            Recording
-          </div>
         </div>
       </div>
       <div className="flex-1 overflow-y-auto p-6">

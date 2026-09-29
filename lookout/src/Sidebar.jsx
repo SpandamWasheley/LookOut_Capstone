@@ -101,7 +101,7 @@ export function Sidebar({ activeView, onViewChange, activeRole, onRoleChange, al
             <div className="text-sm font-semibold leading-none" style={{ color: "var(--sidebar-primary)" }}>
               LookOut
             </div>
-            <div className="text-[11px] mt-0.5 truncate"
+            <div className="text-[13px] mt-0.5 truncate"
               style={{ color: mutedColor, fontFamily: "'DM Mono', monospace" }}>
               Barangay Tetuan
             </div>
@@ -117,7 +117,7 @@ export function Sidebar({ activeView, onViewChange, activeRole, onRoleChange, al
               <button
                 key={role}
                 onClick={() => onRoleChange(role)}
-                className="flex-1 py-1.5 text-[11px] font-medium transition-all duration-150 capitalize"
+                className="flex-1 py-1.5 text-[13px] font-medium transition-all duration-150 capitalize"
                 style={{
                   background: activeRole === role ? "var(--sidebar-primary)" : "transparent",
                   color: activeRole === role ? "var(--sidebar-primary-foreground)" : mutedColor,
@@ -139,7 +139,7 @@ export function Sidebar({ activeView, onViewChange, activeRole, onRoleChange, al
             <div key={group.label} className="mb-1">
               {!collapsed && (
                 <div
-                  className="px-4 py-1.5 text-[10px] font-semibold uppercase"
+                  className="px-4 py-1.5 text-[12px] font-semibold uppercase"
                   style={{ color: mutedColor, fontFamily: "'DM Mono', monospace", letterSpacing: "0.08em", opacity: 0.6 }}
                 >
                   {group.label}
@@ -166,7 +166,7 @@ export function Sidebar({ activeView, onViewChange, activeRole, onRoleChange, al
                         <Icon size={15} />
                         {showBadge && collapsed && (
                           <span
-                            className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full text-[9px] font-bold flex items-center justify-center"
+                            className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full text-[11px] font-bold flex items-center justify-center"
                             style={{ background: "#0E7C86", color: "#fff" }}
                           >
                             {alertCount > 9 ? "9+" : alertCount}
@@ -174,11 +174,11 @@ export function Sidebar({ activeView, onViewChange, activeRole, onRoleChange, al
                         )}
                       </div>
                       {!collapsed && (
-                        <span className="text-[13px] font-medium flex-1 text-left">{item.label}</span>
+                        <span className="text-[15px] font-medium flex-1 text-left">{item.label}</span>
                       )}
                       {showBadge && !collapsed && (
                         <span
-                          className="ml-auto text-[10px] font-bold w-5 h-5 rounded-full flex items-center justify-center"
+                          className="ml-auto text-[12px] font-bold w-5 h-5 rounded-full flex items-center justify-center"
                           style={{ background: "#0E7C86", color: "#fff" }}
                         >
                           {alertCount > 9 ? "9+" : alertCount}
@@ -204,7 +204,7 @@ export function Sidebar({ activeView, onViewChange, activeRole, onRoleChange, al
           onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = mutedColor; }}
         >
           {isLight ? <Moon size={14} className="flex-shrink-0" /> : <Sun size={14} className="flex-shrink-0" />}
-          {!collapsed && <span className="text-[13px] font-medium">{isLight ? "Dark mode" : "Light mode"}</span>}
+          {!collapsed && <span className="text-[15px] font-medium">{isLight ? "Dark mode" : "Light mode"}</span>}
         </button>
 
         <button
@@ -216,7 +216,7 @@ export function Sidebar({ activeView, onViewChange, activeRole, onRoleChange, al
           onMouseLeave={(e) => { e.currentTarget.style.color = mutedColor; e.currentTarget.style.background = "transparent"; }}
         >
           <LogOut size={14} className="flex-shrink-0" />
-          {!collapsed && <span className="text-[13px] font-medium">Sign out</span>}
+          {!collapsed && <span className="text-[15px] font-medium">Sign out</span>}
         </button>
       </div>
     </aside>

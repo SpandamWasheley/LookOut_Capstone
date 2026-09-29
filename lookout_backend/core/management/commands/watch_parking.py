@@ -21,7 +21,11 @@ PARKING_CAMERA_CODE = "CAM-PARKING"
 # every edge drew in the same hardcoded orange, so two edges whose paths run
 # close together on screen (as they often do - both drawn on the same street)
 # were visually indistinguishable from one line.
-EDGE_DEBUG_COLOURS = {"left": (0, 165, 255), "right": (255, 190, 0)}
+EDGE_DEBUG_COLOURS = {"left": (0, 165, 255), "right": (255, 190, 0),
+                      # A road ZONE is a closed polygon rather than a pair of
+                      # kerbs, so it gets a third colour that reads as "this
+                      # whole area", not "this boundary".
+                      "road": (80, 80, 255)}
 # Grace for the PLAIN dwell rule below, whose default dwell is 60s. It is far
 # too short for the obstruction rule, whose dwell is minutes: one jeepney
 # passing in front would reset a five-minute timer and the alert would never
@@ -125,15 +129,21 @@ class Command(BaseCommand):
         parser.add_argument(
             "--edges",
             default=None,
-            help="Path to a JSON file of road-edge lines, switching this command "
-                 "to OBSTRUCTION mode: a vehicle is judged by how much of its "
-                 "footprint sits past the edge and for how long, instead of by "
-                 "dwell alone. Omit to use the edges stored on the --camera "
-                 "record instead (drawn via the dashboard or "
-                 "detection_sandbox/obstruction_web.py). Format: "
-                 '{"left": {"points": [[x,y],[x,y]], "side": 1}, "right": {...}} '
-                 "in the coordinates of the frame as processed — a file passed "
-                 "here is used exactly as given, with no resolution scaling.",
+            help="Path to a JSON file marking the no-parking area, switching "
+                 "this command to OBSTRUCTION mode: a vehicle is judged by how "
+                 "much of its footprint sits in that area and for how long, "
+                 "instead of by dwell alone. Omit to use the area stored on the "
+                 "--camera record instead (drawn via the dashboard or "
+                 "detection_sandbox/obstruction_web.py). Two shapes, and they "
+                 "can be mixed in one file. ZONE - a closed polygon around the "
+                 "road itself, anything standing inside it is an obstruction: "
+                 '{"road": {"type": "zone", "points": [[x,y],[x,y],[x,y],...]}}. '
+                 "EDGE - an open kerb line plus the side the footpath is on: "
+                 '{"left": {"points": [[x,y],[x,y]], "side": 1}, "right": {...}}. '
+                 "Omitting \"type\" means edge, so files written before zones "
+                 "existed are read exactly as before. Coordinates are in the "
+                 "frame as processed — a file passed here is used exactly as "
+                 "given, with no resolution scaling.",
         )
         parser.add_argument(
             "--obstruction-pct", type=int, default=None,
@@ -270,17 +280,38 @@ class Command(BaseCommand):
             if rescale:
                 sx, sy = w / src_w, h / src_h
                 points = [[x * sx, y * sy] for x, y in points]
-            edge = obs.build_edge({"points": points, "side": spec.get("side", 1)})
+            # "type" MUST be forwarded. Without it a zone spec falls through
+            # to build_edge's edge default and gets read as an open path along
+            # the polygon's outline - which still builds, still runs, and
+            # silently judges vehicles against something that is not the area
+            # the operator drew.
+            edge = obs.build_edge({
+                "type": spec.get("type", obs.EDGE),
+                "points": points,
+                "side": spec.get("side", 1),
+            })
             monitors[name] = (edge, obs.ObstructionMonitor(
                 edge, obstruction_seconds=self._obstruction_seconds))
 
         self.monitors = monitors
         if monitors:
             note = f" (scaled from {src_w}x{src_h} to {w}x{h})" if rescale else ""
+            zones = sum(1 for spec in self._edge_specs.values()
+                        if spec.get("type") == obs.ZONE)
+            # The threshold means the same thing either way - a share of the
+            # vehicle's own footprint - but "past the line" and "inside the
+            # road" are very different sentences to an operator reading a log,
+            # so say the one that matches what they actually drew.
+            if zones and zones == len(monitors):
+                shape, where = "zone(s)", "inside the road"
+            elif zones:
+                shape, where = "area(s)", "inside the marked area"
+            else:
+                shape, where = "edge(s)", "past the line"
             self.stdout.write(self.style.SUCCESS(
-                f"OBSTRUCTION mode: {len(monitors)} edge(s) "
-                f"[{', '.join(monitors)}], {self._enter_fraction*100:.0f}% past "
-                f"the line held for {self._obstruction_seconds/60:.1f} min{note}."
+                f"OBSTRUCTION mode: {len(monitors)} {shape} "
+                f"[{', '.join(monitors)}], {self._enter_fraction*100:.0f}% "
+                f"{where} held for {self._obstruction_seconds/60:.1f} min{note}."
             ))
 
     def _run_obstruction(self, frame, vehicles, now_ts, cooldown, debug):
@@ -529,10 +560,9 @@ class Command(BaseCommand):
         # from it later (see _create_alert) instead of relying only on the
         # annotated buffer's sparser processed frames.
         self._source_path = None if is_live else source
-        # Live sources can't be seeked backwards, and record_camera's segments
-        # aren't safely readable while the current one is still open (see
-        # RawFrameRecorder's docstring) — so a live source gets its own rolling
-        # buffer of RAW (unannotated) frames to cut a raw clip from instead.
+        # Live sources can't be seeked backwards, so a live source gets its own
+        # rolling buffer of RAW (unannotated) frames to cut a raw clip from
+        # instead (see RawFrameRecorder's docstring).
         self._raw_buffer = recognition.RawFrameRecorder() if is_live else None
 
         # Settings are re-polled every few seconds (like watch_curfew) so edits

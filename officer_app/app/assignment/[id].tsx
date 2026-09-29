@@ -1243,7 +1243,21 @@ export default function AssignmentDetailScreen() {
           <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>LOCATION</Text>
           {[
             { icon: "map-pin" as const, label: "Zone / Camera", value: assignment.location },
-            { icon: "percent" as const, label: "AI Confidence", value: `${assignment.confidence}%` },
+            // The score is deliberately NOT here any more. It used to read
+            // "AI Confidence 77%", which was wrong twice over: the number is
+            // the violation score rather than the detector's certainty, and a
+            // percentage invites an officer to read it as a probability it is
+            // not. What replaces it is the level and the evidence below.
+            ...(assignment.levelLabel
+              ? [{ icon: "shield" as const, label: "Assessment", value: assignment.levelLabel }]
+              : []),
+            ...(assignment.objectConfidence != null
+              ? [{
+                  icon: "percent" as const,
+                  label: "Object confidence",
+                  value: `${Math.round(assignment.objectConfidence * 100)}%`,
+                }]
+              : []),
           ].map((row) => (
             <View key={row.label} style={[styles.infoRow, { borderBottomColor: c.border }]}>
               <Feather name={row.icon} size={15} color={c.mutedForeground} />
@@ -1254,6 +1268,46 @@ export default function AssignmentDetailScreen() {
             </View>
           ))}
         </View>
+
+        {/* The evidence the officer acts on. Built server-side, so this and the
+            web dashboard always show the same words for the same alert. */}
+        {assignment.checklist && assignment.checklist.found.length > 0 && (
+          <View style={[styles.card, { backgroundColor: c.card, borderColor: c.border }]}>
+            <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>EVIDENCE FOUND</Text>
+            {assignment.checklist.found.map((line) => (
+              <View key={line} style={styles.evidenceRow}>
+                <Feather name="check" size={14} color={assignment.violationType.color} />
+                <Text style={[styles.evidenceText, { color: c.foreground }]}>{line}</Text>
+              </View>
+            ))}
+
+            {assignment.checklist.reduced_by.length > 0 && (
+              /* Shown because it explains why an alert the indicators alone
+                 would have raised was held back -- the most useful line on the
+                 card when it fires. */
+              <View style={[styles.evidenceDivider, { borderTopColor: c.border }]}>
+                <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>SCORE REDUCED BY</Text>
+                {assignment.checklist.reduced_by.map((line) => (
+                  <View key={line} style={styles.evidenceRow}>
+                    <Feather name="minus" size={14} color={c.mutedForeground} />
+                    <Text style={[styles.evidenceText, { color: c.mutedForeground }]}>{line}</Text>
+                  </View>
+                ))}
+              </View>
+            )}
+
+            {assignment.aiReason ? (
+              /* Marked as AI-generated on purpose: an officer must be able to
+                 tell a model's sentence from a dispatcher's note at a glance. */
+              <View style={[styles.evidenceDivider, { borderTopColor: c.border }]}>
+                <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>AI CHECKER SAID</Text>
+                <Text style={[styles.aiReason, { color: c.mutedForeground }]}>
+                  &ldquo;{assignment.aiReason}&rdquo;
+                </Text>
+              </View>
+            ) : null}
+          </View>
+        )}
 
         <View style={[styles.card, { backgroundColor: c.card, borderColor: c.border }]}>
           <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>ASSIGNMENT INFO</Text>
@@ -1497,6 +1551,27 @@ const styles = StyleSheet.create({
   codeText: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 2 },
   description: { fontSize: 15, fontFamily: "Inter_400Regular", lineHeight: 22 },
   infoRow: { flexDirection: "row", alignItems: "flex-start", gap: 12, paddingBottom: 12, borderBottomWidth: 1 },
+  evidenceRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    paddingVertical: 4,
+  },
+  evidenceText: {
+    flex: 1,
+    fontSize: 14,
+    lineHeight: 19,
+  },
+  evidenceDivider: {
+    borderTopWidth: 1,
+    marginTop: 10,
+    paddingTop: 10,
+  },
+  aiReason: {
+    fontSize: 14,
+    lineHeight: 19,
+    fontStyle: "italic",
+  },
   infoLabel: { fontSize: 11, fontFamily: "Inter_400Regular", textTransform: "uppercase", letterSpacing: 0.5 },
   infoValue: { fontSize: 14, fontFamily: "Inter_500Medium", marginTop: 2 },
   actionBar: { flexDirection: "row", padding: 16, gap: 12, borderTopWidth: 1 },

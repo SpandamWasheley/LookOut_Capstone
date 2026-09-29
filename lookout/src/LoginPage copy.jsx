@@ -28,13 +28,13 @@ export default function Login({ onLogin }) {
             <Eye size={22} color="#0c0f16" strokeWidth={2.5} />
           </div>
           <div className="text-lg font-semibold text-white tracking-tight">LookOut</div>
-          <div className="text-[11px] mt-0.5" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+          <div className="text-[13px] mt-0.5" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
             Barangay Tetuan · Sign in
           </div>
         </div>
 
         {error && (
-          <div className="flex items-center gap-2 rounded-lg px-3 py-2 mb-4 text-[12px]"
+          <div className="flex items-center gap-2 rounded-lg px-3 py-2 mb-4 text-[14px]"
             style={{ background: "rgba(239,68,68,0.1)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.2)" }}>
             <AlertCircle size={13} /> {error}
           </div>
@@ -81,7 +81,7 @@ export default function Login({ onLogin }) {
           </button>
         </div>
 
-        <div className="mt-5 pt-4 text-[10px] leading-relaxed" style={{ borderTop: "1px solid var(--border)", color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+        <div className="mt-5 pt-4 text-[12px] leading-relaxed" style={{ borderTop: "1px solid var(--border)", color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
           admin / admin123 · dispatcher / dispatch123 · officer / officer123
         </div>
       </div>

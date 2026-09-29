@@ -12,7 +12,7 @@ from core import face_registry
 from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
-from core.vision import recognition, tracking
+from core.vision import recognition, scoring, tracking, vlm
 
 SMOKING_CAMERA_CODE = "CAM-SMOKING"
 SETTINGS_REFRESH_SECONDS = 5  # re-poll SystemSettings this often, not every frame
@@ -43,7 +43,8 @@ COOLDOWN_CENTER_DIST = 1.5
 # the true/false alert counts can be measured rather than asserted. Everything is
 # ON by default; this exists for evaluation, not for production tuning.
 # ("face" is the same switch as --no-face-check, exposed here for symmetry.)
-ABLATABLE = ("class-floor", "face", "vote", "dwell", "cooldown", "puff", "preprocess")
+ABLATABLE = ("class-floor", "face", "vote", "dwell", "cooldown", "puff", "preprocess",
+             "pose", "scoring", "vlm")
 
 # Per-class policy, same idea as watch_thief's. The model's classes are not
 # equally trustworthy: a `cigarette` or `vape` is an object held at the face,
@@ -80,6 +81,13 @@ DEFAULT_POLICY = {"conf_scale": 1.0, "dwell_scale": 1.0}
 # entirely and no longer check the mouth at all.
 FACE_ANCHORED_CLASSES = {"cigarette", "vape", "smoking"}
 FACE_PROXIMITY = 2.5    # allowed distance from the mouth, in face widths
+
+# How recently an at-the-mouth sighting must have happened for the `near_mouth`
+# cue to still count at alert time. Matched to the vote window's order of
+# magnitude: the cue describes this incident, not something seen a minute ago.
+MOUTH_CUE_MAX_AGE = 5.0
+# Minimum IoU for a pose box to be attributed to an existing person track.
+POSE_MATCH_IOU = 0.3
 
 # Puff-cycle rule: when --require-puff is on, an alert additionally needs the
 # person to have shown the hand-to-mouth RHYTHM (cigarette raised to the lips and
@@ -118,6 +126,7 @@ class Command(BaseCommand):
         self.tracker_name = "greedy"
         self.face_check = True
         self.require_puff = False
+        self.pose = False
         self.cascade = False
         self.far = True
         self.preprocess = False
@@ -132,6 +141,16 @@ class Command(BaseCommand):
         # this) — stays None for --image test mode and file sources, both of
         # which _create_alert's raw-clip fallback already guards for.
         self._raw_buffer = None
+        # Inert by default. handle() replaces this with a real
+        # verifier; watch_merged drives this class WITHOUT calling
+        # handle(), so the attribute has to exist from construction or
+        # _score() raises AttributeError at the first alert.
+        self.vlm = vlm.DisabledVerifier("not configured by this runner")
+        self.vlm_min_confidence = 50
+        # Spec §6: the last few frames, so the VLM judges an EVENT rather than a
+        # still. Fed from the frame loop; empty means the current frame alone,
+        # which is what every existing test exercises.
+        self.frame_buffer = vlm.FrameBuffer()
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -197,6 +216,16 @@ class Command(BaseCommand):
             help="Disable the mouth-proximity rule, accepting any cigarette/vape "
                  "found anywhere on a person's body. Faster (skips a face pass "
                  "per smoker) and more permissive.",
+        )
+        parser.add_argument(
+            "--pose",
+            action="store_true",
+            help="Also run YOLOv8-pose and score the hand-to-mouth GESTURE "
+                 "(wrist rising to the nose and falling). Wrist and nose "
+                 "keypoints stay resolvable far past the range where an 85mm "
+                 "cigarette becomes two pixels, so this is the only smoking "
+                 "indicator that reaches long range. Off by default because it "
+                 "is a fifth model on a CPU box: expect a real frame-rate cost.",
         )
         parser.add_argument(
             "--require-puff",
@@ -308,6 +337,29 @@ class Command(BaseCommand):
         # --no-face-check and --ablate face are the same switch.
         self.face_check = not options["no_face_check"] and "face" not in self.ablate
         self.require_puff = options["require_puff"] and "puff" not in self.ablate
+        self.pose = options["pose"] and "pose" not in self.ablate
+
+        # Second-stage VLM verifier. Built once here rather than per alert so
+        # the HTTP connection survives; build_verifier returns an inert
+        # DisabledVerifier for every unusable configuration, so nothing
+        # downstream needs to branch on "is it on?".
+        _vlm_cfg = SystemSettings.load()
+        self.vlm = vlm.build_verifier(
+            enabled=_vlm_cfg.vlm_enabled and "vlm" not in self.ablate,
+            provider=_vlm_cfg.vlm_provider,
+            api_key=_vlm_cfg.vlm_api_key or None,
+            model=_vlm_cfg.vlm_model,
+            timeout=_vlm_cfg.vlm_timeout,
+            endpoint=_vlm_cfg.vlm_endpoint,
+        )
+        self.vlm_min_confidence = _vlm_cfg.vlm_min_confidence
+        self.stdout.write(vlm.describe(self.vlm, _vlm_cfg.vlm_model))
+
+        if self.pose:
+            self.stdout.write(
+                "Pose gesture cue: ON (fifth model — expect a lower frame rate)"
+            )
+
         # Must stay AFTER --ablate is parsed above, or 'preprocess' in --ablate
         # would be read against the empty default set and silently ignored.
         self.preprocess = options["preprocess"] and "preprocess" not in self.ablate
@@ -440,7 +492,60 @@ class Command(BaseCommand):
                 n = track.update_puff(nearest_ratio, now_ts)
                 if n:
                     self.stats[f"puffs observed (person #{track.id})"] = n
+                # Stamped on the track so the scoring layer can tell "kept
+                # because it was at the mouth" from "kept because no face was
+                # resolvable". Only the first is evidence; the second is the
+                # detector declining to reject (see find_mouth's docstring).
+                track.last_mouth_ratio = nearest_ratio
+                track.last_mouth_seen = now_ts
         return per_track
+
+    def _feed_pose(self, frame, tracks, now_ts):
+        """Feed the POSE hand-to-mouth gesture into each track's rhythm state.
+
+        This is what brings watch_smoking_pose's "Strong" gesture indicator into
+        the production pipeline. It lived only in that standalone command, which
+        watch_all does not run -- so in a real deployment the indicator scored
+        nothing at all.
+
+        Opt-in (--pose) because it is a FIFTH model on a CPU box that already
+        runs four: expect a real frame-rate cost. The per-detector temporal
+        rules are time-based, so a lower frame rate stays correct, just coarser.
+
+        Wrist and nose keypoints stay resolvable long after an 85mm cigarette
+        becomes two pixels, so this is the only smoking indicator that reaches
+        past object range.
+        """
+        if not self.pose or not tracks:
+            return
+        try:
+            poses = recognition.detect_pose(frame)
+        except Exception as exc:
+            self.stats[f"pose unavailable: {type(exc).__name__}"] += 1
+            self.pose = False   # don't retry every frame once it's broken
+            self.stdout.write(self.style.WARNING(
+                f"Pose model failed, continuing without the gesture cue: {exc}"
+            ))
+            return
+
+        for box, kpts in poses:
+            ratio = recognition.hand_to_mouth_ratio(kpts)
+            if ratio is None:
+                continue
+            # Greedy IoU match, same association rule the rest of this command
+            # uses. A pose with no matching person track is dropped rather than
+            # creating one -- person detection owns track creation.
+            best, best_iou = None, 0.0
+            for track in tracks:
+                if track.is_scene or track.box is None:
+                    continue
+                iou = recognition._iou(track.box, box)
+                if iou > best_iou:
+                    best, best_iou = track, iou
+            if best is not None and best_iou >= POSE_MATCH_IOU:
+                n = best.update_gesture(ratio, now_ts)
+                if n:
+                    self.stats[f"hand-to-mouth gestures (person #{best.id})"] = n
 
     def _detect_persons(self, frame):
         """Person boxes + (optionally) external track ids for the chosen tracker."""
@@ -549,10 +654,9 @@ class Command(BaseCommand):
         # from it later (see _create_alert) instead of relying only on the
         # annotated buffer's sparser processed frames.
         self._source_path = None if is_live else source
-        # Live sources can't be seeked backwards, and record_camera's segments
-        # aren't safely readable while the current one is still open (see
-        # RawFrameRecorder's docstring) — so a live source gets its own rolling
-        # buffer of RAW (unannotated) frames to cut a raw clip from instead.
+        # Live sources can't be seeked backwards, so a live source gets its own
+        # rolling buffer of RAW (unannotated) frames to cut a raw clip from
+        # instead (see RawFrameRecorder's docstring).
         self._raw_buffer = recognition.RawFrameRecorder() if is_live else None
 
         # Settings are re-polled every few seconds (like watch_curfew/watch_parking)
@@ -649,6 +753,7 @@ class Command(BaseCommand):
                 smokes = self._detect(frame, conf, persons=persons)
 
                 tracks = tracker.update(persons, now_ts, ids=ids)
+                self._feed_pose(frame, tracks, now_ts)
                 per_track = self._apply_face_rule(
                     frame, tracker.assign(smokes, now_ts), now_ts,
                 )
@@ -675,6 +780,10 @@ class Command(BaseCommand):
 
                 # Buffer this annotated frame for the evidence clip.
                 self.clip.add(frame, now_ts)
+                # Spec §6: the same frames feed the VLM's multi-frame send, so
+                # it judges a short event rather than one still. The buffer
+                # keeps them ~1s apart and holds only three.
+                self.frame_buffer.add(frame, now_ts)
 
                 # Confirmation is time-based, but VOTE_MIN_FRAMES still needs a
                 # few frames to land inside the window — below ~2 FPS that floor,
@@ -803,11 +912,19 @@ class Command(BaseCommand):
 
         # Puff-cycle gate (opt-in): require the hand-to-mouth rhythm as well as
         # the dwell. (Scene tracks never reach here — see the early return above.)
-        if self.require_puff:
-            puffs = track.puff_count(now_ts)
-            if puffs < PUFF_MIN_CYCLES:
-                self.stats[f"held back: no puff rhythm (person #{track.id})"] += 1
-                return
+        # The puff rhythm used to be an opt-in HARD GATE (--require-puff): no
+        # rhythm, no alert. It is now a scored cue worth 0.25 that fires on its
+        # own merits, so the rhythm counts on every run instead of only when a
+        # flag is passed. The indicator table rates it "Strong", and a Strong
+        # indicator sitting behind an off-by-default flag was contributing
+        # nothing in production.
+        #
+        # --require-puff still gates, for ablation runs measuring the rhythm in
+        # isolation.
+        puffs = track.puff_count(now_ts)
+        if self.require_puff and puffs < PUFF_MIN_CYCLES:
+            self.stats[f"held back: no puff rhythm (person #{track.id})"] += 1
+            return
 
         box = track.box or best[:4]
         if "cooldown" not in self.ablate:
@@ -828,19 +945,52 @@ class Command(BaseCommand):
 
         summary = ", ".join(sorted({s[5] for s in track.dets}))
         who = track.display
-        puff_note = ""
-        puffs = track.puff_count(now_ts)
-        if puffs:
-            puff_note = f", {puffs} puff cycle(s) observed"
-        self.stats[f"ALERTS:{best_label}"] += 1
+        puff_note = f", {puffs} puff cycle(s) observed" if puffs else ""
+
+        # E28/E29 for smoking. The cigarette is the identity marker but the
+        # weakest link in the chain (a few pixels at range), so it is priced no
+        # higher than the bare object cue and below the puff rhythm. cigarette and
+        # near_mouth are a redundant pair, as are gesture and puffs -- only the
+        # heavier of each scores (see scoring.py).
+        # `dwell` always fires here: the gate above has already required it.
+        # It is a real cue rather than a constant only because the gate is
+        # meant to become a weight in turn -- until it does, calibration must
+        # treat it as an intercept term (see calibrate_weights).
+        # Spec §4.2 prices four system indicators and no others; `dwell` was the
+        # code's own. It remains a GATE above -- nothing reaches scoring until
+        # the object has persisted -- it simply no longer adds points as well.
+        cues = {"cigarette"}
+        if self._near_mouth(track, now_ts):
+            cues.add("near_mouth")
+        if track.gesture_count(now_ts):
+            cues.add("gesture")
+        if puffs >= PUFF_MIN_CYCLES:
+            cues.add("puffs")
+
+        score, verdict = self._score(
+            cues, frame, box,
+            context=(f"{summary} detected at {best_score * 100:.0f}% confidence, "
+                     f"held {present_for:.0f}s, {puffs} puff cycle(s)"),
+        )
+
+        if "scoring" not in self.ablate and not score.alerting:
+            self.stats[f"WATCH:{best_label} ({score.score:.2f})"] += 1
+            self.stdout.write(self.style.WARNING(f"WATCH {score.summary()}"))
+            return
+
+        self.stats[f"ALERTS:{best_label}:{score.level}"] += 1
         alert = self._create_alert(
-            best_score, best_label, frame,
+            score.score, best_label, frame,
             description=(
                 f"Public smoking detected: {summary} on {who}, present "
-                f"for {present_for:.0f}s{puff_note} on {self.camera.code} feed."
+                f"for {present_for:.0f}s{puff_note} on {self.camera.code} feed. "
+                f"Score {score.score:.2f} ({score.level}) "
+                f"[{', '.join(sorted(score.cues))}]."
+                + (f" VLM: {verdict.reason}" if verdict.ok and verdict.reason else "")
             ),
             box=box, face_threshold=face_threshold, face_frame=clean_frame,
-            now=now_ts,
+            now=now_ts, score_obj=score, verdict=verdict,
+            object_confidence=best_score,
         )
         track.last_alerted_at = now_ts
         track.has_alerted = True
@@ -849,6 +999,64 @@ class Command(BaseCommand):
             (f"ALERT created: {alert.code}" if alert else "ALERT suppressed (dry run)")
             + f" ({best_label}, {who}, held {present_for:.0f}s{puff_note})"
         ))
+
+    # ---- weighted scoring (core/vision/scoring.py) -------------------------
+
+    def _score(self, cues, frame, box, context="", multipliers=None):
+        """Turn a set of fired cues into a scored, banded result.
+
+        v3 §4's one exception to the visibility gate lands here: repeated puff
+        motion with NO detected cigarette still calls the checker, because the
+        cigarette is the hardest object in the system to see at CCTV range. On
+        puffs alone the score is 0.40 and nothing is shown; it becomes visible
+        only if the checker both spots the item (0.15) and reads the motion as
+        smoking (0.20), reaching exactly 0.75.
+        """
+        cues = set(cues)
+        verdict = vlm.unavailable("not attempted")
+
+        if "vlm" not in self.ablate:
+            verdict = vlm.verify_frame(self.vlm, frame, "smoking", box=box,
+                                       context=context,
+                                       frames=self.frame_buffer.recent())
+            if verdict.ok:
+                fired = verdict.fired_cues()
+                # v3 §6: `smoking_item_visible` scores ONLY when YOLO did not
+                # detect the item. Otherwise it counts the same cigarette
+                # twice -- once as the 0.40 gate and again as a 0.15 cue.
+                if "cigarette" in cues:
+                    fired.discard("vlm_smoking_item")
+                cues |= fired
+                # The hand-to-mouth reading both confirms and de-escalates:
+                # drinking, eating and a phone call are ordinary explanations
+                # for the same motion, and the pose model cannot tell them
+                # apart. This is the question that carries the detector.
+                scene = verdict.enum_multipliers()
+                if scene:
+                    multipliers = dict(multipliers or {})
+                    multipliers.update(scene)
+                    self.stats[
+                        f"ai hand-to-mouth: {verdict.cues.get('hand_to_mouth_activity')}"] += 1
+                self.stats[f"ai {verdict.verdict} ({verdict.tier})"] += 1
+            elif verdict.error != "disabled":
+                self.stats[f"ai unavailable: {verdict.error[:40]}"] += 1
+
+        return scoring.Score("smoking", scoring.SMOKING_WEIGHTS, cues,
+                             multipliers=multipliers,
+                             vlm_confidence=verdict.confidence if verdict.ok else None), verdict
+
+    def _near_mouth(self, track, now_ts):
+        """True when this track had a face-anchored object AT the mouth recently.
+
+        Deliberately not "the face rule didn't reject it" -- a detection kept
+        because no face could be resolved is not evidence that anything was
+        near a mouth.
+        """
+        seen = getattr(track, "last_mouth_seen", None)
+        ratio = getattr(track, "last_mouth_ratio", None)
+        if seen is None or ratio is None:
+            return False
+        return (now_ts - seen) <= MOUTH_CUE_MAX_AGE and ratio <= FACE_PROXIMITY
 
     def _cooldown_blocks(self, box, now, cooldown):
         """True if we already alerted near roughly this spot inside the
@@ -862,7 +1070,7 @@ class Command(BaseCommand):
     # ---- shared alert creation --------------------------------------------
 
     def _create_alert(self, score, label, frame, description, box=None, face_threshold=45,
-                      face_frame=None, now=None):
+                      face_frame=None, now=None, score_obj=None, verdict=None, object_confidence=None):
         ts_label = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{ts_label}_smoking_{label}.jpg"
         cv2.imwrite(str(self.violations_dir / filename), frame)
@@ -893,8 +1101,7 @@ class Command(BaseCommand):
         # RAW (unannotated, full source frame rate/resolution) clip. File
         # sources cut straight from the source file (best quality, real fps).
         # Live sources can't be seeked, so they fall back to the rolling
-        # RawFrameRecorder buffer of raw frames instead (see its docstring for
-        # why record_camera's segments aren't usable for this).
+        # RawFrameRecorder buffer of raw frames instead (see its docstring).
         raw_video_url = ""
         raw_name = f"{ts_label}_smoking_{label}_raw.mp4"
         raw_path = self.violations_dir / raw_name
@@ -934,6 +1141,7 @@ class Command(BaseCommand):
             status=Alert.Status.ACTIVE,
             camera=self.camera,
             timestamp=timezone.now(),
+            # Now the weighted violation likelihood, not the YOLO box score.
             confidence=score,
             description=description,
             image_url=image_url,
@@ -942,4 +1150,12 @@ class Command(BaseCommand):
             suspect=label,
             matched_person=matched_person,
             match_confidence=match_confidence,
+            level=score_obj.level if score_obj is not None else "",
+            cues=score_obj.as_dict() if score_obj is not None else {},
+            # The DETECTOR's own confidence in the anchoring box, kept apart
+            # from `confidence` (the violation likelihood). See Alert.object_confidence.
+            object_confidence=object_confidence,
+            vlm_verdict=verdict.verdict if (verdict is not None and verdict.ok) else "",
+            vlm_confidence=verdict.confidence if (verdict is not None and verdict.ok) else None,
+            vlm_reason=verdict.reason if (verdict is not None and verdict.ok) else "",
         )

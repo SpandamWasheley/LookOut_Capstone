@@ -146,7 +146,7 @@ function Slider({ label, value, min, max, step = 1, unit, desc, onChange }) {
           }}
         />
       </div>
-      {desc && <p className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>{desc}</p>}
+      {desc && <p className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>{desc}</p>}
     </div>
   );
 }
@@ -169,7 +169,7 @@ function SensitivitySelector({ label, value, onChange }) {
           <button
             key={lvl}
             onClick={() => onChange(i)}
-            className="flex-1 py-2 rounded-lg text-[11px] font-medium transition-all"
+            className="flex-1 py-2 rounded-lg text-[13px] font-medium transition-all"
             style={{
               background: value === i ? "var(--primary)" : "var(--secondary)",
               color: value === i ? "var(--primary-foreground)" : "var(--muted-foreground)",
@@ -189,8 +189,8 @@ function Toggle({ label, desc, value, onChange }) {
   return (
     <div className="flex items-center justify-between py-3" style={{ borderBottom: "1px solid var(--border)" }}>
       <div>
-        <div className="text-[13px] font-medium" style={{ color: "var(--foreground)" }}>{label}</div>
-        <div className="text-[11px] mt-0.5" style={{ color: "var(--muted-foreground)" }}>{desc}</div>
+        <div className="text-[15px] font-medium" style={{ color: "var(--foreground)" }}>{label}</div>
+        <div className="text-[13px] mt-0.5" style={{ color: "var(--muted-foreground)" }}>{desc}</div>
       </div>
       <button
         onClick={() => onChange(!value)}
@@ -647,7 +647,7 @@ export function SystemConfig() {
               <button
                 key={s.id}
                 onClick={() => setActive(s.id)}
-                className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left transition-all text-[13px] font-medium"
+                className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left transition-all text-[15px] font-medium"
                 style={{
                   background: isActive ? `${s.color}12` : "transparent",
                   color: isActive ? s.color : "var(--muted-foreground)",
@@ -672,7 +672,7 @@ export function SystemConfig() {
               <div className="flex flex-col items-center justify-center py-16 gap-2">
                 <AlertTriangle size={24} style={{ color: "#ef4444" }} />
                 <div className="text-sm font-medium" style={{ color: "var(--foreground)" }}>Failed to load settings</div>
-                <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>{loadError}</div>
+                <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>{loadError}</div>
               </div>
             ) : (
               content[active] ?? (
@@ -720,7 +720,7 @@ export function SystemConfig() {
                 </div>
                 <div>
                   <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>{config.title}</div>
-                  <div className="text-[12px] mt-1" style={{ color: "var(--muted-foreground)" }}>{config.message}</div>
+                  <div className="text-[14px] mt-1" style={{ color: "var(--muted-foreground)" }}>{config.message}</div>
                 </div>
               </div>
               <div className="flex items-center gap-2 px-5 pb-5">

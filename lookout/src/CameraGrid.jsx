@@ -194,7 +194,7 @@ function DetectionJobsPanel({ jobs, onDismiss, onCancel }) {
                 style={{ color: cfg.color, flexShrink: 0, marginTop: 1 }} />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-[12px] font-semibold capitalize" style={{ color: "var(--foreground)" }}>
+                  <span className="text-[14px] font-semibold capitalize" style={{ color: "var(--foreground)" }}>
                     {job.violationType} test
                   </span>
                   {job.status === "running" && onCancel ? (
@@ -210,19 +210,19 @@ function DetectionJobsPanel({ jobs, onDismiss, onCancel }) {
                     </button>
                   )}
                 </div>
-                <div className="text-[10px] truncate" style={{ color: "var(--muted-foreground)" }} title={job.sourceFilename}>
+                <div className="text-[12px] truncate" style={{ color: "var(--muted-foreground)" }} title={job.sourceFilename}>
                   {job.sourceFilename}
                 </div>
-                <div className="text-[10px] mt-1" style={{ color: cfg.color, fontFamily: "'DM Mono', monospace" }}>
+                <div className="text-[12px] mt-1" style={{ color: cfg.color, fontFamily: "'DM Mono', monospace" }}>
                   {cfg.label}{job.status === "running" ? ` · ${elapsedLabel(job.startedAt)}` : ""}
                 </div>
                 {job.status === "failed" && job.error && (
-                  <div className="text-[10px] mt-1 line-clamp-3" style={{ color: "var(--muted-foreground)" }}>
+                  <div className="text-[12px] mt-1 line-clamp-3" style={{ color: "var(--muted-foreground)" }}>
                     {job.error.slice(0, 200)}
                   </div>
                 )}
                 {job.status === "done" && (
-                  <div className="text-[10px] mt-1" style={{ color: "var(--muted-foreground)" }}>
+                  <div className="text-[12px] mt-1" style={{ color: "var(--muted-foreground)" }}>
                     Check the Violations tab for new alerts.
                   </div>
                 )}
@@ -272,7 +272,7 @@ function EmptyTile({ fill }) {
     >
       <WifiOff size={16} style={{ color: "var(--muted-foreground)" }} />
       <span
-        className="text-[9px] mt-1"
+        className="text-[11px] mt-1"
         style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}
       >
         NO CAMERA
@@ -305,7 +305,7 @@ function CameraTile({ cam, alert, isSelected, onSelect, onExpand, fill }) {
 
         {/* LIVE badge for a streaming camera */}
         {cam.isLive && cam.status !== "offline" && (
-          <div className="absolute top-2 right-2 flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold"
+          <div className="absolute top-2 right-2 flex items-center gap-1 px-1.5 py-0.5 rounded text-[12px] font-semibold"
             style={{ background: "rgba(239,68,68,0.85)", color: "#fff" }}>
             <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
             LIVE
@@ -324,7 +324,7 @@ function CameraTile({ cam, alert, isSelected, onSelect, onExpand, fill }) {
         {/* Top-left badges */}
         <div className="absolute top-2 left-2 flex items-center gap-1.5">
           <div
-            className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium"
+            className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[12px] font-medium"
             style={{ background: "rgba(0,0,0,0.65)", color: "#cbd5e1", backdropFilter: "blur(4px)", fontFamily: "'DM Mono', monospace" }}
           >
             {cam.id}
@@ -332,14 +332,14 @@ function CameraTile({ cam, alert, isSelected, onSelect, onExpand, fill }) {
           {cam.status === "online" && (
             <div className="flex items-center gap-1 px-1.5 py-0.5 rounded" style={{ background: "rgba(239,68,68,0.85)" }}>
               <span className="w-1 h-1 rounded-full bg-white animate-pulse" />
-              <span className="text-[9px] font-semibold" style={{ color: "#fff", fontFamily: "'DM Mono', monospace" }}>LIVE</span>
+              <span className="text-[11px] font-semibold" style={{ color: "#fff", fontFamily: "'DM Mono', monospace" }}>LIVE</span>
             </div>
           )}
         </div>
 
         {/* Top-right FPS */}
         <div
-          className="absolute top-2 right-2 text-[9px] px-1.5 py-0.5 rounded"
+          className="absolute top-2 right-2 text-[11px] px-1.5 py-0.5 rounded"
           style={{ background: "rgba(0,0,0,0.55)", color: "#94a3b8", fontFamily: "'DM Mono', monospace" }}
         >
           {cam.fps}fps
@@ -360,7 +360,7 @@ function CameraTile({ cam, alert, isSelected, onSelect, onExpand, fill }) {
         {cam.status === "offline" && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-1">
             <WifiOff size={18} style={{ color: "#ef4444" }} />
-            <span className="text-[10px] font-medium" style={{ color: "#ef4444", fontFamily: "'DM Mono', monospace" }}>
+            <span className="text-[12px] font-medium" style={{ color: "#ef4444", fontFamily: "'DM Mono', monospace" }}>
               NO SIGNAL
             </span>
           </div>
@@ -370,12 +370,12 @@ function CameraTile({ cam, alert, isSelected, onSelect, onExpand, fill }) {
       {/* Footer */}
       <div className="px-3 py-2 flex items-center justify-between shrink-0">
         <div className="min-w-0">
-          <div className="text-[12px] font-semibold text-white leading-none truncate">{cam.name}</div>
-          <div className="text-[10px] mt-0.5 truncate" style={{ color: "var(--muted-foreground)" }}>{cam.zone}</div>
+          <div className="text-[14px] font-semibold text-white leading-none truncate">{cam.name}</div>
+          <div className="text-[12px] mt-0.5 truncate" style={{ color: "var(--muted-foreground)" }}>{cam.zone}</div>
         </div>
         <div className="text-right shrink-0 ml-2">
           <div
-            className="text-[10px] font-medium"
+            className="text-[12px] font-medium"
             style={{
               color: cam.status === "online" ? "#10b981" : cam.status === "degraded" ? "#f59e0b" : "#ef4444",
               fontFamily: "'DM Mono', monospace",
@@ -383,7 +383,7 @@ function CameraTile({ cam, alert, isSelected, onSelect, onExpand, fill }) {
           >
             {cam.status}
           </div>
-          <div className="text-[10px] mt-0.5" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+          <div className="text-[12px] mt-0.5" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
             {cam.lastMotion}
           </div>
         </div>
@@ -451,7 +451,7 @@ function ExpandedCamera({ cam, alert, onClose, isAdmin, onCameraUpdated }) {
           style={{ background: "var(--card)", borderTop: "1px solid var(--border)" }}>
           <div>
             <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>{cam.name}</div>
-            <div className="text-[11px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+            <div className="text-[13px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
               {cam.id} · {cam.zone || "—"} · {cam.status}
             </div>
           </div>
@@ -460,7 +460,7 @@ function ExpandedCamera({ cam, alert, onClose, isAdmin, onCameraUpdated }) {
               <button
                 type="button"
                 onClick={() => setShowStreamModal(true)}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium"
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[13px] font-medium"
                 style={{ background: "var(--secondary)", color: "var(--foreground)", border: "1px solid var(--border)" }}
               >
                 <Link2 size={12} /> Stream
@@ -470,13 +470,13 @@ function ExpandedCamera({ cam, alert, onClose, isAdmin, onCameraUpdated }) {
               <button
                 type="button"
                 onClick={() => setShowEdgeEditor(true)}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium"
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[13px] font-medium"
                 style={{ background: "var(--secondary)", color: "var(--foreground)", border: "1px solid var(--border)" }}
               >
                 <Shapes size={12} /> Edge Zones
               </button>
             )}
-            <div className="text-[11px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+            <div className="text-[13px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
               {cam.lastMotion ? `motion ${cam.lastMotion}` : ""}
             </div>
           </div>
@@ -631,7 +631,7 @@ export function CameraGrid({ compact = false, isAdmin = false }) {
     <div>
       {/* Toolbar with the layout switcher */}
       <div className="flex items-center justify-between mb-3">
-        <div className="text-[11px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+        <div className="text-[13px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
           {activeCount} camera{activeCount === 1 ? "" : "s"} · showing {Math.min(activeCount, layout.tiles)}/{layout.tiles}
         </div>
 
@@ -639,7 +639,7 @@ export function CameraGrid({ compact = false, isAdmin = false }) {
           {isAdmin && (
             <button
               onClick={() => setShowUpload(true)}
-              className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[12px] transition-colors"
+              className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[14px] transition-colors"
               style={{ border: "1px solid var(--border)", background: "var(--card)", color: "var(--foreground)" }}
             >
               <Upload size={14} />
@@ -650,7 +650,7 @@ export function CameraGrid({ compact = false, isAdmin = false }) {
           {isAdmin && (
             <button
               onClick={() => setShowHistory(true)}
-              className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[12px] transition-colors"
+              className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[14px] transition-colors"
               style={{ border: "1px solid var(--border)", background: "var(--card)", color: "var(--foreground)" }}
             >
               <History size={14} />
@@ -661,7 +661,7 @@ export function CameraGrid({ compact = false, isAdmin = false }) {
           <div className="relative" ref={menuRef}>
           <button
             onClick={() => setMenuOpen((o) => !o)}
-            className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[12px] transition-colors"
+            className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[14px] transition-colors"
             style={{ border: "1px solid var(--border)", background: "var(--card)", color: "var(--foreground)" }}
           >
             <LayoutGrid size={14} />
@@ -679,7 +679,7 @@ export function CameraGrid({ compact = false, isAdmin = false }) {
                   <button
                     key={l.key}
                     onClick={() => selectLayout(l.key)}
-                    className="w-full flex items-center gap-3 px-3 py-1.5 text-[12px] transition-colors hover:opacity-80"
+                    className="w-full flex items-center gap-3 px-3 py-1.5 text-[14px] transition-colors hover:opacity-80"
                     style={{ color: isActive ? "#f59e0b" : "var(--foreground)", background: isActive ? "rgba(245,158,11,0.08)" : "transparent" }}
                   >
                     <LayoutIcon layout={l} />

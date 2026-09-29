@@ -43,6 +43,7 @@ flagged rather than silently resolved:
 import math
 from collections import deque
 
+from . import scoring
 from .recognition import _iou
 from .tracking import SceneBaseline, norm_distance
 
@@ -68,8 +69,9 @@ PUSH_SECONDS = 5.0            # E18 sustained push
 OBJ_STATIC_SECONDS = 30       # E21 unattended property
 CROWD_SOFT = 6                # E23 density guard
 CROWD_HARD = 10
-SCORE_OBSERVE = 0.35          # E29 decision bands
-SCORE_ALERT = 0.55
+SCORE_OBSERVE = scoring.SCORE_WATCH    # E29 decision bands, now shared
+SCORE_ALERT = scoring.SCORE_WARNING
+SCORE_VIOLATION = scoring.SCORE_VIOLATION
 
 # --- constants stated inside individual rules rather than in the E.8 table ---
 
@@ -118,34 +120,96 @@ WEAPON_ALONE_ALERTS = False
 # --- E28 recommended initial weights ----------------------------------------
 # Reasoned defaults pending field calibration. The ablation harness supports
 # per-cue removal so each weight can be revised against measured precision.
+# Spec §4.3: snatch (E6-E9), property theft (E21-E22) and carnapping (E15-E19)
+# are DISABLED BY DEFAULT and gated behind --enable-legacy-theft. They are not
+# deleted: they work, they are cited, and they are a fair basis for future work.
+# But the spec scopes this system to HOLDUP, and a detector that also fires on
+# four other patterns cannot report a clean precision figure for the one it
+# claims to detect.
+LEGACY_CUES = frozenset({
+    "E6", "E7", "E8", "E9",              # snatch
+    "E15", "E16", "E17", "E18", "E19",   # carnapping
+    "E21", "E22",                        # unattended property
+})
+
+# What §4.3 prices for holdup, and nothing else.
+HOLDUP_CUES = frozenset({"E10", "E12", "E14", "E20"})
+
+
 WEIGHTS = {
-    "E14": 0.45,   # weapon presence   — escalation is intentional
-    "E9": 0.35,    # custody transfer  — highest specificity of any non-weapon cue
-    "E22": 0.35,   # custody at anchor — same cue, unattended-property variant
-    "E18": 0.35,   # push-away         — near-unique motion signature
-    "E12": 0.25,   # confrontation freeze
-    "E19": 0.25,   # identity mismatch — conditional on a re-ID embedding
-    "E7": 0.20,    # separation burst
-    "E10": 0.20,   # loiter            — context, never sufficient alone
-    "E16": 0.20,   # interaction dwell — primary carnapping cue
-    "E17": 0.15,   # tamper posture    — coarse aspect-ratio proxy
-    "E8": 0.10,    # heading divergence — corroborating only
-}
-MULTIPLIERS = {
-    "E13": 1.5,    # group convergence
-    "E20": 1.3,    # nocturnal
+    # Spec 4.3. Only the cues the spec prices for HOLDUP carry weight by
+    # default; the legacy patterns above are gated behind --enable-legacy-theft
+    # and contribute nothing unless asked for.
+    "E14": 0.45,   # knife / weapon present  -- GATE. Fernandez-Testa (2024)
+    "E12": 0.20,   # confrontation freeze    -- Ruiz-Santaquiteria (2021)
+    "E10": 0.10,   # loitering               -- citation pending (spec 12.2)
+
+    # --- legacy theft patterns (spec 4.3: "disable by default") -------------
+    # Retained at their original values so --enable-legacy-theft reproduces the
+    # previous behaviour exactly, and so the ablation harness can still report
+    # before/after. Excluded from scoring unless that flag is set.
+    "E9": 0.35,    # custody transfer   (snatch)
+    "E22": 0.35,   # custody at anchor  (unattended property)
+    "E18": 0.35,   # push-away          (carnapping)
+    "E19": 0.25,   # identity mismatch  (carnapping)
+    "E7": 0.20,    # separation burst   (snatch)
+    "E16": 0.20,   # interaction dwell  (carnapping)
+    "E17": 0.15,   # tamper posture     (carnapping)
+    "E8": 0.10,    # heading divergence (snatch)
 }
 
-DISCARD, OBSERVE, CANDIDATE = "discard", "observe", "candidate"
+# Two cues the spec prices for holdup have NO detector behind them yet:
+#   "knife near wrist + plausible size"  0.15  Ruiz-Santaquiteria (2021)
+#   "knife persistence (momentum)"       0.15  Fernandez-Testa (2024)
+# Both need new vision work rather than a weight, so they are absent rather
+# than stubbed at zero -- a cue that can never fire is worse than one that is
+# openly missing, because it looks implemented. Holdup's system total is
+# therefore 0.75, not the spec's 1.05, and every holdup score reads lower than
+# the document's worked examples until these land.
+MISSING_HOLDUP_CUES = ("knife_near_wrist_plausible_size", "knife_persistence")
+MULTIPLIERS = {
+    # E13 (group convergence, x1.5) is GONE. Spec §4.3: "has no citation and
+    # fires on ordinary crowds. Drop it unless a source is found." None was, so
+    # it is dropped rather than left in place unjustified -- a multiplier that
+    # inflates every scene with a crowd in it is the opposite of what a
+    # barangay plaza needs.
+    # E30-E33 are the VLM's, applied once at alert time by watch_thief rather
+    # than per frame -- E30-E32 as cues, E33 as the denial multiplier.
+    # E20 is no longer a constant. The flat nocturnal x1.3 it used to hold was
+    # not supported by either Philippine dataset examined -- both put the peak
+    # in the afternoon -- so it is now looked up per three-hour block from
+    # Robielos & Duran (2020). See scoring.MANILA_HOUR_BLOCKS.
+}
+
+# E20's retired value, kept only so the ablation harness can reproduce the
+# pre-Manila behaviour with --ablate e20-manila for the before/after table.
+LEGACY_NOCTURNAL_MULTIPLIER = 1.3
+
+# E29's original three-outcome vocabulary, now aliased onto the shared
+# four-level model. The two lower bands are unchanged; what used to be the
+# single top band "candidate" is SPLIT at 0.75, so a candidate is now reported
+# as either WARNING or VIOLATION. Nothing that alerted before stops alerting --
+# watch_thief returns early only on DISCARD and OBSERVE, so both halves of the
+# old top band still fall through to _create_alert.
+DISCARD, OBSERVE, CANDIDATE = scoring.NONE, scoring.WATCH, scoring.WARNING
+WARNING = scoring.WARNING
+VIOLATION = scoring.VIOLATION
 
 
 def band_of(score):
-    """E29 — map a score to one of three outcomes."""
-    if score > SCORE_ALERT:
-        return CANDIDATE
-    if score >= SCORE_OBSERVE:
-        return OBSERVE
-    return DISCARD
+    """E29 — map a score to a band.
+
+    One deliberate change from the original: the alert band is now entered at
+    score >= SCORE_ALERT rather than score > SCORE_ALERT, matching the scoring
+    document. It matters because the weights are 0.05-granular and sums land on
+    0.55 exactly (E9 0.35 + E10 0.20), which previously fell to Observe.
+    """
+    return scoring.level_of(score)
+
+
+def alerts_at(band):
+    """True when `band` is one the watcher should write an Alert for."""
+    return scoring.alerts_at(band)
 
 
 def _person_norm_distance(person_box, other_box):
@@ -199,12 +263,44 @@ class Evidence:
         self.abstained = set(abstained)
         self.tracks = list(tracks)
         self.detail = detail
-        self.score = sum(self.cues.values())
+        self.raw_score = sum(self.cues.values())
+        self.score = self.raw_score
         for factor in self.multipliers.values():
             self.score *= factor
+        # Capped at 1.0 so the score reads as a likelihood. It is also what
+        # Alert.confidence stores, which removes watch_thief's separate clamp.
+        self.score = min(1.0, max(0.0, self.score))
+        # Kept so rescore() can reapply the same promotion rule later.
+        self.weapon_alone_alerts = weapon_alone_alerts
         self.band = band_of(self.score)
-        if weapon_alone_alerts and "E14" in self.cues and self.band != CANDIDATE:
+        if (weapon_alone_alerts and "E14" in self.cues
+                and not scoring.alerts_at(self.band)):
             self.band = CANDIDATE
+
+    def rescore(self, extra_cues=None, extra_multipliers=None):
+        """Fold late-arriving evidence into this incident's score, in place.
+
+        Exists for the VLM (E30-E40), which is called ONCE at alert time rather
+        than per frame -- Layer E runs on every frame and a network round trip
+        cannot. The band is recomputed from the new total, so a work-context
+        reading can demote a candidate out of the alerting range and a confirmed
+        holdup can promote it to VIOLATION.
+        """
+        for name, weight in (extra_cues or {}).items():
+            self.cues[name] = weight
+        for name, factor in (extra_multipliers or {}).items():
+            self.multipliers[name] = factor
+
+        self.raw_score = sum(self.cues.values())
+        total = self.raw_score
+        for factor in self.multipliers.values():
+            total *= factor
+        self.score = min(1.0, max(0.0, total))
+        self.band = band_of(self.score)
+        if (self.weapon_alone_alerts and "E14" in self.cues
+                and not scoring.alerts_at(self.band)):
+            self.band = CANDIDATE
+        return self
 
     @property
     def rules(self):
@@ -793,7 +889,7 @@ class TheftEngine:
     # ---- per-frame entry point ----
 
     def update(self, tracks, carriables, vehicles, threats, now,
-               is_night=False):
+               is_night=False, now_dt=None):
         """Runs Layer E for one frame and returns a list of Evidence.
 
         `tracks`    live person tracks from tracking.PersonTracker
@@ -818,6 +914,11 @@ class TheftEngine:
         self.anchors.update(vehicles, carriables, usable, now)
 
         evidence = []
+        # E20 is read once per frame, not per evidence item: every incident in
+        # a frame shares one wall clock, and the lookup is pure arithmetic.
+        self._time_multiplier = scoring.manila_time_multiplier(now_dt)
+        self._time_label = scoring.manila_block_label(now_dt)
+
         evidence += self._pair_evidence(usable, now, reach, threats, is_night)
         evidence += self._carnapping_evidence(usable, now, is_night)
         evidence += self._property_evidence(usable, now, is_night)
@@ -1025,11 +1126,21 @@ class TheftEngine:
                 others = {o for ts, target, o in self._converge_log
                           if target == tid and now - ts <= CONVERGE_WINDOW}
                 if len(others) >= CONVERGE_MIN:
-                    mult["E13"] = MULTIPLIERS["E13"]
+                    pass   # E13 dropped -- see MULTIPLIERS
                     self._bump("multiplier:E13 group convergence")
                     break
-        if is_night and not self._off("e20"):
-            mult["E20"] = MULTIPLIERS["E20"]
+        # E20 — time-of-day weighting from Robielos & Duran (2020). Applied on
+        # EVERY frame, not just at night: the Manila blocks scale the score DOWN
+        # in the quiet morning hours (x0.56 at 06:00-09:00) as well as up at the
+        # 15:00-18:00 peak, which the old nocturnal-only rule could not do.
+        #
+        # --ablate e20 restores a flat x1.0 (no time weighting at all); it does
+        # not fall back to the retired nocturnal constant.
+        if not self._off("e20"):
+            factor = getattr(self, "_time_multiplier", 1.0)
+            if factor != 1.0:
+                mult["E20"] = factor
+
 
     def _prune(self, now):
         while self._converge_log and now - self._converge_log[0][0] > CONVERGE_WINDOW:

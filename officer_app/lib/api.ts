@@ -216,6 +216,29 @@ export interface ApiAlert {
   officers_assigned_names: string[];
   suspect: string;
   notes: string;
+
+  // --- scoring (core/vision/scoring.py) --------------------------------------
+  // `confidence` above is the VIOLATION SCORE, not the detector's certainty --
+  // the two were conflated until the scoring layer separated them. What the
+  // officer is shown is `level_label`; the number stays for the record.
+  level: "" | "none" | "watch" | "warning" | "violation";
+  level_label: string;
+  // What the object detector itself was sure of. Null on alerts filed before
+  // the two were separated, so every read of it is guarded.
+  object_confidence: number | null;
+  // The full cue vector. `checklist` inside it is the plain-language evidence
+  // the alert card shows -- built server-side so this app and the web
+  // dashboard cannot drift apart on wording.
+  cues: {
+    checklist?: { found: string[]; reduced_by: string[] };
+    [key: string]: unknown;
+  } | null;
+
+  // --- AI context checker (core/vision/vlm.py) -------------------------------
+  // One sentence a barangay official can read. Shown marked as AI-generated.
+  vlm_verdict: string;
+  vlm_confidence: number | null;
+  vlm_reason: string;
 }
 
 export const getAlerts = () => apiFetch<{ results: ApiAlert[] } | ApiAlert[]>("/alerts/");

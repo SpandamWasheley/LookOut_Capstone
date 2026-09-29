@@ -27,6 +27,28 @@ function mapAlert(raw) {
     matchedPersonId: raw.matched_person,
     matchedPersonName: raw.matched_person_name,
     matchConfidence: raw.match_confidence,
+    // Weighted-sum scoring (core/vision/scoring.py). `level` is the band the
+    // score fell into; `confidence` above is now a violation likelihood rather
+    // than a raw YOLO box score, so the two should be read together.
+    level: raw.level,
+    // Spec 2's human-facing name (Monitoring / Possible / Confirmed). Derived
+    // server-side so the dashboards and the officer app cannot drift apart.
+    levelLabel: raw.level_label || "",
+    // What the OBJECT DETECTOR was sure of, kept apart from `confidence`
+    // (the violation likelihood). Null on alerts filed before the two were
+    // separated, which is why every read of it is guarded.
+    objectConfidence: raw.object_confidence,
+    // v3 2: the evidence the tanod reads instead of the score. Built
+    // server-side so both clients show the same words.
+    checklist: raw.cues?.checklist ?? null,
+    cues: raw.cues,
+    reviewedValid: raw.reviewed_valid,
+    // VLM second stage. `vlmReason` is the sentence worth showing a reviewer.
+    vlmVerdict: raw.vlm_verdict,
+    vlmConfidence: raw.vlm_confidence,
+    vlmReason: raw.vlm_reason,
+    reviewedBy: raw.reviewed_by_name,
+    reviewedAt: raw.reviewed_at,
   };
 }
 
@@ -127,7 +149,7 @@ function DismissModal({ alert, onConfirm, onClose }) {
             </div>
             <div>
               <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Dismiss Alert</div>
-              <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>{alert.id} · {vcfg.label}</div>
+              <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>{alert.id} · {vcfg.label}</div>
             </div>
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg"
@@ -166,7 +188,7 @@ function DismissModal({ alert, onConfirm, onClose }) {
                   >
                     {reason === r && <span className="w-2 h-2 rounded-full" style={{ background: "#f59e0b" }} />}
                   </span>
-                  <span className="text-[12px]"
+                  <span className="text-[14px]"
                     style={{ color: reason === r ? "var(--foreground)" : "var(--muted-foreground)" }}>
                     {r}
                   </span>
@@ -259,12 +281,12 @@ function AlertCard({ alert, onView, thin = false, extraPad = 0 }) {
                   the list stays the same height regardless of title length
                   (e.g. "Parking Obstruction in Area" vs "Smoking"). */}
               <div className="flex items-center gap-2">
-                <span className="text-[13px] font-semibold truncate" style={{ color: "var(--foreground)" }}>
+                <span className="text-[15px] font-semibold truncate" style={{ color: "var(--foreground)" }}>
                   {vcfg.label}
                 </span>
               </div>
               {/* Row 2: alert ID + reported time + optional officers */}
-              <div className="flex items-center gap-2 text-[10px] overflow-hidden" style={{ color: "var(--muted-foreground)" }}>
+              <div className="flex items-center gap-2 text-[12px] overflow-hidden" style={{ color: "var(--muted-foreground)" }}>
                 <span className="font-medium flex-shrink-0" style={{ fontFamily: "'DM Mono', monospace", color: "var(--foreground)" }}>
                   {alert.id}
                 </span>
@@ -289,16 +311,16 @@ function AlertCard({ alert, onView, thin = false, extraPad = 0 }) {
             <div className="flex-1 min-w-0">
               {/* Row 1: title + status */}
               <div className="flex items-center gap-2 flex-wrap mb-0.5">
-                <span className="text-[13px] font-semibold" style={{ color: "var(--foreground)" }}>
+                <span className="text-[15px] font-semibold" style={{ color: "var(--foreground)" }}>
                   {vcfg.label}
                 </span>
-                <span className="text-[11px] font-medium px-2 py-0.5 rounded-full"
+                <span className="text-[13px] font-medium px-2 py-0.5 rounded-full"
                   style={{ background: scfg.bg, color: scfg.color }}>
                   {scfg.label}
                 </span>
               </div>
               {/* Row 2: alert ID + time */}
-              <div className="flex items-center gap-3 text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+              <div className="flex items-center gap-3 text-[13px]" style={{ color: "var(--muted-foreground)" }}>
                 <span className="font-medium" style={{ fontFamily: "'DM Mono', monospace", color: "var(--foreground)" }}>
                   {alert.id}
                 </span>
@@ -308,11 +330,11 @@ function AlertCard({ alert, onView, thin = false, extraPad = 0 }) {
 
             {/* Right: confidence + officer count */}
             <div className="flex flex-col items-end gap-1 flex-shrink-0">
-              <span className="text-[11px] font-medium" style={{ color: vcfg.color }}>
+              <span className="text-[13px] font-medium" style={{ color: vcfg.color }}>
                 {(alert.confidence * 100).toFixed(0)}% conf
               </span>
               {officerCount > 0 && (
-                <span className="flex items-center gap-1 text-[11px] font-medium" style={{ color: "#3b82f6" }}>
+                <span className="flex items-center gap-1 text-[13px] font-medium" style={{ color: "#3b82f6" }}>
                   <Radio size={9} />
                   {`${officerCount} officer${officerCount !== 1 ? "s" : ""}`}
                 </span>
@@ -345,18 +367,18 @@ function ShiftInfo() {
   const ShiftIcon = shift.Icon;
   return (
     <div className="px-4 py-4">
-      <div className="text-[10px] font-semibold uppercase mb-3"
+      <div className="text-[12px] font-semibold uppercase mb-3"
         style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace", letterSpacing: "0.1em" }}>
         Shift Info
       </div>
       <div className="space-y-2.5">
-        <div className="flex items-center justify-between text-[12px]">
+        <div className="flex items-center justify-between text-[14px]">
           <span className="flex items-center gap-2" style={{ color: "var(--muted-foreground)" }}>
             <ShiftIcon size={12} /> Current shift
           </span>
           <span className="font-semibold" style={{ color: shift.color }}>{shift.name}</span>
         </div>
-        <div className="flex items-center justify-between text-[12px]">
+        <div className="flex items-center justify-between text-[14px]">
           <span className="flex items-center gap-2" style={{ color: "var(--muted-foreground)" }}>
             <Clock size={12} /> Hours
           </span>
@@ -390,7 +412,7 @@ function RightPanel({ alerts, cameras }) {
     : "--:--";
 
   const sectionLabel = (text) => (
-    <div className="text-[10px] font-semibold uppercase mb-3"
+    <div className="text-[12px] font-semibold uppercase mb-3"
       style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace", letterSpacing: "0.1em" }}>
       {text}
     </div>
@@ -402,7 +424,7 @@ function RightPanel({ alerts, cameras }) {
       <div className="px-4 pt-4 pb-4 flex-shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
         {sectionLabel("System Status")}
         <div className="space-y-3">
-          <div className="flex items-center justify-between text-[12px]">
+          <div className="flex items-center justify-between text-[14px]">
             <span className="flex items-center gap-2" style={{ color: "var(--muted-foreground)" }}>
               <CameraIcon size={12} /> Cameras online
             </span>
@@ -410,7 +432,7 @@ function RightPanel({ alerts, cameras }) {
               {onlineCount} / {cameras.length || "—"}
             </span>
           </div>
-          <div className="flex items-center justify-between text-[12px]">
+          <div className="flex items-center justify-between text-[14px]">
             <span className="flex items-center gap-2" style={{ color: "var(--muted-foreground)" }}>
               <Clock size={12} /> Last detection
             </span>
@@ -436,7 +458,7 @@ function RightPanel({ alerts, cameras }) {
             <div key={s.label} className="rounded-lg p-2.5"
               style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
               <div className="text-xl font-bold leading-none" style={{ color: s.color }}>{s.value}</div>
-              <div className="text-[10px] mt-1" style={{ color: "var(--muted-foreground)" }}>{s.label}</div>
+              <div className="text-[12px] mt-1" style={{ color: "var(--muted-foreground)" }}>{s.label}</div>
             </div>
           ))}
         </div>
@@ -448,7 +470,7 @@ function RightPanel({ alerts, cameras }) {
         {recentAlerts.length === 0 ? (
           <div className="flex flex-col items-center justify-center flex-1 gap-1.5">
             <Bell size={22} style={{ color: "var(--muted-foreground)", opacity: 0.4 }} />
-            <span className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>No active violations</span>
+            <span className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>No active violations</span>
           </div>
         ) : (
           <div className="scrollbar-visible flex flex-col gap-2 overflow-y-auto flex-1 min-h-0">
@@ -459,13 +481,13 @@ function RightPanel({ alerts, cameras }) {
                 <div key={a.id} className="rounded-lg p-2.5 flex-shrink-0"
                   style={{ background: "var(--secondary)", borderLeft: `3px solid ${vcfg.color}`, border: "1px solid var(--border)" }}>
                   <div className="flex items-center justify-between mb-1">
-                    <span className="text-[12px] font-semibold truncate pr-1" style={{ color: "var(--foreground)" }}>{vcfg.label}</span>
-                    <span className="text-[10px] font-medium px-1.5 py-0.5 rounded flex-shrink-0"
+                    <span className="text-[14px] font-semibold truncate pr-1" style={{ color: "var(--foreground)" }}>{vcfg.label}</span>
+                    <span className="text-[12px] font-medium px-1.5 py-0.5 rounded flex-shrink-0"
                       style={{ background: scfg.bg, color: scfg.color }}>
                       {scfg.label}
                     </span>
                   </div>
-                  <div className="flex items-center gap-2 text-[10px]" style={{ color: "var(--muted-foreground)" }}>
+                  <div className="flex items-center gap-2 text-[12px]" style={{ color: "var(--muted-foreground)" }}>
                     <span className="flex items-center gap-1"><Clock size={9} /> {formatTime(a.timestamp)}</span>
                     <span className="ml-auto font-medium" style={{ color: vcfg.color }}>{(a.confidence * 100).toFixed(0)}%</span>
                   </div>
@@ -719,7 +741,7 @@ export function AlertFeed({ showFilters = false, user }) {
   };
 
   const errorBanner = actionError && (
-    <div className="mb-3 px-3 py-2 rounded-lg text-[12px] flex items-center justify-between gap-2"
+    <div className="mb-3 px-3 py-2 rounded-lg text-[14px] flex items-center justify-between gap-2"
       style={{ background: "rgba(239,68,68,0.12)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.3)" }}>
       <span>{actionError}</span>
       <button onClick={() => setActionError("")} className="font-semibold cursor-pointer flex-shrink-0">✕</button>
@@ -737,6 +759,7 @@ export function AlertFeed({ showFilters = false, user }) {
           officers={officers}
           currentOfficerId={user?.role === "officer" || user?.role === "both" ? user?.officerId : null}
           verifierName={user?.name}
+          userRole={user?.role}
           onClose={() => setSelectedAlert(null)}
           onDismiss={() => setDismissTarget(selectedAlert)}
           onResolved={handleCitationResolved}
@@ -789,7 +812,7 @@ export function AlertFeed({ showFilters = false, user }) {
             {compactHidden > 0 && (
               <button
                 onClick={() => setShowAllRecent(true)}
-                className="h-[34px] flex-shrink-0 flex items-center justify-center gap-1 text-[11px] font-semibold rounded-lg transition-colors"
+                className="h-[34px] flex-shrink-0 flex items-center justify-center gap-1 text-[13px] font-semibold rounded-lg transition-colors"
                 style={{ color: "var(--primary)", background: "transparent" }}
                 onMouseEnter={(e) => (e.currentTarget.style.background = "var(--secondary)")}
                 onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
@@ -815,7 +838,7 @@ export function AlertFeed({ showFilters = false, user }) {
                   <span className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>
                     Recent Violations
                   </span>
-                  <span className="text-[11px] font-medium px-2 py-0.5 rounded-full"
+                  <span className="text-[13px] font-medium px-2 py-0.5 rounded-full"
                     style={{ background: "rgba(239,68,68,0.12)", color: "#ef4444" }}>
                     {visible.length}
                   </span>
@@ -871,13 +894,13 @@ export function AlertFeed({ showFilters = false, user }) {
                 Potential Violations
               </h1>
               {activeCount > 0 && (
-                <span className="flex items-center gap-1.5 text-[12px] font-medium px-2.5 py-1 rounded-full"
+                <span className="flex items-center gap-1.5 text-[14px] font-medium px-2.5 py-1 rounded-full"
                   style={{ background: "rgba(239,68,68,0.15)", color: "#ef4444" }}>
                   <Bell size={11} /> {activeCount} active
                 </span>
               )}
             </div>
-            <span className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>
+            <span className="text-[14px]" style={{ color: "var(--muted-foreground)" }}>
               AI-detected · evidence captured · human review required
             </span>
           </div>
@@ -946,7 +969,7 @@ export function AlertFeed({ showFilters = false, user }) {
                     <button
                       key={o.key}
                       onClick={() => setSortOrder(o.key)}
-                      className="px-2.5 py-1 text-[11px] font-medium rounded-full transition-all whitespace-nowrap"
+                      className="px-2.5 py-1 text-[13px] font-medium rounded-full transition-all whitespace-nowrap"
                       style={{
                         background: isActive ? "var(--card)" : "transparent",
                         color: isActive ? "var(--foreground)" : "var(--muted-foreground)",
@@ -959,7 +982,7 @@ export function AlertFeed({ showFilters = false, user }) {
                 })}
               </div>
 
-              <span className="text-[12px] whitespace-nowrap flex-shrink-0" style={{ color: "var(--muted-foreground)" }}>
+              <span className="text-[14px] whitespace-nowrap flex-shrink-0" style={{ color: "var(--muted-foreground)" }}>
                 {visible.length} record{visible.length !== 1 ? "s" : ""}
               </span>
             </div>

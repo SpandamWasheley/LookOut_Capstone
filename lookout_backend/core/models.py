@@ -5,6 +5,7 @@ from django.contrib.auth.models import AbstractUser
 from django.db import models
 
 from core.constants import ZAMBOANGA_BARANGAYS
+from core.vision.scoring import LEVEL_CHOICES as SCORE_LEVEL_CHOICES
 
 _PUNCTUATION_RE = re.compile(r"[^\w\s]")
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -241,6 +242,62 @@ class Alert(models.Model):
     )
     match_confidence = models.FloatField(null=True, blank=True)
 
+    # --- weighted-sum scoring (core/vision/scoring.py) ----------------------
+    # `confidence` above is now the FINAL score for detectors that have been
+    # ported to the scoring model — an estimate of "how likely is this a
+    # violation", not "how sure is YOLO that this is a bottle". `level` is the
+    # band that score fell into, and is what the dashboard should badge on.
+    # Blank for detectors still on the old hard-gate chain.
+    level = models.CharField(max_length=10, blank=True, choices=SCORE_LEVEL_CHOICES)
+    # The full cue vector: which indicators fired, their weights, the
+    # multipliers, and anything suppressed as redundant or abstained. Kept even
+    # for alerts that barely cleared the bar, because this is the training data
+    # calibrate_weights fits the final weights against — discarding it would
+    # discard every labelled example.
+    cues = models.JSONField(default=dict, blank=True)
+    # Set by an officer/admin reviewing the alert: was this a real violation?
+    # Null until reviewed. This is the LABEL for calibration — without it the
+    # cue vectors above have no target to fit.
+    reviewed_valid = models.BooleanField(null=True, blank=True)
+    # WHO reviewed the footage and closed the alert, and when — the officer or
+    # dispatcher who dismissed it or marked it resolved. A record saying a
+    # violation was dismissed, without saying who dismissed it, is not an
+    # audit trail: that is a decision not to act on a reported violation, and
+    # somebody has to own it.
+    #
+    # Stamped server-side from the requesting user on the status transition
+    # (see AlertViewSet.perform_update) and never accepted from the client, or
+    # a reviewer could attribute their own call to someone else. Cleared again
+    # if the alert is reopened.
+    reviewed_by = models.ForeignKey(
+        "User", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="reviewed_alerts",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+
+    # What the OBJECT DETECTOR was sure of: the YOLO confidence of the box
+    # that anchored this alert, 0-1. Kept separate from `confidence` above,
+    # which is the violation likelihood across every indicator.
+    #
+    # They answer different questions and were being conflated on the violation
+    # card. "How sure is the model that this is a bottle?" is not "how likely is
+    # it that this is a drinking violation?" -- a crisp bottle detection on a
+    # man walking home is high on the first and low on the second, and that gap
+    # is the whole point of the scoring layer.
+    object_confidence = models.FloatField(null=True, blank=True)
+
+    # --- VLM verification (core/vision/vlm.py) ------------------------------
+    # Verdict on the evidence crop: yes / no / unclear, or blank when the VLM is
+    # disabled or the call failed. NEVER gates alert creation -- a VLM that is
+    # down must not stop a security system from alerting.
+    vlm_verdict = models.CharField(max_length=10, blank=True)
+    # The model's own certainty in its verdict, 0-1. Distinct from
+    # `confidence`, which is the violation likelihood across all indicators.
+    vlm_confidence = models.FloatField(null=True, blank=True)
+    # One sentence, shown on the violation card. The main reason the VLM is
+    # worth its latency: a human-readable justification instead of a number.
+    vlm_reason = models.TextField(blank=True)
+
     class Meta:
         ordering = ["-timestamp"]
 
@@ -434,9 +491,16 @@ class SystemSettings(models.Model):
     # Public-drinking ordinances are usually scoped by hour, the way curfew is.
     # Off by default so enabling the detector doesn't silently stop alerting
     # during the day; turn it on and set the window to match the local ordinance.
+    # Kept as a hard gate for operators who need one, but it is OFF by default
+    # and the scoring model no longer depends on it: the time band is now a
+    # SCORED CUE worth scoring.DRINKING_WEIGHTS["time_band"], so drinking
+    # outside the window loses points instead of being silently dropped.
     drinking_hours_enabled = models.BooleanField(default=False)
-    drinking_start = models.TimeField(default=time(22, 0))
-    drinking_end = models.TimeField(default=time(5, 0))
+    # 16:00-24:00, the high band from Omamalin (2022) and the Thai/W. Australia
+    # ED series — tagay is an afternoon-into-evening activity. The previous
+    # 22:00-05:00 was copied from the curfew window and matched no source.
+    drinking_start = models.TimeField(default=time(16, 0))
+    drinking_end = models.TimeField(default=time(0, 0))
 
     # Gathering ("inuman") detection: a second, independent path to an alert
     # alongside the per-person one above. Near the camera an individual's
@@ -444,11 +508,15 @@ class SystemSettings(models.Model):
     # gathering still is — so this scales the evidence standard with what the
     # camera can actually establish, instead of one fixed per-person rule.
     drinking_min_group = models.PositiveSmallIntegerField(default=2)
-    # Default of 25s is deliberately short for testing against sub-minute
-    # clips — a real deployment should set this much higher, ~600-900s
-    # (10-15 minutes), so a few people briefly standing near each other isn't
-    # mistaken for a drinking session.
-    drinking_group_duration = models.PositiveSmallIntegerField(default=25)
+    # 600s (10 minutes), the low end of the 10-15 minute range implied by
+    # Omamalin's (2022) 3-5 hour tagay sessions. Raised from a 25s testing
+    # value: at 25s a few people briefly standing near each other registered as
+    # a drinking session.
+    #
+    # NOTE FOR CALIBRATION: sub-minute test clips can no longer complete a
+    # gathering. Use real long-form footage, or lower this in Settings for the
+    # duration of a clip-based test run.
+    drinking_group_duration = models.PositiveSmallIntegerField(default=600)
 
     # A bottle merely HELD (not raised to the mouth, or no face resolvable to
     # check) still counts as evidence, but only after this much longer than
@@ -477,6 +545,50 @@ class SystemSettings(models.Model):
     # the cooldown pinned to a place in the frame instead of a track id that
     # can churn.
     drinking_cooldown_center_dist = models.FloatField(default=1.5)
+
+    # --- VLM verification ---------------------------------------------------
+    # Second-stage vision-language check on the evidence crop at alert time
+    # (core/vision/vlm.py).
+    #
+    # ON by default, because the safe behaviour is already the DEFAULT one: with
+    # no credentials configured, build_verifier hands back an inert verifier and
+    # every detector runs exactly as it did before. So "enabled" here means "use
+    # it if it is usable", not "require it" — a fresh install with no API key
+    # behaves identically to having this switched off, and a deployment that
+    # adds a key gets verification on the next run with no settings visit.
+    #
+    # Set it to False to keep the VLM off even when a key IS present — for a
+    # metered connection, a privacy constraint, or an ablation run.
+    #
+    # It raises PRECISION, not recall — it only ever sees crops the detectors
+    # already produced, so it cannot find a violation YOLO missed. What it buys
+    # is the context geometry can't see (is this inuman or a family lunch? a
+    # holdup or a fish vendor?) and a readable reason on the alert card.
+    vlm_enabled = models.BooleanField(default=True)
+    vlm_provider = models.CharField(max_length=20, default="ollama")
+    # Where the local Ollama server listens. v3 §8 runs the checker on this
+    # machine, so there is no API key and no outbound request -- what used to
+    # be "is the credential valid" is now "is the server up and is the model
+    # pulled", which build_verifier checks once at startup.
+    vlm_endpoint = models.CharField(max_length=200,
+                                    default="http://localhost:11434")
+    # Held as a setting because model ids turn over far faster than this code
+    # will. If a run reports the model as not found, change it here.
+    vlm_model = models.CharField(max_length=60, default="qwen3-vl:4b")
+    # Blank falls back to the GOOGLE_API_KEY (or GEMINI_API_KEY) environment
+    # variable, which is where it belongs in a deployment — the field exists so
+    # a barangay admin can set it from the dashboard without shell access.
+    vlm_api_key = models.CharField(max_length=200, blank=True)
+    # Seconds before a call is abandoned and treated as unavailable. The alert
+    # is published either way; this only bounds how long it waits.
+    # A local 4B model on CPU is slower than a cloud call, and the alert path
+    # can afford to wait -- the frame loop has already moved on.
+    vlm_timeout = models.PositiveSmallIntegerField(default=60)
+    # Minimum self-reported certainty for a verdict to score at all. Below this
+    # the verdict is recorded on the alert for audit but contributes no cue —
+    # the model saying "maybe, 20%" is not evidence.
+    vlm_min_confidence = models.PositiveSmallIntegerField(default=50)
+
 
     alert_cooldown = models.PositiveSmallIntegerField(default=120)
     evidence_retention_days = models.PositiveSmallIntegerField(default=30)

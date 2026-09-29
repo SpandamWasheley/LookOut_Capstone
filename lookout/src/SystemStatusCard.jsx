@@ -86,7 +86,7 @@ export function SystemStatusCard({ alerts = [], cameras = [] }) {
             <div className="min-w-0">
               <div className="text-2xl font-bold text-white leading-none">{kpi.value}</div>
               <div className="text-sm font-medium mt-1.5 text-white">{kpi.label}</div>
-              <div className="text-[12px] mt-0.5" style={{ color: kpi.accent }}>{kpi.sub}</div>
+              <div className="text-[14px] mt-0.5" style={{ color: kpi.accent }}>{kpi.sub}</div>
             </div>
           </div>
         );

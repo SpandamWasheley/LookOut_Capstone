@@ -55,7 +55,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 
 from core.models import Camera, SystemSettings, ViolationType
-from core.vision import recognition, tracking
+from core.vision import recognition, tracking, vlm
 
 from .watch_smoking import Command as SmokingCommand
 from .watch_thief import Command as ThiefCommand
@@ -149,6 +149,21 @@ class Command(BaseCommand):
         self.violations_dir = settings.MEDIA_ROOT / "violations"
         os.makedirs(self.violations_dir, exist_ok=True)
 
+        # One VLM verifier shared by all three sub-detectors: a single
+        # connection and a single settings read. verify_frame() picks the prompt
+        # spec per call, so sharing costs nothing in specificity.
+        _vlm_cfg = SystemSettings.load()
+        self.vlm = vlm.build_verifier(
+            enabled=_vlm_cfg.vlm_enabled,
+            provider=_vlm_cfg.vlm_provider,
+            api_key=_vlm_cfg.vlm_api_key or None,
+            model=_vlm_cfg.vlm_model,
+            timeout=_vlm_cfg.vlm_timeout,
+            endpoint=_vlm_cfg.vlm_endpoint,
+        )
+        self.vlm_min_confidence = _vlm_cfg.vlm_min_confidence
+        self.stdout.write(vlm.describe(self.vlm, _vlm_cfg.vlm_model))
+
         self.far = not options["fast"]
         self.dry_run = options["dry_run"]
         self.tracker_name = options["tracker"]
@@ -206,6 +221,8 @@ class Command(BaseCommand):
         cmd.tracker_name = "greedy"  # never consulted — we own person detection here
         cmd.show_stats = False
         cmd.ablate = set()
+        cmd.vlm = self.vlm
+        cmd.vlm_min_confidence = self.vlm_min_confidence
         cmd.stats = Counter()
         cmd._alert_log = []
         cmd.stdout = self.stdout
@@ -496,7 +513,9 @@ class Command(BaseCommand):
                     cmd._process_track(track, tdets, now, dwell, cfg.alert_cooldown, frame, debug)
 
         for name in active:
-            self.engines[name]["cmd"].clip.add(frame, now)
+            cmd = self.engines[name]["cmd"]
+            cmd.clip.add(frame, now)
+            cmd.frame_buffer.add(frame, now)
 
     def _log_calibration_rows(self, dets, persons, ids, frame_idx, timestamp):
         """Writes one CSV row per raw detection, before routing, per-engine

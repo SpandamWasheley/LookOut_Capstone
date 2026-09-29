@@ -76,7 +76,7 @@ export function Dashboard() {
         style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}
       >
         <div className="flex items-center gap-3">
-          <h1 className="text-[15px] font-semibold text-white">Overview</h1>
+          <h1 className="text-[17px] font-semibold text-white">Overview</h1>
           <div
             className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs"
             style={{
@@ -116,7 +116,7 @@ export function Dashboard() {
               <div className="min-w-0">
                 <div className="text-xl font-semibold text-white leading-none">{kpi.value}</div>
                 <div className="text-xs font-medium mt-1" style={{ color: "rgba(255,255,255,0.5)" }}>{kpi.label}</div>
-                <div className="text-[11px] mt-0.5" style={{ color: kpi.accent, opacity: 0.85 }}>{kpi.sub}</div>
+                <div className="text-[13px] mt-0.5" style={{ color: kpi.accent, opacity: 0.85 }}>{kpi.sub}</div>
               </div>
             </div>
           );
@@ -140,7 +140,7 @@ export function Dashboard() {
               <span className="text-sm font-medium text-white">Live Feeds</span>
             </div>
             <div className="flex items-center gap-2">
-              <div className="flex items-center gap-1.5 text-[11px]" style={{ color: "#ef4444" }}>
+              <div className="flex items-center gap-1.5 text-[13px]" style={{ color: "#ef4444" }}>
                 <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse inline-block" />
                 REC
               </div>
@@ -169,7 +169,7 @@ export function Dashboard() {
             </div>
             {activeAlerts.length > 0 && (
               <span
-                className="text-[11px] font-medium px-2 py-0.5 rounded-full"
+                className="text-[13px] font-medium px-2 py-0.5 rounded-full"
                 style={{ background: "rgba(239,68,68,0.12)", color: "#ef4444" }}
               >
                 {activeAlerts.length} active

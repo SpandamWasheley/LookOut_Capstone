@@ -153,6 +153,7 @@ export const getAlerts = () => apiFetch("/alerts/");
 export const updateAlert = (id, payload) =>
   apiFetch(`/alerts/${id}/`, { method: "PATCH", body: JSON.stringify(payload) });
 
+
 export const getViolationTypes = () => apiFetch("/violation-types/");
 export const getBarangays = () => apiFetch("/barangays/");
 // Creating a citation against an alert resolves that alert server-side, in
@@ -171,11 +172,6 @@ export const searchViolators = (q) => apiFetch(`/violators/search/?q=${encodeURI
 export const mergeViolators = (winnerId, loserId) =>
   apiFetch(`/violators/${winnerId}/merge/`, { method: "POST", body: JSON.stringify({ loser_id: loserId }) });
 
-// Continuous CCTV recording, tied to dashboard login/logout: start when the
-// operator signs in, stop when they sign out. Fire-and-forget from the UI.
-export const startRecording = () => apiFetch("/recording/start/", { method: "POST" });
-export const stopRecording = () => apiFetch("/recording/stop/", { method: "POST" });
-export const getRecordingStatus = () => apiFetch("/recording/status/");
 
 export const getCameras = () => apiFetch("/cameras/");
 export const updateCamera = (id, payload) =>

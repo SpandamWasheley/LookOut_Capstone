@@ -18,3 +18,10 @@ opencv-python
 torch
 ultralytics
 lap  # ultralytics' ByteTrack/BoT-SORT (watch_* --tracker); auto-installs otherwise
+
+# Second-stage VLM verification (core/vision/vlm.py), via Gemini Flash.
+# Optional at RUNTIME: the verifier is inert without credentials and a missing
+# package degrades to "no VLM" rather than an error, so a detection box without
+# it still runs every detector. Set GOOGLE_API_KEY (free key from
+# aistudio.google.com) to switch it on.
+google-genai

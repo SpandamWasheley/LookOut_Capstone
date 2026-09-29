@@ -32,7 +32,7 @@ export function TypeFilterDropdown({ selected, onToggle, onClear }) {
     <div className="relative flex-shrink-0" ref={rootRef}>
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-all"
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[14px] font-medium transition-all"
         style={{
           background: selected.size > 0 ? "var(--primary)" : "var(--secondary)",
           color: selected.size > 0 ? "var(--primary-foreground)" : "var(--muted-foreground)",
@@ -41,7 +41,7 @@ export function TypeFilterDropdown({ selected, onToggle, onClear }) {
       >
         <Filter size={11} /> Type
         {selected.size > 0 && (
-          <span className="w-4 h-4 flex items-center justify-center rounded-full text-[10px] font-semibold"
+          <span className="w-4 h-4 flex items-center justify-center rounded-full text-[12px] font-semibold"
             style={{ background: "var(--primary-foreground)", color: "var(--primary)" }}>
             {selected.size}
           </span>
@@ -79,7 +79,7 @@ export function TypeFilterDropdown({ selected, onToggle, onClear }) {
                     style={{ accentColor: color }}
                   />
                   <TypeIcon size={13} style={{ color }} />
-                  <span className="text-[13px] font-medium" style={{ color: "var(--foreground)" }}>
+                  <span className="text-[15px] font-medium" style={{ color: "var(--foreground)" }}>
                     {t.short}
                   </span>
                 </label>
@@ -88,7 +88,7 @@ export function TypeFilterDropdown({ selected, onToggle, onClear }) {
             <button
               onClick={onClear}
               disabled={selected.size === 0}
-              className="w-full text-left px-3.5 py-1 text-[12px] font-medium transition-colors disabled:opacity-40 disabled:cursor-default"
+              className="w-full text-left px-3.5 py-1 text-[14px] font-medium transition-colors disabled:opacity-40 disabled:cursor-default"
               style={{ color: "var(--primary)", borderTop: "1px solid var(--border)" }}
             >
               Clear all

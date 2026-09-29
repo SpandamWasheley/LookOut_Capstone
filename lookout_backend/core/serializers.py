@@ -208,6 +208,7 @@ class AlertSerializer(serializers.ModelSerializer):
     )
     officers_assigned_names = serializers.SerializerMethodField()
     matched_person_name = serializers.SerializerMethodField()
+    reviewed_by_name = serializers.SerializerMethodField()
     # The watchers store a relative path (see core/media.py) — resolved to an
     # absolute URL here, against THIS request, so the host always matches
     # whatever the client actually connected through (localhost, a LAN IP, or
@@ -220,6 +221,16 @@ class AlertSerializer(serializers.ModelSerializer):
     video_url = serializers.SerializerMethodField()
     raw_video_url = serializers.SerializerMethodField()
 
+    # Spec 2: "watch/warning/violation" reads as three severities of the same
+    # claim; Monitoring/Possible/Confirmed reads as three degrees of certainty,
+    # which is what the score actually measures. Derived here rather than mapped
+    # in the client so both dashboards and the officer app agree by default.
+    level_label = serializers.SerializerMethodField()
+
+    def get_level_label(self, obj):
+        from core.vision.scoring import label_of
+        return label_of(obj.level) if obj.level else ""
+
     class Meta:
         model = Alert
         fields = [
@@ -227,13 +238,46 @@ class AlertSerializer(serializers.ModelSerializer):
             "confidence", "description", "image_url", "video_url", "raw_video_url",
             "officers_assigned", "officers_assigned_names", "suspect", "notes",
             "matched_person", "matched_person_name", "match_confidence",
+            # Weighted-sum scoring (core/vision/scoring.py). `level` is what the
+            # dashboard should badge on -- `confidence` is now a violation
+            # likelihood, so a bare percentage badge reads differently than it
+            # used to. `cues` is the audit trail: which indicators fired and
+            # what each was worth.
+            "level", "level_label",
+            "object_confidence", "cues",
+            # VLM second-stage verification. `vlm_reason` is the sentence worth
+            # showing a reviewer -- a readable justification, not another number.
+            "vlm_verdict", "vlm_confidence", "vlm_reason",
+            # `reviewed_valid` is the only one of these a client writes: it is
+            # the human label calibrate_weights fits the final weights against.
+            # The reviewer's identity is stamped server-side alongside it.
+            "reviewed_valid", "reviewed_by", "reviewed_by_name", "reviewed_at",
         ]
         # Set only by the watchers' recognition step (see core/face_registry.py),
         # never by a client PATCH.
-        read_only_fields = ["matched_person", "match_confidence"]
+        read_only_fields = [
+            "matched_person", "match_confidence",
+            # Written by the detectors through the ORM only. A client that
+            # could PATCH its own cue vector could rewrite the calibration
+            # training data after the fact.
+            "level", "level_label", "object_confidence", "cues",
+            "vlm_verdict", "vlm_confidence", "vlm_reason",
+            # Who reviewed it is recorded FROM the authenticated request, so a
+            # client cannot name somebody else as the reviewer.
+            "reviewed_by", "reviewed_by_name", "reviewed_at",
+        ]
 
     def get_officers_assigned_names(self, obj):
         return [o.name for o in obj.officers_assigned.all()]
+
+    def get_reviewed_by_name(self, obj):
+        """Display name of whoever reviewed this, or "" if nobody has.
+
+        Survives the reviewer's account being deleted: reviewed_by is
+        SET_NULL, so the alert keeps its label and simply loses the name
+        rather than losing the review.
+        """
+        return str(obj.reviewed_by) if obj.reviewed_by else ""
 
     def _resolve_media_url(self, value):
         if not value:
@@ -281,10 +325,21 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
             "drinking_held_dwell", "drinking_evidence_max_age",
             "drinking_mouth_proximity", "drinking_cooldown_center_dist",
             "drinking_hours_enabled", "drinking_start", "drinking_end",
+            "drinking_min_group", "drinking_group_duration",
+            "vlm_enabled", "vlm_provider", "vlm_model", "vlm_api_key", "vlm_endpoint",
+            "vlm_timeout", "vlm_min_confidence",
             "alert_cooldown", "evidence_retention_days",
             "auto_dispatch", "email_alerts", "sms_alerts",
             "updated_at",
         ]
+        extra_kwargs = {
+            # Settable from the dashboard, never returned by a GET. The endpoint
+            # is admin-only, but a credential echoed back lands in browser
+            # history, proxy logs and anything that caches the response. Blank
+            # means "fall back to GOOGLE_API_KEY", which is where it belongs in
+            # a real deployment.
+            "vlm_api_key": {"write_only": True},
+        }
         read_only_fields = ["updated_at"]
 
 

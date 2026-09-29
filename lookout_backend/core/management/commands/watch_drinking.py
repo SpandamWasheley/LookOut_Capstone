@@ -12,7 +12,7 @@ from core import face_registry
 from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
-from core.vision import recognition, tracking
+from core.vision import recognition, scoring, tracking, vlm
 
 DRINKING_CAMERA_CODE = "CAM-DRINKING"
 SETTINGS_REFRESH_SECONDS = 5  # re-poll SystemSettings this often, not every frame
@@ -77,7 +77,7 @@ FACE_CACHE_SECONDS = 1.0
 # Ablation switches — see HEURISTIC_RULES.md. Everything ON by default.
 ABLATABLE = (
     "posture", "vote", "dwell", "cooldown", "hours", "zones",
-    "stationary", "gathering", "preprocess",
+    "stationary", "gathering", "preprocess", "scoring", "vlm",
 )
 
 # --- Path A (solo) vs Path B (gathering / "inuman") -----------------------
@@ -158,6 +158,16 @@ class Command(BaseCommand):
         # if ever reached via _run_image (--image test mode), which never runs
         # _run_stream's setup. The real upload path always uses --source.
         self._raw_buffer = None
+        # Inert by default. handle() replaces this with a real
+        # verifier; watch_merged drives this class WITHOUT calling
+        # handle(), so the attribute has to exist from construction or
+        # _score() raises AttributeError at the first alert.
+        self.vlm = vlm.DisabledVerifier("not configured by this runner")
+        self.vlm_min_confidence = 50
+        # Spec §6: the last few frames, so the VLM judges an EVENT rather than a
+        # still. Fed from the frame loop; empty means the current frame alone,
+        # which is what every existing test exercises.
+        self.frame_buffer = vlm.FrameBuffer()
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -338,6 +348,24 @@ class Command(BaseCommand):
 
         # --no-face-check and --ablate posture are the same switch.
         self.face_check = not options["no_face_check"] and "posture" not in self.ablate
+
+        # Second-stage VLM verifier. Built once here rather than per alert so
+        # the HTTP connection survives; build_verifier returns an inert
+        # DisabledVerifier for every unusable configuration, so nothing
+        # downstream needs to branch on "is it on?".
+        _vlm_cfg = SystemSettings.load()
+        self.vlm = vlm.build_verifier(
+            enabled=_vlm_cfg.vlm_enabled and "vlm" not in self.ablate,
+            provider=_vlm_cfg.vlm_provider,
+            api_key=_vlm_cfg.vlm_api_key or None,
+            model=_vlm_cfg.vlm_model,
+            timeout=_vlm_cfg.vlm_timeout,
+            endpoint=_vlm_cfg.vlm_endpoint,
+        )
+        self.vlm_min_confidence = _vlm_cfg.vlm_min_confidence
+        self.stdout.write(vlm.describe(self.vlm, _vlm_cfg.vlm_model))
+
+
         self.include_generic = options["include_generic"]
 
         self.zones = []
@@ -593,10 +621,9 @@ class Command(BaseCommand):
         # from it later (see _create_alert) instead of relying only on the
         # annotated buffer's sparser processed frames.
         self._source_path = None if is_live else source
-        # Live sources can't be seeked backwards, and record_camera's segments
-        # aren't safely readable while the current one is still open (see
-        # RawFrameRecorder's docstring) — so a live source gets its own rolling
-        # buffer of RAW (unannotated) frames to cut a raw clip from instead.
+        # Live sources can't be seeked backwards, so a live source gets its own
+        # rolling buffer of RAW (unannotated) frames to cut a raw clip from
+        # instead (see RawFrameRecorder's docstring).
         self._raw_buffer = recognition.RawFrameRecorder() if is_live else None
 
         cfg = SystemSettings.load()
@@ -765,6 +792,10 @@ class Command(BaseCommand):
 
                 # Buffer this annotated frame for the evidence clip.
                 self.clip.add(frame, now_ts)
+                # Spec §6: the same frames feed the VLM's multi-frame send, so
+                # it judges a short event rather than one still. The buffer
+                # keeps them ~1s apart and holds only three.
+                self.frame_buffer.add(frame, now_ts)
 
                 if not fps_warned and self.stats["frames"] >= 30:
                     fps = self.stats["frames"] / max(wall_now - started_at, 1e-6)
@@ -879,6 +910,52 @@ class Command(BaseCommand):
 
     # ---- per-track temporal confirmation ----------------------------------
 
+    # ---- weighted scoring (core/vision/scoring.py) -------------------------
+
+    def _score(self, cues, frame, box, context="", multipliers=None):
+        """Turn a set of fired cues into a scored, banded result.
+
+        The AI checker is called here -- once, on a candidate whose object cue
+        has already held for the dwell, never per frame.
+
+        v3 §8 moved the trigger back to "the object has been detected for about
+        2 seconds", which is exactly the point this method is reached: the vote,
+        dwell and cooldown gates upstream have all passed. The v2 rule (only
+        call at score >= 55) is gone, because under v3 the checker also has to
+        be able to CUT a score, and a check that only ran on already-high scores
+        could never rescue the store-shelf case.
+        """
+        cues = set(cues)
+        verdict = vlm.unavailable("not attempted")
+
+        if "vlm" not in self.ablate:
+            verdict = vlm.verify_frame(self.vlm, frame, "drinking", box=box,
+                                       context=context,
+                                       frames=self.frame_buffer.recent())
+            if verdict.ok:
+                cues |= verdict.fired_cues()
+                # v3 §4: the scene reading is the checker's one way to cut a
+                # score. "other_activity" -- selling, carrying, delivering, or
+                # a family meal -- multiplies the whole total by 0.25, which
+                # drops even a maximum case out of sight.
+                scene = verdict.enum_multipliers()
+                if scene:
+                    multipliers = dict(multipliers or {})
+                    multipliers.update(scene)
+                    self.stats[f"ai scene: {verdict.cues.get('scene_type')}"] += 1
+                self.stats[f"ai {verdict.verdict} ({verdict.tier})"] += 1
+            elif verdict.error != "disabled":
+                self.stats[f"ai unavailable: {verdict.error[:40]}"] += 1
+
+        return scoring.Score("drinking", scoring.DRINKING_WEIGHTS, cues,
+                             multipliers=multipliers,
+                             vlm_confidence=verdict.confidence if verdict.ok else None), verdict
+
+    def _time_band_cue(self):
+        """The Omamalin high band (16:00-24:00) as a scored cue, not a gate."""
+        start, end = scoring.DRINKING_HIGH_BAND
+        return scoring.in_time_band(datetime.datetime.now(), start, end)
+
     def _process_track(self, track, dets, now_ts, dwell_seconds, cooldown,
                        frame, debug, face_threshold, clean_frame=None, *,
                        held_dwell_seconds, mouth_proximity, cooldown_center_dist):
@@ -973,15 +1050,48 @@ class Command(BaseCommand):
                 return
 
         who = track.display
-        self.stats[f"ALERTS:{posture}"] += 1
+
+        # E28/E29 for drinking: the gates above decided this is a CANDIDATE
+        # worth evaluating; the weighted sum decides whether it is a violation
+        # and at what level. Both the object and the posture are cues here, so
+        # `bottle` is priced as possession and `at_mouth` as consumption -- the
+        # redundancy rule keeps only the heavier of the two (see scoring.py).
+        # Spec §4.1 prices five system indicators and no others. `dwell` and
+        # `stationary` were cues of the code's own invention: the dwell timer is
+        # still a GATE above (nothing is scored until it elapses), and the spec
+        # folds "group stationary" into the gathering cue itself.
+        cues = {"bottle"}
+        if posture == "at mouth":
+            cues.add("at_mouth")
+        if self._time_band_cue():
+            cues.add("time_band")
+
+        score, verdict = self._score(
+            cues, frame, box,
+            context=(f"{best_label} detected at {best_score * 100:.0f}% confidence, "
+                     f"posture '{posture}', held {present_for:.0f}s by one person"),
+        )
+
+        if "scoring" not in self.ablate and not score.alerting:
+            # Below the WARNING band. Counted, not filed -- these are the
+            # labelled negatives calibrate_weights fits against.
+            self.stats[f"WATCH:{posture} ({score.score:.2f})"] += 1
+            self.stdout.write(self.style.WARNING(f"WATCH {score.summary()}"))
+            return
+
+        self.stats[f"ALERTS:{posture}:{score.level}"] += 1
         alert = self._create_alert(
-            best_score, best_label, frame,
+            score.score, best_label, frame,
             description=(
                 f"Public drinking detected: {best_label} ({posture}) on {who}, "
-                f"present for {present_for:.0f}s on {self.camera.code} feed."
+                f"present for {present_for:.0f}s on {self.camera.code} feed. "
+                f"Score {score.score:.2f} ({score.level}) "
+                f"[{', '.join(sorted(score.cues))}]."
+                + (f" VLM: {verdict.reason}" if verdict.ok and verdict.reason else "")
             ),
             box=box, face_threshold=face_threshold, face_frame=clean_frame,
-            now=now_ts,
+            now=now_ts, score_obj=score, verdict=verdict,
+            object_confidence=best_score,
         )
         track.last_alerted_at = now_ts
         track.has_alerted = True
@@ -1033,14 +1143,25 @@ class Command(BaseCommand):
             return
         self._gathering_funnel["stationary"].add(cluster.id)
 
+        # THE CORE OF THE REFACTOR. This used to be a hard gate: no fresh
+        # bottle sighting, no alert, full stop. A bottle is a small object on
+        # barangay CCTV and our weights are trained on datasets that look
+        # nothing like it, so that gate meant one missed detection silenced a
+        # sustained, stationary gathering entirely.
+        #
+        # Now the bottle is a CUE worth 0.30. Without it a qualifying gathering
+        # still scores gathering + duration + stationary (+ time band) and
+        # reaches WARNING; with it, VIOLATION. A missed detection costs
+        # escalation, not the alert.
         evidence = cluster.fresh_evidence(now_ts, evidence_max_age)
         if evidence is None:
             reason = ("no bottle evidence" if cluster.evidence is None
                       else "evidence stale (no fresh sighting)")
-            self.stats[f"held back: gathering {reason}"] += 1
-            return
-        self._gathering_funnel["evidence"].add(cluster.id)
-        _, _, _, _, ev_score, ev_label = evidence
+            self.stats[f"gathering scored without bottle: {reason}"] += 1
+            ev_score, ev_label = 0.0, "Gathering"
+        else:
+            self._gathering_funnel["evidence"].add(cluster.id)
+            _, _, _, _, ev_score, ev_label = evidence
 
         box = tuple(int(v) for v in cluster.bbox)
         cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), GATHERING_ALERT_COLOR, 3)
@@ -1068,12 +1189,37 @@ class Command(BaseCommand):
                 self.stats["suppressed: recent alert at same spot"] += 1
                 return
 
-        self.stats["ALERTS:gathering"] += 1
+        # "Group stationary" is included IN the gathering cue per §4.1, not
+        # priced separately -- a group that is not stationary is people passing
+        # each other, which the tracker already declines to call a group.
+        cues = {"gathering", "gathering_duration"}
+        if evidence is not None:
+            cues.add("bottle")
+        if self._time_band_cue():
+            cues.add("time_band")
+
+        score, verdict = self._score(
+            cues, frame, box,
+            context=(f"{n} people gathered and stationary for "
+                     f"{cluster.duration_held:.0f}s"
+                     + (f"; {ev_label} detected at {ev_score * 100:.0f}% confidence"
+                        if evidence is not None else "; no drinking vessel detected")),
+        )
+
+        if "scoring" not in self.ablate and not score.alerting:
+            self.stats[f"WATCH:gathering ({score.score:.2f})"] += 1
+            self.stdout.write(self.style.WARNING(f"WATCH {score.summary()}"))
+            return
+
+        self.stats[f"ALERTS:gathering:{score.level}"] += 1
         alert = self._create_alert(
-            ev_score, ev_label, frame,
+            score.score, ev_label, frame,
             description=(
                 f"Public drinking gathering detected: {n} persons, present "
-                f"for {cluster.duration_held:.0f}s on {self.camera.code} feed."
+                f"for {cluster.duration_held:.0f}s on {self.camera.code} feed. "
+                f"Score {score.score:.2f} ({score.level}) "
+                f"[{', '.join(sorted(score.cues))}]."
+                + (f" VLM: {verdict.reason}" if verdict.ok and verdict.reason else "")
             ),
             suspect=f"{ev_label} · Gathering ({n})",
             filename_tag=f"{ev_label.replace(' ', '_')}_gathering",
@@ -1091,7 +1237,8 @@ class Command(BaseCommand):
     # ---- shared alert creation --------------------------------------------
 
     def _create_alert(self, score, label, frame, description, suspect=None, filename_tag=None,
-                      box=None, face_threshold=45, face_frame=None, now=None):
+                      box=None, face_threshold=45, face_frame=None, now=None,
+                      score_obj=None, verdict=None, object_confidence=None):
         ts_label = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         tag = filename_tag or label.replace(" ", "_")
         filename = f"{ts_label}_drinking_{tag}.jpg"
@@ -1122,8 +1269,7 @@ class Command(BaseCommand):
         # RAW (unannotated, full source frame rate/resolution) clip. File
         # sources cut straight from the source file (best quality, real fps).
         # Live sources can't be seeked, so they fall back to the rolling
-        # RawFrameRecorder buffer of raw frames instead (see its docstring for
-        # why record_camera's segments aren't usable for this).
+        # RawFrameRecorder buffer of raw frames instead (see its docstring).
         raw_video_url = ""
         raw_name = f"{ts_label}_drinking_{tag}_raw.mp4"
         raw_path = self.violations_dir / raw_name
@@ -1163,6 +1309,7 @@ class Command(BaseCommand):
             status=Alert.Status.ACTIVE,
             camera=self.camera,
             timestamp=timezone.now(),
+            # Now the weighted violation likelihood, not the YOLO box score.
             confidence=score,
             description=description,
             image_url=image_url,
@@ -1171,4 +1318,14 @@ class Command(BaseCommand):
             suspect=suspect if suspect is not None else label,
             matched_person=matched_person,
             match_confidence=match_confidence,
+            level=score_obj.level if score_obj is not None else "",
+            # Retained even when it barely cleared the bar: this vector is the
+            # training data calibrate_weights fits the final weights against.
+            cues=score_obj.as_dict() if score_obj is not None else {},
+            # The DETECTOR's own confidence in the anchoring box, kept apart
+            # from `confidence` (the violation likelihood). See Alert.object_confidence.
+            object_confidence=object_confidence,
+            vlm_verdict=verdict.verdict if (verdict is not None and verdict.ok) else "",
+            vlm_confidence=verdict.confidence if (verdict is not None and verdict.ok) else None,
+            vlm_reason=verdict.reason if (verdict is not None and verdict.ok) else "",
         )

@@ -55,8 +55,6 @@ lookout_backend/yolov8n-pose.pt
 
 # Continuous CCTV recordings and recorder runtime state
 cctv records/
-lookout_backend/recorder.pid
-lookout_backend/recorder.stop
 cctv records/recorder.log
 
 # Local test artifacts
@@ -69,3 +67,16 @@ lookout_backend/_*.jpg
 
 # Django collectstatic output (regenerated on every deploy)
 staticfiles/
+
+# --- local database ---------------------------------------------------------
+# Untracked deliberately. It was committed up to 092fa72 "for full portability",
+# but it carries SystemSettings.vlm_api_key -- a live Gemini credential -- so
+# every commit was publishing it. Each developer now keeps their own:
+#   python manage.py migrate && python manage.py seed_demo
+*.sqlite3
+*.sqlite3-journal
+
+# Word lock files (created while a .docx is open, meaningless to anyone else)
+~$*.docx
+# Local backup of src/ taken before the font-size pass
+.font-bump-backup-src/

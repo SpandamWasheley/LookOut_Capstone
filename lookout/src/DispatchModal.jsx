@@ -46,17 +46,17 @@ function OfficerRow({ officer, count, isChecked, onToggle }) {
 
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
-          <span className="text-[13px] font-medium truncate" style={{ color: "var(--foreground)" }}>{officer.name}</span>
-          <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium flex-shrink-0"
+          <span className="text-[15px] font-medium truncate" style={{ color: "var(--foreground)" }}>{officer.name}</span>
+          <span className="text-[12px] px-1.5 py-0.5 rounded-full font-medium flex-shrink-0"
             style={{ background: `${sColor}22`, color: sColor }}>
             {officer.status.replace("-", " ")}
           </span>
         </div>
         <div className="flex items-center gap-3 mt-0.5">
-          <span className="text-[10px] flex items-center gap-1" style={{ color: "var(--muted-foreground)" }}>
+          <span className="text-[12px] flex items-center gap-1" style={{ color: "var(--muted-foreground)" }}>
             <MapPin size={9} /> {officer.location}
           </span>
-          <span className="text-[10px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+          <span className="text-[12px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
             {officer.badge}
           </span>
         </div>
@@ -65,7 +65,7 @@ function OfficerRow({ officer, count, isChecked, onToggle }) {
       {/* Workload */}
       <div className="text-right flex-shrink-0">
         <div className="text-sm font-bold leading-none" style={{ color: loadColor(count) }}>{count}</div>
-        <div className="text-[10px] mt-0.5" style={{ color: loadColor(count), opacity: 0.7 }}>
+        <div className="text-[12px] mt-0.5" style={{ color: loadColor(count), opacity: 0.7 }}>
           {loadLabel(count)}
         </div>
       </div>
@@ -131,7 +131,7 @@ export function DispatchModal({ alert, officers, alerts, onAssign, onClose }) {
             <span className="mt-0.5"><VIcon size={20} style={{ color: vcfg.color }} /></span>
             <div>
               <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Assign Officers</div>
-              <div className="text-[11px] mt-0.5" style={{ color: "var(--muted-foreground)" }}>
+              <div className="text-[13px] mt-0.5" style={{ color: "var(--muted-foreground)" }}>
                 {vcfg.label} · {alert.cameraZone} · {alert.id}
               </div>
             </div>
@@ -144,7 +144,7 @@ export function DispatchModal({ alert, officers, alerts, onAssign, onClose }) {
 
         {/* Tip */}
         <div className="px-6 pt-3 pb-1 flex-shrink-0">
-          <div className="flex items-center gap-1.5 text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+          <div className="flex items-center gap-1.5 text-[13px]" style={{ color: "var(--muted-foreground)" }}>
             <AlertTriangle size={10} style={{ color: "#ef4444" }} />
             You can select multiple officers to respond to this violation.
           </div>
@@ -164,7 +164,7 @@ export function DispatchModal({ alert, officers, alerts, onAssign, onClose }) {
 
           {/* Right: search + officer list */}
           <div className="flex flex-col gap-2 min-w-0 min-h-0">
-            <div className="text-[11px] font-semibold" style={{ color: "var(--muted-foreground)" }}>
+            <div className="text-[13px] font-semibold" style={{ color: "var(--muted-foreground)" }}>
               Available officers
             </div>
             <div className="relative flex-shrink-0">
@@ -173,14 +173,14 @@ export function DispatchModal({ alert, officers, alerts, onAssign, onClose }) {
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Search officers by name, zone or badge…"
-                className="w-full pl-9 pr-3 py-2 rounded-xl text-[13px] outline-none"
+                className="w-full pl-9 pr-3 py-2 rounded-xl text-[15px] outline-none"
                 style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
               />
             </div>
 
             <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-0.5">
               {available.length === 0 && offline.length === 0 ? (
-                <div className="py-8 text-center text-[12px]" style={{ color: "var(--muted-foreground)" }}>
+                <div className="py-8 text-center text-[14px]" style={{ color: "var(--muted-foreground)" }}>
                   No officers match "{search}".
                 </div>
               ) : (
@@ -196,7 +196,7 @@ export function DispatchModal({ alert, officers, alerts, onAssign, onClose }) {
                   ))}
 
                   {offline.length > 0 && (<>
-                    <div className="text-[11px] font-semibold pt-2 pb-1" style={{ color: "var(--muted-foreground)" }}>Off duty</div>
+                    <div className="text-[13px] font-semibold pt-2 pb-1" style={{ color: "var(--muted-foreground)" }}>Off duty</div>
                     {offline.map((officer) => (
                       <div key={officer.id} className="flex items-center gap-3 px-3.5 py-2.5 rounded-xl opacity-35"
                         style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
@@ -207,8 +207,8 @@ export function DispatchModal({ alert, officers, alerts, onAssign, onClose }) {
                           {officer.name.split(" ")[1]?.[0] ?? "O"}
                         </div>
                         <div className="flex-1 min-w-0">
-                          <div className="text-[13px] font-medium truncate" style={{ color: "var(--foreground)" }}>{officer.name}</div>
-                          <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Off duty · unavailable</div>
+                          <div className="text-[15px] font-medium truncate" style={{ color: "var(--foreground)" }}>{officer.name}</div>
+                          <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>Off duty · unavailable</div>
                         </div>
                       </div>
                     ))}
@@ -228,7 +228,7 @@ export function DispatchModal({ alert, officers, alerts, onAssign, onClose }) {
               <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>
                 Confirm assignment
               </div>
-              <p className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>
+              <p className="text-[14px]" style={{ color: "var(--muted-foreground)" }}>
                 Assign {selected.length} officer{selected.length !== 1 ? "s" : ""} to <span style={{ color: "var(--foreground)" }}>{alert.cameraZone}</span>?
                 This will set the violation to <span style={{ color: "#3b82f6" }}>Assigned</span> and notify them on the app.
               </p>
@@ -257,7 +257,7 @@ export function DispatchModal({ alert, officers, alerts, onAssign, onClose }) {
 
           <div className="flex items-center gap-3">
             {selected.length > 0 && (
-              <span className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>
+              <span className="text-[14px]" style={{ color: "var(--muted-foreground)" }}>
                 {selected.length} officer{selected.length > 1 ? "s" : ""} selected
               </span>
             )}

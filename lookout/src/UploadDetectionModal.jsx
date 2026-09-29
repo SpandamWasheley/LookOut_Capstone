@@ -82,7 +82,7 @@ export function UploadDetectionModal({ onClose, onJobStarted }) {
             </div>
             <div>
               <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Test Detection</div>
-              <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+              <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>
                 Run a detector against an uploaded clip
               </div>
             </div>
@@ -98,7 +98,7 @@ export function UploadDetectionModal({ onClose, onJobStarted }) {
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
           {/* Violation type selector */}
           <div>
-            <div className="text-[11px] font-semibold uppercase tracking-wide mb-2"
+            <div className="text-[13px] font-semibold uppercase tracking-wide mb-2"
               style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
               Detector
             </div>
@@ -119,7 +119,7 @@ export function UploadDetectionModal({ onClose, onJobStarted }) {
                     }}
                   >
                     <Icon size={14} style={{ color: isActive ? t.color : "var(--muted-foreground)" }} />
-                    <span className="text-[12px] font-medium"
+                    <span className="text-[14px] font-medium"
                       style={{ color: isActive ? t.color : "var(--foreground)" }}>
                       {t.label}
                     </span>
@@ -131,7 +131,7 @@ export function UploadDetectionModal({ onClose, onJobStarted }) {
 
           {/* Drop zone / file picker */}
           <div>
-            <div className="text-[11px] font-semibold uppercase tracking-wide mb-2"
+            <div className="text-[13px] font-semibold uppercase tracking-wide mb-2"
               style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
               Clip
             </div>
@@ -158,20 +158,20 @@ export function UploadDetectionModal({ onClose, onJobStarted }) {
               {file ? (
                 <>
                   <FileVideo size={22} style={{ color: "#f59e0b" }} />
-                  <div className="text-[12px] font-medium text-center" style={{ color: "var(--foreground)" }}>
+                  <div className="text-[14px] font-medium text-center" style={{ color: "var(--foreground)" }}>
                     {file.name}
                   </div>
-                  <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>
+                  <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>
                     {formatBytes(file.size)}
                   </div>
                 </>
               ) : (
                 <>
                   <Upload size={22} style={{ color: "var(--muted-foreground)" }} />
-                  <div className="text-[12px] text-center" style={{ color: "var(--muted-foreground)" }}>
+                  <div className="text-[14px] text-center" style={{ color: "var(--muted-foreground)" }}>
                     Drag a clip here, or click to browse
                   </div>
-                  <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>
+                  <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>
                     .mp4, .mkv, .avi — up to 1GB
                   </div>
                 </>
@@ -180,14 +180,14 @@ export function UploadDetectionModal({ onClose, onJobStarted }) {
           </div>
 
           {error && (
-            <div className="flex items-start gap-2 text-[12px] px-3 py-2.5 rounded-xl"
+            <div className="flex items-start gap-2 text-[14px] px-3 py-2.5 rounded-xl"
               style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", color: "#ef4444" }}>
               <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
               <span>{error}</span>
             </div>
           )}
 
-          <div className="text-[11px] leading-relaxed" style={{ color: "var(--muted-foreground)" }}>
+          <div className="text-[13px] leading-relaxed" style={{ color: "var(--muted-foreground)" }}>
             Detection runs in the background and may take a few minutes for a longer clip.
             Any alerts it produces will appear in the Violations tab as detection runs.
           </div>

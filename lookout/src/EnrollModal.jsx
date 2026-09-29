@@ -37,7 +37,7 @@ function ProcessingStep({ label, delayMs, failed }) {
                 style={{ borderColor: "var(--primary)", borderTopColor: "transparent" }} />
             : <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: "var(--muted-foreground)", opacity: 0.3 }} />
       }
-      <span className="text-[12px]"
+      <span className="text-[14px]"
         style={{ color: state === "failed" ? "#ef4444" : state === "done" ? "#10b981" : state === "active" ? "var(--primary)" : "var(--muted-foreground)" }}>
         {label}
       </span>
@@ -156,7 +156,7 @@ export function EnrollModal({ person = null, onClose, onEnrolled }) {
             </div>
             <div>
               <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Enrollment complete</div>
-              <div className="text-[12px] mt-1" style={{ color: "var(--muted-foreground)" }}>
+              <div className="text-[14px] mt-1" style={{ color: "var(--muted-foreground)" }}>
                 {enrolledPerson.full_name} has been enrolled.
               </div>
             </div>
@@ -169,7 +169,7 @@ export function EnrollModal({ person = null, onClose, onEnrolled }) {
                 ["Photos",    "Front · Right · Left (3 angles)"],
                 ["Embedding", "insightface · 512-d · buffalo_l"],
               ].map(([k, v]) => (
-                <div key={k} className="flex justify-between text-[11px]">
+                <div key={k} className="flex justify-between text-[13px]">
                   <span style={{ color: "var(--muted-foreground)" }}>{k}</span>
                   <span style={{ color: "var(--muted-foreground)", fontFamily: k === "Person ID" ? "'DM Mono', monospace" : undefined }}>{v}</span>
                 </div>
@@ -206,7 +206,7 @@ export function EnrollModal({ person = null, onClose, onEnrolled }) {
               <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>
                 {selected ? "Enroll Faces" : "Add Person"}
               </div>
-              <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+              <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>
                 {selected ? selected.full_name : "Register a new face-registry entry"}
               </div>
             </div>
@@ -229,14 +229,14 @@ export function EnrollModal({ person = null, onClose, onEnrolled }) {
             return (
               <div key={s.id} className="flex items-center">
                 <div className="flex items-center gap-1.5">
-                  <div className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold transition-all"
+                  <div className="w-5 h-5 rounded-full flex items-center justify-center text-[12px] font-bold transition-all"
                     style={{
                       background: done ? "#10b981" : active ? "var(--primary)" : "var(--secondary)",
                       color: done ? "#fff" : active ? "var(--primary-foreground)" : "var(--muted-foreground)",
                     }}>
                     {done ? <CheckCircle size={11} /> : i + 1}
                   </div>
-                  <span className="text-[11px] font-medium hidden sm:block"
+                  <span className="text-[13px] font-medium hidden sm:block"
                     style={{ color: active ? "var(--primary)" : done ? "#10b981" : "var(--muted-foreground)" }}>
                     {s.label}
                   </span>
@@ -256,7 +256,7 @@ export function EnrollModal({ person = null, onClose, onEnrolled }) {
           {/* ── Step 1: Select or add person (only reached without a preselected person) ── */}
           {step === "add" && (
             <div className="space-y-3">
-              <p className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>
+              <p className="text-[14px]" style={{ color: "var(--muted-foreground)" }}>
                 Enter the person's name to register them in the face registry. You'll capture
                 their three enrollment photos next.
               </p>
@@ -275,7 +275,7 @@ export function EnrollModal({ person = null, onClose, onEnrolled }) {
                 />
               </div>
               {createError && (
-                <div className="flex items-center gap-2 text-[11px]" style={{ color: "#ef4444" }}>
+                <div className="flex items-center gap-2 text-[13px]" style={{ color: "#ef4444" }}>
                   <AlertTriangle size={12} /> {createError}
                 </div>
               )}
@@ -289,13 +289,13 @@ export function EnrollModal({ person = null, onClose, onEnrolled }) {
                 <div className="text-sm font-medium mb-0.5" style={{ color: "var(--foreground)" }}>
                   {selected.full_name}
                 </div>
-                <p className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>
+                <p className="text-[14px]" style={{ color: "var(--muted-foreground)" }}>
                   Upload all three angles for accurate insightface embedding.
                 </p>
               </div>
 
               {submitError && (
-                <div className="flex items-center gap-2 text-[11px] px-3 py-2 rounded-lg"
+                <div className="flex items-center gap-2 text-[13px] px-3 py-2 rounded-lg"
                   style={{ background: "rgba(239,68,68,0.08)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.2)" }}>
                   <AlertTriangle size={12} /> {submitError}
                 </div>
@@ -309,7 +309,7 @@ export function EnrollModal({ person = null, onClose, onEnrolled }) {
                       style={{ background: photos[angle].file ? "#10b981" : "var(--secondary)" }} />
                   </div>
                 ))}
-                <span className="text-[11px] font-medium ml-1"
+                <span className="text-[13px] font-medium ml-1"
                   style={{ color: allPhotosReady ? "#10b981" : "var(--muted-foreground)" }}>
                   {[photos.front, photos.right, photos.left].filter((p) => p.file).length} / 3
                 </span>
@@ -324,7 +324,7 @@ export function EnrollModal({ person = null, onClose, onEnrolled }) {
                   return (
                     <div key={angle} className="flex flex-col gap-1.5">
                       <div className="flex items-center gap-1">
-                        <span className="text-[11px] font-semibold"
+                        <span className="text-[13px] font-semibold"
                           style={{ color: error ? "#ef4444" : slot.file ? "#10b981" : "var(--muted-foreground)" }}>
                           {label}
                         </span>
@@ -350,9 +350,9 @@ export function EnrollModal({ person = null, onClose, onEnrolled }) {
                             {icon}
                           </div>
                           <div className="text-center px-1">
-                            <div className="text-[10px] font-medium leading-tight" style={{ color: "var(--foreground)" }}>{hint}</div>
+                            <div className="text-[12px] font-medium leading-tight" style={{ color: "var(--foreground)" }}>{hint}</div>
                           </div>
-                          <div className="flex items-center gap-1 text-[10px]" style={{ color: "var(--muted-foreground)" }}>
+                          <div className="flex items-center gap-1 text-[12px]" style={{ color: "var(--muted-foreground)" }}>
                             <Upload size={10} /> Upload
                           </div>
                         </div>
@@ -377,7 +377,7 @@ export function EnrollModal({ person = null, onClose, onEnrolled }) {
                           </button>
                           {!error && (
                             <div className="absolute bottom-1.5 left-0 right-0 flex justify-center">
-                              <div className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-medium"
+                              <div className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium"
                                 style={{ background: "rgba(16,185,129,0.9)", color: "#fff" }}>
                                 <CheckCircle size={9} /> OK
                               </div>
@@ -387,7 +387,7 @@ export function EnrollModal({ person = null, onClose, onEnrolled }) {
                       )}
 
                       {error && (
-                        <div className="text-[10px] leading-snug" style={{ color: "#ef4444" }}>
+                        <div className="text-[12px] leading-snug" style={{ color: "#ef4444" }}>
                           {error}
                         </div>
                       )}
@@ -405,14 +405,14 @@ export function EnrollModal({ person = null, onClose, onEnrolled }) {
               </div>
 
               <div className="rounded-xl p-3 space-y-1" style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-                <div className="text-[11px] font-semibold mb-1.5" style={{ color: "var(--foreground)" }}>Photo requirements</div>
+                <div className="text-[13px] font-semibold mb-1.5" style={{ color: "var(--foreground)" }}>Photo requirements</div>
                 {[
                   "Neutral expression, eyes open for all angles",
                   "Well-lit — no harsh shadows on the face",
                   "No sunglasses or face coverings",
                   "Minimum 200×200 px per photo",
                 ].map((req) => (
-                  <div key={req} className="flex items-center gap-2 text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+                  <div key={req} className="flex items-center gap-2 text-[13px]" style={{ color: "var(--muted-foreground)" }}>
                     <div className="w-1 h-1 rounded-full flex-shrink-0" style={{ background: "var(--muted-foreground)" }} />
                     {req}
                   </div>
@@ -435,7 +435,7 @@ export function EnrollModal({ person = null, onClose, onEnrolled }) {
               )}
               <div className="text-center space-y-1.5">
                 <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Generating embeddings…</div>
-                <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>insightface · buffalo_l backend</div>
+                <div className="text-[14px]" style={{ color: "var(--muted-foreground)" }}>insightface · buffalo_l backend</div>
               </div>
               <div className="w-full space-y-2">
                 {[

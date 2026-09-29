@@ -4,23 +4,43 @@ Canonical implementation. detection_sandbox/obstruction.py executes THIS file
 into its own namespace, so the browser tester and the management command run
 identical code and cannot drift apart.
 
-A vehicle is judged by the share of its ground footprint lying past a marked
-edge, held for a minimum time:
+A vehicle is judged by the share of its ground footprint lying inside a marked
+NO-PARKING AREA, held for a minimum time:
 
-    "at least half the vehicle past the line, for at least five minutes"
+    "at least half the vehicle inside the area, for at least five minutes"
 
 The share is a ratio of the vehicle to ITSELF, so it needs no tape measure, no
 homography and no per-camera calibration - the same threshold means the same
 thing on every camera and at any distance.
 
-The edge is supplied by the operator (two clicks per side at install, more where
-the footpath bends). Automatic detection of the painted line was built and
-measured, and is deliberately not used: an edge line is defined by function
-rather than appearance, so a stripe on a road and one on a court are identical
-at pixel level. On this project's night footage the real line scored a
-brightness contrast of 46.5 while the kerb beside it scored 35 - too close to
-separate once weather and exposure move each by more than that gap. The
-experiment lives in detection_sandbox/edge_line.py.
+TWO WAYS TO MARK THAT AREA
+--------------------------
+Both are drawn once by the operator and both answer the same question -
+"is this ground point somewhere a vehicle must not be?" - so the rule, the
+hysteresis and the dwell timer below are shared verbatim.
+
+  * EDGE (EdgeLine / PolyEdge) - an open path plus a `side`. The area is the
+    open half-plane on that side. Right for a straight kerb where the footpath
+    runs off the bottom of the frame and has no far boundary to draw.
+
+  * ZONE (RoadZone) - a closed polygon. The area is simply its interior. Right
+    when the road itself is the thing to protect: trace the carriageway and
+    anything standing in it is an obstruction, with no side to reason about and
+    no half-plane running off to infinity.
+
+A zone is usually the easier of the two to get right. An edge divides the WHOLE
+frame in two, so it also condemns everything behind the camera-side of it -
+fine when that really is footpath, wrong when the frame also contains a yard,
+a shop front or the opposite pavement. A polygon says exactly where it means
+and says nothing at all about the rest of the image.
+
+Automatic detection of the painted line was built and measured, and is
+deliberately not used: an edge line is defined by function rather than
+appearance, so a stripe on a road and one on a court are identical at pixel
+level. On this project's night footage the real line scored a brightness
+contrast of 46.5 while the kerb beside it scored 35 - too close to separate
+once weather and exposure move each by more than that gap. The experiment
+lives in detection_sandbox/edge_line.py.
 
 No Django imports here, same rule as recognition.py - this stays pure CV so it
 can be unit-tested without a database.
@@ -34,23 +54,46 @@ import numpy as np
 
 ABOVE, BELOW = "above", "below"
 
+# Shape kinds accepted by build_edge's spec. EDGE is the default when a stored
+# spec carries no "type" at all, which is what every pre-zone camera config
+# looks like.
+EDGE, ZONE = "edge", "zone"
+
 
 # --- geometry ----------------------------------------------------------------
 
 
 def build_edge(spec):
-    """Builds an oriented edge from {"points": [[x, y], ...], "side": 1|-1}.
+    """Builds a no-parking area from a stored spec.
 
-    Two points give a straight EdgeLine; three or more give a PolyEdge that
-    follows a bend. `side` names which way the protected footpath lies, as the
-    drawing tool shaded it, and the edge is oriented by probing a point just off
-    its MIDDLE segment - so a bent edge is judged against a part of itself that
-    the probe is actually beside.
+    Two shapes, chosen by spec["type"]:
 
-    Shared by the browser tester and the watch_parking command so an edge drawn
+      {"type": "zone",  "points": [[x, y] x3+]}            -> RoadZone
+      {"type": "edge",  "points": [[x, y] x2+], "side": 1} -> EdgeLine/PolyEdge
+
+    `type` is OPTIONAL and defaults to "edge", so every camera configured
+    before zones existed keeps working untouched - its stored spec is exactly
+    the edge form and is read exactly as before.
+
+    For an edge: two points give a straight EdgeLine; three or more give a
+    PolyEdge that follows a bend. `side` names which way the protected footpath
+    lies, as the drawing tool shaded it, and the edge is oriented by probing a
+    point just off its MIDDLE segment - so a bent edge is judged against a part
+    of itself that the probe is actually beside.
+
+    Shared by the browser tester and the watch_parking command so an area drawn
     once means the same thing in both.
     """
     pts = [(float(x), float(y)) for x, y in spec["points"]]
+
+    if spec.get("type") == ZONE:
+        # A polygon needs no orientation probe: "inside" is not a choice the
+        # operator has to make, which is the whole reason a zone is easier to
+        # draw correctly than an edge.
+        if len(pts) < 3:
+            raise ValueError("a zone needs at least three points")
+        return RoadZone(pts)
+
     if len(pts) < 2:
         raise ValueError("an edge needs at least two points")
     edge = EdgeLine(pts[0], pts[1]) if len(pts) == 2 else PolyEdge(pts)
@@ -179,6 +222,92 @@ class PolyEdge:
     def __repr__(self):
         return (f"PolyEdge({len(self.points)} pts, "
                 f"protected={self.protected_side})")
+
+
+class RoadZone:
+    """A closed polygon: the no-parking area is simply its interior.
+
+    Duck-typed with EdgeLine and PolyEdge - it exposes `is_protected`,
+    `signed_distance`, `draw` and `protected_side` - so fraction_past() and
+    ObstructionMonitor consume it without knowing which shape they hold, and
+    the "half the vehicle for five minutes" rule needs no change at all.
+
+    ON THE NAME `is_protected`
+    --------------------------
+    Inherited from the edge shapes, where it meant "on the footpath side". The
+    meaning that actually generalises, and the one both shapes implement, is
+    "this ground point is somewhere a vehicle must not be". For an edge that
+    region is the footpath beyond the kerb; for a zone it is the carriageway
+    itself. `contains()` is the plainer spelling and is what new code should
+    read.
+
+    WHY A POLYGON RATHER THAN A BOUNDING BOX
+    ----------------------------------------
+    A rectangle in image space is not a rectangle on the ground. A camera looks
+    down the road at an angle, so the carriageway appears as a trapezium that
+    narrows towards the vanishing point - fitting an axis-aligned box around it
+    either swallows the footpath on both sides near the camera or misses the
+    road entirely in the distance. Four dragged corners cost the operator one
+    extra click over a box and describe the real surface. More points are
+    accepted for a road that bends or forks.
+    """
+
+    def __init__(self, points):
+        if len(points) < 3:
+            raise ValueError("a RoadZone needs at least three points")
+        self.points = [(float(x), float(y)) for x, y in points]
+        # Present only to satisfy the shared interface. A polygon has an inside
+        # and an outside, not two sides of a line, so nothing reads this.
+        self.protected_side = ABOVE
+        self.support = 1.0
+        self._contour = np.array(self.points, dtype=np.float32).reshape(-1, 1, 2)
+
+    @property
+    def p0(self):
+        return self.points[0]
+
+    @property
+    def p1(self):
+        return self.points[-1]
+
+    def signed_distance(self, point):
+        """Distance to the polygon boundary in pixels; POSITIVE inside.
+
+        Sign matches the edge shapes' convention that a positive value means
+        "in the no-parking region", so anything reading the sign generically
+        behaves the same for both.
+        """
+        return float(cv2.pointPolygonTest(
+            self._contour, (float(point[0]), float(point[1])), True))
+
+    def contains(self, point):
+        """True when the ground point lies inside the zone.
+
+        Boundary-INCLUSIVE, which is the one place a zone and an edge
+        deliberately disagree: EdgeLine.is_protected uses a strict inequality,
+        so a point exactly on the line is outside it. Here the operator traced
+        the kerb, and a vehicle sitting on the kerb is in the road. The
+        difference is only ever visible for a footprint landing on exactly the
+        boundary's float value.
+        """
+        return cv2.pointPolygonTest(
+            self._contour, (float(point[0]), float(point[1])), False) >= 0
+
+    def is_protected(self, point):
+        """Shared-interface spelling of contains() - see the class docstring."""
+        return self.contains(point)
+
+    def draw(self, frame, color=(0, 0, 255), thickness=3):
+        """Outline plus a light wash, so the marked road reads at a glance on a
+        debug frame without hiding the vehicles standing in it."""
+        pts = np.array(self.points, dtype=np.int32).reshape(-1, 1, 2)
+        overlay = frame.copy()
+        cv2.fillPoly(overlay, [pts], color)
+        cv2.addWeighted(overlay, 0.18, frame, 0.82, 0, frame)
+        cv2.polylines(frame, [pts], True, color, thickness)
+
+    def __repr__(self):
+        return f"RoadZone({len(self.points)} pts)"
 
 
 # --- the rule ----------------------------------------------------------------
@@ -344,7 +473,12 @@ def mask_footprint_points(mask, box, samples=FOOTPRINT_SAMPLES, band=0.15):
 
 
 def fraction_past(line, box, mask=None, label=None):
-    """Share of the vehicle's footprint lying on the protected side, 0.0 - 1.0.
+    """Share of the vehicle's footprint inside the no-parking area, 0.0 - 1.0.
+
+    `line` is any shape implementing is_protected() - an EdgeLine, a PolyEdge or
+    a RoadZone. For an edge that share is "how far past the kerb"; for a zone it
+    is "how much of the vehicle is standing in the road". One number either way,
+    so the threshold and dwell rules below never branch on shape.
 
     Uses the segmentation mask when one is supplied - the vehicle's real ground
     contact - and falls back to the bottom edge of the box otherwise.
