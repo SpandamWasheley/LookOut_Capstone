@@ -345,10 +345,44 @@ class RequestTests(unittest.TestCase):
         self.assertGreater(len(images), vlm.FRAME_COUNT,
                            "the full scene frame was not added")
 
-    def test_faces_are_not_blurred(self):
-        """v3 §8: frames never leave the device, and blurring would hide the
-        mouth the hand_to_mouth_activity question depends on."""
+    def test_faces_are_not_blurred_for_a_local_model(self):
+        """Spec v6 §8: frames sent to a local model never leave the device, and
+        blurring would hide the mouth the hand_to_mouth_activity question needs."""
         self.assertFalse(vlm.BLUR_FACES)
+        self.assertFalse(vlm.blur_required("ollama"))
+        self.assertFalse(vlm.blur_required(vlm.OllamaVerifier()))
+        self.assertFalse(vlm.blur_required(vlm.DisabledVerifier()))   # sends nothing
+
+    def test_faces_are_blurred_for_a_cloud_provider(self):
+        """Spec v6 §8: cloud providers get blurred frames; unknown names are
+        treated as cloud (assume it leaves the device)."""
+        self.assertTrue(vlm.blur_required("gemini"))
+        self.assertTrue(vlm.blur_required("some-new-provider"))
+
+    def test_blur_faces_actually_blurs_and_does_not_raise(self):
+        """BLUR_KERNEL was once undefined, so the blur silently never ran."""
+        import numpy as np
+
+        class _OneFace:
+            def detectMultiScale(self, *a, **k):
+                return [(10, 10, 40, 40)]
+
+        frame = (np.random.default_rng(0).integers(0, 255, (120, 160, 3))).astype("uint8")
+        out = vlm.blur_faces(frame, detector=_OneFace(), strict=True)
+        self.assertFalse(np.array_equal(out[10:50, 10:50], frame[10:50, 10:50]))
+        self.assertTrue(np.array_equal(out[60:, 60:], frame[60:, 60:]))
+
+    def test_a_failed_required_blur_drops_the_image(self):
+        """Fail closed: if blurring is required and breaks, nothing is sent."""
+        import numpy as np
+
+        class _Broken:
+            def detectMultiScale(self, *a, **k):
+                raise RuntimeError("cascade broke")
+
+        frame = np.zeros((120, 160, 3), "uint8")
+        with self.assertRaises(RuntimeError):
+            vlm.blur_faces(frame, detector=_Broken(), strict=True)
 
     def test_the_crop_padding(self):
         self.assertEqual(vlm.CROP_PAD, 0.40)

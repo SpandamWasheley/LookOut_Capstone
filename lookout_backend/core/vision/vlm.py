@@ -121,10 +121,30 @@ SEND_FULL_SCENE = True
 # sits on and the second person in a holdup.
 CROP_PAD = 0.40
 
-# v3 §8: NO blurring. Frames never leave the device, and blurring would hide the
-# mouth the hand_to_mouth_activity question depends on -- the single most
-# important question in the smoking set.
-BLUR_FACES = False
+# Face blurring rule (scoring spec v6 §8 / privacy note):
+#   * a LOCAL model (Ollama) is NOT blurred: frames never leave the device, and
+#     blurring would hide the mouth the hand_to_mouth_activity question depends
+#     on -- the single most important question in the smoking set;
+#   * a CLOUD provider (e.g. Gemini) IS blurred, because frames of identifiable
+#     residents leave the device (RA 10173).
+# The decision is made from the verifier that will receive the frames, in
+# blur_required(), not from a global switch a caller could forget.
+LOCAL_PROVIDERS = frozenset({"ollama"})
+BLUR_KERNEL = 51        # odd Gaussian kernel; large enough to destroy a face at CCTV size
+BLUR_FACES = False      # default for encode_crop() when no destination is given (= local)
+
+
+def blur_required(verifier_or_provider):
+    """True when frames sent to this destination must have faces blurred.
+
+    Local providers and the inert DisabledVerifier (which sends nothing) are
+    never blurred. Anything else -- every cloud provider, and any name this
+    module does not recognise -- is blurred: unknown means assume it leaves
+    the device.
+    """
+    name = getattr(verifier_or_provider, "name", verifier_or_provider)
+    name = str(name or "").lower()
+    return name not in LOCAL_PROVIDERS and name != "disabled"
 
 # v3 §8's three tiers and what each is worth.
 _CONFIDENCE_TIERS = (("high", 1.0), ("medium", 0.5), ("low", 0.0))
@@ -548,7 +568,7 @@ def _build_prompt(spec, context="", frames=1):
 
 # --- image encoding ---------------------------------------------------------
 
-def blur_faces(frame_bgr, detector=None):
+def blur_faces(frame_bgr, detector=None, strict=False):
     """Return a copy with every detected face blurred (RA 10173, spec §6).
 
     Uses OpenCV's Haar cascade, a face DETECTOR used only for privacy blurring
@@ -558,15 +578,21 @@ def blur_faces(frame_bgr, detector=None):
     face to a third party.
 
     Fails OPEN by returning the frame unblurred if the cascade is unavailable,
-    consistent with everything else in this module -- but callers that care
-    about the privacy guarantee should check `blur_faces_available()` at startup
-    rather than discovering it per alert.
+    consistent with everything else in this module -- except with strict=True,
+    which RAISES instead. encode_crop() passes strict=True whenever blurring is
+    required (a cloud destination), so a broken blur can never silently send an
+    identifiable face: the image is dropped instead. Callers can also check
+    `blur_faces_available()` at startup.
     """
     if cv2 is None or frame_bgr is None:
+        if strict:
+            raise RuntimeError("face blurring required but OpenCV is unavailable")
         return frame_bgr
     try:
         cascade = detector or _face_cascade()
         if cascade is None:
+            if strict:
+                raise RuntimeError("face blurring required but no face cascade is available")
             return frame_bgr
         out = frame_bgr.copy()
         grey = cv2.cvtColor(out, cv2.COLOR_BGR2GRAY)
@@ -579,6 +605,8 @@ def blur_faces(frame_bgr, detector=None):
                     roi, (BLUR_KERNEL, BLUR_KERNEL), 0)
         return out
     except Exception:
+        if strict:
+            raise
         # Never let a privacy nicety crash a detector.
         return frame_bgr
 
@@ -686,8 +714,11 @@ def encode_crop(frame_bgr, box=None, pad=CROP_PAD, as_bytes=False, blur=None,
         # Blurred HERE rather than at the call sites: a privacy rule that every
         # caller must remember to apply is one that a future caller will forget,
         # and the failure is silent and unrecoverable.
-        if BLUR_FACES if blur is None else blur:
-            img = blur_faces(img)
+        want_blur = BLUR_FACES if blur is None else blur
+        if want_blur:
+            # strict: if blurring is required and fails, the exception drops the
+            # image (encode_crop returns None) rather than sending it unblurred.
+            img = blur_faces(img, strict=True)
         if box is not None:
             h, w = img.shape[:2]
             x1, y1, x2, y2 = (int(v) for v in box)
@@ -1091,12 +1122,15 @@ def verify_frame(verifier, frame_bgr, kind, box=None, context="", frames=None,
     if frame_bgr is not None:
         sequence.append(frame_bgr)
     scene_on = SEND_FULL_SCENE if send_scene is None else send_scene
+    # Spec v6 §8: blur ONLY when this verifier is a cloud provider (frames leave
+    # the device); a local model gets the unblurred mouth it needs.
+    blur = blur_required(verifier)
     encoded = []
     if scene_on and sequence:
-        scene = encode_crop(sequence[-1], box=None, max_edge=max_edge)
+        scene = encode_crop(sequence[-1], box=None, max_edge=max_edge, blur=blur)
         if scene:
             encoded.append(scene)
-    encoded += [c for c in (encode_crop(f, box, max_edge=max_edge)
+    encoded += [c for c in (encode_crop(f, box, max_edge=max_edge, blur=blur)
                             for f in sequence) if c]
     if max_images:
         # Keep the NEWEST images: the last crop is the moment the alert fired,
