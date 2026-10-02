@@ -100,3 +100,7 @@ lookout_backend/recorder.pid
 *.bak-*
 *.backup
 *.pt.bak*
+
+# Ultralytics output and a stray Expo folder created by running a tool on port 8000
+runs/
+8000/
