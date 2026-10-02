@@ -59,3 +59,16 @@ class SettingsApiTests(TestCase):
         self.assertEqual(snap["drinking_start"], "16:00")
         for field in spec_settings.SPEC_DEFAULTS:
             self.assertIn(field, snap)
+
+
+class TestingToolsSettingTests(TestCase):
+    def test_testing_tools_are_off_by_default_and_admin_can_switch_them_on(self):
+        user = get_user_model().objects.create_user(username="admin2", password="x", role="admin")
+        client = APIClient()
+        client.force_authenticate(user)
+        self.assertIs(client.get("/api/settings/").json()["show_testing_tools"], False)
+        r = client.patch("/api/settings/", {"show_testing_tools": True}, format="json")
+        self.assertIs(r.json()["show_testing_tools"], True)
+        officer = get_user_model().objects.create_user(username="off1", password="x", role="officer")
+        client.force_authenticate(officer)
+        self.assertEqual(client.get("/api/settings/").status_code, 403)       # settings stay admin-only

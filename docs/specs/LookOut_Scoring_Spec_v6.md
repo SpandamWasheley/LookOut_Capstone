@@ -1,8 +1,8 @@
-# LookOut — Indicators & Scoring Spec (v6)
+# LookOut — Indicators & Scoring Spec (v6.1)
 
 *Every indicator, its points, how the status is decided, what the AI checker shows, and what the tanod sees.*
 
-*Version 6, 1 October 2026. Supersedes version 5. The AI-suggested status can now move one step up as well as down, with a stricter rule going up, and the smoking observations definition mentions smoke only when it is clearly visible. The official status still comes only from system indicators and is never changed by the AI. The code (core/vision/scoring.py, core/vision/vlm.py) and the alert UI must be updated to match; Section 14 lists the changes.*
+*Version 6.1, 2 October 2026 (Monitoring is no longer a panel on the Overview dashboard; it is viewed with the Include Monitoring filter on the Violations page. Nothing else changed from version 6). Version 6, 1 October 2026. Supersedes version 5. The AI-suggested status can now move one step up as well as down, with a stricter rule going up, and the smoking observations definition mentions smoke only when it is clearly visible. The official status still comes only from system indicators and is never changed by the AI. The code (core/vision/scoring.py, core/vision/vlm.py) and the alert UI must be updated to match; Section 14 lists the changes.*
 
 # 1. The idea in plain words
 
@@ -21,7 +21,7 @@ One sentence for the panel: the system indicators decide the status; the AI chec
 | **When**                                  | **Status** | **What the tanod sees**                                                          |
 |-------------------------------------------|------------|----------------------------------------------------------------------------------|
 | object not yet detected                   | Not shown  | Nothing. Behaviour points are still logged in the database.                      |
-| object detected about 2 s, score under 55 | Monitoring | Listed on the dashboard watchlist, no push notification. For proactive watching. |
+| object detected about 2 s, score under 55 | Monitoring | Listed quietly, no push notification. Viewable on the Violations page with the Include Monitoring filter. For proactive watching. |
 | score 55 – 74                             | Possible   | Listed and notified, low priority                                                |
 | score 75 and above                        | Likely     | Full alert with video evidence                                                   |
 
@@ -460,6 +460,13 @@ No points, no indicators and no AI checker. A vehicle at least halfway past the 
 - The score is a bounded evidence score, not a probability.
 
 # 14. Change history
+
+*Version 6 → 6.1*
+
+| **Change**           | **Version 6**                          | **Version 6.1**                                                                                                  |
+|----------------------|----------------------------------------|------------------------------------------------------------------------------------------------------------------|
+| Where Monitoring shows | a watchlist panel on the Overview dashboard | quiet and without notification; viewed with the Include Monitoring filter on the Violations page. The Overview 'Recent Violations' lists Possible and Likely only |
+| Wording              | 'active violation'                     | alerts are recorded incidents awaiting review: 'Pending Review', 'No incidents awaiting review', filter 'All'    |
 
 *Version 5 → 6*
 

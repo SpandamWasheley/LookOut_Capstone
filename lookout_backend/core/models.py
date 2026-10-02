@@ -567,6 +567,10 @@ class SystemSettings(models.Model):
     # Blank = use vlm_model.
     vlm_model_holdup = models.CharField(max_length=60, default="qwen3-vl:4b-instruct", blank=True)
 
+    # Testing tools (admin only): Run Detection in the sidebar, and Upload Video / History on
+    # Live Feeds. OFF by default so normal operation never shows them.
+    show_testing_tools = models.BooleanField(default=False)
+
     alert_cooldown = models.PositiveSmallIntegerField(default=120)
     # How long alert evidence (images and clips) is kept before
     # `manage.py purge_old_evidence` may delete it. Supports RA 10173 storage

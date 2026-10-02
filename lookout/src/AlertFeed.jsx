@@ -420,11 +420,11 @@ function RightPanel({ alerts, cameras }) {
         {sectionLabel("Today's Violations")}
         <div className="grid grid-cols-2 gap-2">
           {[
-            { label: "Total",           value: allTimeTotal,    color: "#a855f7" },
-            { label: "Total today",     value: todayTotal,      color: "#f59e0b" },
+            { label: "All time",        value: allTimeTotal,    color: "#a855f7" },
+            { label: "Today",           value: todayTotal,      color: "#f59e0b" },
             { label: "Assigned",        value: dispatchedCount, color: "#3b82f6" },
-            { label: "Active",          value: activeCount,     color: "#ef4444" },
-            { label: "Resolve today",   value: todayResolved,   color: "#10b981" },
+            { label: "Unassigned",      value: activeCount,     color: "#ef4444" },
+            { label: "Resolved today",  value: todayResolved,   color: "#10b981" },
             { label: "Dismissed today", value: todayDismissed,  color: "#64748b" },
           ].map((s) => (
             <div key={s.label} className="rounded-lg p-2.5"
@@ -442,7 +442,7 @@ function RightPanel({ alerts, cameras }) {
         {recentAlerts.length === 0 ? (
           <div className="flex flex-col items-center justify-center flex-1 gap-1.5">
             <Bell size={22} style={{ color: "var(--muted-foreground)", opacity: 0.4 }} />
-            <span className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>No active violations</span>
+            <span className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>No incidents awaiting review</span>
           </div>
         ) : (
           <div className="scrollbar-visible flex flex-col gap-2 overflow-y-auto flex-1 min-h-0">
@@ -513,7 +513,7 @@ export function AlertFeed({ showFilters = false, user }) {
     // alert must still match a "theft" filter selection (the checkboxes
     // below are built from VIOLATION_TYPES' canonical codes).
     if (typeFilter.size > 0 && !typeFilter.has(resolveViolationType({ code: a.type }).code)) return false;
-    if (!showFilters) return a.status === "active";
+    if (!showFilters) return a.status === "active" && a.level !== "monitoring";
     if (statusFilter === "active")     return a.status === "active";
     if (statusFilter === "dispatched") return a.status === "dispatched";
     return true;
@@ -770,8 +770,7 @@ export function AlertFeed({ showFilters = false, user }) {
         {visible.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12 gap-2">
             <CheckCircle size={28} style={{ color: "#10b981" }} />
-            <div className="text-sm font-medium" style={{ color: "var(--foreground)" }}>No active violations</div>
-            <div className="text-xs" style={{ color: "var(--muted-foreground)" }}>All zones clear</div>
+            <div className="text-sm font-medium" style={{ color: "var(--foreground)" }}>No incidents awaiting review</div>
           </div>
         ) : (
           <div ref={compactListRef} className="flex-1 min-h-0 overflow-hidden flex flex-col"
@@ -866,7 +865,7 @@ export function AlertFeed({ showFilters = false, user }) {
               {activeCount > 0 && (
                 <span className="flex items-center gap-1.5 text-[14px] font-medium px-2.5 py-1 rounded-full"
                   style={{ background: "rgba(239,68,68,0.15)", color: "#ef4444" }}>
-                  <Bell size={11} /> {activeCount} active
+                  <Bell size={11} /> {activeCount} unassigned
                 </span>
               )}
             </div>
@@ -882,9 +881,10 @@ export function AlertFeed({ showFilters = false, user }) {
 
         {/* Left column: filter bar + alert list */}
         <div className="flex-1 min-w-0 flex flex-col overflow-hidden px-6">
-          {/* Filter row */}
-          <div className="flex items-center justify-between flex-wrap gap-x-4 gap-y-2 py-3 flex-shrink-0">
-            <div className="flex items-center gap-1.5 flex-shrink-0">
+          {/* One toolbar row: filter chips on the left; search, sort and the record count
+              right-aligned. Wraps onto a second line only when the screen is too narrow. */}
+          <div className="flex items-center flex-wrap gap-x-3 gap-y-2 py-3 flex-shrink-0">
+            <div className="flex items-center flex-wrap gap-1.5 min-w-0">
               {(["all", "active", "dispatched"]).map((s) => {
                 const isActive = statusFilter === s;
                 const scfg = statusConfig[s];
@@ -892,21 +892,21 @@ export function AlertFeed({ showFilters = false, user }) {
                   <button
                     key={s}
                     onClick={() => setStatusFilter(s)}
-                    className="px-3 py-1 text-xs font-medium rounded-full transition-all capitalize"
+                    className="px-3 py-1 text-xs font-medium rounded-full transition-all capitalize whitespace-nowrap"
                     style={{
                       background: isActive ? (s === "all" ? "var(--primary)" : scfg.bg) : "var(--secondary)",
                       color: isActive ? (s === "all" ? "var(--primary-foreground)" : scfg.color) : "var(--muted-foreground)",
                       border: `1px solid ${isActive ? (s === "all" ? "var(--primary)" : scfg.color + "40") : "var(--border)"}`,
                     }}
                   >
-                    {s === "all" ? "All active" : scfg?.label ?? s}
+                    {s === "all" ? "All" : scfg?.label ?? s}
                   </button>
                 );
               })}
 
               <button
                 onClick={toggleMonitoring}
-                className="px-3 py-1 text-xs font-medium rounded-full transition-all"
+                className="px-3 py-1 text-xs font-medium rounded-full transition-all whitespace-nowrap"
                 title="Monitoring events: an object was seen, the evidence is still thin. A quiet watchlist with no notification."
                 style={{
                   background: showMonitoring ? "rgba(100,116,139,0.18)" : "var(--secondary)",
@@ -916,28 +916,26 @@ export function AlertFeed({ showFilters = false, user }) {
                 {showMonitoring ? "✓ " : ""}Include Monitoring
               </button>
 
-              {/* Type filter — shared with the Violator Log's, so the two
-                  can't drift into different rules/looks again. Checkbox
-                  values are canonical codes, matched in `filtered` above via
-                  resolveViolationType so a "thief"-coded alert still counts
+              {/* Type filter — shared with the Violator Log's, so the two can't drift into
+                  different rules/looks again. Checkbox values are canonical codes, matched in
+                  `filtered` above via resolveViolationType so a "thief"-coded alert still counts
                   under "Theft". */}
-              <div className="ml-1">
-                <TypeFilterDropdown
-                  selected={typeFilter}
-                  onToggle={toggleType}
-                  onClear={() => setTypeFilter(new Set())}
-                />
-              </div>
+              <TypeFilterDropdown
+                selected={typeFilter}
+                onToggle={toggleType}
+                onClear={() => setTypeFilter(new Set())}
+              />
             </div>
 
-            <div className="flex items-center gap-2 min-w-0">
-              <div className="relative w-56 min-w-0">
+            <div className="flex items-center flex-wrap gap-2 ml-auto min-w-0">
+              <div className="relative w-44 min-w-[8rem]">
                 <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2"
                   style={{ color: "var(--muted-foreground)" }} />
                 <input
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Search by Alert ID, type, zone…"
+                  placeholder="Search…"
+                  title="Search by Alert ID, type, zone or description"
                   className="w-full pl-8 pr-3 py-1.5 rounded-lg text-xs outline-none"
                   style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
                 />
@@ -978,13 +976,13 @@ export function AlertFeed({ showFilters = false, user }) {
                 <CheckCircle size={28} style={{ color: "#10b981" }} />
                 <div className="text-sm font-medium" style={{ color: "var(--foreground)" }}>
                   {ongoing.length === 0
-                    ? "No active violations"
+                    ? "No incidents awaiting review"
                     : search.trim()
                       ? "No violations match your search"
                       : "No violations match this filter"}
                 </div>
                 <div className="text-xs" style={{ color: "var(--muted-foreground)" }}>
-                  {search.trim() ? `Try a different Alert ID or keyword than "${search.trim()}"` : "All zones clear"}
+                  {search.trim() ? `Try a different Alert ID or keyword than "${search.trim()}"` : "Nothing is waiting for review"}
                 </div>
               </div>
             ) : (

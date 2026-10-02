@@ -1,62 +1,13 @@
 import { useEffect, useState } from "react";
-import { IndicatorTimings } from "./IndicatorTimings";
 import { Save, RotateCcw, Car, Cigarette, Siren, Beer, AlertTriangle, Loader2, SlidersHorizontal } from "lucide-react";
 import { getSettings, saveSettings } from "./api";
 
-const trimSeconds = (t) => (t ? t.slice(0, 5) : t);
-
-function fromApi(s) {
-  return {
-    parkingEnabled: s.parking_enabled,
-    parkingConf: s.parking_confidence,
-    parkingDwell: s.parking_dwell,
-    parkingMove: s.parking_move_tolerance,
-    smokingEnabled: s.smoking_enabled,
-    smokingConf: s.smoking_confidence,
-    smokingDwell: s.smoking_dwell,
-    thiefEnabled: s.thief_enabled,
-    thiefConf: s.thief_confidence,
-    thiefDwell: s.thief_dwell,
-    drinkingEnabled: s.drinking_enabled,
-    drinkingConf: s.drinking_confidence,
-    drinkingDwell: s.drinking_dwell,
-    drinkingHeldDwell: s.drinking_held_dwell,
-    drinkingEvidenceMaxAge: s.drinking_evidence_max_age,
-    drinkingMouthProximity: s.drinking_mouth_proximity,
-    drinkingCooldownDist: s.drinking_cooldown_center_dist,
-    drinkingHoursEnabled: s.drinking_hours_enabled,
-    drinkingStart: trimSeconds(s.drinking_start),
-    drinkingEnd: trimSeconds(s.drinking_end),
-    cooldown: s.alert_cooldown,
-    retention: s.evidence_retention_days,
-    autoPurge: s.evidence_auto_purge,
-  };
-}
-
-function toApi(f) {
-  return {
-    parking_enabled: f.parkingEnabled,
-    parking_confidence: f.parkingConf,
-    parking_dwell: f.parkingDwell,
-    parking_move_tolerance: f.parkingMove,
-    smoking_enabled: f.smokingEnabled,
-    smoking_confidence: f.smokingConf,
-    smoking_dwell: f.smokingDwell,
-    thief_enabled: f.thiefEnabled,
-    thief_confidence: f.thiefConf,
-    thief_dwell: f.thiefDwell,
-    drinking_enabled: f.drinkingEnabled,
-    drinking_confidence: f.drinkingConf,
-    drinking_dwell: f.drinkingDwell,
-    drinking_held_dwell: f.drinkingHeldDwell,
-    drinking_evidence_max_age: f.drinkingEvidenceMaxAge,
-    drinking_mouth_proximity: f.drinkingMouthProximity,
-    drinking_cooldown_center_dist: f.drinkingCooldownDist,
-    alert_cooldown: f.cooldown,
-    evidence_retention_days: f.retention,
-    evidence_auto_purge: f.autoPurge,
-  };
-}
+// Settings. One form for the whole page and ONE save button (top right). Every panel is two
+// columns on a wide screen: "Detection" on the left, "Timings" on the right; they stack on a
+// narrow one. Each card has its own "Reset to default", which puts that card's fields back to
+// their default values in the form (nothing is saved until "Save changes").
+//
+// Wording is for barangay staff: plain language, no jargon, no scoring terms.
 
 const sections = [
   { id: "parking", label: "Parking", icon: Car,    color: "#ef4444" },
@@ -66,13 +17,51 @@ const sections = [
   { id: "system", label: "System", icon: SlidersHorizontal, color: "#3b82f6" },
 ];
 
-// ── Slider ────────────────────────────────────────────────────────────────────
-function Slider({ label, value, min, max, step = 1, unit, desc, onChange }) {
+// Defaults for fields the server does not publish a default for. Timings come from the server
+// (`spec_defaults`) so the page and the detectors can never disagree about them.
+const STATIC_DEFAULTS = {
+  parking_enabled: true, parking_confidence: 35, parking_dwell: 60, parking_move_tolerance: 40,
+  smoking_enabled: true, smoking_confidence: 30,
+  thief_enabled: true, thief_confidence: 30,
+  drinking_enabled: true, drinking_confidence: 35,
+  drinking_mouth_proximity: 3.0, drinking_cooldown_center_dist: 1.5,
+  alert_cooldown: 120, evidence_retention_days: 30, evidence_auto_purge: false, show_testing_tools: false,
+  vlm_enabled: true, vlm_model: "qwen3-vl:2b-instruct", vlm_model_holdup: "qwen3-vl:4b-instruct", vlm_frames: 8,
+};
+
+const FIELD_KEYS = [
+  ...Object.keys(STATIC_DEFAULTS),
+  "object_confirm_seconds", "drinking_group_duration", "drinking_min_group", "drinking_start", "drinking_end",
+  "smoking_puff_count", "smoking_puff_window_minutes", "holdup_loiter_seconds", "holdup_near_person_heights",
+];
+
+const hhmm = (t) => (t ? String(t).slice(0, 5) : t);
+
+function fromApi(s) {
+  const f = {};
+  FIELD_KEYS.forEach((k) => { f[k] = s[k]; });
+  f.drinking_start = hhmm(f.drinking_start);
+  f.drinking_end = hhmm(f.drinking_end);
+  return f;
+}
+
+function defaultsFrom(s) {
+  const d = { ...STATIC_DEFAULTS, ...(s?.spec_defaults ?? {}) };
+  d.drinking_start = hhmm(d.drinking_start);
+  d.drinking_end = hhmm(d.drinking_end);
+  return d;
+}
+
+// ── Plain-language durations: "25 sec", "10 min", "2.5 min" — never 0.4166666 ──
+const trimNum = (n) => String(Math.round(n * 10) / 10);
+
+// ── Small controls ───────────────────────────────────────────────────────────
+function Slider({ label, value, min, max, step = 1, unit, desc, onChange, differs }) {
   const pct = ((value - min) / (max - min)) * 100;
   return (
-    <div className="space-y-2.5">
+    <div className="space-y-2" style={differs ? { borderLeft: "2px solid #f59e0b88", paddingLeft: 10 } : undefined}>
       <div className="flex justify-between items-center">
-        <span className="text-xs font-medium" style={{ color: "var(--muted-foreground)" }}>{label}</span>
+        <span className="text-[14px] font-medium" style={{ color: "var(--foreground)" }}>{label}</span>
         <span className="text-xs font-semibold px-2 py-0.5 rounded-md"
           style={{ color: "var(--primary)", background: "var(--secondary)", fontFamily: "'DM Mono', monospace" }}>
           {value}{unit}
@@ -103,17 +92,17 @@ function Slider({ label, value, min, max, step = 1, unit, desc, onChange }) {
   );
 }
 
-// ── Toggle ────────────────────────────────────────────────────────────────────
-function Toggle({ label, desc, value, onChange }) {
+function Toggle({ label, desc, value, onChange, differs }) {
   return (
-    <div className="flex items-center justify-between py-3" style={{ borderBottom: "1px solid var(--border)" }}>
+    <div className="flex items-center justify-between py-2.5 gap-3"
+      style={differs ? { borderLeft: "2px solid #f59e0b88", paddingLeft: 10 } : undefined}>
       <div>
         <div className="text-[15px] font-medium" style={{ color: "var(--foreground)" }}>{label}</div>
         <div className="text-[13px] mt-0.5" style={{ color: "var(--muted-foreground)" }}>{desc}</div>
       </div>
       <button
         onClick={() => onChange(!value)}
-        className="relative w-9 h-5 rounded-full transition-all duration-200 flex-shrink-0 ml-4"
+        className="relative w-9 h-5 rounded-full transition-all duration-200 flex-shrink-0"
         style={{ background: value ? "var(--primary)" : "var(--secondary)", border: "1px solid var(--border)" }}
       >
         <div
@@ -125,7 +114,101 @@ function Toggle({ label, desc, value, onChange }) {
   );
 }
 
-// ── TimeInput ─────────────────────────────────────────────────────────────────
+const inputStyle = { background: "var(--card)", border: "1px solid var(--border)", color: "var(--foreground)" };
+
+// A labelled row: label + description on the left, the control on the right.
+function Row({ label, desc, differs, children }) {
+  return (
+    <div className="flex items-start justify-between gap-4"
+      style={differs ? { borderLeft: "2px solid #f59e0b88", paddingLeft: 10 } : undefined}>
+      <div className="min-w-0">
+        <div className="text-[14px] font-medium" style={{ color: "var(--foreground)" }}>{label}</div>
+        {desc && <div className="text-[13px] mt-0.5" style={{ color: "var(--muted-foreground)" }}>{desc}</div>}
+      </div>
+      <div className="flex items-center gap-1.5 flex-shrink-0">{children}</div>
+    </div>
+  );
+}
+
+function NumberBox({ value, onChange, min, max, step = 1, unit, width = "w-20" }) {
+  return (
+    <>
+      <input type="number" value={value ?? ""} min={min} max={max} step={step}
+        onChange={(e) => { const n = parseFloat(e.target.value); if (!Number.isNaN(n)) onChange(n); }}
+        className={`${width} px-2 py-1 rounded-lg text-[14px] outline-none`} style={inputStyle} />
+      {unit && <span className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>{unit}</span>}
+    </>
+  );
+}
+
+// A duration the user can type in seconds or minutes. The value is held in SECONDS by the caller.
+function DurationBox({ seconds, onChange, version }) {
+  const [unit, setUnit] = useState(seconds < 60 ? "sec" : "min");
+  const shown = unit === "sec" ? trimNum(seconds) : trimNum(seconds / 60);
+  return (
+    <>
+      <input key={`${version}-${unit}`} type="number" min={0} step={unit === "sec" ? 1 : 0.5} defaultValue={shown}
+        onChange={(e) => {
+          const n = parseFloat(e.target.value);
+          if (!Number.isNaN(n) && n > 0) onChange(unit === "sec" ? n : n * 60);
+        }}
+        className="w-20 px-2 py-1 rounded-lg text-[14px] outline-none" style={inputStyle} />
+      <select value={unit} onChange={(e) => setUnit(e.target.value)}
+        className="px-1.5 py-1 rounded-lg text-[13px] outline-none" style={inputStyle}>
+        <option value="sec">sec</option>
+        <option value="min">min</option>
+      </select>
+    </>
+  );
+}
+
+function TimeBox({ value, onChange }) {
+  return (
+    <input type="time" value={value ?? ""} onChange={(e) => onChange(e.target.value)}
+      className="w-36 px-2 py-1 rounded-lg text-[14px] outline-none" style={inputStyle} />
+  );
+}
+
+function Card({ title, note, onReset, children }) {
+  return (
+    <div className="rounded-xl p-4 min-w-0" style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div>
+          <div className="text-[15px] font-semibold" style={{ color: "var(--foreground)" }}>{title}</div>
+          {note && <div className="text-[13px] mt-0.5" style={{ color: "var(--muted-foreground)" }}>{note}</div>}
+        </div>
+        {onReset && (
+          <button onClick={onReset}
+            className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium flex-shrink-0"
+            style={{ background: "var(--card)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}>
+            <RotateCcw size={10} /> Reset to default
+          </button>
+        )}
+      </div>
+      <div className="space-y-4">{children}</div>
+    </div>
+  );
+}
+
+const TIMINGS_FOOTER = "Changes are saved with each alert for record-keeping.";
+
+function InfoBox({ color, children }) {
+  return (
+    <div className="rounded-xl p-4 text-[13px] leading-relaxed"
+      style={{ background: `${color}0f`, border: `1px solid ${color}26`, color: "var(--muted-foreground)" }}>
+      {children}
+    </div>
+  );
+}
+
+const TwoCols = ({ left, right, below }) => (
+  <div className="space-y-4">
+    <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 items-start">{left}{right}</div>
+    {below}
+  </div>
+);
+
+// ── The page ─────────────────────────────────────────────────────────────────
 export function SystemConfig() {
   const [active, setActive] = useState("parking");
   const [saving, setSaving] = useState(false);
@@ -133,90 +216,24 @@ export function SystemConfig() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [pendingAction, setPendingAction] = useState(null); // null | "reset" | "save"
+  const [form, setForm] = useState(null);
+  const [server, setServer] = useState(null);       // last saved values
+  const [defaults, setDefaults] = useState(STATIC_DEFAULTS);
+  const [version, setVersion] = useState(0);        // bumped to re-sync uncontrolled inputs
 
-  const [parkingEnabled, setParkingEnabled] = useState(true);
-  const [parkingConf, setParkingConf] = useState(35);
-  const [parkingDwell, setParkingDwell] = useState(60);
-  const [parkingMove, setParkingMove] = useState(40);
-  const [smokingEnabled, setSmokingEnabled] = useState(true);
-  const [smokingConf, setSmokingConf] = useState(30);
-  const [smokingDwell, setSmokingDwell] = useState(3);
-  const [thiefEnabled, setThiefEnabled] = useState(true);
-  const [thiefConf, setThiefConf] = useState(30);
-  const [thiefDwell, setThiefDwell] = useState(3);
-  const [drinkingEnabled, setDrinkingEnabled] = useState(true);
-  const [drinkingConf, setDrinkingConf] = useState(35);
-  const [drinkingDwell, setDrinkingDwell] = useState(8);
-  const [drinkingHeldDwell, setDrinkingHeldDwell] = useState(24);
-  const [drinkingEvidenceMaxAge, setDrinkingEvidenceMaxAge] = useState(12);
-  const [drinkingMouthProximity, setDrinkingMouthProximity] = useState(3.0);
-  const [drinkingCooldownDist, setDrinkingCooldownDist] = useState(1.5);
-  const [drinkingHoursEnabled, setDrinkingHoursEnabled] = useState(false);
-  const [drinkingStart, setDrinkingStart] = useState("22:00");
-  const [drinkingEnd, setDrinkingEnd] = useState("05:00");
-  const [cooldown, setCooldown] = useState(120);
-  const [retention, setRetention] = useState(30);
-  const [autoPurge, setAutoPurge] = useState(false);
-  const [savedSnapshot, setSavedSnapshot] = useState(null);
-
-  const applySettings = (f) => {
-    setParkingEnabled(f.parkingEnabled);
-    setParkingConf(f.parkingConf);
-    setParkingDwell(f.parkingDwell);
-    setParkingMove(f.parkingMove);
-    setSmokingEnabled(f.smokingEnabled);
-    setSmokingConf(f.smokingConf);
-    setSmokingDwell(f.smokingDwell);
-    setThiefEnabled(f.thiefEnabled);
-    setThiefConf(f.thiefConf);
-    setThiefDwell(f.thiefDwell);
-    setDrinkingEnabled(f.drinkingEnabled);
-    setDrinkingConf(f.drinkingConf);
-    setDrinkingDwell(f.drinkingDwell);
-    setDrinkingHeldDwell(f.drinkingHeldDwell);
-    setDrinkingEvidenceMaxAge(f.drinkingEvidenceMaxAge);
-    setDrinkingMouthProximity(f.drinkingMouthProximity);
-    setDrinkingCooldownDist(f.drinkingCooldownDist);
-    setDrinkingHoursEnabled(f.drinkingHoursEnabled);
-    setDrinkingStart(f.drinkingStart);
-    setDrinkingEnd(f.drinkingEnd);
-    setCooldown(f.cooldown);
-    setRetention(f.retention);
-    setAutoPurge(f.autoPurge);
-    setSavedSnapshot(f);
+  const adopt = (data) => {
+    const f = fromApi(data);
+    setForm(f);
+    setServer(f);
+    setDefaults(defaultsFrom(data));
+    setVersion((v) => v + 1);
   };
-
-  const isDirty = !!savedSnapshot && (
-    parkingEnabled !== savedSnapshot.parkingEnabled ||
-    parkingConf !== savedSnapshot.parkingConf ||
-    parkingDwell !== savedSnapshot.parkingDwell ||
-    parkingMove !== savedSnapshot.parkingMove ||
-    smokingEnabled !== savedSnapshot.smokingEnabled ||
-    smokingConf !== savedSnapshot.smokingConf ||
-    smokingDwell !== savedSnapshot.smokingDwell ||
-    thiefEnabled !== savedSnapshot.thiefEnabled ||
-    thiefConf !== savedSnapshot.thiefConf ||
-    thiefDwell !== savedSnapshot.thiefDwell ||
-    drinkingEnabled !== savedSnapshot.drinkingEnabled ||
-    drinkingConf !== savedSnapshot.drinkingConf ||
-    drinkingDwell !== savedSnapshot.drinkingDwell ||
-    drinkingHeldDwell !== savedSnapshot.drinkingHeldDwell ||
-    drinkingEvidenceMaxAge !== savedSnapshot.drinkingEvidenceMaxAge ||
-    drinkingMouthProximity !== savedSnapshot.drinkingMouthProximity ||
-    drinkingCooldownDist !== savedSnapshot.drinkingCooldownDist ||
-    drinkingHoursEnabled !== savedSnapshot.drinkingHoursEnabled ||
-    drinkingStart !== savedSnapshot.drinkingStart ||
-    drinkingEnd !== savedSnapshot.drinkingEnd ||
-    cooldown !== savedSnapshot.cooldown ||
-    retention !== savedSnapshot.retention ||
-    autoPurge !== savedSnapshot.autoPurge
-  );
 
   const load = async () => {
     setLoading(true);
     setLoadError("");
     try {
-      applySettings(fromApi(await getSettings()));
+      adopt(await getSettings());
     } catch (err) {
       setLoadError(err.message);
     } finally {
@@ -226,19 +243,23 @@ export function SystemConfig() {
 
   useEffect(() => { load(); }, []);
 
+  const changedKeys = form && server ? FIELD_KEYS.filter((k) => form[k] !== server[k]) : [];
+  const isDirty = changedKeys.length > 0;
+
+  const set = (key, value) => setForm((f) => ({ ...f, [key]: value }));
+  const differs = (key) => form && defaults[key] !== undefined && form[key] !== defaults[key];
+  const resetKeys = (keys) => {
+    setForm((f) => ({ ...f, ...Object.fromEntries(keys.map((k) => [k, defaults[k]])) }));
+    setVersion((v) => v + 1);
+  };
+
   const save = async () => {
     setSaving(true);
     try {
-      const updated = await saveSettings(toApi({
-        parkingEnabled, parkingConf, parkingDwell, parkingMove,
-        smokingEnabled, smokingConf, smokingDwell,
-        thiefEnabled, thiefConf, thiefDwell,
-        drinkingEnabled, drinkingConf, drinkingDwell,
-        drinkingHeldDwell, drinkingEvidenceMaxAge, drinkingMouthProximity, drinkingCooldownDist,
-        drinkingHoursEnabled, drinkingStart, drinkingEnd,
-        cooldown, retention, autoPurge,
-      }));
-      applySettings(fromApi(updated));
+      const patch = {};
+      changedKeys.forEach((k) => { patch[k] = form[k]; });
+      adopt(await saveSettings(patch));
+      window.dispatchEvent(new Event("lookout:settings-saved"));
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (err) {
@@ -248,127 +269,200 @@ export function SystemConfig() {
     }
   };
 
-  const content = {
+  const detection = (prefix, enabledLabel, enabledDesc, confDesc, extra) => (
+    <Card title="Detection" onReset={() => resetKeys([`${prefix}_enabled`, `${prefix}_confidence`, ...(extra?.keys ?? [])])}>
+      <Toggle label={enabledLabel} desc={enabledDesc} value={form[`${prefix}_enabled`]}
+        differs={differs(`${prefix}_enabled`)} onChange={(v) => set(`${prefix}_enabled`, v)} />
+      <Slider label="Detection confidence" value={form[`${prefix}_confidence`]} min={10} max={90} unit="%"
+        differs={differs(`${prefix}_confidence`)} desc={confDesc}
+        onChange={(v) => set(`${prefix}_confidence`, v)} />
+      {extra?.node}
+    </Card>
+  );
+
+  const content = form && {
     parking: (
-      <div className="space-y-6">
-        <Toggle label="Illegal parking detection enabled" desc="Flag vehicles parked / obstructing beyond the dwell time" value={parkingEnabled} onChange={setParkingEnabled} />
-        <Slider
-          label="Detection confidence" value={parkingConf} min={20} max={90} unit="%"
-          desc="How sure the model must be that a box is a vehicle. Lower catches faint/blurry ones; higher reduces false detections."
-          onChange={setParkingConf}
-        />
-        <Slider
-          label="Dwell time before alert" value={parkingDwell} min={5} max={300} unit="s"
-          desc="How long a vehicle must stay put to count as parked. A car merely driving through never reaches this."
-          onChange={setParkingDwell}
-        />
-        <Slider
-          label="Movement tolerance" value={parkingMove} min={10} max={120} unit="px"
-          desc="How far a vehicle may drift and still be 'stationary'. Drift beyond this resets its dwell timer."
-          onChange={setParkingMove}
-        />
-        <div className="rounded-xl p-4 text-xs leading-relaxed"
-          style={{ background: "rgba(239,68,68,0.06)", border: "1px solid rgba(239,68,68,0.15)", color: "var(--muted-foreground)" }}>
-          Detects <strong style={{ color: "#ef4444" }}>car, motorcycle, bus, truck</strong> (tricycles register as motorcycle). A vehicle stationary past the dwell time raises an <strong style={{ color: "#ef4444" }}>Illegal Parking</strong> alert.
-        </div>
-      </div>
+      <TwoCols
+        left={detection("parking", "Illegal parking detection",
+          "Flag vehicles parked or blocking the road for too long.",
+          "How sure the system must be before it treats something as a vehicle. Lower catches more but makes more mistakes; higher is stricter.")}
+        right={
+          <Card title="Timings" onReset={() => resetKeys(["parking_dwell", "parking_move_tolerance"])}>
+            <Row label="Time before it counts as parked"
+              desc="How long a vehicle must stay put to count as parked. A car just driving through never reaches it."
+              differs={differs("parking_dwell")}>
+              <DurationBox seconds={form.parking_dwell} version={version} onChange={(s) => set("parking_dwell", Math.round(s))} />
+            </Row>
+            <Row label="Movement allowed while parked"
+              desc="How far a vehicle may shift and still count as standing still."
+              differs={differs("parking_move_tolerance")}>
+              <NumberBox value={form.parking_move_tolerance} min={10} max={120} step={5} unit="px"
+                onChange={(v) => set("parking_move_tolerance", Math.round(v))} />
+            </Row>
+          </Card>
+        }
+        below={<InfoBox color="#ef4444">
+          The system watches for cars, motorcycles, buses and trucks (tricycles count as motorcycles).
+          A vehicle that stays put beyond the set time is flagged as obstructing the road.
+        </InfoBox>}
+      />
     ),
     smoking: (
-      <div className="space-y-6">
-        <Toggle label="Smoking detection enabled" desc="Detect public smoking (cigarette / vape) on the smoking-monitor feed" value={smokingEnabled} onChange={setSmokingEnabled} />
-        <Slider
-          label="Detection confidence" value={smokingConf} min={10} max={90} unit="%"
-          desc="How sure the model must be. The custom model scores genuine cigarettes/vapes ~30–90%; lower catches more at distance, higher reduces false hits."
-          onChange={setSmokingConf}
-        />
-        <Slider
-          label="Dwell time before alert" value={smokingDwell} min={2} max={30} unit="s"
-          desc="How long smoking must stay visible before alerting. Filters one-frame false positives."
-          onChange={setSmokingDwell}
-        />
-        <div className="rounded-xl p-4 text-xs leading-relaxed"
-          style={{ background: "rgba(249,115,22,0.06)", border: "1px solid rgba(249,115,22,0.15)", color: "var(--muted-foreground)" }}>
-          Detects <strong style={{ color: "#f97316" }}>cigarettes</strong>. Sustained presence past the dwell time raises a <strong style={{ color: "#f97316" }}>Public Smoking</strong> alert with an evidence snapshot.
-        </div>
-        <IndicatorTimings group="smoking" />
-      </div>
+      <TwoCols
+        left={detection("smoking", "Smoking detection", "Watch for people smoking in public.",
+          "How sure the system must be before it reports a cigarette. Lower catches more at a distance; higher means fewer false alarms.")}
+        right={
+          <Card title="Timings" onReset={() => resetKeys(["smoking_puff_count", "smoking_puff_window_minutes"])}>
+            <Row label="Repeated smoking motion"
+              desc="How many hand-to-mouth motions, and in how much time, count as a repeated pattern."
+              differs={differs("smoking_puff_count") || differs("smoking_puff_window_minutes")}>
+              <NumberBox value={form.smoking_puff_count} min={2} max={10} step={1} unit="motions in" width="w-16"
+                onChange={(v) => set("smoking_puff_count", Math.round(v))} />
+              <DurationBox seconds={form.smoking_puff_window_minutes * 60} version={version}
+                onChange={(s) => set("smoking_puff_window_minutes", Math.round((s / 60) * 100) / 100)} />
+            </Row>
+            <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>{TIMINGS_FOOTER}</div>
+          </Card>
+        }
+        below={<InfoBox color="#f97316">
+          The system watches for a cigarette in someone&rsquo;s hand. A cigarette seen briefly is flagged for
+          monitoring. It&rsquo;s raised further when the person is also seen bringing it to their mouth, again and again.
+        </InfoBox>}
+      />
     ),
     thief: (
-      <div className="space-y-6">
-        <Toggle label="Holdup detection enabled" desc="Detect Holdup indicators on the monitor feed" value={thiefEnabled} onChange={setThiefEnabled} />
-        <Slider
-          label="Detection confidence" value={thiefConf} min={10} max={90} unit="%"
-          desc="How sure the model must be. Lower catches more (with more false hits); higher is stricter."
-          onChange={setThiefConf}
-        />
-        <Slider
-          label="Dwell time before alert" value={thiefDwell} min={2} max={30} unit="s"
-          desc="How long a threat must stay visible before alerting. Kept short — an armed robbery should alert fast."
-          onChange={setThiefDwell}
-        />
-        <div className="rounded-xl p-4 text-xs leading-relaxed"
-          style={{ background: "rgba(220,38,38,0.06)", border: "1px solid rgba(220,38,38,0.15)", color: "var(--muted-foreground)" }}>
-          Detects <strong style={{ color: "#dc2626" }}>Knife</strong> as anchor for the potential violation. Sustained presence past the dwell time raises a <strong style={{ color: "#dc2626" }}>Holdup</strong> alert with an evidence snapshot.
-        </div>
-        <IndicatorTimings group="holdup" />
-      </div>
+      <TwoCols
+        left={detection("thief", "Holdup detection", "Watch for a person holding a knife.",
+          "How sure the system must be before it reports a knife. Lower catches more but makes more mistakes; higher is stricter.")}
+        right={
+          <Card title="Timings" onReset={() => resetKeys(["holdup_loiter_seconds", "holdup_near_person_heights"])}>
+            <Row label="Lingering before the incident"
+              desc="How long someone must hang around nearby before it's considered suspicious."
+              differs={differs("holdup_loiter_seconds")}>
+              <DurationBox seconds={form.holdup_loiter_seconds} version={version}
+                onChange={(s) => set("holdup_loiter_seconds", Math.round(s))} />
+            </Row>
+            <Row label="How close the second person must be"
+              desc="How near another person must be to the person holding the knife."
+              differs={differs("holdup_near_person_heights")}>
+              <NumberBox value={form.holdup_near_person_heights} min={0.5} max={4} step={0.25} unit="body heights"
+                onChange={(v) => set("holdup_near_person_heights", v)} />
+            </Row>
+            <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>{TIMINGS_FOOTER}</div>
+          </Card>
+        }
+        below={<InfoBox color="#dc2626">
+          A knife held briefly is flagged for monitoring. It&rsquo;s raised further when another person is close by.
+        </InfoBox>}
+      />
     ),
     drinking: (
-      <div className="space-y-6">
-        <Toggle label="Drinking detection enabled" desc="Detect public drinking on the drinking-monitor feed" value={drinkingEnabled} onChange={setDrinkingEnabled} />
-        <Slider
-          label="Detection confidence" value={drinkingConf} min={10} max={90} unit="%"
-          desc="How sure the model must be. Lower catches more (with more false hits); higher is stricter."
-          onChange={setDrinkingConf}
-        />
-        <Slider
-          label="Dwell time before alert (raised to mouth)" value={drinkingDwell} min={3} max={60} unit="s"
-          desc="How long a bottle must stay raised to the mouth before it counts as drinking, not just possession."
-          onChange={setDrinkingDwell}
-        />
-        <Slider
-          label="Dwell time before alert (held, not raised)" value={drinkingHeldDwell} min={10} max={120} unit="s"
-          desc="How long a bottle merely held — or with no face visible to check posture at all, common at CCTV range — must stay with a person before it counts. Weaker evidence than a raised bottle, so this should stay well above the dwell above."
-          onChange={setDrinkingHeldDwell}
-        />
-        <Slider
-          label="Gathering evidence expiry" value={drinkingEvidenceMaxAge} min={5} max={60} unit="s"
-          desc="A gathering's bottle sighting must be this recent to still count — stops a group from staying 'armed' to alert on one old bottle no longer in frame."
-          onChange={setDrinkingEvidenceMaxAge}
-        />
-        <Slider
-          label="Mouth proximity" value={drinkingMouthProximity} min={1.5} max={5} step={0.25} unit=" face-widths"
-          desc="How close a bottle must be to the mouth to count as raised, in units of the detected face's width."
-          onChange={setDrinkingMouthProximity}
-        />
-        <Slider
-          label="Alert cooldown radius" value={drinkingCooldownDist} min={0.5} max={3} step={0.25} unit="x"
-          desc="How close (as a fraction of person height) a new alert must be to a recent one to count as 'the same spot' and get suppressed by cooldown."
-          onChange={setDrinkingCooldownDist}
-        />
-        <div className="rounded-xl p-4 text-xs leading-relaxed"
-          style={{ background: "rgba(139,92,246,0.06)", border: "1px solid rgba(139,92,246,0.15)", color: "var(--muted-foreground)" }}>
-          Detects <strong style={{ color: "#8b5cf6" }}>bottles</strong>. Sustained presence past the dwell time raises a <strong style={{ color: "#8b5cf6" }}>Public Drinking</strong> alert with an evidence snapshot, reflecting inuman culture practices.
-        </div>
-        <IndicatorTimings group="drinking" />
-      </div>
+      <TwoCols
+        left={detection("drinking", "Drinking detection", "Watch for people drinking in public.",
+          "How sure the system must be before it reports a bottle. Lower catches more but makes more mistakes; higher is stricter.",
+          {
+            keys: ["drinking_mouth_proximity", "drinking_cooldown_center_dist"],
+            node: (
+              <>
+                <Slider label="Bottle-to-mouth distance" value={form.drinking_mouth_proximity} min={1.5} max={5} step={0.25}
+                  unit=" face widths" differs={differs("drinking_mouth_proximity")}
+                  desc="How close a bottle must be to someone's mouth to count as raised to drink."
+                  onChange={(v) => set("drinking_mouth_proximity", v)} />
+                <Slider label="Same-spot radius" value={form.drinking_cooldown_center_dist} min={0.5} max={3} step={0.25}
+                  unit="x" differs={differs("drinking_cooldown_center_dist")}
+                  desc="How near a new alert must be to a recent one to be treated as the same spot and held back."
+                  onChange={(v) => set("drinking_cooldown_center_dist", v)} />
+              </>
+            ),
+          })}
+        right={
+          <Card title="Timings"
+            onReset={() => resetKeys(["drinking_group_duration", "drinking_min_group", "drinking_start", "drinking_end"])}>
+            <Row label="Stay time that counts as a long stay"
+              desc="How long a group must stay together to be treated as a long gathering."
+              differs={differs("drinking_group_duration")}>
+              <DurationBox seconds={form.drinking_group_duration} version={version}
+                onChange={(s) => set("drinking_group_duration", Math.round(s))} />
+            </Row>
+            <Row label="Minimum group size" desc="How many people together count as a group."
+              differs={differs("drinking_min_group")}>
+              <NumberBox value={form.drinking_min_group} min={2} max={20} step={1} unit="people"
+                onChange={(v) => set("drinking_min_group", Math.round(v))} />
+            </Row>
+            <Row label="Evening hours" desc="The hours when drinking in public is more likely."
+              differs={differs("drinking_start") || differs("drinking_end")}>
+              <TimeBox value={form.drinking_start} onChange={(v) => set("drinking_start", v)} />
+              <span className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>to</span>
+              <TimeBox value={form.drinking_end} onChange={(v) => set("drinking_end", v)} />
+            </Row>
+            <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>{TIMINGS_FOOTER}</div>
+          </Card>
+        }
+        below={<InfoBox color="#8b5cf6">
+          The system watches for bottles. A bottle seen briefly is flagged for monitoring. It&rsquo;s raised further
+          when people stay together as a group, stay at the spot for a long time, or raise the bottle to their mouth.
+        </InfoBox>}
+      />
     ),
     system: (
-      <div className="space-y-6">
-        <Slider label="Alert cooldown period" value={cooldown} min={30} max={600} unit="s" onChange={setCooldown} />
-        <Slider
-          label="Evidence retention" value={retention} min={7} max={90} unit=" days"
-          desc="How long alert images and clips are kept before they may be purged (RA 10173 storage limitation). The alert records themselves are always kept."
-          onChange={setRetention}
-        />
-        <Toggle
-          label="Automatic purge of old evidence"
-          desc="OFF by default. When on, a scheduled run of `manage.py purge_old_evidence --auto` deletes evidence older than the retention period. Nothing is deleted while this is off."
-          value={autoPurge} onChange={setAutoPurge}
-        />
-        <IndicatorTimings group="all" />
-        <IndicatorTimings group="ai" />
-      </div>
+      <TwoCols
+        left={
+          <Card title="Alerts and records" onReset={() => resetKeys(["alert_cooldown", "evidence_retention_days", "evidence_auto_purge", "show_testing_tools"])}>
+            <Slider label="Alert cooldown" value={form.alert_cooldown} min={30} max={600} unit=" sec"
+              differs={differs("alert_cooldown")}
+              desc="How long the system waits before reporting the same spot again."
+              onChange={(v) => set("alert_cooldown", v)} />
+            <Slider label="Evidence retention" value={form.evidence_retention_days} min={7} max={90} unit=" days"
+              differs={differs("evidence_retention_days")}
+              desc="How long alert images and clips are kept before they may be deleted (RA 10173 storage limitation). The alert records themselves are always kept."
+              onChange={(v) => set("evidence_retention_days", v)} />
+            <Toggle label="Delete old evidence automatically"
+              desc="Off by default. When on, evidence older than the retention period is deleted on a schedule. Nothing is deleted while this is off."
+              value={form.evidence_auto_purge} differs={differs("evidence_auto_purge")}
+              onChange={(v) => set("evidence_auto_purge", v)} />
+            <Toggle label="Show testing tools"
+              desc="Shows Run Detection, and Upload Video and History on Live Feeds, for trying the system on recorded footage. Leave off for normal use."
+              value={form.show_testing_tools} differs={differs("show_testing_tools")}
+              onChange={(v) => set("show_testing_tools", v)} />
+          </Card>
+        }
+        right={
+          <div className="space-y-4">
+            <Card title="Object confirmation" onReset={() => resetKeys(["object_confirm_seconds"])}>
+              <Row label="How long an object must be seen"
+                desc="How long a bottle, cigarette or knife must stay in view before the system starts watching it."
+                differs={differs("object_confirm_seconds")}>
+                <DurationBox seconds={form.object_confirm_seconds} version={version}
+                  onChange={(s) => set("object_confirm_seconds", Math.round(s * 2) / 2)} />
+              </Row>
+              <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>{TIMINGS_FOOTER}</div>
+            </Card>
+            <Card title="AI checker"
+              note="A local AI model looks at a short clip and describes the scene. It only adds context and a suggestion; it never changes an alert's status."
+              onReset={() => resetKeys(["vlm_enabled", "vlm_model", "vlm_model_holdup", "vlm_frames"])}>
+              <Toggle label="AI checker" desc="Everything stays on this computer. Nothing is sent anywhere."
+                value={form.vlm_enabled} differs={differs("vlm_enabled")} onChange={(v) => set("vlm_enabled", v)} />
+              <Row label="Model for smoking and drinking" desc="A smaller model is faster and fits alongside detection."
+                differs={differs("vlm_model")}>
+                <input type="text" value={form.vlm_model} onChange={(e) => set("vlm_model", e.target.value)}
+                  className="w-48 px-2 py-1 rounded-lg text-[14px] outline-none" style={inputStyle} />
+              </Row>
+              <Row label="Model for holdup"
+                desc="A larger model for holdups, where reading the scene correctly matters most. It is slower, so the AI note for a holdup appears a little later. Leave blank to use the model above."
+                differs={differs("vlm_model_holdup")}>
+                <input type="text" value={form.vlm_model_holdup} onChange={(e) => set("vlm_model_holdup", e.target.value)}
+                  className="w-48 px-2 py-1 rounded-lg text-[14px] outline-none" style={inputStyle} />
+              </Row>
+              <Row label="Frames per check"
+                desc="How many video frames the AI looks at each time. More frames give it more to go on but take longer."
+                differs={differs("vlm_frames")}>
+                <NumberBox value={form.vlm_frames} min={8} max={12} step={1} unit="frames"
+                  onChange={(v) => set("vlm_frames", Math.min(12, Math.max(8, Math.round(v))))} />
+              </Row>
+            </Card>
+          </div>
+        }
+      />
     ),
   };
 
@@ -379,7 +473,7 @@ export function SystemConfig() {
         style={{ borderBottom: "1px solid var(--border)" }}>
         <div className="flex items-center gap-3">
           <h1 className="text-xl font-bold" style={{ color: "var(--foreground)" }}>Settings</h1>
-          <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>Admin only · changes apply immediately</span>
+          <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>Admin only · changes apply within a few seconds</span>
         </div>
         <div className="flex gap-2">
           <button
@@ -388,7 +482,7 @@ export function SystemConfig() {
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50"
             style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}
           >
-            <RotateCcw size={11} /> Reset
+            <RotateCcw size={11} /> Discard changes
           </button>
           <button
             onClick={() => setPendingAction("save")}
@@ -403,7 +497,7 @@ export function SystemConfig() {
 
       <div className="flex flex-1 overflow-hidden">
         {/* Section nav */}
-        <div className="w-48 flex-shrink-0 p-3 space-y-0.5 overflow-y-auto"
+        <div className="w-44 flex-shrink-0 p-3 space-y-0.5 overflow-y-auto"
           style={{ borderRight: "1px solid var(--border)" }}>
           {sections.map((s) => {
             const Icon = s.icon;
@@ -426,8 +520,8 @@ export function SystemConfig() {
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto p-6">
-          <div className="max-w-md">
+        <div className="flex-1 overflow-y-auto p-5">
+          <div className="max-w-5xl">
             {loading ? (
               <div className="flex flex-col items-center justify-center py-16 gap-2">
                 <Loader2 size={24} className="animate-spin" style={{ color: "var(--muted-foreground)" }} />
@@ -440,11 +534,7 @@ export function SystemConfig() {
                 <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>{loadError}</div>
               </div>
             ) : (
-              content[active] ?? (
-                <div className="text-sm text-center py-16" style={{ color: "var(--muted-foreground)" }}>
-                  Configuration for {active} coming soon
-                </div>
-              )
+              content?.[active]
             )}
           </div>
         </div>
@@ -455,14 +545,14 @@ export function SystemConfig() {
           ? {
               iconColor: "#ef4444", iconBg: "rgba(239,68,68,0.12)", Icon: RotateCcw,
               title: "Discard unsaved changes?",
-              message: "This reloads the last saved settings from the server — any edits you haven't saved will be lost.",
-              confirmLabel: "Yes, reset", confirmColor: "#ef4444",
+              message: "This reloads the last saved settings — any edits you haven't saved will be lost.",
+              confirmLabel: "Yes, discard", confirmColor: "#ef4444",
               run: load,
             }
           : {
               iconColor: "#10b981", iconBg: "rgba(16,185,129,0.12)", Icon: Save,
               title: "Save these settings?",
-              message: "Changes apply immediately across the system — the detectors will use these values right away.",
+              message: "Changes apply within a few seconds — the detectors will use these values right away.",
               confirmLabel: "Yes, save", confirmColor: "#10b981",
               run: save,
             };

@@ -3,6 +3,7 @@ import { Maximize2, WifiOff, LayoutGrid, Check, X, Upload, Loader2, CheckCircle2
 import { getAlerts, getCameras, getCameraSnapshotUrl, getDetectionJobs, cancelDetectionJob } from "./api";
 import { UploadDetectionModal } from "./UploadDetectionModal";
 import { DetectionJobHistoryModal } from "./DetectionJobHistoryModal";
+import { useTestingTools } from "./useTestingTools";
 import { EdgeEditorModal } from "./EdgeEditorModal";
 import { CameraStreamModal } from "./CameraStreamModal";
 
@@ -283,11 +284,11 @@ function CameraTile({ cam, alert, isSelected, onSelect, onExpand, fill }) {
     >
       {/* Feed image — live snapshot for CCTV cameras, static image otherwise */}
       <div className={`relative w-full overflow-hidden bg-black ${fill ? "flex-1 min-h-0" : "aspect-video"}`}>
-        <img
+        <FeedImage
           src={liveUrl || cam.imageUrl}
           alt={`${cam.name} feed`}
+          offline={cam.status === "offline"}
           className="w-full h-full object-cover transition-all duration-300"
-          style={{ opacity: cam.status === "offline" ? 0.2 : 1 }}
         />
 
         {/* LIVE badge for a streaming camera */}
@@ -394,11 +395,12 @@ function ExpandedCamera({ cam, alert, onClose, isAdmin, onCameraUpdated }) {
         style={{ maxWidth: "min(95vw, 1600px)", border: "1px solid var(--border)", background: "#000" }}
       >
         <div className="relative w-full bg-black" style={{ aspectRatio: "16 / 9" }}>
-          <img
+          <FeedImage
             src={liveUrl || cam.imageUrl}
             alt={`${cam.name} feed`}
+            offline={cam.status === "offline"}
             className="w-full h-full object-contain"
-            style={{ opacity: cam.status === "offline" ? 0.2 : 1 }}
+            iconSize={34}
           />
           {cam.isLive && cam.status !== "offline" && (
             <div className="absolute top-3 left-3 flex items-center gap-1.5 px-2 py-1 rounded text-xs font-semibold"
@@ -476,7 +478,40 @@ function ExpandedCamera({ cam, alert, onClose, isAdmin, onCameraUpdated }) {
   );
 }
 
-export function CameraGrid({ compact = false, isAdmin = false }) {
+// The camera picture. When the stream / snapshot fails (or the camera is marked offline) a clean
+// "Camera offline" panel replaces the browser's broken-image icon and alt text. The <img> stays
+// mounted (hidden) while failed, so the snapshot polling that keeps updating `src` also brings
+// the picture back by itself when the camera returns.
+function FeedImage({ src, alt, offline, className, iconSize = 22 }) {
+  const [failed, setFailed] = useState(false);
+  const down = offline || failed || !src;
+  return (
+    <>
+      {src ? (
+        <img
+          src={src}
+          alt={alt}
+          className={className}
+          style={{ display: down ? "none" : undefined }}
+          onError={() => setFailed(true)}
+          onLoad={() => setFailed(false)}
+        />
+      ) : null}
+      {down && (
+        <div className="w-full h-full flex flex-col items-center justify-center gap-1.5"
+          style={{ background: "#0b0f14", color: "#64748b" }}>
+          <WifiOff size={iconSize} />
+          <span className="text-[13px] font-medium">Camera offline</span>
+        </div>
+      )}
+    </>
+  );
+}
+
+export function CameraGrid({ compact = false, isAdmin: isAdminRole = false }) {
+  // Upload Video and History are testing tools: admin only AND switched on in Settings -> System.
+  const testingTools = useTestingTools(isAdminRole);
+  const isAdmin = isAdminRole;
   const [expanded, setExpanded] = useState(null);
   const [selected, setSelected] = useState(null);
   const [allCameras, setAllCameras] = useState([]);
@@ -608,7 +643,7 @@ export function CameraGrid({ compact = false, isAdmin = false }) {
         </div>
 
         <div className="flex items-center gap-2">
-          {isAdmin && (
+          {testingTools && (
             <button
               onClick={() => setShowUpload(true)}
               className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[14px] transition-colors"
@@ -619,7 +654,7 @@ export function CameraGrid({ compact = false, isAdmin = false }) {
             </button>
           )}
 
-          {isAdmin && (
+          {testingTools && (
             <button
               onClick={() => setShowHistory(true)}
               className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[14px] transition-colors"
@@ -704,14 +739,14 @@ export function CameraGrid({ compact = false, isAdmin = false }) {
           isAdmin={isAdmin} onCameraUpdated={handleCameraUpdated} />
       )}
 
-      {isAdmin && showUpload && (
+      {testingTools && showUpload && (
         <UploadDetectionModal
           onClose={() => setShowUpload(false)}
           onJobStarted={(job) => setDetectionJobs((prev) => [mapDetectionJob(job), ...prev])}
         />
       )}
 
-      {isAdmin && showHistory && (
+      {testingTools && showHistory && (
         <DetectionJobHistoryModal jobs={detectionJobs} onClose={() => setShowHistory(false)} onCancel={handleCancelJob} />
       )}
 

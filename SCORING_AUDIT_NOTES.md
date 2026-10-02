@@ -156,3 +156,19 @@ others.
   dormant gate code in `watch_drinking` is still there (default off) and should be deleted in Round 2.
 - `drinking_group_duration` on the live DB is 25 s (a testing value). It shows as "changed" next to the
   spec default of 10 minutes; use "Reset to spec defaults" before measurement runs.
+
+## Ordinance hours (open question, note from the user)
+
+The old "Restrict to ordinance hours" gate (21:30-04:00 on the live DB) is separate from the scoring evening band
+(16:00-24:00, a +5 indicator). The user will confirm what Ord. No. 469 actually says. If it only bans drinking during
+certain hours, restore a real gate (a setting plus the existing dormant `drinking_hours_enabled` code in
+`watch_drinking`); if it bans public drinking at all hours, the gate stays removed and the evening band stays a cue.
+Until then the gate is off and its Settings toggle is gone.
+
+## Unused per-violation dwell settings (found while cleaning Settings)
+
+After momentum replaced the vote and dwell gate, `smoking_dwell`, `thief_dwell`, `drinking_dwell`,
+`drinking_held_dwell` and `drinking_evidence_max_age` are no longer read by any detector (the dwell is still
+passed into `_process_track` but never used). Their Settings sliders were removed. The columns remain in the
+database and should be dropped, with the `--dwell` flags and the `dwell` arguments, in a Round 2 migration.
+`parking_dwell` is still used (parking has its own timer) and stays.
