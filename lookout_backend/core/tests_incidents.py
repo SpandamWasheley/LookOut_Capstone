@@ -166,14 +166,14 @@ class ThiefAndDrinkingTests(TestCase):
         near = self._knife_track(2, (560, 200, 680, 500))            # ~1.0 heights away
         far = self._knife_track(3, (1100, 200, 1220, 500))           # ~2.3 heights away
         import datetime
-        from unittest import mock
-        with mock.patch("core.management.commands.watch_thief.datetime") as dt:
-            dt.datetime.now.return_value = datetime.datetime(2026, 10, 2, 16, 0)   # x1.36
-            self.thief._frame_tracks = [holder, far]
-            self.assertEqual(self.thief._knife_evidence(holder, "knife", 3.0, 10.0, holder.box).band,
-                             scoring.MONITORING)
-            self.thief._frame_tracks = [holder, near]
-            ev = self.thief._knife_evidence(holder, "knife", 3.0, 10.0, holder.box)
+        # an uploaded clip filmed at 16:00 (the x1.36 block) via --clock
+        self.thief._source_path = "clip.mp4"
+        self.thief.clock_start = datetime.datetime(2026, 10, 2, 16, 0)
+        self.thief._frame_tracks = [holder, far]
+        self.assertEqual(self.thief._knife_evidence(holder, "knife", 3.0, 0.0, holder.box).band,
+                         scoring.MONITORING)
+        self.thief._frame_tracks = [holder, near]
+        ev = self.thief._knife_evidence(holder, "knife", 3.0, 0.0, holder.box)
         self.assertTrue(ev.people_near)
         self.assertEqual(ev.band, scoring.WARNING)
         self.assertAlmostEqual(ev.score, 0.45 * 1.36, places=3)

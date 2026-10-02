@@ -139,6 +139,7 @@ class Command(IncidentMixin, BaseCommand):
         self.mouth_check = True
         self.require_puff = False
         self.pose = True
+        self.cascade_extra = False     # add a native-res person-crop pass to --far (watch_all sets it)
         self.cascade = False
         self.far = True
         self.preprocess = False
@@ -630,6 +631,11 @@ class Command(IncidentMixin, BaseCommand):
             dets = recognition.detect_smoking_far(
                 frame, conf=conf, tiles=self.tiles, person_boxes=persons,
             )
+        if self.cascade_extra and not self.cascade and persons:
+            extra = recognition.detect_smoking_cascade(
+                frame, persons, conf=conf, crop_imgsz=recognition.NEAR_IMGSZ)
+            if extra:
+                dets = recognition._nms(list(dets) + extra)
         return self._apply_class_floors(dets, conf)
 
     # ---- single-image test mode -------------------------------------------
@@ -896,41 +902,13 @@ class Command(IncidentMixin, BaseCommand):
             self.stats["discarded: no person (scene)"] += 1
             return
 
-        track.vote(dets, now_ts)
-        active = bool(dets) if "vote" in self.ablate else track.accruing(now_ts)
-        present_for = track.tick(now_ts, active)
-
-        best = track.best_detection() if active else None
-        best_score = best_label = None
-        object_on = False
-        if best is not None:
-            _, _, _, _, best_score, best_label = best
-            required = 0 if "dwell" in self.ablate else self._dwell_for(best_label, dwell_seconds)
-
-            # Draw the violation boxes ALWAYS (green while building, orange once
-            # the object cue is ON) so the evidence clip shows the detection;
-            # the track's last known boxes are drawn dashed when this frame has none.
-            draw_dets = dets if dets else track.dets
-            is_historical = not dets and bool(track.dets)
-            for (x1, y1, x2, y2, score, label) in draw_dets:
-                color = (0, 165, 245) if present_for >= required else (0, 200, 0)
-                label_text = f"{label} {score * 100:.0f}% {present_for:.0f}/{required:.0f}s"
-                if is_historical:
-                    color = tuple(c // 2 for c in color)
-                    recognition.draw_dashed_rect(frame, (x1, y1), (x2, y2), color, 2)
-                    label_text += " (last seen)"
-                else:
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                recognition.draw_label(frame, label_text, x1, max(y1 - 8, 0), color)
-
-            if present_for >= required:
-                object_on = True
-            else:
-                self.stats[f"held back: dwell not met:{best_label}"] += 1
-        elif track.seen_at(now_ts) and now_ts - track.last_threat_seen > PRESENCE_GRACE_SECONDS:
-            # Visibly standing there NOT smoking any more; an occluded person
-            # keeps their progress (the tombstone hands it back).
-            track.reset_dwell()
+        track.vote(dets, now_ts)       # keeps the label history that track.dets draws from
+        # Object cue: momentum per (track, class) -- replaces the vote + dwell gate.
+        cue = self._object_cue(track, dets, now_ts)
+        object_on, best_label, best_score = cue.on, cue.label, cue.conf
+        self._draw_object_cue(frame, track, dets, cue, color_on=(0, 165, 245))
+        if not object_on and dets:
+            self.stats["held back: momentum below ON"] += 1
 
         # --- the cues (spec v6 section 6) ---
         puffs = track.gesture_count(now_ts)          # pose counter, 5-minute window
@@ -955,8 +933,8 @@ class Command(IncidentMixin, BaseCommand):
             self._incident_sync(key, score, now_ts, create=None)   # closes an open incident's state
             return
 
-        box = track.box or (best[:4] if best else None)
-        summary = ", ".join(sorted({s[5] for s in track.dets})) or "hand-to-mouth movement"
+        box = track.box
+        summary = best_label or ", ".join(sorted({s[5] for s in track.dets})) or "hand-to-mouth movement"
         who = track.display
 
         def describe(sc):
@@ -973,7 +951,8 @@ class Command(IncidentMixin, BaseCommand):
         alert = self._incident_sync(
             key, score, now_ts, create=create, describe=describe, frame=frame, box=box,
             blocked=lambda: "cooldown" not in self.ablate and self._cooldown_blocks(box, now_ts, cooldown),
-            extra_cues={"puffs_seen": puffs, "object_confidence": None if best_score is None else round(best_score, 3)},
+            extra_cues={"puffs_seen": puffs, "momentum": cue.snapshot,
+                        "object_confidence": None if best_score is None else round(best_score, 3)},
         )
         inc = self._incident_book().get(key)
         if alert is not None and inc is not None and not getattr(inc, "ai_queued", False):

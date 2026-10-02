@@ -518,6 +518,12 @@ def _gpu_available():
 # (where 960 would drop near mode well under 10 FPS — the plan's own fallback).
 NEAR_IMGSZ = int(os.environ.get("LOOKOUT_IMGSZ", 960 if _gpu_available() else 640))
 CASCADE_IMGSZ = int(os.environ.get("LOOKOUT_CASCADE_IMGSZ", 1280))
+# The far path (whole frame + tiles + person crops) used to call the model with
+# ultralytics' default imgsz of 640 while the near path used NEAR_IMGSZ (960 on a
+# GPU), so a 2560 px frame was shrunk 4x before the model ever saw it. Both paths
+# now use the same size. Override with LOOKOUT_FAR_IMGSZ (e.g. 640 to trade
+# recall for speed).
+FAR_IMGSZ = int(os.environ.get("LOOKOUT_FAR_IMGSZ", NEAR_IMGSZ))
 
 _yolo_model = None
 _merged_model = None
@@ -999,7 +1005,7 @@ def detect_smoking(frame, conf=0.3, imgsz=None):
     the inference resolution (default NEAR_IMGSZ).
     """
     model = load_smoking_model()
-    results = model(frame, verbose=False, imgsz=imgsz or NEAR_IMGSZ)[0]
+    results = model(frame, verbose=False, imgsz=imgsz or NEAR_IMGSZ, conf=conf)[0]
     return _only(_smoking_boxes_from_result(results, conf), SMOKING_CLASSES)
 
 
@@ -1052,7 +1058,7 @@ def _nms(boxes, iou_thresh=0.5):
     return kept
 
 
-def _detect_far(model, frame, conf, tiles, overlap, person_boxes, upscale):
+def _detect_far(model, frame, conf, tiles, overlap, person_boxes, upscale, imgsz=None):
     """Long-range detection cascade for CCTV footage, merged from two
     resolution-preserving passes so a distant small object (a few pixels on the
     full frame) still lands on enough pixels to detect:
@@ -1071,6 +1077,7 @@ def _detect_far(model, frame, conf, tiles, overlap, person_boxes, upscale):
     CCTV where high FPS isn't needed.
     """
     boxes = []
+    imgsz = imgsz or FAR_IMGSZ
 
     # The whole-frame pass ALWAYS runs, tiles or not. A tile is a zoomed-in
     # fragment with the surrounding context cropped away, and the model was
@@ -1079,7 +1086,7 @@ def _detect_far(model, frame, conf, tiles, overlap, person_boxes, upscale):
     # whole-frame and nothing at all once cut into 320x320 quarters). Running
     # both and merging keeps far mode a strict superset of near mode: it can
     # only ever add recall, never trade it away.
-    results = model(frame, verbose=False)[0]
+    results = model(frame, verbose=False, imgsz=imgsz, conf=conf)[0]
     boxes.extend(_smoking_boxes_from_result(results, conf))
 
     rows, cols = tiles
@@ -1087,7 +1094,7 @@ def _detect_far(model, frame, conf, tiles, overlap, person_boxes, upscale):
         for tile, (ox, oy) in _iter_tiles(frame, rows, cols, overlap):
             if tile.size == 0:
                 continue
-            results = model(tile, verbose=False)[0]
+            results = model(tile, verbose=False, imgsz=imgsz, conf=conf)[0]
             boxes.extend(_smoking_boxes_from_result(results, conf, offset=(ox, oy)))
 
     scale = upscale or 1.0
@@ -1100,7 +1107,7 @@ def _detect_far(model, frame, conf, tiles, overlap, person_boxes, upscale):
         if scale != 1.0:
             crop = cv2.resize(crop, None, fx=scale, fy=scale,
                               interpolation=cv2.INTER_CUBIC)
-        results = model(crop, verbose=False)[0]
+        results = model(crop, verbose=False, imgsz=imgsz, conf=conf)[0]
         for (x1, y1, x2, y2, score, label) in _smoking_boxes_from_result(results, conf):
             # map the (possibly upscaled) crop-space box back to full-frame coords
             boxes.append((
@@ -1150,7 +1157,7 @@ def detect_on_person_crops(model, frame, person_boxes, conf, pad=0.35,
         crop = frame[y1:y2, x1:x2]
         if crop.size == 0:
             continue
-        results = model(crop, verbose=False, imgsz=crop_imgsz)[0]
+        results = model(crop, verbose=False, imgsz=crop_imgsz, conf=conf)[0]
         for (bx1, by1, bx2, by2, score, label) in _smoking_boxes_from_result(results, conf):
             boxes.append((bx1 + x1, by1 + y1, bx2 + x1, by2 + y1, score, label))
     return _nms(boxes)
@@ -1183,7 +1190,7 @@ def detect_thief(frame, conf=0.3, imgsz=None):
     raises the inference resolution (default NEAR_IMGSZ).
     """
     model = load_thief_model()
-    results = model(frame, verbose=False, imgsz=imgsz or NEAR_IMGSZ)[0]
+    results = model(frame, verbose=False, imgsz=imgsz or NEAR_IMGSZ, conf=conf)[0]
     return _only(_smoking_boxes_from_result(results, conf), THIEF_CLASSES)
 
 
@@ -1213,7 +1220,7 @@ def detect_drinking(frame, conf=0.35):
     range — but at true CCTV distance use detect_drinking_far.
     """
     model = load_drinking_model()
-    results = model(frame, verbose=False)[0]
+    results = model(frame, verbose=False, imgsz=NEAR_IMGSZ, conf=conf)[0]
     return _only(_smoking_boxes_from_result(results, conf), DRINKING_CLASSES)
 
 
@@ -1257,7 +1264,7 @@ def detect_merged(frame, conf=0.15, imgsz=None):
     class names.
     """
     model = load_merged_model()
-    results = model(frame, verbose=False, imgsz=imgsz or NEAR_IMGSZ)[0]
+    results = model(frame, verbose=False, imgsz=imgsz or NEAR_IMGSZ, conf=conf)[0]
     return _smoking_boxes_from_result(results, conf)
 
 

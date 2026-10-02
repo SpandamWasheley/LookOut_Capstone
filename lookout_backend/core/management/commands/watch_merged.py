@@ -108,6 +108,12 @@ class Command(BaseCommand):
                  "drinking evening band (position in the video is added to it). "
                  "Ignored for live streams; without it the wall clock is used.",
         )
+        parser.add_argument(
+            "--no-cascade", action="store_true",
+            help="Skip the extra native-resolution person-crop pass for Cigarette "
+                 "(it is on by default: about 0.04 s/frame, finds cigarettes the "
+                 "downscaled passes miss).",
+        )
         parser.add_argument("--dry-run", action="store_true",
                             help="Detect and save evidence but write no Alert rows.")
         parser.add_argument("--debug", action="store_true",
@@ -183,6 +189,7 @@ class Command(BaseCommand):
 
         self.far = not options["fast"]
         self.dry_run = options["dry_run"]
+        self.cascade = not options["no_cascade"]
         self.clock_start = vclock.parse_clock(options.get("clock"))
         self.tracker_name = options["tracker"]
         self.show_stats = options["stats"]
@@ -481,6 +488,17 @@ class Command(BaseCommand):
         else:
             dets = recognition.detect_merged(frame, conf=conf_floor)
 
+        # Cigarette recall: a native-resolution pass over each person's crop. A
+        # cigarette is ~24 px on the full frame; the whole-frame and tile passes
+        # shrink it, the crop pass does not.
+        if self.cascade and "smoking" in active and persons:
+            casc = recognition.detect_smoking_cascade(
+                frame, persons, conf=cfg.smoking_confidence / 100,
+                crop_imgsz=recognition.NEAR_IMGSZ)
+            if casc:
+                dets = recognition._nms(list(dets) + casc)
+                self.stats_cascade = getattr(self, "stats_cascade", 0) + len(casc)
+
         if self.calibration_writer is not None:
             self._log_calibration_rows(dets, persons, ids, frame_idx, timestamp)
 
@@ -607,8 +625,9 @@ class Command(BaseCommand):
                            if t.id in cluster.member_ids and not t.is_scene]
             # a bottle on the table the group sits around is a scene detection
             member_dets += cmd._scene_dets_near(cluster, per_track)
-            if member_dets:
-                best = max(member_dets, key=lambda d: d[4])
+            best = max(member_dets, key=lambda d: d[4]) if member_dets else None
+            cluster.frame_conf = best[4] if best else 0.0
+            if best:
                 cluster.note_evidence(best, now)
             cmd._process_cluster(
                 cluster, now, min_group, group_duration, cfg.alert_cooldown,

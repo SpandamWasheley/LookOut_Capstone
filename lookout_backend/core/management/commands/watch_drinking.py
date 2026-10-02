@@ -798,8 +798,9 @@ class Command(IncidentMixin, BaseCommand):
                         # A bottle on the table the group sits around is not in
                         # anyone's box (a scene track) but still belongs to it.
                         member_dets += self._scene_dets_near(cluster, per_track)
-                        if member_dets:
-                            best = max(member_dets, key=lambda d: d[4])
+                        best = max(member_dets, key=lambda d: d[4]) if member_dets else None
+                        cluster.frame_conf = best[4] if best else 0.0
+                        if best:
                             cluster.note_evidence(best, now_ts)
                         self._process_cluster(
                             cluster, now_ts, min_group, group_duration,
@@ -996,46 +997,23 @@ class Command(IncidentMixin, BaseCommand):
             self.stats["discarded: no person (scene)"] += 1
             return
 
-        track.vote(dets, now_ts)
-        active = bool(dets) if "vote" in self.ablate else track.accruing(now_ts)
-        present_for = track.tick(now_ts, active)
-
-        best = track.best_detection() if active else None
-        best_score = best_label = None
+        track.vote(dets, now_ts)       # keeps the label history that track.dets draws from
+        # Object cue: momentum per (track, class) -- replaces the vote + dwell gate.
+        # A bottle carried past is Monitoring too (spec v6 lists it on the quiet
+        # watchlist), so there is no stationary requirement.
+        cue = self._object_cue(track, dets, now_ts)
+        object_on, best_label, best_score = cue.on, cue.label, cue.conf
         posture = "held"
-        object_on = False
-        if best is not None:
-            _, _, _, _, best_score, best_label = best
+        if object_on:
             # Posture describes the object being scored, not the person in
             # general: a glass raised to the mouth must not credit a bottle
             # sitting at the hip.
             own = [d for d in dets if d[5] == best_label] or dets
             posture = self._posture(frame, track, own, now_ts, mouth_proximity)
             self.stats[f"posture:{posture}"] += 1
-            # The object cue (vote + dwell; momentum replaces this next phase).
-            # A bottle held while walking past is Monitoring too: spec v6 lists it
-            # on the quiet watchlist, so there is no stationary requirement here.
-            required = 0 if "dwell" in self.ablate else dwell_seconds
-
-            draw_dets = dets if dets else track.dets
-            is_historical = not dets and bool(track.dets)
-            for (x1, y1, x2, y2, score, label) in draw_dets:
-                color = (200, 80, 160) if present_for >= required else (0, 200, 0)
-                label_text = f"{label} {score * 100:.0f}% {posture} {present_for:.0f}/{required:.0f}s"
-                if is_historical:
-                    color = tuple(c // 2 for c in color)
-                    recognition.draw_dashed_rect(frame, (x1, y1), (x2, y2), color, 2)
-                    label_text += " (last seen)"
-                else:
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                recognition.draw_label(frame, label_text, x1, max(y1 - 8, 0), color)
-
-            if present_for >= required:
-                object_on = True
-            else:
-                self.stats[f"held back: dwell not met:{posture}"] += 1
-        elif track.seen_at(now_ts) and now_ts - track.last_threat_seen > PRESENCE_GRACE_SECONDS:
-            track.reset_dwell()
+        self._draw_object_cue(frame, track, dets, cue, color_on=(200, 80, 160))
+        if not object_on and dets:
+            self.stats["held back: momentum below ON"] += 1
 
         # --- the cues (spec v6 section 5) ---
         cues = set()
@@ -1056,13 +1034,12 @@ class Command(IncidentMixin, BaseCommand):
             self._incident_sync(key, score, now_ts, create=None)
             return
 
-        box = track.box or best[:4]
+        box = track.box
         who = track.display
 
         def describe(sc):
-            return (f"Public drinking: {best_label} ({posture}) on {who}, present for "
-                    f"{present_for:.0f}s, status {scoring.label_of(sc.level)} on "
-                    f"{self.camera.code} feed.")
+            return (f"Public drinking: {best_label} ({posture}) on {who}, status "
+                    f"{scoring.label_of(sc.level)} on {self.camera.code} feed.")
 
         def create(level, with_clip):
             return self._create_alert(
@@ -1074,7 +1051,7 @@ class Command(IncidentMixin, BaseCommand):
             key, score, now_ts, create=create, describe=describe, frame=frame, box=box,
             blocked=lambda: "cooldown" not in self.ablate
             and self._cooldown_blocks(box, now_ts, cooldown, cooldown_center_dist),
-            extra_cues={"posture": posture,
+            extra_cues={"posture": posture, "momentum": cue.snapshot,
                         "object_confidence": None if best_score is None else round(best_score, 3)},
         )
         inc = self._incident_book().get(key)
@@ -1123,16 +1100,22 @@ class Command(IncidentMixin, BaseCommand):
         cues = self._gathering_cues(cluster, now_ts)
         if "gathering_duration" in cues:
             self._gathering_funnel["stationary"].add(cluster.id)
-        evidence = cluster.fresh_evidence(now_ts, evidence_max_age)
-        object_on = evidence is not None
+        # Object cue for the gathering: momentum on the best bottle confidence
+        # seen around the group this frame (a member's hand OR the table).
+        mkey = ("cluster", cluster.id)
+        self._momentum_book()
+        self._seen_track_ids.add(mkey)
+        frame_conf = getattr(cluster, "frame_conf", 0.0)
+        slots = self._momentum_book().step(mkey, {"bottle": frame_conf} if frame_conf > 0 else {})
+        slot = slots.get("bottle")
+        object_on = bool(slot and slot.cue_on)
+        evidence = cluster.evidence
         if object_on:
             self._gathering_funnel["evidence"].add(cluster.id)
             cues.add("bottle")
-            _, _, _, _, ev_score, ev_label = evidence
+            _, _, _, _, ev_score, ev_label = evidence if evidence else (0, 0, 0, 0, frame_conf, "Bottle")
         else:
             ev_score, ev_label = 0.0, "Gathering"
-            if cluster.evidence is not None:
-                self.stats["gathering scored without bottle: evidence stale"] += 1
         if self._time_band_cue(now_ts):
             cues.add("time_band")
 
@@ -1169,7 +1152,8 @@ class Command(IncidentMixin, BaseCommand):
             key, score, now_ts, create=create, describe=describe, frame=frame, box=box,
             blocked=lambda: "cooldown" not in self.ablate
             and self._cooldown_blocks(box, now_ts, cooldown, cooldown_center_dist),
-            extra_cues={"gathering_size": n, "gathering_seconds": round(cluster.duration_held, 1)},
+            extra_cues={"gathering_size": n, "gathering_seconds": round(cluster.duration_held, 1),
+                        "momentum": self._momentum_book().snapshot(mkey, "bottle")},
         )
         inc = self._incident_book().get(key)
         if alert is not None and inc is not None and not getattr(inc, "ai_queued", False):

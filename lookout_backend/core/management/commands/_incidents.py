@@ -13,8 +13,12 @@ callables: how to create the row, and how to describe it.
 
 from django.utils import timezone
 
+from collections import namedtuple
+
+import cv2
+
 from core.models import Alert
-from core.vision import recognition, scoring
+from core.vision import momentum, recognition, scoring
 
 CLIP_REFRESH_SECONDS = 15.0     # while Possible / Likely continues
 ROW_UPDATE_SECONDS = 5.0        # throttle for score / last_seen writes
@@ -36,9 +40,73 @@ class Incident:
         self.announced = False      # the first row (or its dry-run log line) was handled
 
 
+ObjectCue = namedtuple("ObjectCue", "on label conf momentum snapshot")
+NO_CUE = ObjectCue(False, None, None, 0.0, None)
+
+
 class IncidentMixin:
     """Mix into a watch_* Command. Needs: self.dry_run, self.stdout, self.style,
     self.stats, self._alert_log, and the watcher's own _save_clips()."""
+
+    # ---- object cue: momentum per (track, class) ---------------------------
+
+    def _momentum_book(self):
+        book = self.__dict__.get("_momentum")
+        if book is None:
+            book = self._momentum = momentum.MomentumBook(momentum.DEFAULT_CONFIG)
+            self._seen_track_ids = set()
+        return book
+
+    def _object_cue(self, track, dets, now_ts):
+        """Advance this track's momentum slots by one processed frame and report
+        the object cue (docs/specs/LookOut_Object_Cue_Momentum_Spec.md).
+
+        Replaces the old vote + dwell gate. `dets` are this frame's detections
+        for the track; a class that is absent this frame simply decays.
+        """
+        book = self._momentum_book()
+        self._seen_track_ids.add(track.id)
+        confs, names = {}, {}
+        for d in dets:
+            cls = str(d[5]).lower()
+            if d[4] > confs.get(cls, 0.0):
+                confs[cls] = float(d[4])
+            names.setdefault(cls, d[5])
+        slots = book.step(track.id, confs)
+        # Optional run log ($LOOKOUT_MOUTH_LOG): the raw per-frame input of every slot,
+        # so momentum settings can be replayed offline without re-running the models.
+        if confs or slots:
+            recognition.log_mouth(
+                kind="mom", t=round(now_ts, 3), track=track.id, confs={c: round(v, 3) for c, v in confs.items()},
+                box=[int(v) for v in track.box] if track.box is not None else None,
+                on=[c for c, sl in slots.items() if sl.cue_on])
+        for cls in slots:
+            names.setdefault(cls, cls)
+        on = [c for c, sl in slots.items() if sl.cue_on]
+        if not on:
+            top = max(slots.values(), key=lambda sl: sl.momentum, default=None)
+            return ObjectCue(False, None, None, top.momentum if top else 0.0, None)
+        cls = max(on, key=lambda c: slots[c].momentum)
+        conf = confs.get(cls, slots[cls].last_conf) or slots[cls].peak / 3.0
+        return ObjectCue(True, names[cls], float(conf), slots[cls].momentum,
+                         book.snapshot(track.id, cls))
+
+    def _draw_object_cue(self, frame, track, dets, cue, color_on, color_building=(0, 200, 0)):
+        """Draw the violation boxes ALWAYS (green while momentum builds, `color_on`
+        once the cue is ON). With no detection this frame the track's last known
+        boxes are drawn dashed and dimmed."""
+        draw_dets = dets if dets else (track.dets if cue.on else [])
+        is_historical = not dets and bool(draw_dets)
+        for (x1, y1, x2, y2, score, label) in draw_dets:
+            color = color_on if cue.on else color_building
+            text = f"{label} {score * 100:.0f}% m={cue.momentum:.1f}{' ON' if cue.on else ''}"
+            if is_historical:
+                color = tuple(c // 2 for c in color)
+                recognition.draw_dashed_rect(frame, (x1, y1), (x2, y2), color, 2)
+                text += " (last seen)"
+            else:
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            recognition.draw_label(frame, text, x1, max(y1 - 8, 0), color)
 
     def _incident_book(self):
         book = self.__dict__.get("_incidents")
@@ -168,6 +236,13 @@ class IncidentMixin:
         The row stays (it is the record); it simply stops being active:
         `last_seen_at` is the last moment the object cue was ON.
         """
+        # Momentum slots of tracks that were not processed this frame are lost
+        # with their track (no leak, no carry-over to a new id).
+        mbook = self._momentum_book()
+        dropped = mbook.drop_missing(self._seen_track_ids)
+        if dropped:
+            self.stats["momentum slots cleaned"] += dropped
+        self._seen_track_ids = set()
         book = self._incident_book()
         for key in [k for k, inc in book.items() if now - inc.last_active > END_GRACE_SECONDS]:
             inc = book.pop(key)

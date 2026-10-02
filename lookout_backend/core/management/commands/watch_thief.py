@@ -915,81 +915,20 @@ class Command(IncidentMixin, BaseCommand):
             self.stats["discarded: no person (scene)"] += 1
             return
 
-        track.vote(dets, now_ts)
-
-        # Which class's confirmation policy applies — the one most represented
-        # in the window so far, same resolution best_detection() below uses to
-        # pick what to REPORT, resolved here too since a per-class vote/dwell
-        # override (CLASS_POLICY's ratio_scale/stale_scale — currently just
-        # knife, see its comment) has to be known before the active/accruing
-        # check, not after. None when the window is still empty; _policy()
-        # falls back to DEFAULT_POLICY (scale 1.0, i.e. the shared default)
-        # for that and for any class without its own override.
-        label_votes = track.label_votes()
-        policy_label = max(label_votes, key=label_votes.get) if label_votes else None
-        policy = self._policy(policy_label)
-        vote_ratio = tracking.VOTE_MIN_RATIO * policy["ratio_scale"]
-        accrual_stale = tracking.ACCRUAL_STALE_SECONDS * policy["stale_scale"]
-
-        # Ablating the vote removes temporal confirmation entirely: a detection
-        # in THIS frame is taken at face value, which is the no-heuristics
-        # baseline the evaluation compares against.
-        active = bool(dets) if "vote" in self.ablate else track.accruing(
-            now_ts, min_ratio=vote_ratio, stale_seconds=accrual_stale,
-            target_label=policy_label,
-        )
-        present_for = track.tick(now_ts, active)
-
-        if not active:
+        track.vote(dets, now_ts)       # keeps the label history that track.dets draws from
+        # Object cue: momentum per (track, class) -- replaces the vote + dwell gate
+        # (and the per-class vote/stale overrides it needed for the flickery knife).
+        cue = self._object_cue(track, dets, now_ts)
+        self._draw_object_cue(frame, track, dets, cue, color_on=(0, 0, 220))
+        if not cue.on:
             if dets:
-                self.stats["held back: not enough votes yet"] += 1
-            # Clear the dwell only when the person is visibly standing there
-            # NOT doing it any more. If the track wasn't matched this frame they
-            # are out of view, not innocent — hold the progress and let the
-            # tombstone hand it back when they reappear.
-            if track.seen_at(now_ts) and now_ts - track.last_threat_seen > PRESENCE_GRACE_SECONDS:
-                track.reset_dwell()
+                self.stats["held back: momentum below ON"] += 1
             return
+        best_label, best_score = cue.label, cue.conf
+        present_for = cue.momentum
 
-        # The class that held up across the window, not whichever spiked highest
-        # in one frame.
-        best = track.best_detection()
-        if best is None:
-            return
-        _, _, _, _, best_score, best_label = best
-
-        required = 0 if "dwell" in self.ablate else self._dwell_for(
-            best_label, dwell_seconds,
-        )
-
-        # Draw the violation boxes ALWAYS (green while building, red once the
-        # dwell is met) — not just in debug — so the evidence clip shows the
-        # weapon/pose being detected. Matches watch_smoking/watch_drinking.
-        # `dets` is only THIS frame's detections, but active/present_for can
-        # still be confirmed on a frame with none at all (track.accruing()
-        # tolerates brief flicker within the vote window) — draw the
-        # track's last KNOWN detections instead so the clip has something to
-        # show for a dwell/alert that built up across a gap, dashed and
-        # dimmed to mark it as historical, not live this frame.
-        draw_dets = dets if dets else track.dets
-        is_historical = not dets and bool(track.dets)
-        for (x1, y1, x2, y2, score, label) in draw_dets:
-            color = (0, 0, 220) if present_for >= required else (0, 200, 0)
-            label_text = f"{label} {score * 100:.0f}% {present_for:.0f}/{required:.0f}s"
-            if is_historical:
-                color = tuple(c // 2 for c in color)
-                recognition.draw_dashed_rect(frame, (x1, y1), (x2, y2), color, 2)
-                label_text += " (last seen)"
-            else:
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            recognition.draw_label(frame, label_text, x1, max(y1 - 8, 0), color)
-
-        if present_for < required:
-            self.stats[f"held back: dwell not met:{best_label}"] += 1
-            return
-
-        box = track.box or best[:4]
-        # The object cue is ON (vote + dwell, to be replaced by momentum). The
+        box = track.box
+        # The object cue is ON (momentum). The
         # status now comes from the shared scoring rules: a knife is 45 points
         # times the time-of-day block, Monitoring until a second person is NEAR
         # the holder -- never the raw YOLO box confidence.
@@ -1011,7 +950,7 @@ class Command(IncidentMixin, BaseCommand):
             ("knife", track.id), evidence, now_ts, create=create, frame=frame, box=box,
             describe=lambda sc: self._describe(sc, summary, who, present_for),
             blocked=lambda: "cooldown" not in self.ablate and self._cooldown_blocks(box, now_ts, cooldown),
-            extra_cues={"object_confidence": round(best_score, 3)},
+            extra_cues={"object_confidence": round(best_score, 3), "momentum": cue.snapshot},
         )
         if alert is not None or self.dry_run:
             self.stats[f"status:{evidence.band}:{best_label}"] += 1
@@ -1023,8 +962,8 @@ class Command(IncidentMixin, BaseCommand):
     def _describe(self, ev, summary, who, present_for):
         status = scoring.label_of(ev.band)
         note = " Second person nearby." if ev.people_near else " No second person near the holder."
-        return (f"Weapon detected: {summary} on {who}, present for {present_for:.0f}s "
-                f"on {self.camera.code} feed. Status {status}.{note}")
+        return (f"Weapon detected: {summary} on {who} on {self.camera.code} feed. "
+                f"Status {status}.{note}")
 
     def _knife_evidence(self, track, label, present_for, now_ts, box):
         """Evidence for one knife holder: the knife (E14), any recent Layer E
@@ -1043,7 +982,7 @@ class Command(IncidentMixin, BaseCommand):
                    for o in self._frame_tracks)
         return theft.Evidence(
             "weapon", tuple(box), cues, mult, set(), [track.id],
-            f"{label} held for {present_for:.0f}s",
+            f"{label} (momentum {present_for:.1f})",
             people_near=near, previous_level=self._incident_level(("knife", track.id)))
 
     # ---- Layer E evidence handling (E29) ----------------------------------
