@@ -1207,14 +1207,14 @@ class Command(IncidentMixin, BaseCommand):
             type=self.drinking_type,
             status=Alert.Status.ACTIVE,
             camera=self.camera,
-            timestamp=timezone.now(),
+            timestamp=self._event_time(now),
             # Now the weighted violation likelihood, not the YOLO box score.
             confidence=score,
             description=description,
             image_url=image_url,
             video_url=video_url,
             raw_video_url=raw_video_url,
-            last_seen_at=timezone.now(),
+            last_seen_at=self._event_time(now),
             suspect=suspect if suspect is not None else label,
             level=score_obj.level if score_obj is not None else "",
             # Retained even when it barely cleared the bar: this vector is the

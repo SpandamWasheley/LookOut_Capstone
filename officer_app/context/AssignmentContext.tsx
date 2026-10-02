@@ -27,8 +27,10 @@ export interface Assignment {
   checklist: { found: string[]; adjusted_by: string[]; tag: string } | null;
   // The AI checker's context card and suggested status (display only).
   ai: api.ApiAiContext | null;
-  // Review tag set by the tanod: Pending / Verified / Dismissed.
-  reviewedValid: boolean | null;
+  // Closing details, for the Dismissed / Resolved banner.
+  reviewedBy: string;
+  reviewedAt: string | null;
+  citationIssued: boolean;
   dispatchedAt: string;
   assignedOfficerIds: number[];
   assignedOfficerNames: string[];
@@ -59,7 +61,9 @@ function mapAlert(raw: api.ApiAlert, typesByCode: Record<string, ViolationTypeMe
         }
       : null,
     ai: raw.ai_context ?? null,
-    reviewedValid: raw.reviewed_valid ?? null,
+    reviewedBy: raw.reviewed_by_name || "",
+    reviewedAt: raw.reviewed_at ?? null,
+    citationIssued: !!raw.citation_issued,
     dispatchedAt: raw.timestamp,
     assignedOfficerIds: raw.officers_assigned,
     assignedOfficerNames: raw.officers_assigned_names,

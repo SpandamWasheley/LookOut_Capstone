@@ -1026,6 +1026,9 @@ export default function AssignmentDetailScreen() {
   const [resolveModalVisible, setResolveModalVisible] = useState(false);
   const [busy, setBusy] = useState(false);
   const [showAllOfficers, setShowAllOfficers] = useState(false);
+  const [statusDetails, setStatusDetails] = useState(false);
+  const [aiDetails, setAiDetails] = useState(false);
+  const [tip, setTip] = useState<"status" | "object" | null>(null);
   const [citationsForAlert, setCitationsForAlert] = useState<api.ApiCitation[]>([]);
 
 
@@ -1132,14 +1135,34 @@ export default function AssignmentDetailScreen() {
           </View>
         </View>
 
-        {/* Dismissal reason — shown when the assignment was dismissed */}
-        {assignment.status === "acknowledged" && !!assignment.notes && (
-          <View style={[styles.card, { backgroundColor: c.dangerLight, borderColor: c.destructive }]}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <Feather name="x-circle" size={15} color={c.destructive} />
-              <Text style={[styles.cardLabel, { color: c.destructive }]}>DISMISSAL REASON</Text>
+        {/* Closing banner: who dismissed / resolved it, when, and why */}
+        {isClosed && (
+          <View style={[styles.closedBanner, {
+            backgroundColor: assignment.status === "acknowledged" ? "rgba(244,63,94,0.10)" : "rgba(16,185,129,0.10)",
+            borderColor: assignment.status === "acknowledged" ? "rgba(244,63,94,0.35)" : "rgba(16,185,129,0.4)",
+          }]}>
+            <Feather
+              name={assignment.status === "acknowledged" ? "x" : "check"}
+              size={15}
+              color={assignment.status === "acknowledged" ? "#e11d48" : "#059669"}
+              style={{ marginTop: 3 }}
+            />
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.closedTitle, { color: c.foreground }]}>
+                {assignment.status === "acknowledged" ? "Dismissed" : "Resolved"}
+              </Text>
+              {(!!assignment.reviewedBy || !!assignment.reviewedAt) && (
+                <Text style={[styles.closedMeta, { color: c.mutedForeground }]}>
+                  {[assignment.reviewedBy ? `by ${assignment.reviewedBy}` : "",
+                    assignment.reviewedAt ? formatDate(assignment.reviewedAt) : ""].filter(Boolean).join(" · ")}
+                </Text>
+              )}
+              <Text style={[styles.closedBody, { color: c.foreground }]}>
+                {assignment.status === "acknowledged"
+                  ? (assignment.notes || "No reason provided.")
+                  : (assignment.citationIssued ? "Citation issued" : "No citation")}
+              </Text>
             </View>
-            <Text style={[styles.description, { color: c.foreground, fontSize: 14 }]}>{assignment.notes}</Text>
           </View>
         )}
 
@@ -1161,34 +1184,59 @@ export default function AssignmentDetailScreen() {
 
         <View style={[styles.card, { backgroundColor: c.card, borderColor: c.border }]}>
           <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>LOCATION</Text>
-          {[
-            { icon: "map-pin" as const, label: "Zone / Camera", value: assignment.location },
-            // No score or percentage here: it would read as a probability it is not. The Status
-            // and the evidence checklist below replace it.
-            ...(assignment.levelLabel
-              ? [{ icon: "shield" as const, label: "Status", value: assignment.levelLabel }]
-              : []),
-            ...(assignment.objectConfidence != null
-              ? [{
-                  icon: "percent" as const,
-                  label: "Object confidence",
-                  value: `${Math.round(assignment.objectConfidence * 100)}%`,
-                }]
-              : []),
-          ].map((row) => (
-            <View key={row.label} style={[styles.infoRow, { borderBottomColor: c.border }]}>
-              <Feather name={row.icon} size={15} color={c.mutedForeground} />
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.infoLabel, { color: c.mutedForeground }]}>{row.label}</Text>
-                <Text style={[styles.infoValue, { color: c.foreground }]}>{row.value}</Text>
-              </View>
+          <View style={[styles.infoRow, { borderBottomColor: c.border, borderBottomWidth: 0, paddingBottom: 0 }]}>
+            <Feather name="map-pin" size={15} color={c.mutedForeground} />
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.infoLabel, { color: c.mutedForeground }]}>Zone / Camera</Text>
+              <Text style={[styles.infoValue, { color: c.foreground }]}>{assignment.location}</Text>
             </View>
-          ))}
+          </View>
         </View>
 
-        {/* The evidence the officer acts on. Built server-side, so this and the
-            web dashboard always show the same words for the same alert. */}
-        {assignment.checklist && assignment.checklist.found.length > 0 && (
+        {/* Status and Object confidence, side by side. The Status is a word, never a number; the
+            evidence behind it is under Details. Tap the (i) for what each one means. */}
+        <View style={{ flexDirection: "row", gap: 10 }}>
+          <View style={[styles.card, { flex: 1, backgroundColor: c.card, borderColor: c.border }]}>
+            <View style={styles.cardTitleRow}>
+              <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>STATUS</Text>
+              <Pressable onPress={() => setTip(tip === "status" ? null : "status")} hitSlop={8}>
+                <Feather name="info" size={13} color={c.mutedForeground} />
+              </Pressable>
+            </View>
+            <Text style={[styles.bigValue, { color: assignment.levelLabel === "Likely" ? "#dc2626" : assignment.levelLabel === "Possible" ? "#f59e0b" : c.foreground }]}>
+              {assignment.levelLabel || "—"}
+            </Text>
+            {assignment.checklist && (assignment.checklist.found.length > 0 || assignment.checklist.adjusted_by.length > 0) && (
+              <Pressable onPress={() => setStatusDetails(!statusDetails)} style={styles.detailsToggle}>
+                <Feather name={statusDetails ? "chevron-up" : "chevron-down"} size={13} color={c.mutedForeground} />
+                <Text style={[styles.detailsText, { color: c.mutedForeground }]}>Details</Text>
+              </Pressable>
+            )}
+          </View>
+          <View style={[styles.card, { flex: 1, backgroundColor: c.card, borderColor: c.border }]}>
+            <View style={styles.cardTitleRow}>
+              <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>OBJECT CONFIDENCE</Text>
+              <Pressable onPress={() => setTip(tip === "object" ? null : "object")} hitSlop={8}>
+                <Feather name="info" size={13} color={c.mutedForeground} />
+              </Pressable>
+            </View>
+            <Text style={[styles.bigValue, { color: c.foreground }]}>
+              {assignment.objectConfidence != null ? `${Math.round(assignment.objectConfidence * 100)}% conf` : "—"}
+            </Text>
+          </View>
+        </View>
+
+        {tip && (
+          <View style={[styles.card, { backgroundColor: c.card, borderColor: c.foreground }]}>
+            <Text style={[styles.evidenceText, { color: c.foreground }]}>
+              {tip === "status"
+                ? "Shows how strongly the detected evidence points to a violation. It's based only on what the system detected (objects, movement, duration, and time), not on the AI.\n\nMonitoring: An object linked to a violation was detected. Watch the scene.\nPossible: Some signs of a violation, but not enough to be sure. Review the alert before acting.\nLikely: Strong evidence of a violation. Review and respond."
+                : "How certain the YOLOv8 model detected the respective object of the violation."}
+            </Text>
+          </View>
+        )}
+
+        {statusDetails && assignment.checklist && (
           <View style={[styles.card, { backgroundColor: c.card, borderColor: c.border }]}>
             <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>EVIDENCE FOUND</Text>
             {assignment.checklist.found.map((line) => (
@@ -1197,9 +1245,7 @@ export default function AssignmentDetailScreen() {
                 <Text style={[styles.evidenceText, { color: c.foreground }]}>{line}</Text>
               </View>
             ))}
-
             {assignment.checklist.adjusted_by.length > 0 && (
-              /* What moved the status up or down besides the objects (for example the time of day). */
               <View style={[styles.evidenceDivider, { borderTopColor: c.border }]}>
                 <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>ADJUSTED BY</Text>
                 {assignment.checklist.adjusted_by.map((line) => (
@@ -1210,7 +1256,6 @@ export default function AssignmentDetailScreen() {
                 ))}
               </View>
             )}
-
           </View>
         )}
 
@@ -1232,7 +1277,13 @@ export default function AssignmentDetailScreen() {
                   &ldquo;{assignment.ai.observations}&rdquo;
                 </Text>
               ) : null}
-              {assignment.ai.checklist.map((item) => (
+              {assignment.ai.checklist.length > 0 && (
+                <Pressable onPress={() => setAiDetails(!aiDetails)} style={styles.detailsToggle}>
+                  <Feather name={aiDetails ? "chevron-up" : "chevron-down"} size={13} color={c.mutedForeground} />
+                  <Text style={[styles.detailsText, { color: c.mutedForeground }]}>Details</Text>
+                </Pressable>
+              )}
+              {aiDetails && assignment.ai.checklist.map((item) => (
                 <View key={item.field} style={styles.evidenceRow}>
                   <Feather
                     name={item.value === true ? "check" : item.value === false ? "x" : "minus"}
@@ -1514,6 +1565,14 @@ const styles = StyleSheet.create({
     paddingTop: 10,
   },
   aiCard: { borderStyle: "dashed" },
+  cardTitleRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  bigValue: { fontSize: 20, fontFamily: "Inter_600SemiBold", marginTop: 6 },
+  detailsToggle: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 8 },
+  detailsText: { fontSize: 12, fontFamily: "Inter_500Medium" },
+  closedBanner: { flexDirection: "row", gap: 10, borderRadius: 12, borderWidth: 1, padding: 14 },
+  closedTitle: { fontSize: 16, fontFamily: "Inter_600SemiBold" },
+  closedMeta: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 2 },
+  closedBody: { fontSize: 14, fontFamily: "Inter_400Regular", marginTop: 6, lineHeight: 20 },
   aiHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   aiNote: { fontSize: 11, fontFamily: "Inter_400Regular" },
   aiBadge: { fontSize: 14, fontFamily: "Inter_600SemiBold", marginTop: 6 },

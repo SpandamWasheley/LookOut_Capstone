@@ -249,9 +249,9 @@ export function RecordsPage({ user }) {
         <ViolationModal
           alert={selected}
           assignedOfficerNames={selected.officersAssignedNames ?? []}
-          onReview={async (value) => {
-            await updateAlert(selected.dbId, { reviewed_valid: value });
-            setSelected({ ...selected, reviewedValid: value });
+          onReopen={async () => {
+            await updateAlert(selected.dbId, { status: "active", officers_assigned: [] });
+            setSelected(null);          // it leaves Records and returns to Violations
           }}
           onDismiss={() => {}}
           onDispatch={() => {}}

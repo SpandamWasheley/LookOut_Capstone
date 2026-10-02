@@ -242,7 +242,12 @@ export interface ApiAlert {
     checklist?: { found: string[]; adjusted_by?: string[]; tag?: string };
     [key: string]: unknown;
   } | null;
-  // Reviewed by the tanod: null = Pending, true = Verified, false = Dismissed.
+  // Who closed the alert (dismissed / resolved) and when, and whether a citation was filed.
+  reviewed_by_name: string;
+  reviewed_at: string | null;
+  citation_issued: boolean;
+  // true when the alert was worth attending, false for a false alarm. Recorded silently from
+  // Assign / Dismiss for evaluating the system; there is no UI for it.
   reviewed_valid: boolean | null;
 
   // --- AI checker (core/vision/ai_checker.py) --------------------------------

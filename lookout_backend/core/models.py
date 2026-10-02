@@ -248,8 +248,14 @@ class Alert(models.Model):
     # status every time the alert is read (core/vision/ai_status.ai_context).
     ai = models.JSONField(default=dict, blank=True)
 
+    # Status changes, assignment, dismissal, resolution, reopening: see core/timeline.py.
+    timeline = models.JSONField(default=list, blank=True)
+
     class Meta:
-        ordering = ["-timestamp"]
+        # Newest CREATED first, not newest "timestamp": an uploaded clip's alerts carry the time the
+        # footage was recorded (which may be weeks ago), and must still appear on the first page
+        # of the list the dashboard and the officer app load.
+        ordering = ["-id"]
 
     def save(self, *args, **kwargs):
         if not self.code:

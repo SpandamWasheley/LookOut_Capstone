@@ -1,8 +1,8 @@
-# LookOut — Indicators & Scoring Spec (v6.1)
+# LookOut — Indicators & Scoring Spec (v6.2)
 
 *Every indicator, its points, how the status is decided, what the AI checker shows, and what the tanod sees.*
 
-*Version 6.1, 2 October 2026 (Monitoring is no longer a panel on the Overview dashboard; it is viewed with the Include Monitoring filter on the Violations page. Nothing else changed from version 6). Version 6, 1 October 2026. Supersedes version 5. The AI-suggested status can now move one step up as well as down, with a stricter rule going up, and the smoking observations definition mentions smoke only when it is clearly visible. The official status still comes only from system indicators and is never changed by the AI. The code (core/vision/scoring.py, core/vision/vlm.py) and the alert UI must be updated to match; Section 14 lists the changes.*
+*Version 6.2, 3 October 2026 (alert details cleanup: see the change history below). Version 6.1, 2 October 2026 (Monitoring is no longer a panel on the Overview dashboard; it is viewed with the Include Monitoring filter on the Violations page. Nothing else changed from version 6). Version 6, 1 October 2026. Supersedes version 5. The AI-suggested status can now move one step up as well as down, with a stricter rule going up, and the smoking observations definition mentions smoke only when it is clearly visible. The official status still comes only from system indicators and is never changed by the AI. The code (core/vision/scoring.py, core/vision/vlm.py) and the alert UI must be updated to match; Section 14 lists the changes.*
 
 # 1. The idea in plain words
 
@@ -31,10 +31,11 @@ The app shows the status and a checklist of the evidence found, not the number. 
 
 | **Card**               | **Shows**                                                                                       | **Style**                     |
 |------------------------|-------------------------------------------------------------------------------------------------|-------------------------------|
-| Status                 | Monitoring / Possible / Likely, plus the evidence checklist                                     | solid border — official       |
+| Status                 | Monitoring / Possible / Likely only; the evidence checklist is behind a 'Details' toggle        | solid border — official       |
+| Object confidence      | '78% conf' — how certain the YOLOv8 model was about the object ('—' when no object was detected) | solid border                  |
 | AI context             | AI badge, observations sentence, answered fields; 'AI-generated · may be wrong'                 | dashed border, AI icon        |
 | Status with AI context | the AI-suggested status, e.g. 'Possible → Likely', 'Likely → Possible', or 'Likely — AI agrees' | dashed border, AI icon        |
-| Review (header tag)    | Pending / Verified / Dismissed — set by the tanod                                               | replaces the old 'Active' tag |
+| Closed banner (dismissed / resolved) | who closed it, when, and why; plus a Timeline card (detected, status changes, assigned, closed)   | soft red / soft green          |
 
 *ⓘ text for the Status card*
 
@@ -460,6 +461,19 @@ No points, no indicators and no AI checker. A vehicle at least halfway past the 
 - The score is a bounded evidence score, not a probability.
 
 # 14. Change history
+
+*Version 6.1 → 6.2*
+
+| **Change**                | **Version 6.1**                                                  | **Version 6.2**                                                                                                         |
+|---------------------------|------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------|
+| Status card               | status and the evidence checklist                                | the status only; the evidence checklist is behind a 'Details' toggle                                                   |
+| Object confidence         | inside the Status card area                                      | its own card beside Status, shown as '78% conf' (object confidence × 100); '—' when no object was detected (puff-only) |
+| AI context card           | badge, observations, answered fields and frames                  | badge and observations; the answered fields and 'Frames the AI saw' are behind 'Details'                               |
+| ⓘ text                    | opened on hover                                                  | opens only when the ⓘ is clicked; closes on a click outside, Esc, or a second click                                    |
+| Review tag                | Pending / Verified / Dismissed switch and badge                  | removed from the UI. The verdict is still recorded silently for evaluation: Dismiss (also after assignment, and an officer's false alarm) = false alarm; Assign officers = worth attending |
+| Closed alerts             | a 'dismissal reason' box at the bottom                           | a Dismissed (soft red) or Resolved (soft green) banner under the header with who, when and why, plus a Timeline card; only 'Reopen' (admin) remains |
+| Violations list cards     | status, review tag, '% conf'                                     | status; the assignment state (Unassigned / Assigned) on the right                                                      |
+| Alert time (uploaded clips) | processing time                                                | 'Recorded at' + the event's position in the clip; 'processed at' when no recorded time was given. Test cameras show 'Uploaded footage' |
 
 *Version 6 → 6.1*
 

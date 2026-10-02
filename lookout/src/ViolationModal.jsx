@@ -3,10 +3,10 @@ import {
   X, Shield, Play, Pause,
   SkipBack, Download, Radio, CheckCircle, AlertTriangle,
   ChevronDown, Loader2, Search, Info,
-  Clock, Check, Minus, MapPin, Sparkles,
+  Clock, Check, Minus, MapPin, Sparkles, ChevronUp, RotateCcw,
 } from "lucide-react";
 import { violationDisplay } from "./constants/violationTypes";
-import { reviewTag, levelColor } from "./alertModel";
+import { levelColor } from "./alertModel";
 import { useTestingTools } from "./useTestingTools";
 import { getViolationTypes, getBarangays, createCitation, searchViolators } from "./api";
 
@@ -653,80 +653,85 @@ function CitationFormModal({ alert, vcfg, officers = [], currentOfficerId, onRes
   );
 }
 
-// ── Quiet reference-detail card ───────────────────────────────────────────────
-// Used for the redesigned modal's right-column metadata (Camera, Confidence,
-// What was detected, Detected object, Assigned officers) — an 11px muted
-// label above a 13px value, on a quiet surface so these read as reference
-// details rather than competing with the video or footer actions.
-export function QuietCard({ label, value, mono, valueColor, tooltip,
-                           tooltipAlign = "left", tooltipSpan = "auto" }) {
-  // A fixed-width tooltip overflows a narrow card. These sit in the 2fr side of
-  // a 3fr/2fr split and then again in a 2-column grid -- roughly 20% of the
-  // modal, about 120px -- so a 208px tooltip hangs ~90px outside the card and
-  // the panel's overflow-y-auto clips it.
-  //
-  // `tooltipSpan="row"` sizes it to the two-card row instead: 200% of this card
-  // plus the gap-2 between them. The percentage is why the tooltip has to be
-  // positioned against the CARD rather than against the little icon wrapper it
-  // used to live in -- 200% of a 10px icon is 20px, not a row.
-  const widthClass = tooltipSpan === "row"
-    ? "w-[calc(200%+0.5rem)]"
-    : "w-52 max-w-[min(13rem,60vw)]";
-
-  // Where the tooltip hangs from. Edge-anchoring (left-0 / right-0) put the
-  // box against one card's edge, which on a ~120px card meant it stuck out and
-  // the panel's overflow clipped it.
-  //
-  // For a row-width tooltip, centre it on the ROW instead. Each card's inner
-  // edge plus half the gap IS the row's midpoint, so hanging the box there and
-  // pulling it back by half its own width lands it exactly over the pair --
-  // symmetrical, and with nothing protruding on either side to be cut.
-  const positionClass = tooltipSpan === "row"
-    ? (tooltipAlign === "right"
-        ? "right-[calc(100%+0.25rem)] translate-x-1/2"
-        : "left-[calc(100%+0.25rem)] -translate-x-1/2")
-    : (tooltipAlign === "right" ? "right-0" : "left-0");
+// ── Click-only info tooltip ─────────────────────────────────────────────────────
+// Opens ONLY when the (i) itself is clicked (never on hover). Solid background; closes on a click
+// outside, on Escape, or on a second click of the (i).
+function InfoTip({ children, align = "left" }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setOpen(false); } };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey, true);
+    };
+  }, [open]);
   return (
-    // `relative group` on the card, not the icon: the card is the positioning
-    // context the tooltip's width and edge-anchoring are measured against, and
-    // hovering anywhere on the card is a larger, easier target than a 10px
-    // glyph.
-    <div className="rounded-lg px-3 py-2.5 min-w-0 relative group"
+    <span ref={ref} className="relative inline-flex align-middle">
+      <button type="button" aria-label="More information" aria-expanded={open}
+        onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}
+        className="inline-flex items-center justify-center rounded-full"
+        style={{ color: open ? "var(--foreground)" : "var(--muted-foreground)", cursor: "pointer" }}>
+        <Info size={13} />
+      </button>
+      {open && (
+        <div role="tooltip"
+          className={`absolute top-full mt-2 z-[70] w-72 max-w-[80vw] rounded-xl px-3.5 py-3 text-[13px] leading-relaxed shadow-2xl ${align === "right" ? "right-0" : "left-0"}`}
+          style={{ background: "var(--card)", border: "1px solid var(--foreground)", color: "var(--foreground)", opacity: 1 }}>
+          {children}
+        </div>
+      )}
+    </span>
+  );
+}
+
+// A small "Details" toggle that expands the extra lines of a card.
+function DetailsToggle({ open, onClick }) {
+  return (
+    <button type="button" onClick={onClick}
+      className="mt-2 inline-flex items-center gap-1 text-[12px] font-medium"
+      style={{ color: "var(--muted-foreground)" }}>
+      {open ? <ChevronUp size={12} /> : <ChevronDown size={12} />} Details
+    </button>
+  );
+}
+
+// ── Quiet reference-detail card ───────────────────────────────────────────────
+// An 13px muted label above a 15px value, on a quiet surface, so these read as reference details
+// rather than competing with the video or footer actions. `tooltip` opens on click of the (i).
+export function QuietCard({ label, value, mono, valueColor, tooltip, tooltipAlign = "left" }) {
+  return (
+    <div className="rounded-lg px-3 py-2.5 min-w-0"
       style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-1.5">
         <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>{label}</div>
-        {tooltip && (
-          <Info size={10} style={{ color: "var(--muted-foreground)", cursor: "pointer" }} />
-        )}
+        {tooltip && <InfoTip align={tooltipAlign}>{tooltip}</InfoTip>}
       </div>
       <div className={`text-[15px] font-medium mt-0.5 ${mono ? "truncate" : "break-words"}`}
         style={{ color: valueColor || "var(--foreground)", fontFamily: mono ? "'DM Mono', monospace" : undefined }}>
         {value}
       </div>
-      {tooltip && (
-        <div className={`absolute bottom-full mb-2 ${widthClass} rounded-xl px-3 py-2.5 text-[13px] leading-relaxed pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity z-50 shadow-xl ${positionClass}`}
-          style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--muted-foreground)" }}>
-          {tooltip}
-        </div>
-      )}
     </div>
   );
 }
 
-
-// ── Alert detail cards (scoring spec v6, sections 2 and 8) ─────────────────────
-// Three kinds of card, told apart at a glance:
-//   Status                 solid border  - the official status, from system indicators only
-//   AI context             dashed border - what the AI checker saw (AI-generated, may be wrong)
+// ── Alert detail cards (scoring spec v6.2) ─────────────────────────────────────
+//   Status                 solid border  - the official status only; the evidence is behind Details
+//   Object confidence      solid border  - how sure the YOLOv8 model was about the object
+//   AI context             dashed border - badge + what the AI saw (AI-generated, may be wrong)
 //   Status with AI context dashed border - a SUGGESTION; the official status never changes
 // The status is never shown as a number: a score reads like a percentage, which it is not.
 
 const STATUS_TOOLTIP = (
   <>
-    <div className="font-semibold mb-1" style={{ color: "var(--foreground)" }}>Status</div>
+    <div className="font-semibold mb-1">Status</div>
     Shows how strongly the detected evidence points to a violation. It&rsquo;s based only on
     what the system detected (objects, movement, duration, and time), not on the AI.
-    <div className="mt-1.5" style={{ opacity: 0.9 }}>
+    <div className="mt-1.5">
       <b>Monitoring:</b> An object linked to a violation was detected. Watch the scene.<br />
       <b>Possible:</b> Some signs of a violation, but not enough to be sure. Review the alert before acting.<br />
       <b>Likely:</b> Strong evidence of a violation. Review and respond.
@@ -736,10 +741,10 @@ const STATUS_TOOLTIP = (
 
 const SUGGESTED_TOOLTIP = (
   <>
-    <div className="font-semibold mb-1" style={{ color: "var(--foreground)" }}>Status with AI context</div>
+    <div className="font-semibold mb-1">Status with AI context</div>
     What the status would be if the AI&rsquo;s view of the scene were taken into account.
     This is only a suggestion. The official status does not change.
-    <div className="mt-1.5" style={{ opacity: 0.9 }}>
+    <div className="mt-1.5">
       If the AI is confident the scene is a violation, it may suggest one step higher.
       If it is confident the scene is ordinary activity (such as vending, selling, or
       eating), it may suggest one step lower. Review the clip to decide.
@@ -747,60 +752,67 @@ const SUGGESTED_TOOLTIP = (
   </>
 );
 
-function InfoCard({ label, tooltip, dashed, icon, aside, children }) {
+const OBJECT_TOOLTIP = "How certain the YOLOv8 model detected the respective object of the violation.";
+
+function InfoCard({ label, tooltip, tooltipAlign, dashed, icon, aside, children, className = "" }) {
   return (
-    <div className="rounded-lg px-3 py-2.5 min-w-0 relative group"
+    <div className={`rounded-lg px-3 py-2.5 min-w-0 h-full ${className}`}
       style={{ background: "var(--secondary)", border: `1px ${dashed ? "dashed" : "solid"} var(--border)` }}>
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5 text-[13px]" style={{ color: "var(--muted-foreground)" }}>
           {icon}
           {label}
-          {tooltip && <Info size={11} style={{ cursor: "pointer" }} />}
+          {tooltip && <InfoTip align={tooltipAlign}>{tooltip}</InfoTip>}
         </div>
         {aside && <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>{aside}</div>}
       </div>
-      {tooltip && (
-        <div className="absolute left-0 top-7 w-[min(22rem,100%)] rounded-xl px-3 py-2.5 text-[13px] leading-relaxed pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity z-50 shadow-xl"
-          style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--muted-foreground)" }}>
-          {tooltip}
-        </div>
-      )}
       {children}
     </div>
   );
 }
 
 function StatusCard({ alert }) {
+  const [details, setDetails] = useState(false);
   const label = alert.levelLabel || "—";
   const color = levelColor(label);
   const found = alert.checklist?.found ?? [];
   const adjusted = alert.checklist?.adjusted_by ?? alert.checklist?.reduced_by ?? [];
   const tag = alert.checklist?.tag;
+  const hasDetails = found.length > 0 || adjusted.length > 0 || !!tag;
   return (
     <InfoCard label="Status" tooltip={STATUS_TOOLTIP}>
-      <div className="text-[18px] font-semibold mt-0.5" style={{ color }}>{label}</div>
-      {tag ? (
-        <div className="mt-1 text-[13px] italic" style={{ color: "var(--muted-foreground)" }}>{tag}</div>
-      ) : null}
-      {found.length > 0 && (
+      <div className="text-[20px] font-semibold mt-0.5" style={{ color }}>{label}</div>
+      {hasDetails && <DetailsToggle open={details} onClick={() => setDetails((d) => !d)} />}
+      {details && (
         <div className="mt-2 pt-2" style={{ borderTop: "1px solid var(--border)" }}>
+          {tag ? <div className="mb-1 text-[13px] italic" style={{ color: "var(--muted-foreground)" }}>{tag}</div> : null}
           <div className="text-[12px] mb-1" style={{ color: "var(--muted-foreground)" }}>Evidence found</div>
           {found.map((line) => (
-            <div key={line} className="flex items-start gap-1.5 text-[14px] leading-snug mt-0.5"
-              style={{ color: "var(--foreground)" }}>
+            <div key={line} className="flex items-start gap-1.5 text-[14px] leading-snug mt-0.5" style={{ color: "var(--foreground)" }}>
               <Check size={13} className="flex-shrink-0 mt-0.5" style={{ color }} />
               <span className="break-words">{line}</span>
             </div>
           ))}
           {adjusted.map((line) => (
-            <div key={line} className="flex items-start gap-1.5 text-[13px] leading-snug mt-0.5"
-              style={{ color: "var(--muted-foreground)" }}>
+            <div key={line} className="flex items-start gap-1.5 text-[13px] leading-snug mt-0.5" style={{ color: "var(--muted-foreground)" }}>
               <Minus size={13} className="flex-shrink-0 mt-0.5" />
               <span className="break-words">Adjusted by: {line}</span>
             </div>
           ))}
         </div>
       )}
+    </InfoCard>
+  );
+}
+
+function ObjectConfidenceCard({ alert }) {
+  // No object detected (puff-only smoking is hand movement alone): nothing to be confident about.
+  const none = alert.objectConfidence == null || alert.cues?.puff_only;
+  return (
+    <InfoCard label="Object confidence" tooltip={OBJECT_TOOLTIP} tooltipAlign="right">
+      <div className="text-[20px] font-semibold mt-0.5" style={{ color: "var(--foreground)" }}>
+        {none ? "—" : `${Math.round(alert.objectConfidence * 100)}% conf`}
+      </div>
     </InfoCard>
   );
 }
@@ -813,14 +825,15 @@ const AI_BADGE_STYLE = {
 };
 
 function AIContextCard({ ai }) {
+  const [details, setDetails] = useState(false);
   const state = ai?.state ?? "unavailable";
   const badge = ai?.badge ?? { code: "unavailable", text: "AI context unavailable" };
   const style = AI_BADGE_STYLE[badge.code] ?? AI_BADGE_STYLE.unavailable;
   const BadgeIcon = style.icon;
   const frames = ai?.frames ?? [];
+  const checklist = ai?.checklist ?? [];
   return (
-    <InfoCard dashed label="AI context" icon={<Sparkles size={13} />}
-      aside="AI-generated · may be wrong">
+    <InfoCard dashed label="AI context" icon={<Sparkles size={13} />} aside="AI-generated · may be wrong">
       {state === "pending" ? (
         <div className="mt-2 flex items-center gap-2 text-[14px]" style={{ color: "var(--muted-foreground)" }}>
           <Loader2 size={14} className="animate-spin" /> AI is checking this event…
@@ -832,15 +845,18 @@ function AIContextCard({ ai }) {
             <BadgeIcon size={12} /> {badge.text}
             {state === "done" && ai.confidence ? <span style={{ opacity: 0.8 }}>· {ai.confidence} confidence</span> : null}
           </div>
-          {state === "done" && (
+          {state === "done" && ai.observations && (
+            <div className="mt-2 text-[15px] leading-snug italic break-words" style={{ color: "var(--foreground)" }}>
+              &ldquo;{ai.observations}&rdquo;
+            </div>
+          )}
+          {state === "done" && (checklist.length > 0 || frames.length > 0) && (
+            <DetailsToggle open={details} onClick={() => setDetails((d) => !d)} />
+          )}
+          {state === "done" && details && (
             <>
-              {ai.observations && (
-                <div className="mt-2 text-[15px] leading-snug italic break-words" style={{ color: "var(--foreground)" }}>
-                  &ldquo;{ai.observations}&rdquo;
-                </div>
-              )}
               <div className="mt-2 flex flex-col gap-1">
-                {ai.checklist.map((c) => (
+                {checklist.map((c) => (
                   <div key={c.field} className="flex items-center gap-1.5 text-[14px]" style={{ color: "var(--foreground)" }}>
                     {c.value === true ? <Check size={13} style={{ color: "#10b981" }} />
                       : c.value === false ? <X size={13} style={{ color: "var(--muted-foreground)" }} />
@@ -850,17 +866,16 @@ function AIContextCard({ ai }) {
                 ))}
               </div>
               {frames.length > 0 && (
-                <details className="mt-2 text-[13px]" style={{ color: "var(--muted-foreground)" }}>
-                  <summary className="cursor-pointer">Frames the AI saw ({frames.length})</summary>
-                  <div className="mt-1.5 grid grid-cols-4 gap-1">
+                <div className="mt-2">
+                  <div className="text-[12px] mb-1" style={{ color: "var(--muted-foreground)" }}>Frames the AI saw ({frames.length})</div>
+                  <div className="grid grid-cols-4 gap-1">
                     {frames.map((u) => (
                       <a key={u} href={u} target="_blank" rel="noreferrer">
-                        <img src={u} alt="frame sent to the AI" loading="lazy"
-                          className="w-full h-14 object-cover rounded" />
+                        <img src={u} alt="frame sent to the AI" loading="lazy" className="w-full h-14 object-cover rounded" />
                       </a>
                     ))}
                   </div>
-                </details>
+                </div>
               )}
             </>
           )}
@@ -876,10 +891,8 @@ function SuggestedStatusCard({ ai }) {
   const color = sug?.direction === "up" ? "#dc2626" : sug?.direction === "down" ? "#b45309" : "var(--foreground)";
   return (
     <InfoCard dashed label="Status with AI context" icon={<Sparkles size={13} />}
-      tooltip={SUGGESTED_TOOLTIP} aside="suggestion only">
-      <div className="mt-1.5 text-[16px] font-medium leading-snug break-words" style={{ color }}>
-        {text}
-      </div>
+      tooltip={SUGGESTED_TOOLTIP} tooltipAlign="right" aside="suggestion only">
+      <div className="mt-1.5 text-[16px] font-medium leading-snug break-words" style={{ color }}>{text}</div>
     </InfoCard>
   );
 }
@@ -943,38 +956,79 @@ function ScoreBreakdown({ alert }) {
   );
 }
 
-// Review (header tag): Pending / Verified / Dismissed, set by the tanod. It records the human
-// decision on whether the event was a real violation (it also labels data for checking the
-// thresholds). Separate from the Dismiss / Assign / Resolve workflow below.
-function ReviewControl({ alert, onReview }) {
-  const tag = reviewTag(alert);
-  const options = [
-    { key: "verified", label: "Verified", value: true, color: "#10b981" },
-    { key: "dismissed", label: "Dismissed", value: false, color: "#64748b" },
-    { key: "pending", label: "Pending", value: null, color: "#f59e0b" },
-  ];
+
+// ── Closed alerts ────────────────────────────────────────────────────────────────
+
+function whenText(ts) {
+  if (!ts) return "";
+  const { date, time } = formatStamp(ts);
+  return `${date}, ${time}`;
+}
+
+// Directly under the header: who closed the alert, when, and why.
+function ClosedBanner({ alert }) {
+  const dismissed = alert.status === "acknowledged";
+  const tone = dismissed
+    ? { bg: "rgba(244,63,94,0.08)", border: "rgba(244,63,94,0.25)", icon: "#e11d48", Icon: X, title: "Dismissed" }
+    : { bg: "rgba(16,185,129,0.08)", border: "rgba(16,185,129,0.28)", icon: "#059669", Icon: Check, title: "Resolved" };
+  const Icon = tone.Icon;
+  const by = alert.reviewedBy ? `by ${alert.reviewedBy}` : "";
+  const when = whenText(alert.reviewedAt);
   return (
-    <div className="flex items-center gap-2">
-      <span className="text-[13px] font-medium px-2 py-0.5 rounded-full"
-        style={{ background: tag.bg, color: tag.color }}>
-        {tag.label}
+    <div className="flex items-start gap-3 w-full rounded-lg px-4 py-3 mb-5"
+      style={{ background: tone.bg, border: `1px solid ${tone.border}` }}>
+      <span className="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5"
+        style={{ background: tone.icon + "22", color: tone.icon }}>
+        <Icon size={13} />
       </span>
-      {onReview && (
-        <div className="flex items-center gap-0.5 p-0.5 rounded-full"
-          style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-          {options.map((o) => (
-            <button key={o.key} onClick={() => onReview(o.value)}
-              className="px-2 py-0.5 text-[12px] font-medium rounded-full transition-all"
-              title={o.value === null ? "Mark as not yet reviewed" : `Mark this event ${o.label.toLowerCase()}`}
-              style={{
-                background: tag.key === o.key ? o.color + "26" : "transparent",
-                color: tag.key === o.key ? o.color : "var(--muted-foreground)",
-              }}>
-              {o.label}
-            </button>
-          ))}
+      <div className="min-w-0">
+        <div className="text-[16px] font-semibold" style={{ color: "var(--foreground)" }}>{tone.title}</div>
+        {(by || when) && (
+          <div className="text-[13px] mt-0.5" style={{ color: "var(--muted-foreground)" }}>
+            {[by, when].filter(Boolean).join(" · ")}
+          </div>
+        )}
+        <div className="text-[14px] mt-1.5 leading-relaxed break-words" style={{ color: "var(--foreground)" }}>
+          {dismissed ? (alert.notes || "No reason provided.") : (alert.citationIssued ? "Citation issued" : "No citation")}
         </div>
-      )}
+      </div>
+    </div>
+  );
+}
+
+// Detected -> status changes -> assigned -> dismissed / resolved, each with its time.
+function TimelineCard({ alert }) {
+  const detected = { t: alert.timestamp, label: alert.timeSource === "processed" ? "Detected (processed at)" : "Detected", kind: "detected" };
+  const events = (alert.timeline ?? []).map((e) => ({
+    t: e.t, kind: e.type,
+    label: e.type === "status" ? e.label
+      : e.type === "dismissed" ? `Dismissed${e.by ? ` by ${e.by}` : ""}`
+      : e.type === "resolved" ? `Resolved${e.by ? ` by ${e.by}` : ""}`
+      : e.type === "reopened" ? `Reopened${e.by ? ` by ${e.by}` : ""}`
+      : e.label,
+  }));
+  // Alerts closed before timelines were kept still show how they ended.
+  const closedKnown = events.some((e) => e.kind === "dismissed" || e.kind === "resolved");
+  if (!closedKnown && alert.reviewedAt && (alert.status === "acknowledged" || alert.status === "resolved")) {
+    events.push({ t: alert.reviewedAt, kind: "closed", label: `${alert.status === "resolved" ? "Resolved" : "Dismissed"}${alert.reviewedBy ? ` by ${alert.reviewedBy}` : ""}` });
+  }
+  const rows = [detected, ...events].sort((a, b) => new Date(a.t) - new Date(b.t));
+  const colorOf = (r) => (r.kind === "status" ? levelColor(r.label) : r.kind === "dismissed" || r.label.startsWith("Dismissed") ? "#e11d48"
+    : r.kind === "resolved" || r.label.startsWith("Resolved") ? "#059669" : r.kind === "assigned" ? "#3b82f6" : "var(--muted-foreground)");
+  return (
+    <div className="rounded-lg px-3 py-2.5 mt-4" style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
+      <div className="text-[13px] mb-2" style={{ color: "var(--muted-foreground)" }}>Timeline</div>
+      <ol className="space-y-1.5">
+        {rows.map((r, i) => (
+          <li key={i} className="flex items-start gap-2.5">
+            <span className="w-2 h-2 rounded-full flex-shrink-0 mt-[7px]" style={{ background: colorOf(r) }} />
+            <span className="text-[14px] flex-1 break-words" style={{ color: "var(--foreground)" }}>{r.label}</span>
+            <span className="text-[13px] flex-shrink-0" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+              {new Date(r.t).toLocaleTimeString("en-PH", { hour: "numeric", minute: "2-digit", second: "2-digit", hour12: true })}
+            </span>
+          </li>
+        ))}
+      </ol>
     </div>
   );
 }
@@ -982,35 +1036,20 @@ function ReviewControl({ alert, onReview }) {
 // ── Main modal ─────────────────────────────────────────────────────────────────
 export function ViolationModal({
   alert, assignedOfficerNames, officers = [], currentOfficerId,
-  onDismiss, onDispatch, onResolved, onClose, onReview,
+  onDismiss, onDispatch, onResolved, onClose, onReopen,
   userRole,
 }) {
-  // Resolving closes a violation and is what a citation is filed against, so
-  // it belongs to whoever actually attended the scene. A dispatcher assigns
-  // officers and dismisses false alarms; they do not attend, so they are not
-  // in a position to say an incident was dealt with.
-  //
-  // "both" (Officer & Dispatcher) keeps it -- that role IS an officer.
-  // An explicit allowlist, not "anyone who is not a dispatcher".
-  //
-  // The old form failed OPEN: RecordsPage rendered this modal without passing
-  // userRole, so the prop was undefined, `undefined !== "dispatcher"` was true,
-  // and a dispatcher got the Mark resolved button on the Records page -- the
-  // exact thing the check existed to prevent. A missing prop must hide a
-  // privileged action, never reveal one.
+  // Resolving closes a violation and is what a citation is filed against, so it belongs to whoever
+  // attended the scene. An explicit allowlist: a missing prop must hide a privileged action.
   const canResolve = ["admin", "officer", "both"].includes(userRole);
-  // Icon + color identity from violationTypes.js (same source the rest of
-  // the app's chips use). It's deliberately scoped to smoking/drinking/
-  // parking/theft, so any other (old) type falls through to
-  // violationDisplay's own humanized fallback — never the raw db code, and
-  // never (as watch_thief.py's now-fixed code split used to cause)
-  // something as opaque as "thief".
+  const canReopen = userRole === "admin" && !!onReopen;
   const vcfg = violationDisplay(alert.type);
   const VIcon = vcfg.icon;
   // Testing view (score breakdown): admin only, and only while "Show testing tools" is on.
   const testingTools = useTestingTools(userRole === "admin");
   const [showResolveChecklist, setShowResolveChecklist] = useState(false);
   const [showAllOfficers, setShowAllOfficers] = useState(false);
+  const closed = alert.status === "acknowledged" || alert.status === "resolved";
 
   // Assigned officers card — paired with "Detected object".
   const officersCard = (
@@ -1082,6 +1121,8 @@ export function ViolationModal({
     </div>
   );
 
+  const stamp = formatStamp(alert.timestamp);
+
   return (
     <>
       <div
@@ -1090,49 +1131,41 @@ export function ViolationModal({
         onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
       >
         <div
-          className="w-full max-w-6xl rounded-2xl overflow-hidden shadow-2xl flex flex-col"
-          style={{ background: "var(--card)", border: "1px solid var(--border)", maxHeight: "90vh" }}
+          className="w-[90vw] max-w-[1440px] rounded-2xl overflow-hidden shadow-2xl flex flex-col"
+          style={{ background: "var(--card)", border: "1px solid var(--border)", maxHeight: "92vh" }}
         >
-          {/* Header — camera name, timestamp and alert ID collapse into one
-              muted metadata line instead of three separate chips. */}
-          <div className="flex items-center justify-between px-6 py-4 flex-shrink-0"
+          {/* Header — what, which camera, and when. No review tag: the verdict is recorded
+              silently from Dismiss / Assign. */}
+          <div className="flex items-center justify-between gap-4 px-6 py-4 flex-shrink-0"
             style={{ borderBottom: "1px solid var(--border)" }}>
-            <div className="flex items-center gap-3">
-              <VIcon size={22} style={{ color: vcfg.color }} />
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="text-[17px] font-semibold" style={{ color: "var(--foreground)" }}>{vcfg.label}</span>
-                  <ReviewControl alert={alert} onReview={onReview} />
-                </div>
-                <div className="mt-1 text-[13px]" style={{ color: "var(--muted-foreground)" }}>
+            <div className="flex items-center gap-3 min-w-0">
+              <VIcon size={22} style={{ color: vcfg.color, flexShrink: 0 }} />
+              <div className="min-w-0">
+                <span className="text-[17px] font-semibold" style={{ color: "var(--foreground)" }}>{vcfg.label}</span>
+                <div className="mt-1 text-[13px] truncate" style={{ color: "var(--muted-foreground)" }}>
                   <span style={{ fontFamily: "'DM Mono', monospace" }}>{alert.id}</span>
                   {" · "}{alert.cameraZone || alert.camera}
                 </div>
               </div>
             </div>
 
-            {/* WHEN and WHERE, right-aligned. Both answer "where do I go and
-                was this just now?", which is what an officer reads first --
-                and neither competes with the violation type on the left. */}
             <div className="flex items-start gap-3 flex-shrink-0">
               <div className="text-right min-w-0">
                 <div className="flex items-center justify-end gap-2">
                   <Clock size={17} style={{ color: "var(--muted-foreground)", flexShrink: 0 }} />
+                  {alert.timeSource === "processed" && (
+                    <span className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>processed at</span>
+                  )}
                   <span className="text-[20px] leading-tight" style={{ color: "var(--foreground)" }}>
-                    <span style={{ fontWeight: 500 }}>{formatStamp(alert.timestamp).date}</span>
+                    <span style={{ fontWeight: 500 }}>{stamp.date}</span>
                     <span style={{ color: "var(--muted-foreground)", margin: "0 7px" }}>·</span>
-                    <span style={{ fontWeight: 700 }}>{formatStamp(alert.timestamp).time}</span>
+                    <span style={{ fontWeight: 700 }}>{stamp.time}</span>
                   </span>
                 </div>
-                {/* The camera's own address. Absent until someone types one in
-                    Live Feeds, so the line is omitted rather than showing an
-                    empty pin that reads like missing data. */}
                 {alert.cameraAddress ? (
                   <div className="mt-1 flex items-center justify-end gap-1.5">
                     <MapPin size={14} style={{ color: "var(--muted-foreground)", flexShrink: 0 }} />
-                    <span className="text-[14px] break-words" style={{ color: "var(--muted-foreground)" }}>
-                      {alert.cameraAddress}
-                    </span>
+                    <span className="text-[14px] break-words" style={{ color: "var(--muted-foreground)" }}>{alert.cameraAddress}</span>
                   </div>
                 ) : null}
               </div>
@@ -1143,96 +1176,65 @@ export function ViolationModal({
             </div>
           </div>
 
-          {/* Body — video left (60%), stacked reference cards right (40%);
-              this one region scrolls if content overflows a shorter screen. */}
+          {/* Body: ONE scrolling area. Evidence ~60% on the left, cards ~40% on the right; on a
+              narrow screen the video is on top and the cards stack below it. */}
           <div className="overflow-y-auto flex-1 p-6">
-            <div className="grid grid-cols-[3fr_2fr] gap-5" style={{ alignItems: "start" }}>
-              {/* Left: video, scales with the column */}
+            {closed && <ClosedBanner alert={alert} />}
+            <div className="grid grid-cols-1 lg:grid-cols-[60fr_40fr] gap-5 items-start">
               <div className="min-w-0">
                 <RecordingPlayer alert={alert} />
+                <TimelineCard alert={alert} />
               </div>
 
-              {/* Right: stacked reference-detail cards */}
               <div className="flex flex-col gap-3 min-w-0">
-                {/* Where: the camera's name (and address), never its code. */}
                 <QuietCard label="Camera" value={alert.cameraZone || alert.cameraAddress || "—"} />
-                <StatusCard alert={alert} />
+                <div className="grid grid-cols-2 gap-3 items-stretch">
+                  <StatusCard alert={alert} />
+                  <ObjectConfidenceCard alert={alert} />
+                </div>
                 <AIContextCard ai={alert.aiContext} />
                 <SuggestedStatusCard ai={alert.aiContext} />
                 {testingTools && <ScoreBreakdown alert={alert} />}
-
-                {/* Detected object (the model's class label) paired with Assigned officers. */}
                 <div className="grid grid-cols-2 gap-3">
                   <QuietCard label="Detected object" value={alert.suspect || "—"} />
                   {officersCard}
                 </div>
               </div>
             </div>
-
-            {/* Dismissal reason — full-width block below the cards */}
-            {alert.status === "acknowledged" && (
-              <div className="flex items-start gap-2.5 w-full rounded-lg px-4 py-3"
-                style={{ border: "1px solid rgba(239,68,68,0.25)", background: "rgba(239,68,68,0.06)" }}>
-                <X size={15} style={{ color: "#ef4444", flexShrink: 0, marginTop: 1 }} />
-                <div className="flex-1 min-w-0">
-                  <div className="text-[12px] font-semibold uppercase tracking-wider mb-1" style={{ color: "#ef4444" }}>
-                    Dismissal reason
-                  </div>
-                  <p className="text-[14px] leading-relaxed" style={{ color: "var(--foreground)" }}>
-                    {alert.notes || "No reason provided."}
-                  </p>
-                </div>
-              </div>
-            )}
           </div>
 
-          {/* Footer actions */}
-          {(alert.status === "active" || alert.status === "dispatched") && (
-            <div className="flex items-center gap-2 px-6 py-4 flex-shrink-0"
-              style={{ borderTop: "1px solid var(--border)" }}>
+          {/* Footer. Open alerts: Dismiss and Assign officers (plus Mark resolved once assigned).
+              Closed alerts: only a small Reopen, for admins. */}
+          {!closed && (
+            <div className="flex items-center gap-2 px-6 py-4 flex-shrink-0" style={{ borderTop: "1px solid var(--border)" }}>
               <div className="flex-1" />
-
-              {alert.status === "active" && (
-                <>
-                  <button
-                    onClick={onDismiss}
-                    className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all"
-                    style={{ background: "rgba(239,68,68,0.15)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.4)" }}>
-                    <X size={14} /> Dismiss
-                  </button>
-                  <button
-                    onClick={onDispatch}
-                    className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all"
-                    style={{ background: "rgba(245,158,11,0.22)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.5)" }}>
-                    <Radio size={14} />
-                    {assignedOfficerNames.length > 0 ? "Reassign officers" : "Assign officers"}
-                  </button>
-                </>
+              <button onClick={onDismiss}
+                className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all"
+                style={{ background: "rgba(239,68,68,0.15)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.4)" }}>
+                <X size={14} /> Dismiss
+              </button>
+              <button onClick={onDispatch}
+                className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all"
+                style={{ background: "rgba(245,158,11,0.22)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.5)" }}>
+                <Radio size={14} /> Assign officers
+              </button>
+              {alert.status === "dispatched" && canResolve && (
+                <button onClick={() => setShowResolveChecklist(true)}
+                  className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all"
+                  style={{ background: "rgba(16,185,129,0.22)", color: "#10b981", border: "1px solid rgba(16,185,129,0.45)" }}>
+                  <CheckCircle size={14} /> Mark resolved
+                </button>
               )}
-              {alert.status === "dispatched" && (
-                <>
-                  <button
-                    onClick={onDismiss}
-                    className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all"
-                    style={{ background: "rgba(239,68,68,0.15)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.4)" }}>
-                    <X size={14} /> Dismiss
-                  </button>
-                  <button
-                    onClick={onDispatch}
-                    className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all"
-                    style={{ background: "rgba(59,130,246,0.22)", color: "#3b82f6", border: "1px solid rgba(59,130,246,0.45)" }}>
-                    <Radio size={14} /> Reassign officers
-                  </button>
-                  {canResolve && (
-                    <button
-                      onClick={() => setShowResolveChecklist(true)}
-                      className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all"
-                      style={{ background: "rgba(16,185,129,0.22)", color: "#10b981", border: "1px solid rgba(16,185,129,0.45)" }}>
-                      <CheckCircle size={14} /> Mark resolved
-                    </button>
-                  )}
-                </>
-              )}
+            </div>
+          )}
+          {closed && canReopen && (
+            <div className="flex items-center px-6 py-3 flex-shrink-0" style={{ borderTop: "1px solid var(--border)" }}>
+              <div className="flex-1" />
+              <button onClick={onReopen}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium"
+                style={{ background: "var(--secondary)", color: "var(--foreground)", border: "1px solid var(--border)" }}>
+                <RotateCcw size={12} /> Reopen
+              </button>
             </div>
           )}
         </div>

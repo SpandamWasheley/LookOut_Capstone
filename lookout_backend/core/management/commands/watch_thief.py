@@ -8,7 +8,6 @@ from collections import Counter
 import cv2
 from django.conf import settings
 from django.core.management.base import BaseCommand
-from django.utils import timezone
 
 from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
@@ -1116,7 +1115,7 @@ class Command(IncidentMixin, BaseCommand):
             type=self.thief_type,
             status=Alert.Status.ACTIVE,
             camera=self.camera,
-            timestamp=timezone.now(),
+            timestamp=self._event_time(now),
             confidence=score,
             description=description,
             image_url=image_url,
@@ -1129,7 +1128,7 @@ class Command(IncidentMixin, BaseCommand):
             # calibrate_weights -- theft was the only detector not recording
             # one, so none of its alerts could ever be fitted against.
             cues=evidence.as_dict() if evidence is not None else {},
-            last_seen_at=timezone.now(),
+            last_seen_at=self._event_time(now),
             # The detector's own confidence in the anchoring box, distinct from
             # the violation likelihood above.
             object_confidence=object_confidence,

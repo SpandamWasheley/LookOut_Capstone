@@ -6,7 +6,6 @@ from collections import Counter
 import cv2
 from django.conf import settings
 from django.core.management.base import BaseCommand
-from django.utils import timezone
 
 from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
@@ -1023,14 +1022,14 @@ class Command(IncidentMixin, BaseCommand):
             type=self.smoking_type,
             status=Alert.Status.ACTIVE,
             camera=self.camera,
-            timestamp=timezone.now(),
+            timestamp=self._event_time(now),
             # Now the weighted violation likelihood, not the YOLO box score.
             confidence=score,
             description=description,
             image_url=image_url,
             video_url=video_url,
             raw_video_url=raw_video_url,
-            last_seen_at=timezone.now(),
+            last_seen_at=self._event_time(now),
             suspect=label,
             level=score_obj.level if score_obj is not None else "",
             cues=score_obj.as_dict() if score_obj is not None else {},

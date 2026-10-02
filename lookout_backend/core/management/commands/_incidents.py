@@ -11,18 +11,22 @@ The three watchers (smoking, drinking, thief) mix this in and supply two small
 callables: how to create the row, and how to describe it.
 """
 
+import datetime
 import os
 from collections import namedtuple
+from zoneinfo import ZoneInfo
 
 import cv2
 from django.utils import timezone
 
 from core.media import violation_media_path
 from core.models import Alert, SystemSettings
+from core import timeline
 from core.vision import ai_checker, debug_view, momentum, recognition, scoring, spec_settings
 
 CLIP_REFRESH_SECONDS = 15.0     # while Possible / Likely continues
 ROW_UPDATE_SECONDS = 5.0        # throttle for score / last_seen writes
+STATUS_EVENT_GAP = 5.0          # seconds between recorded status changes on the timeline
 END_GRACE_SECONDS = 3.0         # no update for this long -> the incident has ended
 
 
@@ -99,6 +103,37 @@ NO_CUE = ObjectCue(False, None, None, 0.0, None)
 class IncidentMixin:
     """Mix into a watch_* Command. Needs: self.dry_run, self.stdout, self.style,
     self.stats, self._alert_log, and the watcher's own _save_clips()."""
+
+    # ---- when did it happen --------------------------------------------------------
+
+    def _event_time(self, now_ts):
+        """The moment an event happened. A live camera: right now. An uploaded clip with a
+        "Recorded at" time (--clock): that time plus the event's position in the clip, in
+        Philippine time. An uploaded clip without one: the processing time (labelled "processed at"
+        in the UI)."""
+        start = getattr(self, "clock_start", None)
+        if start is not None and getattr(self, "_source_path", None) is not None and now_ts is not None:
+            return (start + datetime.timedelta(seconds=now_ts)).replace(tzinfo=ZoneInfo("Asia/Manila"))
+        return timezone.now()
+
+    def _time_source(self):
+        if getattr(self, "_source_path", None) is None:
+            return "live"
+        return "recorded" if getattr(self, "clock_start", None) is not None else "processed"
+
+    @staticmethod
+    def _status_event_due(events, when):
+        """A status can flicker between Possible and Likely several times a second as one indicator
+        comes and goes. The timeline records a change only once the previous recorded status change
+        is at least STATUS_EVENT_GAP seconds old, so it stays readable."""
+        last = [e for e in (events or []) if e.get("type") == "status"]
+        if not last:
+            return True
+        try:
+            previous = datetime.datetime.fromisoformat(last[-1]["t"])
+        except (KeyError, ValueError):
+            return True
+        return (when - previous).total_seconds() >= STATUS_EVENT_GAP
 
     # ---- live processing view (Run Detection / Live Feeds; only with LOOKOUT_DEBUG_DIR) ----
 
@@ -318,11 +353,16 @@ class IncidentMixin:
                 return None
             alert = create(level, score.alerting)
             inc.alert = alert
-            if alert is not None and self.spec_snapshot is not None:
+            if alert is not None:
                 # Log the active settings with the alert, so the timings behind this status
-                # are on record (calibration, and answering "why did this fire?").
-                alert.cues = {**(alert.cues or {}), "settings": self.spec_snapshot}
-                Alert.objects.filter(pk=alert.pk).update(cues=alert.cues)
+                # are on record (calibration, and answering "why did this fire?"), and where its
+                # time comes from (live / recorded / processed).
+                extra = {"time_source": self._time_source()}
+                if self.spec_snapshot is not None:
+                    extra["settings"] = self.spec_snapshot
+                alert.cues = {**(alert.cues or {}), **extra}
+                first = timeline.make_event("status", scoring.label_of(level), self._event_time(now))
+                Alert.objects.filter(pk=alert.pk).update(cues=alert.cues, timeline=[first])
             if ai is not None:
                 self._ai_trigger(alert, ai, key, now, level)
             inc.clip_base = getattr(self, "_last_clip_base", None)
@@ -342,7 +382,7 @@ class IncidentMixin:
             due = (level != previous) or (inc.last_row_write is None
                                            or now - inc.last_row_write >= ROW_UPDATE_SECONDS)
             if alert is not None and due:
-                self._incident_write(inc, score, level, describe, extra_cues)
+                self._incident_write(inc, score, level, describe, extra_cues, now, changed=(level != previous))
                 inc.last_row_write = now
             if (alert is not None and score.alerting and frame is not None
                     and (previous not in scoring.NOTIFY_LEVELS
@@ -358,17 +398,21 @@ class IncidentMixin:
             inc.peak = level
         return inc.alert
 
-    def _incident_write(self, inc, score, level, describe, extra_cues):
+    def _incident_write(self, inc, score, level, describe, extra_cues, now=None, changed=False):
         """Update the stored row to the current status, score and cue vector."""
         alert = inc.alert
         fields = {
             "level": level,
             "confidence": score.score,
-            "last_seen_at": timezone.now(),
+            "last_seen_at": self._event_time(now),
         }
         if describe is not None:
             fields["description"] = describe(score)
-        cues = dict(Alert.objects.filter(pk=alert.pk).values_list("cues", flat=True).first() or {})
+        row = Alert.objects.filter(pk=alert.pk).values("cues", "timeline").first() or {}
+        cues = dict(row.get("cues") or {})
+        if changed and self._status_event_due(row.get("timeline"), fields["last_seen_at"]):
+            fields["timeline"] = timeline.appended(
+                row.get("timeline"), timeline.make_event("status", scoring.label_of(level), fields["last_seen_at"]))
         cues.update(score.as_dict())
         if self.spec_snapshot is not None:
             cues["settings"] = self.spec_snapshot
@@ -417,7 +461,7 @@ class IncidentMixin:
             inc = book.pop(key)
             if inc.alert is not None and not self.dry_run:
                 Alert.objects.filter(pk=inc.alert.pk).update(
-                    last_seen_at=timezone.now() - timezone.timedelta(seconds=END_GRACE_SECONDS))
+                    last_seen_at=self._event_time(inc.last_active))
                 if inc.peak in scoring.NOTIFY_LEVELS and frame is not None:
                     self._incident_clip(inc, frame, now)
             self.stats["incident ended"] += 1

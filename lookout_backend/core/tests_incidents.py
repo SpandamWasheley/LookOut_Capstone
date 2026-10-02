@@ -303,3 +303,34 @@ class AICheckerWiringTests(SmokingIncidentTests):
         row = self.rows()[0]
         self.assertEqual(row.ai["state"], "unavailable")
         self.assertEqual(row.level, scoring.MONITORING)
+
+
+class FootageTimeTests(SmokingIncidentTests):
+    """An uploaded clip's alert time is the clip's "Recorded at" time plus the event's position."""
+
+    def test_alert_time_is_recorded_at_plus_position_in_the_clip(self):
+        import datetime as dt
+        from zoneinfo import ZoneInfo
+        self.cmd.clock_start = dt.datetime(2026, 8, 18, 19, 4)
+        self.cmd._source_path = "clip.mp4"
+        for i in range(30):
+            self.step(i * 0.25, [CIG])
+        row = self.rows()[0]
+        local = row.timestamp.astimezone(ZoneInfo("Asia/Manila"))
+        self.assertEqual((local.year, local.month, local.day, local.hour, local.minute), (2026, 8, 18, 19, 4))
+        self.assertEqual(row.cues["time_source"], "recorded")
+        self.assertEqual(row.timeline[0]["label"], "Monitoring")
+
+    def test_without_recorded_at_the_time_is_the_processing_time(self):
+        self.cmd.clock_start = None
+        self.cmd._source_path = "clip.mp4"
+        for i in range(30):
+            self.step(i * 0.25, [CIG])
+        row = self.rows()[0]
+        self.assertEqual(row.cues["time_source"], "processed")
+        self.assertLess(abs((timezone_now() - row.timestamp).total_seconds()), 60)
+
+
+def timezone_now():
+    from django.utils import timezone
+    return timezone.now()

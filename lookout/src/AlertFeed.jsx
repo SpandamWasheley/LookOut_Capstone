@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Bell, Clock, AlertTriangle, Radio, CheckCircle, X, Camera as CameraIcon, Moon, Sun, Sunset, ChevronRight, Search } from "lucide-react";
 import { resolveViolationType, violationDisplay } from "./constants/violationTypes";
 import { ViolationModal } from "./ViolationModal";
-import { mapAlert, reviewTag, levelColor } from "./alertModel";
+import { mapAlert, levelColor } from "./alertModel";
 import { DispatchModal } from "./DispatchModal";
 import { TypeFilterDropdown } from "./TypeFilterDropdown";
 import { getAlerts, getOfficers, getCameras, updateAlert } from "./api";
@@ -198,9 +198,8 @@ const THIN_CARD_H = 56;
 function AlertCard({ alert, onView, thin = false, extraPad = 0 }) {
   const vcfg = violationDisplay(alert.type);
   const VIcon = vcfg.icon;
-  const scfg = statusConfig[alert.status] ?? statusConfig.acknowledged;
   const officerCount = alert.officersAssignedNames.length;
-  const review = reviewTag(alert);
+  const assigned = alert.status === "dispatched";
 
   return (
     <div
@@ -282,16 +281,6 @@ function AlertCard({ alert, onView, thin = false, extraPad = 0 }) {
                     {alert.levelLabel}
                   </span>
                 )}
-                <span className="text-[13px] font-medium px-2 py-0.5 rounded-full"
-                  style={{ background: review.bg, color: review.color }}>
-                  {review.label}
-                </span>
-                {(alert.status === "dispatched" || alert.status === "resolved") && (
-                  <span className="text-[13px] font-medium px-2 py-0.5 rounded-full"
-                    style={{ background: scfg.bg, color: scfg.color }}>
-                    {scfg.label}
-                  </span>
-                )}
               </div>
               {/* Row 2: alert ID + time */}
               <div className="flex items-center gap-3 text-[13px]" style={{ color: "var(--muted-foreground)" }}>
@@ -302,9 +291,13 @@ function AlertCard({ alert, onView, thin = false, extraPad = 0 }) {
               </div>
             </div>
 
-            {/* Right: officer count. No percentage: the status and its evidence checklist
-                replace the confidence figure (a score reads like a percentage; it is not). */}
+            {/* Right: the assignment state (where the "% conf" used to be). */}
             <div className="flex flex-col items-end gap-1 flex-shrink-0">
+              <span className="text-[13px] font-semibold px-2 py-0.5 rounded-full"
+                style={{ background: assigned ? "rgba(59,130,246,0.12)" : "rgba(239,68,68,0.10)",
+                         color: assigned ? "#3b82f6" : "#ef4444" }}>
+                {assigned ? "Assigned" : "Unassigned"}
+              </span>
               {officerCount > 0 && (
                 <span className="flex items-center gap-1 text-[13px] font-medium" style={{ color: "#3b82f6" }}>
                   <Radio size={9} />
@@ -461,7 +454,7 @@ function RightPanel({ alerts, cameras }) {
                   </div>
                   <div className="flex items-center gap-2 text-[12px]" style={{ color: "var(--muted-foreground)" }}>
                     <span className="flex items-center gap-1"><Clock size={9} /> {formatTime(a.timestamp)}</span>
-                    <span className="ml-auto font-medium" style={{ color: reviewTag(a).color }}>{reviewTag(a).label}</span>
+                    <span className="ml-auto font-medium" style={{ color: a.status === "dispatched" ? "#3b82f6" : "#ef4444" }}>{a.status === "dispatched" ? "Assigned" : "Unassigned"}</span>
                   </div>
                 </div>
               );
@@ -649,14 +642,15 @@ export function AlertFeed({ showFilters = false, user }) {
     refresh().catch(() => {});
   };
 
-  // Review tag written by the tanod: Verified (true) / Dismissed (false) / Pending (null).
-  const handleReview = async (alert, value) => {
+  // Reopening a closed alert (admin): back to Unassigned, with no officers.
+  const handleReopen = async (alert) => {
     setActionError("");
     try {
-      await updateAlert(alert.dbId, { reviewed_valid: value });
+      await updateAlert(alert.dbId, { status: "active", officers_assigned: [] });
       await refresh();
+      setSelectedAlert(null);
     } catch (err) {
-      setActionError(err.message || "Could not save the review.");
+      setActionError(err.message || "Could not reopen the alert.");
     }
   };
 
@@ -731,7 +725,7 @@ export function AlertFeed({ showFilters = false, user }) {
           currentOfficerId={user?.role === "officer" || user?.role === "both" ? user?.officerId : null}
           userRole={user?.role}
           onClose={() => setSelectedAlert(null)}
-          onReview={(value) => handleReview(selectedAlert, value)}
+          onReopen={() => handleReopen(selectedAlert)}
           onDismiss={() => setDismissTarget(selectedAlert)}
           onResolved={handleCitationResolved}
           onDispatch={() => { setDispatchingAlert(selectedAlert); setSelectedAlert(null); }}

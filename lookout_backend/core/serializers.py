@@ -162,7 +162,13 @@ class CitationSerializer(serializers.ModelSerializer):
 class AlertSerializer(serializers.ModelSerializer):
     type = serializers.SlugRelatedField(slug_field="code", queryset=ViolationType.objects.all())
     camera = serializers.SlugRelatedField(slug_field="code", queryset=Camera.objects.all(), required=False, allow_null=True)
-    camera_zone = serializers.CharField(source="camera.name", read_only=True)
+    # Footage uploaded for testing is filed on a "<CODE>-TEST" camera; show it for what it is.
+    camera_zone = serializers.SerializerMethodField()
+    # True once a citation has been filed against this alert (closed banner: "Citation issued").
+    citation_issued = serializers.SerializerMethodField()
+    # "recorded" (uploaded clip with a Recorded-at time), "processed" (uploaded clip without one:
+    # the time is when it was processed) or "live" (a real camera, real time).
+    time_source = serializers.SerializerMethodField()
     # Where the camera is. The alert shows this as the location of the
     # violation -- the system knows which camera saw it, so the camera's own
     # address is the most precise honest answer it can give.
@@ -199,6 +205,31 @@ class AlertSerializer(serializers.ModelSerializer):
     # status, recomputed on every read from the stored reply and the CURRENT level.
     ai_context = serializers.SerializerMethodField()
 
+    def get_camera_zone(self, obj):
+        cam = obj.camera
+        if cam is None:
+            return ""
+        return "Uploaded footage" if cam.code.endswith("-TEST") else cam.name
+
+    def get_citation_issued(self, obj):
+        return obj.citations.exists()
+
+    def get_time_source(self, obj):
+        return (obj.cues or {}).get("time_source") or ("processed" if obj.camera and obj.camera.code.endswith("-TEST") else "live")
+
+    def update(self, instance, validated_data):
+        """Save only the fields the client sent. A full-row save would write back the whole row as
+        it was loaded, and could undo an update the detector made to the same event in between
+        (its status, evidence clip, last-seen time) while an officer is being assigned."""
+        officers = validated_data.pop("officers_assigned", None)
+        for name, value in validated_data.items():
+            setattr(instance, name, value)
+        if validated_data:
+            instance.save(update_fields=list(validated_data))
+        if officers is not None:
+            instance.officers_assigned.set(officers)
+        return instance
+
     def get_ai_context(self, obj):
         from core.vision import ai_checker, ai_status
         cues = obj.cues or {}
@@ -226,7 +257,7 @@ class AlertSerializer(serializers.ModelSerializer):
             # used to. `cues` is the audit trail: which indicators fired and
             # what each was worth.
             "level", "level_label", "last_seen_at",
-            "object_confidence", "cues", "ai_context",
+            "object_confidence", "cues", "ai_context", "timeline", "citation_issued", "time_source",
             # `reviewed_valid` is the only one of these a client writes: it is
             # the human label calibrate_weights fits the final weights against.
             # The reviewer's identity is stamped server-side alongside it.
@@ -236,7 +267,7 @@ class AlertSerializer(serializers.ModelSerializer):
             # Written by the detectors through the ORM only. A client that
             # could PATCH its own cue vector could rewrite the calibration
             # training data after the fact.
-            "level", "level_label", "last_seen_at", "object_confidence", "cues", "ai_context",
+            "level", "level_label", "last_seen_at", "object_confidence", "cues", "ai_context", "timeline",
             # Who reviewed it is recorded FROM the authenticated request, so a
             # client cannot name somebody else as the reviewer.
             "reviewed_by", "reviewed_by_name", "reviewed_at",

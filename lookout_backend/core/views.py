@@ -716,7 +716,12 @@ class CitationViewSet(viewsets.ModelViewSet):
 
             citation = serializer.save(created_by=self.request.user, violator=violator, client_uuid=client_uuid)
             if citation.alert_id and resolve_alert:
-                Alert.objects.filter(pk=citation.alert_id).update(status=Alert.Status.RESOLVED)
+                from core import timeline
+                who = getattr(self.request.user, "display_name", "") or self.request.user.username
+                Alert.objects.filter(pk=citation.alert_id).update(
+                    status=Alert.Status.RESOLVED, reviewed_by=self.request.user,
+                    reviewed_at=timezone.now(), reviewed_valid=True)
+                timeline.add(citation.alert_id, "resolved", "Resolved · citation issued", by=who)
 
 
 class ViolatorViewSet(viewsets.ReadOnlyModelViewSet):
@@ -822,41 +827,55 @@ class AlertViewSet(viewsets.ModelViewSet):
     REVIEWED_STATUSES = (Alert.Status.RESOLVED, Alert.Status.ACKNOWLEDGED)
 
     def perform_update(self, serializer):
-        """Records WHO closed the alert, whenever it reaches a reviewed status.
+        """Records WHO closed the alert, keeps its timeline, and silently records the verdict.
 
-        The reviewer is not a separate thing a user declares -- it is whoever
-        dismissed the alert or marked it resolved. Those are the actions that
-        already exist and the ones that actually constitute reviewing the
-        footage, so the audit trail is a by-product of the normal workflow
-        rather than an extra step somebody has to remember.
-
-        Taken from the authenticated request, never from the payload: a client
-        that could name the reviewer could attribute its own call to somebody
-        else, which would make the record worse than having none.
+        The reviewer is whoever dismissed the alert or marked it resolved, taken from the
+        authenticated request (never from the payload). The verdict `reviewed_valid` has no UI; it
+        is recorded for evaluating the system:
+            Dismiss (web or officer app, also after assignment)  -> False  (a false alarm)
+            Assign officers / an officer accepting               -> True   (worth attending)
         """
-        previous_status = serializer.instance.status
+        from core import timeline
+        before = serializer.instance
+        previous_status = before.status
+        previous_officers = set(before.officers_assigned.values_list("pk", flat=True))
         alert = serializer.save()
+        user = self.request.user if self.request.user.is_authenticated else None
+        who = (getattr(user, "display_name", "") or getattr(user, "username", "")) if user else ""
+        officers = list(alert.officers_assigned.all())
+        events = []
+        update = {}
 
-        if alert.status == previous_status:
-            # Nothing closed here. A PATCH that edits notes or reassigns
-            # officers must not silently reattribute an existing review.
-            return
+        if set(o.pk for o in officers) != previous_officers and officers:
+            events.append(("assigned", "Assigned to " + ", ".join(o.name for o in officers)))
+            update["reviewed_valid"] = True
+        elif alert.status == Alert.Status.DISPATCHED and previous_status != Alert.Status.DISPATCHED:
+            events.append(("assigned", "Assigned"))
+            update["reviewed_valid"] = True
 
-        if alert.status in self.REVIEWED_STATUSES:
-            user = self.request.user
-            alert.reviewed_by = user if user and user.is_authenticated else None
-            alert.reviewed_at = timezone.now()
-            # The Review tag follows the workflow unless the tanod already set it by hand:
-            # dismissed as a false alarm -> Dismissed; attended and resolved -> Verified.
-            if alert.reviewed_valid is None:
-                alert.reviewed_valid = alert.status == Alert.Status.RESOLVED
-                alert.save(update_fields=["reviewed_valid"])
-        else:
-            # Reopened -- back to active or dispatched. The previous reviewer
-            # no longer closed anything, so their name goes with the status.
-            alert.reviewed_by = None
-            alert.reviewed_at = None
-        alert.save(update_fields=["reviewed_by", "reviewed_at"])
+        if alert.status != previous_status:
+            if alert.status == Alert.Status.ACKNOWLEDGED:
+                events.append(("dismissed", alert.notes or "Dismissed"))
+                update["reviewed_valid"] = False          # a false alarm, even after it was assigned
+            elif alert.status == Alert.Status.RESOLVED:
+                events.append(("resolved", "Resolved"))
+                update["reviewed_valid"] = True
+            elif previous_status in self.REVIEWED_STATUSES:
+                events.append(("reopened", "Reopened"))
+            if alert.status in self.REVIEWED_STATUSES:
+                update["reviewed_by"] = user
+                update["reviewed_at"] = timezone.now()
+            else:
+                # Reopened (or assigned): the earlier reviewer no longer closed anything.
+                update["reviewed_by"] = None
+                update["reviewed_at"] = None
+
+        for kind, label in events:
+            timeline.add(alert.pk, kind, label, by=who)
+        if update:
+            Alert.objects.filter(pk=alert.pk).update(**update)
+            for name, value in update.items():
+                setattr(alert, name, value)
 
     @action(detail=True, methods=["post"])
     def accept(self, request, pk=None):
@@ -872,10 +891,15 @@ class AlertViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Only officer accounts can accept assignments."}, status=403)
 
         alert = self.get_object()
+        was_assigned = alert.officers_assigned.filter(pk=officer.pk).exists()
         alert.officers_assigned.add(officer)
         if alert.status == Alert.Status.ACTIVE:
             alert.status = Alert.Status.DISPATCHED
             alert.save(update_fields=["status"])
+        if not was_assigned:
+            from core import timeline
+            timeline.add(alert.pk, "assigned", f"Assigned to {officer.name}", by=officer.name)
+            Alert.objects.filter(pk=alert.pk).update(reviewed_valid=True)
 
         return Response(self.get_serializer(alert).data)
 

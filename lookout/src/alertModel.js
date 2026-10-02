@@ -35,18 +35,14 @@ export function mapAlert(raw) {
     cues: raw.cues,
     // The AI checker's cards: badge, observations, checklist, suggested status.
     aiContext: raw.ai_context ?? null,
-    reviewedValid: raw.reviewed_valid,
+    // Closing details (dismissed / resolved banner) and the event timeline.
+    citationIssued: !!raw.citation_issued,
+    timeline: raw.timeline ?? [],
+    // "live" | "recorded" (uploaded clip with a Recorded-at time) | "processed" (uploaded clip, no time given)
+    timeSource: raw.time_source ?? "live",
     reviewedBy: raw.reviewed_by_name,
     reviewedAt: raw.reviewed_at,
   };
-}
-
-// The header tag that replaces "Active": set by the tanod.
-//   reviewed_valid null -> Pending, true -> Verified, false -> Dismissed
-export function reviewTag(alert) {
-  if (alert.reviewedValid === true) return { key: "verified", label: "Verified", color: "#10b981", bg: "rgba(16,185,129,0.12)" };
-  if (alert.reviewedValid === false) return { key: "dismissed", label: "Dismissed", color: "#64748b", bg: "rgba(100,116,139,0.14)" };
-  return { key: "pending", label: "Pending", color: "#f59e0b", bg: "rgba(245,158,11,0.14)" };
 }
 
 // Status colours: amber for Possible, red for Likely, a quiet blue-grey for Monitoring.
