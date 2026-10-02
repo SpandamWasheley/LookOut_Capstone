@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Save, RotateCcw, Car, Cigarette, Siren, Beer, AlertTriangle, Loader2 } from "lucide-react";
+import { Save, RotateCcw, Car, Cigarette, Siren, Beer, AlertTriangle, Loader2, SlidersHorizontal } from "lucide-react";
 import { getSettings, saveSettings } from "./api";
 
 const trimSeconds = (t) => (t ? t.slice(0, 5) : t);
@@ -28,6 +28,7 @@ function fromApi(s) {
     drinkingEnd: trimSeconds(s.drinking_end),
     cooldown: s.alert_cooldown,
     retention: s.evidence_retention_days,
+    autoPurge: s.evidence_auto_purge,
   };
 }
 
@@ -55,6 +56,7 @@ function toApi(f) {
     drinking_end: f.drinkingEnd,
     alert_cooldown: f.cooldown,
     evidence_retention_days: f.retention,
+    evidence_auto_purge: f.autoPurge,
   };
 }
 
@@ -63,7 +65,7 @@ const sections = [
   { id: "smoking", label: "Smoking", icon: Cigarette, color: "#f97316" },
   { id: "thief",   label: "Holdup",   icon: Siren,  color: "#dc2626" },
   { id: "drinking", label: "Drinking", icon: Beer, color: "#8b5cf6" },
-  // { id: "system", label: "System", icon: Clock,   color: "#3b82f6" },
+  { id: "system", label: "System", icon: SlidersHorizontal, color: "#3b82f6" },
 ];
 
 // ── Slider ────────────────────────────────────────────────────────────────────
@@ -198,6 +200,7 @@ export function SystemConfig() {
   const [drinkingEnd, setDrinkingEnd] = useState("05:00");
   const [cooldown, setCooldown] = useState(120);
   const [retention, setRetention] = useState(30);
+  const [autoPurge, setAutoPurge] = useState(false);
   const [savedSnapshot, setSavedSnapshot] = useState(null);
 
   const applySettings = (f) => {
@@ -223,6 +226,7 @@ export function SystemConfig() {
     setDrinkingEnd(f.drinkingEnd);
     setCooldown(f.cooldown);
     setRetention(f.retention);
+    setAutoPurge(f.autoPurge);
     setSavedSnapshot(f);
   };
 
@@ -248,7 +252,8 @@ export function SystemConfig() {
     drinkingStart !== savedSnapshot.drinkingStart ||
     drinkingEnd !== savedSnapshot.drinkingEnd ||
     cooldown !== savedSnapshot.cooldown ||
-    retention !== savedSnapshot.retention
+    retention !== savedSnapshot.retention ||
+    autoPurge !== savedSnapshot.autoPurge
   );
 
   const load = async () => {
@@ -275,7 +280,7 @@ export function SystemConfig() {
         drinkingEnabled, drinkingConf, drinkingDwell,
         drinkingHeldDwell, drinkingEvidenceMaxAge, drinkingMouthProximity, drinkingCooldownDist,
         drinkingHoursEnabled, drinkingStart, drinkingEnd,
-        cooldown, retention,
+        cooldown, retention, autoPurge,
       }));
       applySettings(fromApi(updated));
       setSaved(true);
@@ -403,7 +408,16 @@ export function SystemConfig() {
     system: (
       <div className="space-y-6">
         <Slider label="Alert cooldown period" value={cooldown} min={30} max={600} unit="s" onChange={setCooldown} />
-        <Slider label="Evidence retention" value={retention} min={7} max={90} unit=" days" onChange={setRetention} />
+        <Slider
+          label="Evidence retention" value={retention} min={7} max={90} unit=" days"
+          desc="How long alert images and clips are kept before they may be purged (RA 10173 storage limitation). The alert records themselves are always kept."
+          onChange={setRetention}
+        />
+        <Toggle
+          label="Automatic purge of old evidence"
+          desc="OFF by default. When on, a scheduled run of `manage.py purge_old_evidence --auto` deletes evidence older than the retention period. Nothing is deleted while this is off."
+          value={autoPurge} onChange={setAutoPurge}
+        />
       </div>
     ),
   };

@@ -287,7 +287,7 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
             "vlm_enabled", "vlm_provider", "vlm_model", "vlm_api_key", "vlm_endpoint",
             "vlm_timeout", "vlm_min_confidence",
             "vlm_frames", "vlm_max_edge", "vlm_send_scene", "vlm_async",
-            "alert_cooldown", "evidence_retention_days",
+            "alert_cooldown", "evidence_retention_days", "evidence_auto_purge",
             "updated_at",
         ]
         extra_kwargs = {

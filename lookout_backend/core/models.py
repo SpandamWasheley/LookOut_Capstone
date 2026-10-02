@@ -558,7 +558,14 @@ class SystemSettings(models.Model):
 
 
     alert_cooldown = models.PositiveSmallIntegerField(default=120)
+    # How long alert evidence (images and clips) is kept before
+    # `manage.py purge_old_evidence` may delete it. Supports RA 10173 storage
+    # limitation: footage of identifiable people is not kept longer than needed.
     evidence_retention_days = models.PositiveSmallIntegerField(default=30)
+    # Master switch for the scheduled purge (`purge_old_evidence --auto`). OFF by
+    # default and never turned on by code: an operator enables it deliberately,
+    # because the purge deletes files.
+    evidence_auto_purge = models.BooleanField(default=False)
 
     updated_at = models.DateTimeField(auto_now=True)
 
