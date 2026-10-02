@@ -14,6 +14,7 @@ from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
 from core.vision import recognition, scoring, theft, tracking, vlm
+from ._incidents import IncidentMixin
 from ._vlm_followup import attach_verdict
 
 THIEF_CAMERA_CODE = "CAM-SMOKE-01"
@@ -191,7 +192,7 @@ def _is_night(now_dt):
 HOLDUP_MIN_PERSONS = 2
 
 
-class Command(BaseCommand):
+class Command(IncidentMixin, BaseCommand):
     help = (
         "Detects theft/robbery indicators (gun/knife/robbery activity/stealing) "
         "using the custom thief model. Use --image PATH to test on a single "
@@ -217,7 +218,8 @@ class Command(BaseCommand):
         self.frame_buffer = vlm.FrameBuffer()
         self.layer_e = True
         self.layer_e_only = False
-        self.weapon_alone_alerts = False
+        self._frame_tracks = []
+        self._holdup_cues = {}        # holder track id -> (time, Layer E cues seen recently)
         self.observe_log = None
         self.engine = None
         # Set only for a file source (see _run_stream) — lets _create_alert cut
@@ -334,24 +336,12 @@ class Command(BaseCommand):
             action="store_true",
             help="Make Layer E the ONLY decision path, per the spec's "
                  "implementation binding ('the scoring function replaces the "
-                 "current conjunctive gate'). NOTE: with the written weights a "
-                 "lone weapon scores 0.45, below the 0.55 alert band, so a gun "
-                 "with no other cue stops raising alerts — pair this with "
-                 "--weapon-alone-alerts if that is not what you want.",
-        )
-        parser.add_argument(
-            "--weapon-alone-alerts",
-            action="store_true",
-            help="Promote any evidence containing the weapon cue (E14) to the "
-                 "Candidate band regardless of score. Resolves the spec's own "
-                 "conflict between E14's weight (0.45) and its stated rationale "
-                 "('sufficient alone to reach the alert band') in favour of the "
-                 "rationale.",
+                 "current conjunctive gate'). A lone weapon is Monitoring only.",
         )
         parser.add_argument(
             "--observe-log",
             default=None,
-            help="Append Observe-band evidence (E29: 0.35-0.55) to this file as "
+            help="Append near-miss evidence (no knife, or nobody near it) to this file as "
                  "JSON lines, with the full cue vector. This is the ablation "
                  "store the spec calibrates the threshold against after the "
                  "field shoot — near-misses accumulate instead of being lost.",
@@ -437,21 +427,15 @@ class Command(BaseCommand):
         # --- Layer E ---
         self.layer_e = not options["no_layer_e"] and "layer-e" not in self.ablate
         self.layer_e_only = options["layer_e_only"] and self.layer_e
-        self.weapon_alone_alerts = options["weapon_alone_alerts"]
         self.observe_log = options["observe_log"]
         if self.layer_e:
             # The engine shares self.stats, so --stats reports Layer E's
             # suppressions and cue counts in the same table as the legacy gate's.
-            self.engine = theft.TheftEngine(
-                ablate=self.ablate, stats=self.stats,
-                weapon_alone_alerts=self.weapon_alone_alerts,
-            )
+            self.engine = theft.TheftEngine(ablate=self.ablate, stats=self.stats)
         if self.layer_e_only:
             self.stdout.write(self.style.WARNING(
                 "LAYER E ONLY: the per-class dwell gate is off. A lone weapon "
-                f"scores {theft.WEIGHTS['E14']:.2f}, under the "
-                f"{theft.SCORE_ALERT:.2f} alert band, so it will land in "
-                "Observe rather than alerting unless --weapon-alone-alerts is set."
+                "is Monitoring (watchlist) only."
             ))
         try:
             rows, cols = (int(v) for v in options["tiles"].lower().split("x"))
@@ -808,7 +792,7 @@ class Command(BaseCommand):
                 # frame.shape feeds the E25 edge-truncation guard: a box clipped
                 # by the frame border has a wrong centroid and height, which
                 # corrupts every normalized quantity in E1-E3.
-                tracks = tracker.update(persons, now_ts, ids=ids,
+                tracks = self._frame_tracks = tracker.update(persons, now_ts, ids=ids,
                                         frame_shape=frame.shape)
                 per_track = tracker.assign(threats, now_ts)
                 per_track = self._apply_weapon_region_rule(per_track, frame)
@@ -846,6 +830,7 @@ class Command(BaseCommand):
 
                 # Buffer this annotated frame for the evidence clip.
                 self.clip.add(frame, now_ts)
+                self._incident_gc(now_ts, frame)   # close incidents whose object is gone
                 # Spec §6: the same frames feed the VLM's multi-frame send, so
                 # it judges a short event rather than one still. The buffer
                 # keeps them ~1s apart and holds only three.
@@ -994,166 +979,80 @@ class Command(BaseCommand):
             return
 
         box = track.box or best[:4]
-        if "cooldown" not in self.ablate:
-            # Phase C: a cooldown timing out is not the same thing as this
-            # incident ending. See tracking.Track.has_alerted.
-            if track.has_alerted:
-                self.stats["suppressed: track already alerted (same incident)"] += 1
-                return
-            if track.in_cooldown(now_ts, cooldown):
-                self.stats["suppressed: track cooldown"] += 1
-                return
-            if self._cooldown_blocks(box, now_ts, cooldown):
-                self.stats["suppressed: recent alert at same spot"] += 1
-                return
-
-        summary = ", ".join(sorted({s[5] for s in track.dets}))
+        # The object cue is ON (vote + dwell, to be replaced by momentum). The
+        # status now comes from the shared scoring rules: a knife is 45 points
+        # times the time-of-day block, Monitoring until a second person is NEAR
+        # the holder -- never the raw YOLO box confidence.
+        evidence = self._knife_evidence(track, best_label, present_for, now_ts, box)
         who = track.display
-        self.stats[f"ALERTS:{best_label}"] += 1
-        alert = self._create_alert(
-            best_score, best_label, frame,
-            description=(
-                f"Theft/robbery indicator detected: {summary} on {who}, "
-                f"present for {present_for:.0f}s on {self.camera.code} feed."
-            ),
-            now=now_ts,
-            # This path alerts on a weapon held by one track rather than on a
-            # Layer E pattern, so there is no Evidence object. One is built
-            # here purely so the alert still carries a band and a cue vector --
-            # a weapon detection with no level reads on the violation card as
-            # raw detector confidence, which is exactly the conflation the
-            # scoring layer exists to end.
-            evidence=theft.Evidence(
-                "weapon", tuple(box), {"E14": theft.WEIGHTS["E14"]}, {}, set(),
-                [track], f"{best_label} held for {present_for:.0f}s"),
-            # The detector's own confidence in the winning box. Carried
-            # separately from the Layer E score, which is the violation
-            # likelihood -- the two answer different questions and the card
-            # shows them in different places.
-            object_confidence=best_score,
+        summary = ", ".join(sorted({s[5] for s in track.dets}))
+
+        def create(level, with_clip):
+            return self._create_alert(
+                evidence.score, best_label, frame,
+                description=self._describe(evidence, summary, who, present_for),
+                now=now_ts, evidence=evidence, with_clip=with_clip,
+                # The detector's own confidence in the winning box, kept apart
+                # from the evidence score (the two answer different questions).
+                object_confidence=best_score,
+            )
+
+        alert = self._incident_sync(
+            ("knife", track.id), evidence, now_ts, create=create, frame=frame, box=box,
+            describe=lambda sc: self._describe(sc, summary, who, present_for),
+            blocked=lambda: "cooldown" not in self.ablate and self._cooldown_blocks(box, now_ts, cooldown),
+            extra_cues={"object_confidence": round(best_score, 3)},
         )
-        track.last_alerted_at = now_ts
-        track.has_alerted = True
-        self._alert_log.append((tuple(box), now_ts))
-        self.stdout.write(self.style.SUCCESS(
-            (f"ALERT created: {alert.code}" if alert else "ALERT suppressed (dry run)")
-            + f" ({best_label}, {who}, held {present_for:.0f}s)"
-        ))
+        if alert is not None or self.dry_run:
+            self.stats[f"status:{evidence.band}:{best_label}"] += 1
+
+    def _describe(self, ev, summary, who, present_for):
+        status = scoring.label_of(ev.band)
+        note = " Second person nearby." if ev.people_near else " No second person near the holder."
+        return (f"Weapon detected: {summary} on {who}, present for {present_for:.0f}s "
+                f"on {self.camera.code} feed. Status {status}.{note}")
+
+    def _knife_evidence(self, track, label, present_for, now_ts, box):
+        """Evidence for one knife holder: the knife (E14), any recent Layer E
+        cues for the same holder, and the time-of-day block."""
+        cues = {"E14": theft.WEIGHTS["E14"]}
+        seen = self._holdup_cues.get(track.id)
+        if seen is not None and now_ts - seen[0] <= theft.EVIDENCE_WINDOW:
+            for rule in seen[1]:
+                cues[rule] = theft.WEIGHTS[rule]
+        mult = {}
+        factor = scoring.manila_time_multiplier(datetime.datetime.now())
+        if factor != 1.0 and "e20" not in self.ablate:
+            mult["E20"] = factor
+        near = any(o is not track and not getattr(o, "is_scene", False)
+                   and theft._person_norm_distance(track.box, o.box) <= theft.NEAR_PERSON_HEIGHTS
+                   for o in self._frame_tracks)
+        return theft.Evidence(
+            "weapon", tuple(box), cues, mult, set(), [track.id],
+            f"{label} held for {present_for:.0f}s",
+            people_near=near, previous_level=self._incident_level(("knife", track.id)))
 
     # ---- Layer E evidence handling (E29) ----------------------------------
 
     def _handle_evidence(self, ev, frame, now_ts, cooldown, debug):
-        """E29 — route one scored evidence vector to its band's outcome.
-
-        Discard  (<0.35)      nothing beyond the suppression log
-        Observe  (0.35-0.55)  logged with the full cue vector, no alert
-        Candidate(>0.55)      an Alert row, entering the existing lifecycle
+        """E29 -- Layer E pattern evidence. It no longer creates alerts of its own:
+        the knife path (object cue ON) owns the incident, and the pattern cues
+        (E12 frozen pair, E10 loitering) are folded into its score for the same
+        holder. A pattern with no knife is not shown (spec: no object, no alert).
         """
         if debug:
             x1, y1, x2, y2 = ev.box
-            color = {theft.CANDIDATE: (0, 0, 220),
-                     theft.OBSERVE: (0, 165, 255)}.get(ev.band, (120, 120, 120))
+            color = {scoring.WARNING: (0, 0, 220),
+                     scoring.MONITORING: (0, 165, 255)}.get(ev.band, (120, 120, 120))
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
             recognition.draw_label(frame, f"{ev.kind} {ev.score:.2f} {ev.band}",
                                    x1, max(y1 - 8, 0), color)
-
-        if ev.band == theft.DISCARD:
-            return
-        if ev.band == theft.OBSERVE:
+        rules = {r for r in ev.cues if r in ("E12", "E10")}
+        if rules:
+            for tid in ev.tracks:
+                self._holdup_cues[tid] = (now_ts, rules)
+        if ev.band == scoring.NONE:
             self._log_observe(ev)
-            return
-
-        if "cooldown" not in self.ablate and self._cooldown_blocks(
-                ev.box, now_ts, cooldown):
-            self.stats["suppressed: recent alert at same spot"] += 1
-            return
-
-        # Spec §4.3 -- RPC Art. 293 defines robbery as taking property from
-        # ANOTHER person, so a holdup requires a victim in frame. A hard gate
-        # rather than a scored cue: no accumulation of other evidence can make a
-        # one-person scene a holdup, and a lone person with a blade is somebody
-        # working, not robbing.
-        if len(getattr(ev, "tracks", []) or []) < HOLDUP_MIN_PERSONS:
-            self.stats["suppressed: only one person (RPC Art. 293 needs a victim)"] += 1
-            self._log_observe(ev)
-            return
-
-        # E30-E33 -- the VLM, called ONCE here rather than per frame. It
-        # answers the question the geometry cannot: in a barangay a bolo and a
-        # fish knife are ordinary tools, so a blade is only a threat when the
-        # context that would explain it is ABSENT.
-        verdict = vlm.unavailable("not attempted")
-        # Inline only when asked for. Asynchronously the alert is published on
-        # Layer E alone and the context is attached afterwards -- which also
-        # means a late answer cannot rescore or suppress it, so the suppression
-        # branch below is reachable only on the inline path.
-        if "vlm" not in self.ablate and not self.vlm_async:
-            verdict = vlm.verify_frame(
-                self.vlm, frame, "holdup", box=ev.box,
-                context=f"{ev.kind}: {ev.detail}",
-                frames=self.frame_buffer.recent(),
-                **self.vlm_cost,
-            )
-            if verdict.ok:
-                extra_cues, extra_mults = {}, {}
-                # E30 -- "this is a holdup".
-                if verdict.confirms and "e30" not in self.ablate:
-                    extra_cues["E30"] = scoring.HOLDUP_VLM_WEIGHTS["E30"]
-
-                # E32 pointed at a person, E34 victim reacting. v3 dropped the
-                # "is a sharp object visible" question: it repeated the E14
-                # gate, and the checker is never asked to confirm an object the
-                # detector already found.
-                for name, code in scoring.HOLDUP_CUE_CODES.items():
-                    if verdict.cues.get(name) and code.lower() not in self.ablate:
-                        extra_cues[code] = scoring.HOLDUP_VLM_WEIGHTS[code]
-
-                # E33 -- scene_type. Everything that is not a confrontation
-                # collapses into other_activity and cuts the score to a quarter:
-                # vending, food preparation, work, play. Listing benign scenes
-                # one by one is a losing game.
-                for name, factor in verdict.enum_multipliers().items():
-                    if scoring.HOLDUP_DENIAL_CODE.lower() not in self.ablate:
-                        extra_mults[scoring.HOLDUP_DENIAL_CODE] = factor
-                        self.stats[f"ai scene: {verdict.cues.get(name)}"] += 1
-
-                if extra_cues or extra_mults:
-                    before = ev.score
-                    ev.rescore(extra_cues, extra_mults)
-                    self.stats[f"ai rescored {before:.2f} -> {ev.score:.2f}"] += 1
-                    if not theft.alerts_at(ev.band):
-                        self.stats["suppressed: read as ordinary activity"] += 1
-                        self._log_observe(ev)
-                        return
-                self.stats[f"ai {verdict.verdict} ({verdict.tier})"] += 1
-            elif verdict.error != "disabled":
-                self.stats[f"ai unavailable: {verdict.error[:40]}"] += 1
-
-        self.stats[f"ALERTS:{ev.kind}"] += 1
-        alert = self._create_alert(
-            # theft.Evidence caps its own score at 1.0 now, so no clamp here.
-            ev.score, ev.kind, frame,
-            description=(
-                f"Theft pattern detected ({ev.kind}): {ev.detail}. "
-                f"Layer E score {ev.score:.2f} "
-                f"[{', '.join(ev.rules)}] on {self.camera.code} feed."
-                + (f" VLM: {verdict.reason}" if verdict.ok and verdict.reason else "")
-            ),
-            now=now_ts, evidence=ev, verdict=verdict,
-            # Layer E fires on a PATTERN, not on one box, so there is no single
-            # detection to quote. The weapon detection that anchored it is the
-            # closest honest answer; None when the pattern had no weapon at all
-            # (a freeze with no blade), which the card renders as a dash rather
-            # than inventing a number.
-            object_confidence=getattr(ev, "weapon_conf", None),
-        )
-        self._alert_log.append((tuple(ev.box), now_ts))
-        self._queue_context(alert, "holdup", frame, box=ev.box,
-                            context=f"{ev.kind}: {ev.detail}")
-        self.stdout.write(self.style.SUCCESS(
-            (f"ALERT created: {alert.code}" if alert else "ALERT suppressed (dry run)")
-            + f" [Layer E {ev.kind}] {ev.summary()}"
-        ))
 
     def _log_observe(self, ev):
         """The Observe band: a near miss, kept with its evidence vector intact.
@@ -1219,14 +1118,9 @@ class Command(BaseCommand):
             frames=self.frame_buffer.recent(), **self.vlm_cost)
         self.stats["ai context queued"] += 1
 
-    def _create_alert(self, score, label, frame, description, now=None,
-                      evidence=None, verdict=None, object_confidence=None):
-        ts_label = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        safe_label = label.replace(" ", "_")
-        filename = f"{ts_label}_thief_{safe_label}.jpg"
-        cv2.imwrite(str(self.violations_dir / filename), frame)
-        image_url = violation_media_path(filename)
-
+    def _save_clips(self, base, frame, now):
+        """Write (or rewrite) the annotated and raw evidence clips named `base`.
+        Returns (video_url, raw_video_url); either may be empty on failure."""
         # Write the ~30s evidence clip (annotated frames leading up to the
         # alert). getattr guards --image test mode, which never creates
         # self.clip (mirrors watch_smoking/watch_drinking's own guard).
@@ -1246,7 +1140,7 @@ class Command(BaseCommand):
             # only covers a caller with no timeline of its own (--image
             # test mode, which never touches self.clip anyway).
             clip.add(frame, now if now is not None else time.time())
-            video_name = f"{ts_label}_thief_{safe_label}.mp4"
+            video_name = f"{base}.mp4"
             if clip.save(self.violations_dir / video_name):
                 video_url = violation_media_path(video_name)
 
@@ -1255,7 +1149,7 @@ class Command(BaseCommand):
         # Live sources can't be seeked, so they fall back to the rolling
         # RawFrameRecorder buffer of raw frames instead (see its docstring).
         raw_video_url = ""
-        raw_name = f"{ts_label}_thief_{safe_label}_raw.mp4"
+        raw_name = f"{base}_raw.mp4"
         raw_path = self.violations_dir / raw_name
         if self._source_path is not None and self._video_pos_sec is not None:
             start = max(0.0, self._video_pos_sec - recognition.RAW_CLIP_PRE_SECONDS)
@@ -1272,6 +1166,23 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING(
                 "  raw clip not produced (see ffmpeg log above if one was attempted)"
             ))
+        return video_url, raw_video_url
+
+    def _create_alert(self, score, label, frame, description, now=None,
+                      evidence=None, verdict=None, object_confidence=None, with_clip=True):
+        ts_label = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_label = label.replace(" ", "_")
+        base = f"{ts_label}_thief_{safe_label}"
+        self._last_clip_base = base
+        filename = f"{base}.jpg"
+        cv2.imwrite(str(self.violations_dir / filename), frame)
+        image_url = violation_media_path(filename)
+
+        # A Monitoring event gets ONE image and no clip; the clip is written when
+        # the event reaches Possible / Likely (and refreshed while it continues).
+        video_url = raw_video_url = ""
+        if with_clip:
+            video_url, raw_video_url = self._save_clips(base, frame, now)
 
         # Optional run log ($LOOKOUT_MOUTH_LOG): what fired and with which cues,
         # even in --dry-run, so before/after comparisons need no database rows.
@@ -1292,24 +1203,16 @@ class Command(BaseCommand):
             video_url=video_url,
             raw_video_url=raw_video_url,
             suspect=label,
-            # The band (Monitoring / Possible / Confirmed). Without this the
-            # violation card falls back to calling the score "Confidence",
-            # which is the one thing it is not.
+            # The status (Monitoring / Possible / Likely), never a bare number.
             level=evidence.band if evidence is not None else "",
             # The full cue vector, for the audit trail and for
             # calibrate_weights -- theft was the only detector not recording
             # one, so none of its alerts could ever be fitted against.
-            cues=({
-                "kind": "holdup",
-                "cues": dict(evidence.cues),
-                "multipliers": dict(evidence.multipliers),
-                "raw_score": round(evidence.raw_score, 4),
-                "score": round(evidence.score, 4),
-                "level": evidence.band,
-                "label": scoring.label_of(evidence.band),
-                # The checker's own answers -- see the note in watch_drinking.
-                "vlm": verdict.as_dict() if verdict is not None else {},
-            } if evidence is not None else {}),
+            cues=({**evidence.as_dict(),
+                   # The checker's own answers (attached later, asynchronously).
+                   "vlm": verdict.as_dict() if verdict is not None else {},
+                   } if evidence is not None else {}),
+            last_seen_at=timezone.now(),
             # The detector's own confidence in the anchoring box, distinct from
             # the violation likelihood above.
             object_confidence=object_confidence,

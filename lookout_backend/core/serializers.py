@@ -212,7 +212,7 @@ class AlertSerializer(serializers.ModelSerializer):
             # likelihood, so a bare percentage badge reads differently than it
             # used to. `cues` is the audit trail: which indicators fired and
             # what each was worth.
-            "level", "level_label",
+            "level", "level_label", "last_seen_at",
             "object_confidence", "cues",
             # VLM second-stage verification. `vlm_reason` is the sentence worth
             # showing a reviewer -- a readable justification, not another number.
@@ -226,7 +226,7 @@ class AlertSerializer(serializers.ModelSerializer):
             # Written by the detectors through the ORM only. A client that
             # could PATCH its own cue vector could rewrite the calibration
             # training data after the fact.
-            "level", "level_label", "object_confidence", "cues",
+            "level", "level_label", "last_seen_at", "object_confidence", "cues",
             "vlm_verdict", "vlm_confidence", "vlm_reason",
             # Who reviewed it is recorded FROM the authenticated request, so a
             # client cannot name somebody else as the reviewer.

@@ -386,13 +386,20 @@ class Command(BaseCommand):
         tracks = tracker.update(persons, now)
         per_track = tracker.assign(dets, now)
         if name == "smoking":
-            per_track = cmd._apply_mouth_rule(frame, per_track, now)
+            cmd._feed_pose(frame, tracks, now)              # pose hand-to-mouth counter
+            per_track = cmd._hires_check(frame, per_track, now)
+            per_track = cmd._apply_mouth_cue(frame, per_track, now)
+        elif name == "thief":
+            cmd._frame_tracks = tracks
 
         if name == "drinking":
             self._run_gathering(eng, tracks, per_track, now, cfg, frame, debug)
             for track, td in per_track.items():
-                cmd._process_track(track, td, now, dwell, cfg.alert_cooldown,
-                                   frame, debug)
+                cmd._process_track(
+                    track, td, now, dwell, cfg.alert_cooldown, frame, debug,
+                    held_dwell_seconds=cfg.drinking_held_dwell,
+                    mouth_proximity=cfg.drinking_mouth_proximity,
+                    cooldown_center_dist=cfg.drinking_cooldown_center_dist)
         elif name == "smoking":
             for track, td in per_track.items():
                 cmd._process_track(track, td, now, dwell, cfg.alert_cooldown,
@@ -407,6 +414,7 @@ class Command(BaseCommand):
         # clip is a near-blank few-hundred-ms stub, not the ~30s of context
         # the standalone commands' own _run_stream loops buffer every frame.
         cmd.clip.add(frame, now)
+        cmd._incident_gc(now, frame)        # close incidents whose object is gone
 
     def _run_gathering(self, eng, tracks, per_track, now, cfg, frame, debug):
         """Drinking's Path B (gathering) — previously never invoked here, so a
@@ -419,19 +427,21 @@ class Command(BaseCommand):
         min_group = cfg.drinking_min_group
         group_duration = cfg.drinking_group_duration
         clusters = group_tracker.update(tracks, now, min_group)
-        detected_ids = {t.id for t, dets in per_track.items() if dets and not t.is_scene}
+        cmd.note_clusters(clusters, min_group, group_duration)
         for cluster in clusters:
-            if cluster.member_ids & detected_ids:
-                member_dets = [d for t, dets in per_track.items()
-                              for d in dets
-                              if t.id in cluster.member_ids and not t.is_scene]
-                if member_dets:
-                    best = max(member_dets, key=lambda d: d[4])
-                    if cluster.evidence is None or best[4] > cluster.evidence[4]:
-                        cluster.evidence = best
+            member_dets = [d for t, dets in per_track.items()
+                           for d in dets
+                           if t.id in cluster.member_ids and not t.is_scene]
+            # a bottle on the table the group sits around is a scene detection
+            member_dets += cmd._scene_dets_near(cluster, per_track)
+            if member_dets:
+                best = max(member_dets, key=lambda d: d[4])
+                cluster.note_evidence(best, now)
             cmd._process_cluster(
                 cluster, now, min_group, group_duration, cfg.alert_cooldown,
                 frame, debug,
+                evidence_max_age=cfg.drinking_evidence_max_age,
+                cooldown_center_dist=cfg.drinking_cooldown_center_dist,
             )
 
     def _run_parking(self, frame, now, cfg, debug):

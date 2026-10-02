@@ -199,6 +199,10 @@ class Alert(models.Model):
     # band that score fell into, and is what the dashboard should badge on.
     # Blank for detectors still on the old hard-gate chain.
     level = models.CharField(max_length=10, blank=True, choices=SCORE_LEVEL_CHOICES)
+    # The last moment the object cue was ON for this event. A Monitoring event is
+    # "active" while this is recent; it ends when the object goes away. Null on
+    # alerts from before spec v6.
+    last_seen_at = models.DateTimeField(null=True, blank=True)
     # The full cue vector: which indicators fired, their weights, the
     # multipliers, and anything suppressed as redundant or abstained. Kept even
     # for alerts that barely cleared the bar, because this is the training data

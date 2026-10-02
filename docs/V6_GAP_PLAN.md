@@ -26,6 +26,7 @@ Scale: the internal 0-1 scale is kept; 40 pts = 0.40, Possible = 0.55, Likely = 
 | Behaviour points build silently; when the bottle appears the full score appears at once (examples) | The cluster path needs bottle evidence; the solo path scores only on the bottle | PARTLY | Keep gathering / duration points per track continuously so Possible can open the moment the bottle cue turns ON. |
 | Bottle at mouth scores only with the bottle (5 note) | `CONDITIONAL_CUES` `scoring.py:465` | MATCHES | the "at mouth" string bug is already fixed (`31f38fa`) |
 | No time multiplier; evening band 16:00-24:00 | `DRINKING_HIGH_BAND` `scoring.py:226` | MATCHES | none |
+| A bottle on a table near a group must still count for the gathering path | `tracker.assign` (`tracking.py:800`) gives a bottle to a person only if its centre is inside that person's box + `ASSIGN_REACH`; a bottle on a table is not, so it becomes a **scene track**, and the gathering code collects evidence only from `not t.is_scene` members (`watch_drinking.py:~782`, same in `watch_merged._process_drinking_frame` and `watch_all._run_gathering`). So **today a bottle on a table is discarded** (solo path: "discarded: no person (scene)") and never reaches the cluster. | DIFFERS (bug) | `Cluster` gets a method that also claims scene-track bottles whose centre lies inside the cluster's bbox expanded by about one person-height; all three drinking loops use it. |
 
 ## C. Smoking (6) and the three paths
 | Spec | Current | Verdict | Change |
@@ -60,6 +61,13 @@ Scale: the internal 0-1 scale is kept; 40 pts = 0.40, Possible = 0.55, Likely = 
 | Local provider: no blur | `blur_required` `vlm.py:137` | MATCHES | done in `7e64347` |
 | Model: Qwen3-VL (2B video via Transformers, or 4B frames via Ollama; "being finalised") | Ollama 4B frames only (`vlm.py:79-84`) | PARTLY | stay on Ollama frames; video / 2B left open |
 
+### E2. AI checker details to build (decisions of the plan review)
+- **Model.** Qwen3-VL through local Ollama, default 2B. Test 2B vs 4B on the same clips and report JSON-valid rate, the answers, seconds per call and GPU memory with detection running; keep the winner as the default (model name stays a Setting).
+- **Async.** The call never blocks the detection loop.
+- **Frames.** A rolling buffer of full-resolution frames (no drawn boxes). On trigger take 8-12 frames bunched around the detection / puff (denser close to the trigger).
+- **Crops.** Per violation, following the tracked box from frame to frame: smoking = half body (head, shoulders, hands); drinking = whole group plus surroundings; holdup = both people. Crop from the full-resolution frame, then resize. Raw frames only: no boxes, labels or overlays.
+- **Audit.** Save the exact frames sent with the alert, so an answer can be checked against what the model saw.
+
 ## F. Alert UI (2) and review
 | Spec | Current | Verdict | Change |
 |---|---|---|---|
@@ -70,6 +78,18 @@ Scale: the internal 0-1 scale is kept; 40 pts = 0.40, Possible = 0.55, Likely = 
 | No confidence x100 in AlertFeed | `AlertFeed.jsx:337`, `:495` show "% conf" | DIFFERS | remove |
 | Monitoring as a quiet dashboard watchlist | none | MISSING | Overview watchlist panel; excluded from the notification list and the officer app |
 | Officer app: only Possible / Likely notify; correct labels | the officer app polls `/alerts/` (no push); its level type lists `none / watch / warning / violation` (`officer_app/lib/api.ts:224`); the label comes from `level_label` | PARTLY | filter monitoring out and update the type |
+
+### F2. Settings (Part 5): adjustable indicator timings and conditions
+| Item | Current | Verdict | Change |
+|---|---|---|---|
+| Object confirmation time (~2 s) | `smoking_dwell` 3, `drinking_dwell` 8, `thief_dwell` 3 (`models.py` SystemSettings) | DIFFERS | one "object confirmation" per violation, spec default ~2 s (momentum ON/OFF in Part 3) |
+| Drinking: stay 10 min, minimum group 2, evening band | `drinking_group_duration` 600, `drinking_min_group` 2, `drinking_start/end` 16:00-00:00 | MATCHES (fields exist) | surface them under one "indicator conditions" block |
+| Smoking puff window (3 puffs in 5 min) | hard-coded `GESTURE_WINDOW_SECONDS` 20 s | MISSING | settings `puff_count` / `puff_window_seconds`, defaults 3 / 300 |
+| Holdup loitering time | `LOITER_SECONDS = 20` (`theft.py:61`) | MISSING | setting, default from the spec |
+| Holdup "nearby person" distance | none | MISSING | setting, default 1.75 person-heights (range about 1.5-2), also read by Part 2 |
+| Reset to spec defaults per violation | none | MISSING | button in Settings per violation panel |
+| Points and the 55 / 75 cut-offs | module constants | MATCHES | **not editable** (stay in code) |
+| Active settings logged with each alert | not logged | MISSING | `cues["settings"]` snapshot on every Alert |
 
 ## G. Momentum spec (M)
 | Item | Current | Verdict | Change |
@@ -88,7 +108,8 @@ Scale: the internal 0-1 scale is kept; 40 pts = 0.40, Possible = 0.55, Likely = 
 DB backup before each; migration files shown before applying.
 
 ## I. Decisions needed before Part 2
-1. **Knife and people.** v6's own vendor example reaches Possible (45 x 1.36 = 61) with the knife alone, while section 7 says a holdup needs >= 2 people. I read it as: >= 2 people in frame is the gate for Possible / Likely; with fewer people the event is Monitoring only. So a knife with 2 people at 09:00-18:00 can be Possible without a freeze.
+1. **Knife and people (decided).** The second person must be *near* the knife holder (about 1.5-2 person-heights, configurable); knife alone or nobody nearby stays Monitoring. (Original question:)
+   **Knife and people.** v6's own vendor example reaches Possible (45 x 1.36 = 61) with the knife alone, while section 7 says a holdup needs >= 2 people. I read it as: >= 2 people in frame is the gate for Possible / Likely; with fewer people the event is Monitoring only. So a knife with 2 people at 09:00-18:00 can be Possible without a freeze.
 2. **Existing `watch` rows** become `monitoring` (they are object-detected, stored events).
 3. **Pose always on** for smoking. Cost: one full-frame pose call per processed frame, replacing the per-person crops. FPS measured interleaved in Part 3.
 4. **Monitoring evidence.** Write the evidence image on entry and (re)write the clip when the event rises or ends, so Monitoring does not produce a clip per passer-by.

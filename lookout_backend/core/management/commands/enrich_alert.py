@@ -25,7 +25,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 
 from core.models import Alert, SystemSettings
-from core.vision import scoring, vlm
+from core.vision import vlm
 
 # Alert.type.code -> the prompt spec that fits it. watch_thief files several
 # patterns under one type, and all of them ask the holdup questions.
@@ -47,12 +47,6 @@ class Command(BaseCommand):
                             help="Enrich the N most recent alerts instead.")
         parser.add_argument("--missing-only", action="store_true",
                             help="Skip alerts that already have a reading.")
-        parser.add_argument("--rescore", action="store_true",
-                            help="Also apply the scene multiplier to the stored "
-                                 "score. OFF by default: the score was computed "
-                                 "live from what the detector actually saw, and "
-                                 "rewriting it afterwards from a single still "
-                                 "would misrepresent how the alert was reached.")
 
     def handle(self, *args, **options):
         alerts = self._select(options)
@@ -96,7 +90,7 @@ class Command(BaseCommand):
 
         self.stdout.write("")
         for alert in alerts:
-            self._enrich(alert, verifier, options["rescore"])
+            self._enrich(alert, verifier)
 
     # ------------------------------------------------------------------ parts
     def _select(self, options):
@@ -114,7 +108,7 @@ class Command(BaseCommand):
             alerts = [a for a in alerts if not a.vlm_reason]
         return alerts
 
-    def _enrich(self, alert, verifier, rescore):
+    def _enrich(self, alert, verifier):
         import cv2
 
         label = f"{alert.code} ({alert.type.code if alert.type else '?'})"
@@ -155,17 +149,8 @@ class Command(BaseCommand):
         # path sees three frames a second apart; this saw one still.
         cues["vlm"]["source"] = "enriched from saved evidence (single frame)"
 
-        if rescore and verdict.enum_multipliers():
-            factor = min(verdict.enum_multipliers().values())
-            alert.confidence = round(min(1.0, alert.confidence * factor), 4)
-            cues["score"] = alert.confidence
-            cues["level"] = scoring.level_of(alert.confidence)
-            cues["label"] = scoring.label_of(cues["level"])
-            alert.level = cues["level"]
-
         alert.cues = cues
-        alert.save(update_fields=["vlm_verdict", "vlm_confidence", "vlm_reason",
-                                  "cues", "confidence", "level"])
+        alert.save(update_fields=["vlm_verdict", "vlm_confidence", "vlm_reason", "cues"])
 
         ordinary = verdict.enum_multipliers()
         flag = self.style.WARNING(" [reads as ordinary activity]") if ordinary else ""

@@ -115,25 +115,7 @@ class QuestionSetTests(unittest.TestCase):
         self.assertEqual(set(enum("holdup", "scene_type").values),
                          {"confrontation", "other_activity", "unclear"})
 
-    def test_ordinary_activity_cuts_to_a_quarter(self):
-        for kind, field, ordinary in (("drinking", "scene_type", "other_activity"),
-                                      ("smoking", "hand_to_mouth_activity", "eating"),
-                                      ("holdup", "scene_type", "other_activity")):
-            cue = next(c for c in vlm.SPECS[kind].cues if c.name == field)
-            self.assertEqual(cue.multiplier_for(ordinary),
-                             scoring.SCENE_MULTIPLIER, kind)
 
-    def test_unclear_never_cuts(self):
-        """"I cannot tell" is not "this is harmless".
-
-        CCTV crops are poor and the model hedges often. If hedging cut the
-        score, real violations would be lost every time it was unsure.
-        """
-        for kind, field in (("drinking", "scene_type"),
-                            ("smoking", "hand_to_mouth_activity"),
-                            ("holdup", "scene_type")):
-            cue = next(c for c in vlm.SPECS[kind].cues if c.name == field)
-            self.assertEqual(cue.multiplier_for("unclear"), 1.0, kind)
 
     def test_the_prompt_carries_every_field_and_its_definition(self):
         for kind, want in self.FIELDS.items():
@@ -146,25 +128,7 @@ class QuestionSetTests(unittest.TestCase):
                        "Do not guess", "Reply only with the JSON"):
             self.assertIn(phrase, vlm.SYSTEM_PROMPT, phrase)
 
-    def test_every_field_is_priced_or_deliberately_not(self):
-        for key in vlm.WEIGHT_KEYS.values():
-            name = "vlm_" + key
-            self.assertTrue(name in scoring.DRINKING_WEIGHTS
-                            or name in scoring.SMOKING_WEIGHTS, name)
-        self.assertEqual(set(scoring.HOLDUP_CUE_CODES),
-                         {"object_pointed_at_a_person", "victim_response_visible"})
 
-    def test_the_v3_totals(self):
-        def tot(w, is_vlm):
-            return sum(v for k, v in w.items() if k.startswith("vlm_") == is_vlm)
-
-        self.assertAlmostEqual(tot(scoring.DRINKING_WEIGHTS, False), 0.85)
-        self.assertAlmostEqual(tot(scoring.DRINKING_WEIGHTS, True), 0.40)
-        self.assertAlmostEqual(tot(scoring.SMOKING_WEIGHTS, False), 0.95)
-        self.assertAlmostEqual(tot(scoring.SMOKING_WEIGHTS, True), 0.35)
-        self.assertAlmostEqual(sum(scoring.HOLDUP_VLM_WEIGHTS.values()), 0.45)
-        self.assertEqual(scoring.VLM_CAP,
-                         {"drinking": 0.40, "smoking": 0.35, "holdup": 0.45})
 
 
 # --- parsing ----------------------------------------------------------------
@@ -189,44 +153,8 @@ class ParseTests(unittest.TestCase):
                          {"vlm_verdict", "vlm_seating", "vlm_drinking_items"})
         self.assertEqual(v.enum_multipliers(), {})
 
-    def test_the_smoking_verdict_comes_from_the_activity_choice(self):
-        smoking = self._parse("smoking", {
-            "smoking_item_visible": True, "hand_to_mouth_activity": "smoking",
-            "confidence": "high", "reason": "r"})
-        self.assertEqual(smoking.verdict, vlm.YES)
-        self.assertIn("vlm_verdict", smoking.fired_cues())
 
-        eating = self._parse("smoking", {
-            "smoking_item_visible": False, "hand_to_mouth_activity": "eating",
-            "confidence": "high", "reason": "r"})
-        self.assertEqual(eating.verdict, vlm.NO)
-        self.assertEqual(eating.enum_multipliers(),
-                         {"hand_to_mouth_activity": scoring.SCENE_MULTIPLIER})
 
-    def test_low_confidence_forces_a_scene_reading_to_unclear(self):
-        """v3 §8, and the most consequential rule in the whole checker.
-
-        De-escalating by 75% is the single strongest thing the model can say.
-        A model that is mostly guessing must not be able to say it.
-        """
-        v = self._parse("holdup", {
-            "object_pointed_at_a_person": True, "victim_response_visible": True,
-            "appears_to_be_a_holdup": True, "scene_type": "other_activity",
-            "confidence": "low", "reason": "r"})
-        self.assertTrue(v.ok)
-        self.assertEqual(v.cues["scene_type"], "unclear")
-        self.assertEqual(v.enum_multipliers(), {})
-
-    def test_medium_confidence_halves_the_points(self):
-        v = self._parse("drinking", {
-            "group_appears_to_be_drinking_together": True,
-            "table_chairs_or_seating_visible": False,
-            "drinking_items_visible": False,
-            "scene_type": "unclear", "confidence": "medium", "reason": "r"})
-        self.assertEqual(v.confidence, 0.5)
-        s = scoring.Score("drinking", scoring.DRINKING_WEIGHTS,
-                          {"bottle"} | v.fired_cues(), vlm_confidence=v.confidence)
-        self.assertAlmostEqual(s.vlm_score, s.vlm_raw * 0.5, places=6)
 
     def test_an_unknown_choice_falls_back_to_the_default(self):
         v = self._parse("holdup", {"scene_type": "who knows",
@@ -239,11 +167,6 @@ class ParseTests(unittest.TestCase):
         self.assertFalse(v.cues["drinking_items_visible"])
         self.assertEqual(v.verdict, vlm.NO)
 
-    def test_a_numeric_confidence_still_works(self):
-        """A provider that ignores the schema must not break scoring."""
-        for raw, want in ((0.95, 1.0), (0.5, 0.5), (0.05, 0.0)):
-            v = self._parse("drinking", {"confidence": raw, "reason": "r"})
-            self.assertEqual(scoring.confidence_scale(v.confidence), want, raw)
 
     def test_unparseable_and_wrong_shape(self):
         self.assertIn("unparseable",
@@ -395,58 +318,8 @@ class RequestTests(unittest.TestCase):
 
 # --- scoring behaviour ------------------------------------------------------
 
-class CheckerCannotAlertAloneTests(unittest.TestCase):
-    """v3 §4, rule 2."""
-
-    def test_the_cap_binds(self):
-        s = scoring.Score("drinking", scoring.DRINKING_WEIGHTS,
-                          {"bottle", "vlm_verdict", "vlm_seating",
-                           "vlm_drinking_items"}, vlm_confidence=1.0)
-        self.assertLessEqual(s.vlm_score, scoring.VLM_CAP["drinking"])
-
-    def test_checker_answers_alone_never_reach_a_shown_level(self):
-        for kind, weights in (("drinking", scoring.DRINKING_WEIGHTS),
-                              ("smoking", scoring.SMOKING_WEIGHTS)):
-            only = {c for c in weights if c.startswith("vlm_")}
-            s = scoring.Score(kind, weights, only, vlm_confidence=1.0)
-            self.assertFalse(s.alerting, f"{kind}: {s.summary()}")
-
-    def test_low_confidence_earns_nothing(self):
-        s = scoring.Score("drinking", scoring.DRINKING_WEIGHTS,
-                          {"bottle", "vlm_verdict"}, vlm_confidence=0.0)
-        self.assertEqual(s.vlm_score, 0.0)
-        self.assertAlmostEqual(s.score, s.system_score, places=6)
 
 
-class SceneReadingTests(unittest.TestCase):
-    """v3 §4, rule 3: the checker's one way to cut a score."""
-
-    def test_it_drops_a_maximum_case_out_of_sight(self):
-        """v3's own arithmetic: drinking 125 -> 31, smoking 130 -> 32.5."""
-        for kind, weights in (("drinking", scoring.DRINKING_WEIGHTS),
-                              ("smoking", scoring.SMOKING_WEIGHTS)):
-            every = set(weights)
-            full = scoring.Score(kind, weights, every, vlm_confidence=1.0)
-            cut = scoring.Score(kind, weights, every, vlm_confidence=1.0,
-                                multipliers={"scene": scoring.SCENE_MULTIPLIER})
-            self.assertTrue(full.alerting, kind)
-            self.assertFalse(cut.alerting, f"{kind}: {cut.summary()}")
-
-    def test_but_the_event_is_still_logged(self):
-        """Not zero, so it can be audited if the checker was wrong."""
-        s = scoring.Score("drinking", scoring.DRINKING_WEIGHTS,
-                          set(scoring.DRINKING_WEIGHTS), vlm_confidence=1.0,
-                          multipliers={"scene": scoring.SCENE_MULTIPLIER})
-        self.assertGreater(s.score, 0.0)
-        self.assertTrue(s.cues)
-
-    def test_the_fish_vendor(self):
-        ev = theft.Evidence("holdup", (0, 0, 10, 10),
-                            {"E14": 0.45, "E12": 0.20, "E10": 0.10}, {}, set(),
-                            [1, 2], "freeze with weapon")
-        self.assertTrue(theft.alerts_at(ev.band))
-        ev.rescore({}, {scoring.HOLDUP_DENIAL_CODE: scoring.SCENE_MULTIPLIER})
-        self.assertFalse(theft.alerts_at(ev.band), ev.score)
 
 
 # --- the visibility gate and its one exception ------------------------------
@@ -465,20 +338,7 @@ class GateTests(unittest.TestCase):
         self.assertGreater(s.raw_score, 0.0)
         self.assertTrue(s.cues)
 
-    def test_puffs_alone_are_not_shown(self):
-        """v3 §4's exception: the checker is called, but 0.40 stays invisible."""
-        s = scoring.Score("smoking", scoring.SMOKING_WEIGHTS,
-                          {"gesture", "puffs"})
-        self.assertAlmostEqual(s.score, 0.40)
-        self.assertTrue(s.pose_exception)
-        self.assertFalse(s.visible)
 
-    def test_the_checker_is_what_makes_a_puff_only_case_visible(self):
-        """0.40 + item 0.15 + smoking 0.20 = 0.75, exactly v3's worked example."""
-        s = scoring.Score("smoking", scoring.SMOKING_WEIGHTS,
-                          {"gesture", "puffs", "vlm_smoking_item", "vlm_verdict"},
-                          vlm_confidence=1.0)
-        self.assertAlmostEqual(s.score, 0.75)
 
 
 # --- what the tanod sees ----------------------------------------------------
@@ -509,12 +369,6 @@ class LevelTests(unittest.TestCase):
         # schema to read an alert.
         self.assertFalse([line for line in found if "_" in line])
 
-    def test_a_cut_score_says_why(self):
-        s = scoring.Score("drinking", scoring.DRINKING_WEIGHTS,
-                          {"bottle", "gathering"},
-                          multipliers={"scene_type": scoring.SCENE_MULTIPLIER})
-        self.assertIn("AI checker: ordinary activity",
-                      s.checklist()["reduced_by"])
 
     def test_the_checklist_travels_on_the_stored_vector(self):
         s = scoring.Score("drinking", scoring.DRINKING_WEIGHTS, {"bottle"})

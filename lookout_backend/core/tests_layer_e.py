@@ -225,7 +225,7 @@ class SnatchTests(unittest.TestCase):
         self.assertIn("E8", ev.cues, "heading divergence (E8) did not fire")
         # 0.20 + 0.10 + 0.35 = 0.65, over the 0.55 alert band.
         self.assertAlmostEqual(ev.score, 0.65, places=6)
-        self.assertEqual(ev.band, theft.CANDIDATE)
+        self.assertEqual(ev.band, theft.WARNING)
 
     def test_snatch_without_custody_transfer_is_discarded(self):
         # Burst + divergence alone is 0.30 — under the Observe floor. A hurried
@@ -233,7 +233,7 @@ class SnatchTests(unittest.TestCase):
         s = self._run_snatch(with_bag=False)
         ev = s.best("snatch")
         if ev is not None:
-            self.assertLess(ev.score, theft.SCORE_OBSERVE)
+            self.assertLess(ev.score, theft.SCORE_ALERT)
             self.assertEqual(ev.band, theft.DISCARD)
 
     def test_greeting_is_suppressed(self):
@@ -316,7 +316,7 @@ class HoldupTests(unittest.TestCase):
         self.assertIsNotNone(ev)
         self.assertIn("E20", ev.multipliers)
         self.assertAlmostEqual(ev.score, 0.30 * 1.36, places=6)
-        self.assertEqual(ev.band, theft.OBSERVE)
+        self.assertEqual(ev.band, theft.DISCARD)      # no knife: not shown
         self.assertFalse(theft.alerts_at(ev.band))
 
     def test_quiet_morning_block_scales_the_same_freeze_down(self):
@@ -389,7 +389,7 @@ class CarnappingTests(unittest.TestCase):
         self.assertIn("E18", ev.cues, "push-away (E18) did not fire")
         # 0.20 + 0.15 + 0.35 = 0.70
         self.assertAlmostEqual(ev.score, 0.70, places=6)
-        self.assertEqual(ev.band, theft.CANDIDATE)
+        self.assertEqual(ev.band, theft.WARNING)
 
     def test_e19_abstains_without_a_reid_embedding(self):
         s = Scene()
@@ -448,7 +448,7 @@ class PropertyTests(unittest.TestCase):
         self.assertIsNotNone(ev, "no property evidence emitted")
         self.assertIn("E22", ev.cues)
         self.assertAlmostEqual(ev.score, 0.35, places=6)
-        self.assertEqual(ev.band, theft.OBSERVE)
+        self.assertEqual(ev.band, theft.DISCARD)      # legacy pattern, under 55
 
     def test_owner_reclaiming_their_own_bag_is_not_theft(self):
         s = Scene()
@@ -522,14 +522,14 @@ class ScoringTests(unittest.TestCase):
     """E28-E29 — the weighted sum and the three-band decision."""
 
     def test_band_boundaries(self):
-        self.assertEqual(theft.band_of(0.34), theft.DISCARD)
-        self.assertEqual(theft.band_of(theft.SCORE_OBSERVE), theft.OBSERVE)
-        # Deliberate change: the alert band is entered at >= 0.55, not > 0.55,
-        # matching the scoring document. It matters because the weights are
-        # 0.05-granular and real sums land on 0.55 exactly (E9 0.35 + E10 0.20).
-        self.assertEqual(theft.band_of(0.55), theft.CANDIDATE)
-        self.assertEqual(theft.band_of(0.56), theft.CANDIDATE)
-        # And the old top band is now split at 0.75.
+        # Spec v6: Monitoring is "object cue ON", not a score band. Without the
+        # object nothing is shown; with it the floor is Monitoring.
+        self.assertEqual(theft.band_of(0.34, object_on=False), theft.DISCARD)
+        self.assertEqual(theft.band_of(0.34), theft.MONITORING)
+        self.assertEqual(theft.band_of(0.54), theft.MONITORING)
+        # The alert band is entered at >= 0.55, matching the scoring document.
+        self.assertEqual(theft.band_of(0.55), theft.WARNING)
+        self.assertEqual(theft.band_of(0.56), theft.WARNING)
         self.assertEqual(theft.band_of(0.74), theft.WARNING)
         self.assertEqual(theft.band_of(0.75), theft.VIOLATION)
 
@@ -548,17 +548,13 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(ev.score, 1.0)
         self.assertEqual(ev.band, theft.VIOLATION)
 
-    def test_weapon_alone_sits_below_the_alert_band_as_written(self):
-        # Documented conflict: E14's rationale calls a weapon "sufficient alone
-        # to reach the alert band", but 0.45 < 0.55. As written it is Observe.
+    def test_weapon_alone_is_monitoring(self):
+        # Spec v6 section 7: a knife alone always starts Monitoring and, with
+        # nobody near the holder, never goes above it.
         ev = theft.Evidence("weapon", (0, 0, 10, 10), {"E14": 0.45}, {},
                             set(), [1], "test")
-        self.assertEqual(ev.band, theft.OBSERVE)
-
-    def test_weapon_alone_alerts_when_the_operator_opts_in(self):
-        ev = theft.Evidence("weapon", (0, 0, 10, 10), {"E14": 0.45}, {},
-                            set(), [1], "test", weapon_alone_alerts=True)
-        self.assertEqual(ev.band, theft.CANDIDATE)
+        self.assertEqual(ev.band, theft.MONITORING)
+        self.assertFalse(theft.alerts_at(ev.band))
 
 
 class ManilaTimeTests(unittest.TestCase):
@@ -691,23 +687,16 @@ class WeightedScoringTests(unittest.TestCase):
         self.assertAlmostEqual(system.score, 0.85)
         self.assertEqual(system.level, scoring.VIOLATION)
 
-        # With the VLM agreeing, the raw total exceeds 1.0 and the cap binds.
-        score = scoring.Score(
-            "drinking", scoring.DRINKING_WEIGHTS,
-            {"bottle", "at_mouth", "gathering", "gathering_duration",
-             "time_band", "vlm_verdict", "vlm_beverage", "vlm_glass",
-             "vlm_seating", "vlm_food"}, vlm_confidence=0.95)
-        self.assertEqual(score.score, 1.0)
-        self.assertGreater(score.raw_score, 1.0)
         # Even a maxed-out score keeps its full vector: this is the training
         # data calibrate_weights fits against.
-        self.assertIn("gathering", score.cues)
-        self.assertEqual(score.as_dict()["level"], scoring.VIOLATION)
+        self.assertIn("gathering", system.cues)
+        self.assertEqual(system.as_dict()["level"], scoring.VIOLATION)
 
-    def test_watch_band_is_scored_but_not_alerting(self):
+    def test_the_object_alone_is_monitoring_and_does_not_notify(self):
         score = scoring.Score("drinking", scoring.DRINKING_WEIGHTS,
                               {"bottle", "time_band"})
-        self.assertEqual(score.level, scoring.WATCH)
+        self.assertEqual(score.level, scoring.MONITORING)
+        self.assertTrue(score.stored)
         self.assertFalse(score.alerting)
 
     def test_unknown_cue_is_surfaced_not_silently_ignored(self):
@@ -719,10 +708,10 @@ class WeightedScoringTests(unittest.TestCase):
         self.assertEqual(
             scoring.level_with_hysteresis(0.52, scoring.WARNING), scoring.WARNING)
         self.assertEqual(
-            scoring.level_with_hysteresis(0.49, scoring.WARNING), scoring.WATCH)
+            scoring.level_with_hysteresis(0.49, scoring.WARNING), scoring.MONITORING)
         # Rising is always immediate.
         self.assertEqual(
-            scoring.level_with_hysteresis(0.80, scoring.WATCH), scoring.VIOLATION)
+            scoring.level_with_hysteresis(0.80, scoring.MONITORING), scoring.VIOLATION)
 
 
 class ScoringTestsContinued(unittest.TestCase):

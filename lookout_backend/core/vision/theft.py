@@ -32,7 +32,7 @@ flagged rather than silently resolved:
   1. E14's weight (0.45) sits below the E29 alert band (0.55), so a weapon on
      its own reaches Observe, not Candidate — while E14's own rationale says
      weapon presence is "sufficient alone to reach the alert band". The
-     constants are implemented exactly as written; WEAPON_ALONE_ALERTS lets the
+     constants are implemented exactly as written; the (removed) WEAPON_ALONE_ALERTS let the
      operator opt into the rationale's reading instead.
   2. E14's rule text requires the weapon to be near a track satisfying E11,
      but the E.A pseudocode scores the weapon with no such condition. Both are
@@ -69,8 +69,7 @@ PUSH_SECONDS = 5.0            # E18 sustained push
 OBJ_STATIC_SECONDS = 30       # E21 unattended property
 CROWD_SOFT = 6                # E23 density guard
 CROWD_HARD = 10
-SCORE_OBSERVE = scoring.SCORE_WATCH    # E29 decision bands, now shared
-SCORE_ALERT = scoring.SCORE_WARNING
+SCORE_ALERT = scoring.SCORE_WARNING    # Possible; shared with every detector
 SCORE_VIOLATION = scoring.SCORE_VIOLATION
 
 # --- constants stated inside individual rules rather than in the E.8 table ---
@@ -112,10 +111,13 @@ ANCHOR_MATCH_IOU = 0.3
 # enough per frame for this to mis-associate it, and IoU is always tried first.
 ANCHOR_MATCH_REACH = 2.0
 
-# When True, a weapon on its own is promoted to the Candidate band regardless of
-# arithmetic — E14's stated rationale ("sufficient alone"). Left False so the
-# written constants govern by default; watch_thief exposes it as a flag.
-WEAPON_ALONE_ALERTS = False
+# Spec v6 section 7: a knife alone ALWAYS starts as Monitoring and, with nobody
+# near the knife holder, never goes above it. (The old "weapon alone alerts"
+# promotion was removed: a lone weapon is a watchlist entry, not an alert.)
+#
+# A second person counts as NEAR the knife holder within this many of the
+# HOLDER's heights (spec decision: about 1.5-2, configurable in Settings).
+NEAR_PERSON_HEIGHTS = 1.75
 
 # --- E28 recommended initial weights ----------------------------------------
 # Reasoned defaults pending field calibration. The ablation harness supports
@@ -158,15 +160,6 @@ WEIGHTS = {
     "E8": 0.10,    # heading divergence (snatch)
 }
 
-# Two cues the spec prices for holdup have NO detector behind them yet:
-#   "knife near wrist + plausible size"  0.15  Ruiz-Santaquiteria (2021)
-#   "knife persistence (momentum)"       0.15  Fernandez-Testa (2024)
-# Both need new vision work rather than a weight, so they are absent rather
-# than stubbed at zero -- a cue that can never fire is worse than one that is
-# openly missing, because it looks implemented. Holdup's system total is
-# therefore 0.75, not the spec's 1.05, and every holdup score reads lower than
-# the document's worked examples until these land.
-MISSING_HOLDUP_CUES = ("knife_near_wrist_plausible_size", "knife_persistence")
 MULTIPLIERS = {
     # E13 (group convergence, x1.5) is GONE. Spec §4.3: "has no citation and
     # fires on ordinary crowds. Drop it unless a source is found." None was, so
@@ -185,30 +178,20 @@ MULTIPLIERS = {
 # pre-Manila behaviour with --ablate e20-manila for the before/after table.
 LEGACY_NOCTURNAL_MULTIPLIER = 1.3
 
-# E29's original three-outcome vocabulary, now aliased onto the shared
-# four-level model. The two lower bands are unchanged; what used to be the
-# single top band "candidate" is SPLIT at 0.75, so a candidate is now reported
-# as either WARNING or VIOLATION. Nothing that alerted before stops alerting --
-# watch_thief returns early only on DISCARD and OBSERVE, so both halves of the
-# old top band still fall through to _create_alert.
-DISCARD, OBSERVE, CANDIDATE = scoring.NONE, scoring.WATCH, scoring.WARNING
+# Statuses are the shared ones (scoring.py): Monitoring / Possible / Likely.
+DISCARD, MONITORING = scoring.NONE, scoring.MONITORING
 WARNING = scoring.WARNING
 VIOLATION = scoring.VIOLATION
+STORED_BANDS = scoring.STORED_LEVELS
 
 
-def band_of(score):
-    """E29 — map a score to a band.
-
-    One deliberate change from the original: the alert band is now entered at
-    score >= SCORE_ALERT rather than score > SCORE_ALERT, matching the scoring
-    document. It matters because the weights are 0.05-granular and sums land on
-    0.55 exactly (E9 0.35 + E10 0.20), which previously fell to Observe.
-    """
-    return scoring.level_of(score)
+def band_of(score, object_on=True):
+    """E29 -- map a score to a status (Monitoring needs the object cue ON)."""
+    return scoring.level_of(score, object_on)
 
 
 def alerts_at(band):
-    """True when `band` is one the watcher should write an Alert for."""
+    """True when `band` notifies (Possible and Likely only)."""
     return scoring.alerts_at(band)
 
 
@@ -247,15 +230,21 @@ def _seat_region(box):
 
 
 class Evidence:
-    """One scored incident (E28) with its band (E29) and full cue vector.
+    """One scored incident (E28) with its status (E29) and full cue vector.
 
-    The cue vector is kept intact even for Observe-band events: that is the
-    mechanism by which the threshold gets calibrated against real footage after
-    the field shoot, instead of against reasoned defaults.
+    The cue vector is kept intact even when nothing is shown: that is how the
+    thresholds get checked against real footage after the field shoot.
+
+    Status rules (spec v6 section 7): the weapon cue (E14) is the gate. With it
+    the status is Monitoring below 55, Possible from 55, Likely from 75 --
+    but only when a second person is NEAR the knife holder (`people_near`);
+    otherwise it stays Monitoring. Without a weapon nothing is shown, except
+    the disabled-by-default legacy patterns, which keep plain 55 / 75 bands.
     """
 
     def __init__(self, kind, box, cues, multipliers, abstained, tracks, detail,
-                 weapon_alone_alerts=WEAPON_ALONE_ALERTS):
+                 weapon_alone_alerts=None, people_near=None, previous_level=None):
+        # `weapon_alone_alerts` is accepted and ignored (removed in spec v6).
         self.kind = kind
         self.box = tuple(int(v) for v in box)
         self.cues = dict(cues)
@@ -264,47 +253,68 @@ class Evidence:
         self.tracks = list(tracks)
         self.detail = detail
         self.raw_score = sum(self.cues.values())
-        self.score = self.raw_score
-        for factor in self.multipliers.values():
-            self.score *= factor
-        # Capped at 1.0 so the score reads as a likelihood. It is also what
-        # Alert.confidence stores, which removes watch_thief's separate clamp.
-        self.score = min(1.0, max(0.0, self.score))
-        # Kept so rescore() can reapply the same promotion rule later.
-        self.weapon_alone_alerts = weapon_alone_alerts
-        self.band = band_of(self.score)
-        if (weapon_alone_alerts and "E14" in self.cues
-                and not scoring.alerts_at(self.band)):
-            self.band = CANDIDATE
-
-    def rescore(self, extra_cues=None, extra_multipliers=None):
-        """Fold late-arriving evidence into this incident's score, in place.
-
-        Exists for the VLM (E30-E40), which is called ONCE at alert time rather
-        than per frame -- Layer E runs on every frame and a network round trip
-        cannot. The band is recomputed from the new total, so a work-context
-        reading can demote a candidate out of the alerting range and a confirmed
-        holdup can promote it to VIOLATION.
-        """
-        for name, weight in (extra_cues or {}).items():
-            self.cues[name] = weight
-        for name, factor in (extra_multipliers or {}).items():
-            self.multipliers[name] = factor
-
-        self.raw_score = sum(self.cues.values())
         total = self.raw_score
         for factor in self.multipliers.values():
             total *= factor
-        self.score = min(1.0, max(0.0, total))
-        self.band = band_of(self.score)
-        if (self.weapon_alone_alerts and "E14" in self.cues
-                and not scoring.alerts_at(self.band)):
-            self.band = CANDIDATE
-        return self
+        self.score = min(1.0, max(0.0, scoring._r(total)))
+        # Two tracks in the evidence means the pair pattern (E12): they are, by
+        # construction, close together. A lone weapon needs the engine to say so.
+        self.people_near = (len(self.tracks) >= 2) if people_near is None else bool(people_near)
+        self.object_on = "E14" in self.cues
+        self.holdup_capped = False
+        if self.object_on:
+            level = scoring.level_with_hysteresis(self.score, previous_level, True)
+            if (not self.people_near
+                    and scoring.LEVEL_ORDER[level] > scoring.LEVEL_ORDER[scoring.MONITORING]):
+                level = scoring.MONITORING
+                self.holdup_capped = True
+        elif any(c in LEGACY_CUES for c in self.cues):
+            level = (scoring.VIOLATION if scoring._r(self.score) >= scoring.SCORE_VIOLATION
+                     else scoring.WARNING if scoring._r(self.score) >= scoring.SCORE_WARNING
+                     else scoring.NONE)
+        else:
+            level = scoring.NONE
+        self.band = level
+
+    @property
+    def level(self):
+        return self.band
+
+    @property
+    def alerting(self):
+        """True when this notifies (Possible and Likely)."""
+        return scoring.alerts_at(self.band)
+
+    @property
+    def stored(self):
+        return scoring.stored_at(self.band)
+
+    def as_dict(self):
+        """Serialisable cue vector, same shape as scoring.Score.as_dict()."""
+        return {
+            "kind": "holdup",
+            "cues": dict(self.cues),
+            "multipliers": dict(self.multipliers),
+            "raw_score": round(self.raw_score, 4),
+            "score": round(self.score, 4),
+            "object_on": self.object_on,
+            "people_near": self.people_near,
+            "holdup_capped": self.holdup_capped,
+            "level": self.band,
+            "label": scoring.label_of(self.band),
+            "tag": "",
+            "checklist": self.checklist(),
+        }
 
     @property
     def rules(self):
         return sorted(self.cues) + sorted(self.multipliers)
+
+    def checklist(self):
+        found = [scoring.Score.CUE_LABELS.get(n, n) for n in sorted(self.cues)]
+        notes = [scoring.Score.MULTIPLIER_LABELS.get(n, n) for n, f in sorted(self.multipliers.items())
+                 if f != 1.0]
+        return {"found": found, "adjusted_by": notes, "tag": ""}
 
     def summary(self):
         cues = ", ".join(f"{r}={w:.2f}" for r, w in sorted(self.cues.items()))
@@ -839,13 +849,13 @@ class TheftEngine:
     """
 
     def __init__(self, ablate=(), baseline=None, stats=None,
-                 weapon_alone_alerts=WEAPON_ALONE_ALERTS):
+                 weapon_alone_alerts=None, near_person_heights=NEAR_PERSON_HEIGHTS):
         self.ablate = {r.lower() for r in ablate}
         self.baseline = baseline or SceneBaseline()
         self.anchors = AnchorStore()
         self.pairs = {}
         self.stats = stats if stats is not None else {}
-        self.weapon_alone_alerts = weapon_alone_alerts
+        self.near_person_heights = near_person_heights
         self._converge_log = deque()   # (t, target_id, other_id) for E13
         self._weapon_emitted = {}      # track id -> last E14 emission
 
@@ -1117,15 +1127,21 @@ class TheftEngine:
             if not cues:
                 continue
             self._weapon_emitted[t.id] = now
+            # Spec v6 section 7: a second person must be NEAR the knife holder
+            # (within near_person_heights of the HOLDER's height) to go above
+            # Monitoring.
+            near = any(o is not t and _person_norm_distance(t.box, o.box) <= self.near_person_heights
+                       for o in tracks)
             out.append(self._evidence(
                 "weapon", t.box, cues, mult, abstained, [t.id],
                 f"weapon visible: {label} on person #{t.id}",
+                people_near=near,
             ))
         return out
 
-    def _evidence(self, *args):
-        """Builds Evidence with this engine's band policy applied."""
-        ev = Evidence(*args, weapon_alone_alerts=self.weapon_alone_alerts)
+    def _evidence(self, *args, **kw):
+        """Builds Evidence."""
+        ev = Evidence(*args, **kw)
         # What the object detector was sure of, as distinct from the Layer E
         # score. None when the pattern involved no weapon at all -- the card
         # shows a dash rather than inventing a number.

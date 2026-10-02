@@ -201,8 +201,8 @@ class Verdict:
         coarser judgement it makes more reliably. The tier is what scales its
         points; the float is kept for the audit trail.
         """
-        from core.vision import scoring
-        return scoring.confidence_tier(self.confidence)
+        from core.vision import ai_status
+        return ai_status.confidence_tier(self.confidence)
 
     @property
     def confirms(self):

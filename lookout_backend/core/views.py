@@ -747,6 +747,19 @@ class AlertViewSet(viewsets.ModelViewSet):
     serializer_class = AlertSerializer
     filterset_fields = ["status", "type", "camera"]
 
+    def get_queryset(self):
+        """Monitoring events are a quiet watchlist (spec v6): they never appear in
+        the normal alert list or notify anyone. Ask for them explicitly with
+        ?level=monitoring (the dashboard watchlist) or ?include_monitoring=1."""
+        qs = super().get_queryset()
+        if self.action == "list":
+            params = self.request.query_params
+            if params.get("level") == "monitoring":
+                return qs.filter(level="monitoring")
+            if params.get("include_monitoring") not in ("1", "true"):
+                qs = qs.exclude(level="monitoring")
+        return qs
+
     # Statuses that mean somebody has looked at the footage and closed the
     # matter: resolved (attended and dealt with) or acknowledged (judged a
     # false alarm and dismissed). These are exactly the alerts the Records
