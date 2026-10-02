@@ -1131,8 +1131,7 @@ export function ViolationModal({
                   <QuietCard label="What was detected" value={alert.description || "—"} />
                 )}
 
-                {/* Detected object (the model's class label — NOT a resident
-                    match) paired with Assigned officers. */}
+                {/* Detected object (the model's class label) paired with Assigned officers. */}
                 <div className="grid grid-cols-2 gap-3">
                   <QuietCard label="Detected object" value={alert.suspect || "—"} />
                   {officersCard}

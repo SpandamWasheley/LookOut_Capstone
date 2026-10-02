@@ -371,28 +371,6 @@ class DetectionJob(models.Model):
 
 
 class SystemSettings(models.Model):
-    curfew_start = models.TimeField(default=time(22, 0))
-    curfew_end = models.TimeField(default=time(6, 0))
-    curfew_age = models.PositiveSmallIntegerField(default=18)
-    # Compared directly against the face-recognition match score (insightface/
-    # ArcFace cosine similarity * 100). A genuine match typically scores
-    # 35-70, not 90+, so this default is calibrated to that scale rather than
-    # a generic "75% confident" percentage.
-    curfew_confidence = models.PositiveSmallIntegerField(default=45)
-    curfew_dwell = models.PositiveSmallIntegerField(default=5)
-    guardian_check = models.BooleanField(default=True)
-    unknown_alert = models.BooleanField(default=True)
-
-    noise_enabled = models.BooleanField(default=True)
-    noise_threshold_db = models.PositiveSmallIntegerField(default=65)
-    noise_duration = models.PositiveSmallIntegerField(default=10)
-
-    waste_enabled = models.BooleanField(default=True)
-    waste_confidence = models.PositiveSmallIntegerField(default=70)
-    waste_dwell = models.PositiveSmallIntegerField(default=8)
-    waste_collection_start = models.TimeField(default=time(6, 0))
-    waste_collection_end = models.TimeField(default=time(9, 0))
-
     parking_enabled = models.BooleanField(default=True)
     # YOLO detection confidence as a 0-100 percent (watch_parking divides by 100).
     parking_confidence = models.PositiveSmallIntegerField(default=35)
@@ -581,9 +559,6 @@ class SystemSettings(models.Model):
 
     alert_cooldown = models.PositiveSmallIntegerField(default=120)
     evidence_retention_days = models.PositiveSmallIntegerField(default=30)
-    auto_dispatch = models.BooleanField(default=False)
-    email_alerts = models.BooleanField(default=True)
-    sms_alerts = models.BooleanField(default=True)
 
     updated_at = models.DateTimeField(auto_now=True)
 

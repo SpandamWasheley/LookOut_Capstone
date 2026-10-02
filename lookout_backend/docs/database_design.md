@@ -116,12 +116,6 @@ email address it was issued to rather than by a foreign key.
 
 ---
 
-**Note for adviser discussion.** Two matters surfaced during this
-documentation pass and are recorded here rather than in the narrative above,
-since they concern implementation status rather than schema structure. First,
-three configuration groups on tblSystemSettings — the noise-related fields,
-the waste-collection-related fields, and the sms_alerts flag — have no
-corresponding detector or notification implementation anywhere in the
-codebase; they are documented as they exist in the schema, but represent
-either unfinished or abandoned scope and should be raised for a decision on
-whether to implement or remove. Second, the curfew_confidence field, despite its name, was only ever read as the face-match confidence threshold by the smoking and drinking detectors; facial recognition has since been removed, so no code reads it any more and it is a leftover awaiting the same decision.
+**Note.** The unused curfew, noise, waste, SMS, e-mail-alert and auto-dispatch configuration columns on
+tblSystemSettings (18 in total, none read by any detector) have been removed (migration
+`0045_remove_unused_settings_columns`).

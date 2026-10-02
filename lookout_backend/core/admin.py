@@ -35,7 +35,7 @@ class ViolationTypeAdmin(admin.ModelAdmin):
 
 @admin.register(Camera)
 class CameraAdmin(admin.ModelAdmin):
-    list_display = ("code", "name", "zone", "status", "fps", "last_motion_at")
+    list_display = ("code", "name", "zone", "status")
     list_filter = ("status", "zone")
 
 

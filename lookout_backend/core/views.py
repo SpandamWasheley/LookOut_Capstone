@@ -442,52 +442,6 @@ def dashboard_stats(request):
     })
 
 
-@api_view(["POST"])
-@permission_classes([permissions.IsAuthenticated])
-def send_sms(request):
-    import requests as http_requests
-
-    recipients = request.data.get("recipients", [])
-    message = request.data.get("message", "")
-    if not recipients:
-        return Response({"detail": "No recipients specified."}, status=400)
-    if not message.strip():
-        return Response({"detail": "Message cannot be empty."}, status=400)
-
-    api_key = django_settings.SEMAPHORE_API_KEY
-    sender  = getattr(django_settings, "SEMAPHORE_SENDER_NAME", "LookOut")
-
-    if not api_key:
-        # No key configured — log only (dev/demo mode)
-        for number in recipients:
-            print(f"[SMS stub] → {number}: {message[:120]}")
-        return Response({"sent": len(recipients), "recipients": recipients})
-
-    failed = []
-    for number in recipients:
-        try:
-            resp = http_requests.post(
-                "https://api.semaphore.co/api/v4/messages",
-                data={
-                    "apikey": api_key,
-                    "number": number,
-                    "message": message,
-                    "sendername": sender,
-                },
-                timeout=10,
-            )
-            resp.raise_for_status()
-        except Exception as exc:
-            failed.append({"number": number, "error": str(exc)})
-
-    if failed:
-        return Response(
-            {"sent": len(recipients) - len(failed), "failed": failed},
-            status=207,
-        )
-    return Response({"sent": len(recipients), "recipients": recipients})
-
-
 class ZoneViewSet(viewsets.ModelViewSet):
     queryset = Zone.objects.all()
     serializer_class = ZoneSerializer

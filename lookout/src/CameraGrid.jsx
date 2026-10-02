@@ -67,15 +67,6 @@ const LAYOUTS = [
   { key: "4x4", label: "4 × 4", tiles: 16, cols: 4 },
 ];
 
-function timeAgo(iso) {
-  if (!iso) return "—";
-  const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
-  if (diff < 60) return "just now";
-  if (diff < 3600) return `${Math.floor(diff / 60)} min ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)} hr ago`;
-  return `${Math.floor(diff / 86400)}d ago`;
-}
-
 function mapCamera(raw) {
   return {
     id: raw.code,
@@ -83,8 +74,6 @@ function mapCamera(raw) {
     name: raw.name,
     zone: raw.zone,
     status: raw.status,
-    fps: raw.fps,
-    lastMotion: timeAgo(raw.last_motion_at),
     imageUrl: raw.image_url,
     isLive: raw.is_live,   // poll the snapshot proxy instead of the static image
     // Obstruction-zone config, passed through as-is for the edge editor.
@@ -335,14 +324,6 @@ function CameraTile({ cam, alert, isSelected, onSelect, onExpand, fill }) {
           )}
         </div>
 
-        {/* Top-right FPS */}
-        <div
-          className="absolute top-2 right-2 text-[11px] px-1.5 py-0.5 rounded"
-          style={{ background: "rgba(0,0,0,0.55)", color: "#94a3b8", fontFamily: "'DM Mono', monospace" }}
-        >
-          {cam.fps}fps
-        </div>
-
         {/* Expand to fullscreen */}
         <button
           type="button"
@@ -380,9 +361,6 @@ function CameraTile({ cam, alert, isSelected, onSelect, onExpand, fill }) {
             }}
           >
             {cam.status}
-          </div>
-          <div className="text-[12px] mt-0.5" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
-            {cam.lastMotion}
           </div>
         </div>
       </div>
@@ -474,9 +452,6 @@ function ExpandedCamera({ cam, alert, onClose, isAdmin, onCameraUpdated }) {
                 <Shapes size={12} /> Edge Zones
               </button>
             )}
-            <div className="text-[13px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
-              {cam.lastMotion ? `motion ${cam.lastMotion}` : ""}
-            </div>
           </div>
         </div>
       </div>

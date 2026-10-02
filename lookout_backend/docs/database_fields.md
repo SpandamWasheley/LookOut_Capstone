@@ -230,21 +230,6 @@ read/written through `SystemSettings.load()`.)*
 | Attribute Name | Data Type | Max Length | Key Type | Null |
 |---|---|---|---|---|
 | id | INTEGER | - | Primary Key | No |
-| curfew_start | TIME | - | | No |
-| curfew_end | TIME | - | | No |
-| curfew_age | SMALLINT | - | | No |
-| curfew_confidence | SMALLINT | - | | No |
-| curfew_dwell | SMALLINT | - | | No |
-| guardian_check | BOOLEAN | - | | No |
-| unknown_alert | BOOLEAN | - | | No |
-| noise_enabled | BOOLEAN | - | | No |
-| noise_threshold_db | SMALLINT | - | | No |
-| noise_duration | SMALLINT | - | | No |
-| waste_enabled | BOOLEAN | - | | No |
-| waste_confidence | SMALLINT | - | | No |
-| waste_dwell | SMALLINT | - | | No |
-| waste_collection_start | TIME | - | | No |
-| waste_collection_end | TIME | - | | No |
 | parking_enabled | BOOLEAN | - | | No |
 | parking_confidence | SMALLINT | - | | No |
 | parking_dwell | SMALLINT | - | | No |
@@ -269,16 +254,8 @@ read/written through `SystemSettings.load()`.)*
 | drinking_cooldown_center_dist | FLOAT | - | | No |
 | alert_cooldown | SMALLINT | - | | No |
 | evidence_retention_days | SMALLINT | - | | No |
-| auto_dispatch | BOOLEAN | - | | No |
-| email_alerts | BOOLEAN | - | | No |
-| sms_alerts | BOOLEAN | - | | No |
 | updated_at | DATETIME | - | | No |
 
-**Note for adviser discussion.** This table's 43 configuration fields (44
-including `id`) are documented here exactly as they exist, without deletion or
-omission, but three groups have no corresponding implementation in the
-codebase and should be flagged as scope questions: the `noise_*` fields (3)
-and `waste_*` fields (5) have no `watch_noise`/`watch_waste` management
-command anywhere in the project — no detector reads them; `sms_alerts` is a
-boolean toggle with no SMS-sending code anywhere in the codebase (no provider
-integration, no send function). Separately, `curfew_confidence` was only ever used as the face-match threshold passed to the smoking/drinking detectors; facial recognition has since been removed, so no code reads it any more and it is a leftover awaiting backend cleanup.
+**Note.** The curfew, noise, waste, SMS, e-mail-alert and auto-dispatch settings columns (18 in total) that earlier
+versions of this table listed were never read by any detector and have been removed (migration
+`0045_remove_unused_settings_columns`).

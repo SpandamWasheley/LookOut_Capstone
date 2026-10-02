@@ -56,8 +56,8 @@ class CameraSerializer(serializers.ModelSerializer):
     class Meta:
         model = Camera
         fields = [
-            "id", "code", "name", "zone", "address", "status", "fps",
-            "last_motion_at", "image_url", "is_live", "stream_url",
+            "id", "code", "name", "zone", "address", "status",
+            "image_url", "is_live", "stream_url",
             "edges", "edges_width", "edges_height",
             "obstruction_pct", "obstruction_minutes",
         ]
@@ -275,11 +275,6 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
     class Meta:
         model = SystemSettings
         fields = [
-            "curfew_start", "curfew_end", "curfew_age", "curfew_confidence", "curfew_dwell",
-            "guardian_check", "unknown_alert",
-            "noise_enabled", "noise_threshold_db", "noise_duration",
-            "waste_enabled", "waste_confidence", "waste_dwell",
-            "waste_collection_start", "waste_collection_end",
             "parking_enabled", "parking_confidence", "parking_dwell",
             "parking_move_tolerance",
             "smoking_enabled", "smoking_confidence", "smoking_dwell",
@@ -293,7 +288,6 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
             "vlm_timeout", "vlm_min_confidence",
             "vlm_frames", "vlm_max_edge", "vlm_send_scene", "vlm_async",
             "alert_cooldown", "evidence_retention_days",
-            "auto_dispatch", "email_alerts", "sms_alerts",
             "updated_at",
         ]
         extra_kwargs = {

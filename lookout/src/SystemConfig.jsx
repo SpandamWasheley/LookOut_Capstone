@@ -28,8 +28,6 @@ function fromApi(s) {
     drinkingEnd: trimSeconds(s.drinking_end),
     cooldown: s.alert_cooldown,
     retention: s.evidence_retention_days,
-    autoDispatch: s.auto_dispatch,
-    emailAlerts: s.email_alerts,
   };
 }
 
@@ -57,8 +55,6 @@ function toApi(f) {
     drinking_end: f.drinkingEnd,
     alert_cooldown: f.cooldown,
     evidence_retention_days: f.retention,
-    auto_dispatch: f.autoDispatch,
-    email_alerts: f.emailAlerts,
   };
 }
 
@@ -202,8 +198,6 @@ export function SystemConfig() {
   const [drinkingEnd, setDrinkingEnd] = useState("05:00");
   const [cooldown, setCooldown] = useState(120);
   const [retention, setRetention] = useState(30);
-  const [autoDispatch, setAutoDispatch] = useState(false);
-  const [emailAlerts, setEmailAlerts] = useState(true);
   const [savedSnapshot, setSavedSnapshot] = useState(null);
 
   const applySettings = (f) => {
@@ -229,8 +223,6 @@ export function SystemConfig() {
     setDrinkingEnd(f.drinkingEnd);
     setCooldown(f.cooldown);
     setRetention(f.retention);
-    setAutoDispatch(f.autoDispatch);
-    setEmailAlerts(f.emailAlerts);
     setSavedSnapshot(f);
   };
 
@@ -256,9 +248,7 @@ export function SystemConfig() {
     drinkingStart !== savedSnapshot.drinkingStart ||
     drinkingEnd !== savedSnapshot.drinkingEnd ||
     cooldown !== savedSnapshot.cooldown ||
-    retention !== savedSnapshot.retention ||
-    autoDispatch !== savedSnapshot.autoDispatch ||
-    emailAlerts !== savedSnapshot.emailAlerts
+    retention !== savedSnapshot.retention
   );
 
   const load = async () => {
@@ -285,7 +275,7 @@ export function SystemConfig() {
         drinkingEnabled, drinkingConf, drinkingDwell,
         drinkingHeldDwell, drinkingEvidenceMaxAge, drinkingMouthProximity, drinkingCooldownDist,
         drinkingHoursEnabled, drinkingStart, drinkingEnd,
-        cooldown, retention, autoDispatch, emailAlerts,
+        cooldown, retention,
       }));
       applySettings(fromApi(updated));
       setSaved(true);
@@ -414,24 +404,6 @@ export function SystemConfig() {
       <div className="space-y-6">
         <Slider label="Alert cooldown period" value={cooldown} min={30} max={600} unit="s" onChange={setCooldown} />
         <Slider label="Evidence retention" value={retention} min={7} max={90} unit=" days" onChange={setRetention} />
-        <div>
-          <Toggle label="Auto-assign officer on critical alert" desc="Notify nearest on-duty officer automatically" value={autoDispatch} onChange={setAutoDispatch} />
-          <Toggle label="Email notifications" desc="Send alert emails to administrators" value={emailAlerts} onChange={setEmailAlerts} />
-        </div>
-        <div className="rounded-xl p-4 space-y-2" style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-          <div className="text-xs font-medium mb-3" style={{ color: "var(--foreground)" }}>System info</div>
-          {[
-            ["Model",         "YOLOv8n — fine-tuned v2.4.1"],
-            ["RTSP streams",  "4 active"],
-            ["Data residency","Local · RA 10173"],
-            ["Last retrain",  "2025-05-18"],
-          ].map(([k, v]) => (
-            <div key={k} className="flex justify-between text-xs">
-              <span style={{ color: "var(--muted-foreground)" }}>{k}</span>
-              <span style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>{v}</span>
-            </div>
-          ))}
-        </div>
       </div>
     ),
   };
