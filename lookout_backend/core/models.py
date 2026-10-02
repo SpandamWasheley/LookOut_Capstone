@@ -90,6 +90,15 @@ class Camera(models.Model):
     code = models.CharField(max_length=20, unique=True, blank=True)
     name = models.CharField(max_length=150)
     zone = models.ForeignKey(Zone, on_delete=models.SET_NULL, null=True, related_name="cameras")
+    # Free-text street address, set per camera from the Live Feeds page.
+    #
+    # Separate from `zone`, which is a barangay subdivision and too coarse to
+    # dispatch against -- "Zone 3" does not tell a tanod which street to walk
+    # to. An alert inherits this, so where the camera IS becomes where the
+    # violation HAPPENED, which is the only location the system can honestly
+    # claim: it knows which camera saw the event, not where in the frame the
+    # person stood.
+    address = models.CharField(max_length=255, blank=True)
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.ONLINE)
     fps = models.PositiveSmallIntegerField(default=0)
     last_motion_at = models.DateTimeField(null=True, blank=True)
@@ -584,6 +593,50 @@ class SystemSettings(models.Model):
     # A local 4B model on CPU is slower than a cloud call, and the alert path
     # can afford to wait -- the frame loop has already moved on.
     vlm_timeout = models.PositiveSmallIntegerField(default=60)
+
+    # --- per-call cost (the only knobs that matter on CPU-only hardware) -----
+    # A vision call's wall clock is dominated by PREFILL: every image becomes
+    # hundreds of visual tokens that must all be processed before the first
+    # word is generated. With a GPU this is seconds and the defaults are right.
+    # Without one -- a 15W laptop chip, no CUDA -- the same call can take
+    # minutes, and these two fields are how it is brought back into range.
+    #
+    # They trade accuracy for speed honestly, and the trade should be reported:
+    # fewer images means the motion questions (hand_to_mouth_activity compares
+    # frames) have less to compare, and a smaller edge means small objects are
+    # harder to see. Measure with `manage.py vlm_selftest --benchmark` rather
+    # than guessing which setting your hardware needs.
+    #
+    # Total images sent = 1 scene frame (if enabled) + up to vlm_frames crops.
+    vlm_frames = models.PositiveSmallIntegerField(default=3)
+    # Longest edge of each image in pixels. Visual tokens grow with AREA, so
+    # 1024 -> 512 is roughly a 4x cut in prefill work.
+    vlm_max_edge = models.PositiveSmallIntegerField(default=1024)
+    # The full uncropped frame. It is what makes the scene questions ("is this
+    # a store?", "is there seating?") answerable at all, so turn it off only
+    # when the machine cannot afford it.
+    vlm_send_scene = models.BooleanField(default=True)
+
+    # Run the checker WITHOUT making the alert wait for it (spec 6: "Async:
+    # never block the video loop").
+    #
+    # Inline, the checker's latency is the frame loop's latency -- fine at a few
+    # seconds on a GPU, unusable at minutes on CPU, which is why the only option
+    # on slow hardware was to switch it off entirely.
+    #
+    # Asynchronous, the alert publishes immediately on the system indicators and
+    # the context is attached whenever the answer arrives. Slow stops being a
+    # reason not to run the checker; it just means the context lands later.
+    #
+    # The cost is that a late answer cannot be scored: the alert has already
+    # been filed and possibly dispatched against, and silently moving its number
+    # minutes afterwards would mean two people looking at the same event saw
+    # different scores with nothing on screen to explain it. The context is
+    # additive, and the card marks an ordinary-activity reading plainly.
+    #
+    # Default ON, because an alert that arrives now with context later beats an
+    # alert that arrives minutes late, and beats no checker at all.
+    vlm_async = models.BooleanField(default=True)
     # Minimum self-reported certainty for a verdict to score at all. Below this
     # the verdict is recorded on the alert for audit but contributes no cue —
     # the model saying "maybe, 20%" is not evidence.

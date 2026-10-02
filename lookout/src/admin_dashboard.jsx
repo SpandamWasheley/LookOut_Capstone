@@ -215,7 +215,7 @@ function AdminDashboard({ user, onLogout }) {
 
         {safePage === "alerts" && <div className="h-full"><AlertFeed showFilters user={user} /></div>}
 
-        {safePage === "records" && <div className="h-full"><RecordsPage /></div>}
+        {safePage === "records" && <div className="h-full"><RecordsPage user={user} /></div>}
 
         {safePage === "cameras" && (
           <div className="flex flex-col h-full overflow-hidden">

@@ -26,6 +26,7 @@ function mapAlert(raw) {
     status: raw.status,
     camera: raw.camera,
     cameraZone: raw.camera_zone,
+    cameraAddress: raw.camera_address ?? "",
     timestamp: raw.timestamp,
     confidence: raw.confidence,
     description: raw.description,
@@ -43,6 +44,9 @@ function mapAlert(raw) {
     // v3 2: the evidence the tanod reads instead of the score. Built
     // server-side so both clients show the same words.
     checklist: raw.cues?.checklist ?? null,
+    // The checker's own per-question answers, so the card can show WHAT it saw
+    // rather than only what it concluded.
+    ai: raw.cues?.vlm ?? null,
     cues: raw.cues,
     reviewedValid: raw.reviewed_valid,
     // VLM second stage. `vlmReason` is the sentence worth showing a reviewer.
@@ -54,7 +58,7 @@ function mapAlert(raw) {
   };
 }
 
-export function RecordsPage() {
+export function RecordsPage({ user }) {
   const [finishedAlerts, setFinishedAlerts] = useState([]);
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
@@ -65,7 +69,14 @@ export function RecordsPage() {
       getAlerts()
         .then((res) =>
           setFinishedAlerts(
-            (res.results ?? res).map(mapAlert).filter((a) => a.status === "acknowledged" || a.status === "resolved")
+            (res.results ?? res)
+              .map(mapAlert)
+              .filter((a) => a.status === "acknowledged" || a.status === "resolved")
+              // Newest first. Sorted here rather than trusted from the API:
+              // the list is paginated and re-fetched on a poll, and relying on
+              // server order means the page silently reorders itself the day
+              // someone adds an `ordering` parameter upstream.
+              .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
           )
         )
         .catch(() => {});
@@ -283,6 +294,7 @@ export function RecordsPage() {
           onDispatch={() => {}}
           onResolved={() => {}}
           onClose={() => setSelected(null)}
+          userRole={user?.role}
         />
       )}
     </div>

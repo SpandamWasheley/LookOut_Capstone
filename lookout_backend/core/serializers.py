@@ -58,7 +58,7 @@ class CameraSerializer(serializers.ModelSerializer):
     class Meta:
         model = Camera
         fields = [
-            "id", "code", "name", "zone", "status", "fps",
+            "id", "code", "name", "zone", "address", "status", "fps",
             "last_motion_at", "image_url", "is_live", "stream_url",
             "edges", "edges_width", "edges_height",
             "obstruction_pct", "obstruction_minutes",
@@ -198,6 +198,11 @@ class AlertSerializer(serializers.ModelSerializer):
     type = serializers.SlugRelatedField(slug_field="code", queryset=ViolationType.objects.all())
     camera = serializers.SlugRelatedField(slug_field="code", queryset=Camera.objects.all(), required=False, allow_null=True)
     camera_zone = serializers.CharField(source="camera.name", read_only=True)
+    # Where the camera is. The alert shows this as the location of the
+    # violation -- the system knows which camera saw it, so the camera's own
+    # address is the most precise honest answer it can give.
+    camera_address = serializers.CharField(source="camera.address", read_only=True,
+                                           default="")
     # Written/read by stable Officer id, not display name — Officer.name has
     # no uniqueness constraint, so matching by name risked merging two
     # different officers that happen to share a name (or silently failing
@@ -234,7 +239,8 @@ class AlertSerializer(serializers.ModelSerializer):
     class Meta:
         model = Alert
         fields = [
-            "id", "code", "type", "status", "camera", "camera_zone", "timestamp",
+            "id", "code", "type", "status", "camera", "camera_zone",
+            "camera_address", "timestamp",
             "confidence", "description", "image_url", "video_url", "raw_video_url",
             "officers_assigned", "officers_assigned_names", "suspect", "notes",
             "matched_person", "matched_person_name", "match_confidence",
@@ -328,6 +334,7 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
             "drinking_min_group", "drinking_group_duration",
             "vlm_enabled", "vlm_provider", "vlm_model", "vlm_api_key", "vlm_endpoint",
             "vlm_timeout", "vlm_min_confidence",
+            "vlm_frames", "vlm_max_edge", "vlm_send_scene", "vlm_async",
             "alert_cooldown", "evidence_retention_days",
             "auto_dispatch", "email_alerts", "sms_alerts",
             "updated_at",

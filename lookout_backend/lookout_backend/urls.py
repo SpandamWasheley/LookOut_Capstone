@@ -24,5 +24,19 @@ urlpatterns = [
     path('api/', include('core.urls')),
 ]
 
+# The detection lab (core/lab.py): drop in an image, see what the detector
+# found, what it would score and what the checker makes of it.
+#
+# DEBUG only, and deliberately so. It runs models synchronously and has no
+# authentication -- mounting it beside the operational dashboard in production
+# would be an unauthenticated way to spend every CPU the server has.
+if settings.DEBUG:
+    from core import lab
+    urlpatterns += [
+        path('lab/', lab.page, name='lab'),
+        path('lab/analyse/', lab.analyse, name='lab_analyse'),
+        path('lab/config/', lab.config, name='lab_config'),
+    ]
+
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

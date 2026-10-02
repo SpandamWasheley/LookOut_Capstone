@@ -99,10 +99,25 @@ class ClipRecorder:
     which case it's choppy but still the full N seconds).
     """
 
-    def __init__(self, seconds=10, playback_fps=12, label=""):
+    # Longest edge a buffered frame is kept at. Evidence clips are watched in a
+    # browser panel a few hundred pixels wide, so holding 2560x1440 buys nothing
+    # visible and costs 10.5 MB per frame: 30 seconds at 5 fps is ~1.6 GB for
+    # ONE recorder, and merged mode runs three. That is what exhausted memory on
+    # a 16 GB machine with the vision-language model also resident, and it
+    # failed as a crash mid-run rather than as anything that named the cause.
+    MAX_EDGE = 1280
+
+    # A hard ceiling as well as the time window. The window alone assumes a
+    # steady frame rate; a fast source or a stalled cutoff lets the deque grow
+    # without bound, and running out of memory is a worse failure than a clip
+    # with fewer frames in it.
+    MAX_FRAMES = 450
+
+    def __init__(self, seconds=10, playback_fps=12, label="", max_edge=None):
         self.seconds = seconds
         self.playback_fps = playback_fps
         self.label = label            # e.g. camera code, drawn next to the time
+        self.max_edge = max_edge or self.MAX_EDGE
         self._buf = deque()  # (timestamp, annotated_frame)
         # Cap in seconds on how long a single buffered frame can be held during
         # playback. Without this, a detector stall (e.g. a slow far-mode tile
@@ -111,10 +126,26 @@ class ClipRecorder:
         self._max_hold_seconds = 2.0
 
     def add(self, frame, now):
-        self._buf.append((now, frame.copy()))
+        self._buf.append((now, self._fit(frame)))
         cutoff = now - self.seconds
         while self._buf and self._buf[0][0] < cutoff:
             self._buf.popleft()
+        while len(self._buf) > self.MAX_FRAMES:
+            self._buf.popleft()
+
+    def _fit(self, frame):
+        """A copy no larger than `max_edge` on its longest side.
+
+        Always a copy: the capture loop reuses its buffer, so a stored reference
+        would be overwritten within milliseconds and the clip would be a reel of
+        whatever the camera is looking at now.
+        """
+        h, w = frame.shape[:2]
+        if max(h, w) <= self.max_edge:
+            return frame.copy()
+        scale = self.max_edge / float(max(h, w))
+        return cv2.resize(frame, (max(int(w * scale), 1), max(int(h * scale), 1)),
+                          interpolation=cv2.INTER_AREA)
 
     def _stamp(self, frame, ts):
         """Burns the real capture date/time (system clock) into the frame — the

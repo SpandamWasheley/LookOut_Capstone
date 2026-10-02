@@ -13,6 +13,7 @@ from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
 from core.vision import recognition, scoring, tracking, vlm
+from ._vlm_followup import attach_verdict
 
 SMOKING_CAMERA_CODE = "CAM-SMOKING"
 SETTINGS_REFRESH_SECONDS = 5  # re-poll SystemSettings this often, not every frame
@@ -147,6 +148,8 @@ class Command(BaseCommand):
         # _score() raises AttributeError at the first alert.
         self.vlm = vlm.DisabledVerifier("not configured by this runner")
         self.vlm_min_confidence = 50
+        self.vlm_cost = {}
+        self.vlm_async = True
         # Spec §6: the last few frames, so the VLM judges an EVENT rather than a
         # still. Fed from the frame loop; empty means the current frame alone,
         # which is what every existing test exercises.
@@ -353,6 +356,17 @@ class Command(BaseCommand):
             endpoint=_vlm_cfg.vlm_endpoint,
         )
         self.vlm_min_confidence = _vlm_cfg.vlm_min_confidence
+        self.vlm_async = _vlm_cfg.vlm_async
+        # Sized from the configured call cost: there is no reason to hold a
+        # frame larger than the checker will ever be sent.
+        self.frame_buffer = vlm.FrameBuffer(store_edge=_vlm_cfg.vlm_max_edge)
+        # How much work each call is allowed to cost. Read once, with the
+        # verifier, rather than per alert.
+        self.vlm_cost = {
+            "max_edge": _vlm_cfg.vlm_max_edge,
+            "send_scene": _vlm_cfg.vlm_send_scene,
+            "max_images": (1 if _vlm_cfg.vlm_send_scene else 0) + _vlm_cfg.vlm_frames,
+        }
         self.stdout.write(vlm.describe(self.vlm, _vlm_cfg.vlm_model))
 
         if self.pose:
@@ -993,6 +1007,7 @@ class Command(BaseCommand):
             object_confidence=best_score,
         )
         track.last_alerted_at = now_ts
+        self._queue_context(alert, "smoking", frame, box=box)
         track.has_alerted = True
         self._alert_log.append((tuple(box), now_ts))
         self.stdout.write(self.style.SUCCESS(
@@ -1015,10 +1030,14 @@ class Command(BaseCommand):
         cues = set(cues)
         verdict = vlm.unavailable("not attempted")
 
-        if "vlm" not in self.ablate:
+        # Asynchronous: nothing is asked here. The alert is scored and
+        # published on the system indicators, and _queue_context() asks
+        # afterwards, once there is an alert id to attach the answer to.
+        if "vlm" not in self.ablate and not self.vlm_async:
             verdict = vlm.verify_frame(self.vlm, frame, "smoking", box=box,
                                        context=context,
-                                       frames=self.frame_buffer.recent())
+                                       frames=self.frame_buffer.recent(),
+                                       **self.vlm_cost)
             if verdict.ok:
                 fired = verdict.fired_cues()
                 # v3 §6: `smoking_item_visible` scores ONLY when YOLO did not
@@ -1068,6 +1087,26 @@ class Command(BaseCommand):
                    for b, _ in self._alert_log)
 
     # ---- shared alert creation --------------------------------------------
+
+
+    def _queue_context(self, alert, kind, frame, box=None, context=""):
+        """Ask the checker in the background and attach the answer when it comes.
+
+        Called AFTER the alert exists, because the answer is written back by
+        primary key. Returns immediately -- the frame loop never waits on a
+        model that may take minutes on CPU-only hardware.
+        """
+        if alert is None or not self.vlm_async or "vlm" in self.ablate:
+            return
+        if isinstance(self.vlm, vlm.DisabledVerifier):
+            return
+        alert_id = alert.pk
+        vlm.verify_frame_async(
+            self.vlm, frame, kind,
+            on_done=lambda verdict: attach_verdict(alert_id, verdict, kind),
+            box=box, context=context,
+            frames=self.frame_buffer.recent(), **self.vlm_cost)
+        self.stats["ai context queued"] += 1
 
     def _create_alert(self, score, label, frame, description, box=None, face_threshold=45,
                       face_frame=None, now=None, score_obj=None, verdict=None, object_confidence=None):
@@ -1151,7 +1190,14 @@ class Command(BaseCommand):
             matched_person=matched_person,
             match_confidence=match_confidence,
             level=score_obj.level if score_obj is not None else "",
-            cues=score_obj.as_dict() if score_obj is not None else {},
+            # The checker's own answers, stored alongside the score vector.
+            # Verdict.as_dict() already carried all of it -- the verdict, the
+            # tier, the reason and every field it answered -- but only three
+            # columns were being kept, so the per-question answers were thrown
+            # away. The violation card needs them to show WHAT the checker saw,
+            # not just what it concluded.
+            cues={**(score_obj.as_dict() if score_obj is not None else {}),
+                  "vlm": verdict.as_dict() if verdict is not None else {}},
             # The DETECTOR's own confidence in the anchoring box, kept apart
             # from `confidence` (the violation likelihood). See Alert.object_confidence.
             object_confidence=object_confidence,

@@ -1011,6 +1011,7 @@ class TheftEngine:
         if loiterer is not None:
             self._add_cue(cues, abstained, "E10", [loiterer], now, "loiter")
 
+        self.last_weapon_conf = None
         armed = self._weapon_on(ta, threats) or self._weapon_on(tb, threats)
         if armed is not None:
             self._add_cue(cues, abstained, "E14", [ta, tb], now, "weapon")
@@ -1076,7 +1077,14 @@ class TheftEngine:
     # ---- E14 standalone ----
 
     def _weapon_on(self, track, threats):
-        """The weapon label on or within WEAPON_REACH of this track, if any."""
+        """The weapon label on or within WEAPON_REACH of this track, if any.
+
+        Also records the detector's own confidence in that box on
+        `self.last_weapon_conf`. Returning it would mean changing what every
+        caller unpacks for a value only one of them wants; the attribute keeps
+        the common path unchanged and is read immediately after the call, in
+        the same frame, by the one site that builds an Evidence.
+        """
         if self._off("e14"):
             return None
         for det in threats:
@@ -1084,6 +1092,7 @@ class TheftEngine:
             if label not in ("gun", "knife"):
                 continue
             if _person_norm_distance(track.box, det[:4]) <= WEAPON_REACH:
+                self.last_weapon_conf = det[4]
                 return label
         return None
 
@@ -1116,7 +1125,12 @@ class TheftEngine:
 
     def _evidence(self, *args):
         """Builds Evidence with this engine's band policy applied."""
-        return Evidence(*args, weapon_alone_alerts=self.weapon_alone_alerts)
+        ev = Evidence(*args, weapon_alone_alerts=self.weapon_alone_alerts)
+        # What the object detector was sure of, as distinct from the Layer E
+        # score. None when the pattern involved no weapon at all -- the card
+        # shows a dash rather than inventing a number.
+        ev.weapon_conf = getattr(self, "last_weapon_conf", None)
+        return ev
 
     # ---- E13 / E20 multipliers ----
 

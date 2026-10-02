@@ -83,7 +83,24 @@ DEFAULT_PROVIDER = "ollama"
 DEFAULT_MODEL = "qwen3-vl:4b"
 DEFAULT_ENDPOINT = "http://localhost:11434"
 DEFAULT_TIMEOUT = 60.0        # a local 4B model on CPU is slower than a cloud call
-DEFAULT_MAX_TOKENS = 512
+# Qwen3 reasons before it answers, and Ollama's `think: false` is NOT honoured
+# for this model -- verified against 0.35.0, which still returned a `thinking`
+# field with it set. The reasoning is charged against this budget, so a limit
+# sized for the ANSWER alone is exhausted before a single character of JSON is
+# written, and the reply comes back with content="" and done_reason="length".
+#
+# Measured: a trivial text prompt needs ~200 tokens; an image prompt reasons
+# for longer. 1536 leaves room for both without inviting the model to ramble.
+# Measured against a real evidence photo: qwen3-vl reasoned past 1536 tokens
+# without reaching its answer. 4096 is sized for the model that is actually
+# configured rather than for the answer it eventually gives -- on a GPU those
+# tokens are seconds, and an exhausted budget wastes the whole call.
+DEFAULT_MAX_TOKENS = 4096
+
+# Context window. Must hold the system prompt, the images, the questions AND
+# the model's answer -- Ollama defaults to 2048, which a single image very
+# nearly fills on its own.
+DEFAULT_NUM_CTX = 8192
 
 YES, NO, UNCLEAR = "yes", "no", "unclear"
 
@@ -589,6 +606,23 @@ def blur_faces_available():
     return cv2 is not None and _face_cascade() is not None
 
 
+def _shrink(frame_bgr, max_edge):
+    """A copy no larger than `max_edge` on its longest side.
+
+    Always a copy: the capture loop reuses its buffer, so a stored reference
+    would be overwritten within milliseconds and the checker would end up
+    describing a later moment.
+    """
+    if cv2 is None or frame_bgr is None:
+        return frame_bgr
+    h, w = frame_bgr.shape[:2]
+    if max(h, w) <= max_edge:
+        return frame_bgr.copy()
+    scale = max_edge / float(max(h, w))
+    return cv2.resize(frame_bgr, (max(int(w * scale), 1), max(int(h * scale), 1)),
+                      interpolation=cv2.INTER_AREA)
+
+
 class FrameBuffer:
     """The last few frames for one tracked subject, for the multi-frame send.
 
@@ -598,18 +632,30 @@ class FrameBuffer:
     track in a busy frame.
     """
 
-    def __init__(self, count=FRAME_COUNT, spacing=FRAME_SPACING):
+    def __init__(self, count=FRAME_COUNT, spacing=FRAME_SPACING,
+                 store_edge=MAX_EDGE):
         self.count = count
         self.spacing = spacing
+        # Longest edge kept in memory. Never below what a call might ask for,
+        # so shrinking here cannot quietly degrade what the checker sees.
+        self.store_edge = store_edge
         self._frames = []      # [(timestamp, frame)]
 
     def add(self, frame_bgr, now):
-        """Keep a frame if it is at least `spacing` newer than the last kept."""
+        """Keep a frame if it is at least `spacing` newer than the last kept.
+
+        Stored DOWNSCALED. These frames exist only to be sent to the checker,
+        which resizes to `max_edge` (512-1024px) before encoding anyway -- so
+        holding them at source resolution buys nothing and costs a great deal:
+        a 2560x1440 frame is 10.5 MB, and merged mode keeps three of these
+        buffers alongside three 30-second clip recorders. That combination
+        exhausted memory on a 16 GB machine with the model also resident.
+        """
         if frame_bgr is None:
             return
         if self._frames and now - self._frames[-1][0] < self.spacing:
             return
-        self._frames.append((now, frame_bgr.copy()))
+        self._frames.append((now, _shrink(frame_bgr, self.store_edge)))
         # One more than needed, so the newest frame at call time is never the
         # only one available.
         del self._frames[:-(self.count + 1)]
@@ -623,7 +669,8 @@ class FrameBuffer:
         return len(self._frames)
 
 
-def encode_crop(frame_bgr, box=None, pad=CROP_PAD, as_bytes=False, blur=None):
+def encode_crop(frame_bgr, box=None, pad=CROP_PAD, as_bytes=False, blur=None,
+                max_edge=None):
     """BGR frame (optionally cropped to `box`) -> JPEG, or None on any failure.
 
     `pad` widens the box before cropping: a tight person box cuts off exactly
@@ -655,8 +702,12 @@ def encode_crop(frame_bgr, box=None, pad=CROP_PAD, as_bytes=False, blur=None):
             img = img[y1:y2, x1:x2]
 
         h, w = img.shape[:2]
-        if max(h, w) > MAX_EDGE:
-            scale = MAX_EDGE / float(max(h, w))
+        # The single biggest lever on a CPU-only machine. Visual tokens grow
+        # with AREA, so halving the longest edge cuts the token count ~4x --
+        # and prefill is most of the wall clock.
+        limit = max_edge or MAX_EDGE
+        if max(h, w) > limit:
+            scale = limit / float(max(h, w))
             img = cv2.resize(img, (max(int(w * scale), 1), max(int(h * scale), 1)),
                              interpolation=cv2.INTER_AREA)
 
@@ -695,7 +746,7 @@ class OllamaVerifier:
 
     def __init__(self, api_key=None, model=DEFAULT_MODEL,
                  max_tokens=DEFAULT_MAX_TOKENS, timeout=DEFAULT_TIMEOUT,
-                 endpoint=DEFAULT_ENDPOINT):
+                 endpoint=DEFAULT_ENDPOINT, num_ctx=DEFAULT_NUM_CTX):
         # api_key is accepted and ignored: a local server needs none. Kept in
         # the signature so build_verifier can treat every provider alike.
         self.api_key = api_key or ""
@@ -703,6 +754,7 @@ class OllamaVerifier:
         self.max_tokens = int(max_tokens or DEFAULT_MAX_TOKENS)
         self.timeout = float(timeout or DEFAULT_TIMEOUT)
         self.endpoint = (endpoint or DEFAULT_ENDPOINT).rstrip("/")
+        self.num_ctx = int(num_ctx or DEFAULT_NUM_CTX)
 
     def _post(self, path, payload):
         import urllib.request
@@ -733,10 +785,20 @@ class OllamaVerifier:
                 f"Start it with: ollama serve")
 
         names = {m.get("name", "") for m in tags.get("models", [])}
+        if not names:
+            # No models at all. This guard used to be folded into the check
+            # below as `if names and ...`, which meant an empty list SKIPPED
+            # validation entirely -- startup reported ON, and the failure only
+            # surfaced later as a bare HTTP 404 from /api/chat with nothing to
+            # explain it. An empty server is the most likely state of a fresh
+            # install, so it is the one case that most needed naming.
+            raise RuntimeError(
+                f"Ollama is running but has no models. Run: "
+                f"ollama pull {self.model}")
         # Ollama reports "qwen3-vl:4b"; a bare "qwen3-vl" should still match.
-        if names and not any(n == self.model or n.startswith(self.model + ":")
-                             or self.model.startswith(n.split(":")[0])
-                             for n in names):
+        if not any(n == self.model or n.startswith(self.model + ":")
+                   or self.model.startswith(n.split(":")[0])
+                   for n in names):
             raise RuntimeError(
                 f"model {self.model!r} is not pulled. Run: ollama pull {self.model}")
         return True
@@ -776,11 +838,28 @@ class OllamaVerifier:
                 # loop. Ollama constrains generation to valid JSON.
                 "format": "json",
                 "stream": False,
+                # Qwen3 emits reasoning tokens before its answer. Left on, the
+                # thinking consumes the whole num_predict budget and `content`
+                # comes back EMPTY -- which reads as a model failure and is
+                # really a token-budget one. There is nothing to reason about
+                # here: the questions are yes/no observations about a picture.
+                "think": False,
                 "options": {
                     # A classification, not a creative task: the same crops must
                     # not get different answers on two runs.
                     "temperature": 0.0,
                     "num_predict": self.max_tokens,
+                    # Ollama's default context is 2048 tokens, and a single
+                    # 512px image is hundreds of visual tokens before the prompt
+                    # is counted. Two images plus the system instructions very
+                    # nearly fill it, so generation stops at the CONTEXT limit
+                    # with done_reason="length" long before num_predict is
+                    # reached -- which looks identical to "the model rambled"
+                    # and is nothing of the sort.
+                    #
+                    # This is why raising num_predict from 512 to 4096 changed
+                    # nothing: the binding limit was never num_predict.
+                    "num_ctx": self.num_ctx,
                 },
             })
         except Exception as exc:
@@ -790,8 +869,18 @@ class OllamaVerifier:
             return unavailable(f"{type(exc).__name__}: {exc}")
 
         latency = _time.monotonic() - started
-        text = (reply.get("message") or {}).get("content", "")
+        message = reply.get("message") or {}
+        text = message.get("content", "")
         if not text:
+            # Distinguish the two ways a reply arrives empty. They look
+            # identical at the call site and need completely different fixes:
+            # one is a token budget, the other is a model or prompt problem.
+            if reply.get("done_reason") == "length":
+                return Verdict(
+                    ok=False, model=self.model, latency=latency,
+                    error=(f"token budget exhausted before any answer "
+                           f"({reply.get('eval_count')} tokens, all reasoning). "
+                           f"Raise vlm max_tokens above {self.max_tokens}."))
             return Verdict(ok=False, error="empty response", model=self.model,
                            latency=latency)
         return _parse_reply(text, spec, self.model, latency)
@@ -930,7 +1019,57 @@ def describe(verifier, model=""):
     return f"VLM verification: ON ({model or DEFAULT_MODEL})"
 
 
-def verify_frame(verifier, frame_bgr, kind, box=None, context="", frames=None):
+def verify_frame_async(verifier, frame_bgr, kind, on_done, box=None,
+                      context="", frames=None, **cost):
+    """Run verify_frame on a worker thread and hand the Verdict to `on_done`.
+
+    Returns immediately. The caller publishes its alert on the system
+    indicators and never waits -- which is exactly what it already does when
+    the checker fails, so the alert path is unchanged in shape and only the
+    timing differs.
+
+    `on_done(verdict)` runs on the worker, so it must do its own database work
+    and must not touch anything the frame loop owns. The watchers pass a
+    closure that updates one Alert row by primary key, which is safe from any
+    thread.
+
+    Frames are COPIED before the thread starts. The capture loop reuses its
+    buffer, so a reference handed to a thread would be overwritten within
+    milliseconds and the checker would end up describing a later moment --
+    a bug that would look like the model hallucinating.
+
+    A daemon thread, not a queue: one call per alert, a few an hour, and a
+    worker that must never hold up shutdown. If the rate ever rises enough to
+    need backpressure, that is the point to introduce a real queue.
+    """
+    # Shrunk, not just copied: these are handed to a thread that may hold them
+    # for minutes on slow hardware, and at source resolution that is hundreds of
+    # megabytes pinned for the duration.
+    edge = cost.get("max_edge") or MAX_EDGE
+    snapshot = None if frame_bgr is None else _shrink(frame_bgr, edge)
+    copies = [_shrink(f, edge) for f in (frames or [])]
+
+    def _run():
+        try:
+            verdict = verify_frame(verifier, snapshot, kind, box=box,
+                                   context=context, frames=copies, **cost)
+        except Exception as exc:                  # noqa: BLE001
+            verdict = unavailable(f"{type(exc).__name__}: {exc}")
+        try:
+            on_done(verdict)
+        except Exception:
+            # The callback writes to the database. If that fails the alert is
+            # already published and correct; losing the context is the smaller
+            # loss, and raising here would only kill a daemon thread silently.
+            import logging
+            logging.getLogger(__name__).exception("VLM callback failed")
+
+    threading.Thread(target=_run, daemon=True,
+                     name=f"vlm-{kind}").start()
+
+
+def verify_frame(verifier, frame_bgr, kind, box=None, context="", frames=None,
+                 max_edge=None, send_scene=None, max_images=None):
     """Convenience wrapper: crop, encode and verify in one call.
 
     This is what the watchers use. `kind` selects the prompt spec; an unknown
@@ -951,12 +1090,24 @@ def verify_frame(verifier, frame_bgr, kind, box=None, context="", frames=None):
     sequence = list(frames or [])
     if frame_bgr is not None:
         sequence.append(frame_bgr)
+    scene_on = SEND_FULL_SCENE if send_scene is None else send_scene
     encoded = []
-    if SEND_FULL_SCENE and sequence:
-        scene = encode_crop(sequence[-1], box=None)
+    if scene_on and sequence:
+        scene = encode_crop(sequence[-1], box=None, max_edge=max_edge)
         if scene:
             encoded.append(scene)
-    encoded += [c for c in (encode_crop(f, box) for f in sequence) if c]
+    encoded += [c for c in (encode_crop(f, box, max_edge=max_edge)
+                            for f in sequence) if c]
+    if max_images:
+        # Keep the NEWEST images: the last crop is the moment the alert fired,
+        # and the full scene (first, when sent) is what answers the context
+        # questions -- so trim from the middle outward by keeping the head and
+        # the tail rather than a plain slice.
+        if scene_on and len(encoded) > max_images >= 1:
+            encoded = encoded[:1] + encoded[-(max_images - 1):] if max_images > 1 \
+                else encoded[:1]
+        else:
+            encoded = encoded[-max_images:]
     if not encoded:
         return unavailable("could not encode crop")
     return verifier.verify(encoded, spec, context=context)

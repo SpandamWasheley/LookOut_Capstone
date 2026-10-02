@@ -14,6 +14,9 @@ function mapAlert(raw) {
     status: raw.status,
     camera: raw.camera,
     cameraZone: raw.camera_zone,
+    // Where the camera is, typed in Live Feeds. Shown as the violation's
+    // location, since the camera's position is what the system actually knows.
+    cameraAddress: raw.camera_address ?? "",
     timestamp: raw.timestamp,
     confidence: raw.confidence,
     description: raw.description,
@@ -41,6 +44,9 @@ function mapAlert(raw) {
     // v3 2: the evidence the tanod reads instead of the score. Built
     // server-side so both clients show the same words.
     checklist: raw.cues?.checklist ?? null,
+    // The checker's own per-question answers, so the card can show WHAT it saw
+    // rather than only what it concluded.
+    ai: raw.cues?.vlm ?? null,
     cues: raw.cues,
     reviewedValid: raw.reviewed_valid,
     // VLM second stage. `vlmReason` is the sentence worth showing a reviewer.
@@ -53,7 +59,7 @@ function mapAlert(raw) {
 }
 
 function mapOfficer(raw) {
-  return { id: raw.id, name: raw.name, status: raw.status, location: raw.location, badge: raw.badge };
+  return { id: raw.id, name: raw.name, status: raw.status, location: raw.location, badge: raw.badge, address: raw.address ?? "" };
 }
 
 function formatTime(ts) {

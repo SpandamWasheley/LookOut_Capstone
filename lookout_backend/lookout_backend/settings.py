@@ -52,6 +52,33 @@ DEBUG = config('DEBUG', default=False, cast=bool)
 # machine's IP, e.g. ALLOWED_HOSTS=192.168.1.10
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='', cast=Csv())
 
+# In DEBUG only, add this machine's own LAN addresses.
+#
+# The officer app runs on a phone, so it reaches Django by LAN IP rather than
+# by localhost -- and Django answers a host it does not recognise with a bare
+# 400 before any view runs. Pinning the IP by hand works until the laptop joins
+# a different network, which during testing is constantly; the symptom is every
+# request failing at once with nothing in the server log to explain it.
+#
+# Detected rather than configured, and gated on DEBUG so production still fails
+# closed on an explicit list.
+if DEBUG:
+    import socket as _socket
+
+    _hosts = {'localhost', '127.0.0.1', '10.0.2.2'}   # 10.0.2.2 = Android emulator
+    try:
+        _probe = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        _probe.connect(('8.8.8.8', 80))       # no packets sent; just picks a route
+        _hosts.add(_probe.getsockname()[0])
+        _probe.close()
+    except OSError:
+        pass                                   # offline: localhost is enough
+    try:
+        _hosts.update(_socket.gethostbyname_ex(_socket.gethostname())[2])
+    except OSError:
+        pass
+    ALLOWED_HOSTS = sorted(set(ALLOWED_HOSTS) | _hosts)
+
 # ngrok terminates HTTPS at its edge and forwards plain HTTP to this dev
 # server, setting X-Forwarded-Proto: https on the way — without this, Django
 # has no way to know the original request was secure, so

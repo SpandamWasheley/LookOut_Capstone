@@ -14,6 +14,7 @@ from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
 from core.vision import recognition, scoring, theft, tracking, vlm
+from ._vlm_followup import attach_verdict
 
 THIEF_CAMERA_CODE = "CAM-THIEF"
 SETTINGS_REFRESH_SECONDS = 5  # re-poll SystemSettings this often, not every frame
@@ -220,6 +221,8 @@ class Command(BaseCommand):
         self.ablate = set()
         self.vlm = vlm.DisabledVerifier()
         self.vlm_min_confidence = 50
+        self.vlm_cost = {}
+        self.vlm_async = True
         self.frame_buffer = vlm.FrameBuffer()
         self.layer_e = True
         self.layer_e_only = False
@@ -412,6 +415,17 @@ class Command(BaseCommand):
             endpoint=_vlm_cfg.vlm_endpoint,
         )
         self.vlm_min_confidence = _vlm_cfg.vlm_min_confidence
+        self.vlm_async = _vlm_cfg.vlm_async
+        # Sized from the configured call cost: there is no reason to hold a
+        # frame larger than the checker will ever be sent.
+        self.frame_buffer = vlm.FrameBuffer(store_edge=_vlm_cfg.vlm_max_edge)
+        # How much work each call is allowed to cost. Read once, with the
+        # verifier, rather than per alert.
+        self.vlm_cost = {
+            "max_edge": _vlm_cfg.vlm_max_edge,
+            "send_scene": _vlm_cfg.vlm_send_scene,
+            "max_images": (1 if _vlm_cfg.vlm_send_scene else 0) + _vlm_cfg.vlm_frames,
+        }
         self.stdout.write(vlm.describe(self.vlm, _vlm_cfg.vlm_model))
         unknown = self.ablate - set(ABLATABLE)
         if unknown:
@@ -1021,6 +1035,11 @@ class Command(BaseCommand):
             evidence=theft.Evidence(
                 "weapon", tuple(box), {"E14": theft.WEIGHTS["E14"]}, {}, set(),
                 [track], f"{best_label} held for {present_for:.0f}s"),
+            # The detector's own confidence in the winning box. Carried
+            # separately from the Layer E score, which is the violation
+            # likelihood -- the two answer different questions and the card
+            # shows them in different places.
+            object_confidence=best_score,
         )
         track.last_alerted_at = now_ts
         track.has_alerted = True
@@ -1073,11 +1092,16 @@ class Command(BaseCommand):
         # fish knife are ordinary tools, so a blade is only a threat when the
         # context that would explain it is ABSENT.
         verdict = vlm.unavailable("not attempted")
-        if "vlm" not in self.ablate:
+        # Inline only when asked for. Asynchronously the alert is published on
+        # Layer E alone and the context is attached afterwards -- which also
+        # means a late answer cannot rescore or suppress it, so the suppression
+        # branch below is reachable only on the inline path.
+        if "vlm" not in self.ablate and not self.vlm_async:
             verdict = vlm.verify_frame(
                 self.vlm, frame, "holdup", box=ev.box,
                 context=f"{ev.kind}: {ev.detail}",
                 frames=self.frame_buffer.recent(),
+                **self.vlm_cost,
             )
             if verdict.ok:
                 extra_cues, extra_mults = {}, {}
@@ -1125,8 +1149,16 @@ class Command(BaseCommand):
                 + (f" VLM: {verdict.reason}" if verdict.ok and verdict.reason else "")
             ),
             now=now_ts, evidence=ev, verdict=verdict,
+            # Layer E fires on a PATTERN, not on one box, so there is no single
+            # detection to quote. The weapon detection that anchored it is the
+            # closest honest answer; None when the pattern had no weapon at all
+            # (a freeze with no blade), which the card renders as a dash rather
+            # than inventing a number.
+            object_confidence=getattr(ev, "weapon_conf", None),
         )
         self._alert_log.append((tuple(ev.box), now_ts))
+        self._queue_context(alert, "holdup", frame, box=ev.box,
+                            context=f"{ev.kind}: {ev.detail}")
         self.stdout.write(self.style.SUCCESS(
             (f"ALERT created: {alert.code}" if alert else "ALERT suppressed (dry run)")
             + f" [Layer E {ev.kind}] {ev.summary()}"
@@ -1176,8 +1208,28 @@ class Command(BaseCommand):
 
     # ---- shared alert creation --------------------------------------------
 
+
+    def _queue_context(self, alert, kind, frame, box=None, context=""):
+        """Ask the checker in the background and attach the answer when it comes.
+
+        Called AFTER the alert exists, because the answer is written back by
+        primary key. Returns immediately -- the frame loop never waits on a
+        model that may take minutes on CPU-only hardware.
+        """
+        if alert is None or not self.vlm_async or "vlm" in self.ablate:
+            return
+        if isinstance(self.vlm, vlm.DisabledVerifier):
+            return
+        alert_id = alert.pk
+        vlm.verify_frame_async(
+            self.vlm, frame, kind,
+            on_done=lambda verdict: attach_verdict(alert_id, verdict, kind),
+            box=box, context=context,
+            frames=self.frame_buffer.recent(), **self.vlm_cost)
+        self.stats["ai context queued"] += 1
+
     def _create_alert(self, score, label, frame, description, now=None,
-                      evidence=None, verdict=None):
+                      evidence=None, verdict=None, object_confidence=None):
         ts_label = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         safe_label = label.replace(" ", "_")
         filename = f"{ts_label}_thief_{safe_label}.jpg"
@@ -1259,11 +1311,12 @@ class Command(BaseCommand):
                 "score": round(evidence.score, 4),
                 "level": evidence.band,
                 "label": scoring.label_of(evidence.band),
+                # The checker's own answers -- see the note in watch_drinking.
+                "vlm": verdict.as_dict() if verdict is not None else {},
             } if evidence is not None else {}),
             # The detector's own confidence in the anchoring box, distinct from
             # the violation likelihood above.
-            object_confidence=getattr(evidence, "object_confidence", None)
-            if evidence is not None else None,
+            object_confidence=object_confidence,
             vlm_verdict=verdict.verdict if (verdict is not None and verdict.ok) else "",
             vlm_confidence=verdict.confidence if (verdict is not None and verdict.ok) else None,
             vlm_reason=verdict.reason if (verdict is not None and verdict.ok) else "",

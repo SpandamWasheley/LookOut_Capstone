@@ -80,3 +80,12 @@ staticfiles/
 ~$*.docx
 # Local backup of src/ taken before the font-size pass
 .font-bump-backup-src/
+
+# Local model copies. core/vision/merged.pt is the one the detectors load and
+# is tracked; these two are duplicates of it.
+#   merged_v2_best.pt       the same weights as pulled from models/merged-v2
+#   *_v1_backup.pt          a rollback copy, recoverable from history
+# args.yaml and results.csv ARE kept: they are small and they are the only
+# record of how the deployed weights were trained.
+/merged_v2_best.pt
+*_v1_backup.pt

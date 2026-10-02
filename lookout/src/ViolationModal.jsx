@@ -1,9 +1,9 @@
-import { useRef, useEffect, useState, useMemo , Check, Minus} from "react";
+import { useRef, useEffect, useState, useMemo } from "react";
 import {
   X, User, Shield, Play, Pause,
   SkipBack, Download, Radio, CheckCircle, AlertTriangle,
   MessageSquare, Phone, ChevronDown, ChevronRight, Home, Loader2, Search, Send, Info,
-  Clock,
+  Clock, Check, Minus, MapPin, Sparkles,
 } from "lucide-react";
 import { violationDisplay } from "./constants/violationTypes";
 import { sendSms, getViolationTypes, getBarangays, createCitation, searchViolators } from "./api";
@@ -1370,6 +1370,78 @@ function SetCandidateModal({ alert, households: rawHH, residents: rawRes, onSave
 // What was detected, Detected object, Assigned officers) — an 11px muted
 // label above a 13px value, on a quiet surface so these read as reference
 // details rather than competing with the video or footer actions.
+// v3 2's two visible levels, by severity.
+//
+// Deliberately NOT the violation type's colour, which is what this used to use:
+// a smoking alert and a holdup alert each have their own hue, so "Possible" and
+// "Likely" rendered identically within a type and the level carried no visual
+// weight at all. Since the level is now the main thing a tanod reads, it needs
+// to be the thing that changes colour.
+//
+// Amber for Possible, red for Likely -- the same two the spec uses, and the
+// pairing a barangay officer already reads correctly from traffic lights.
+const LEVEL_COLORS = {
+  Likely: "#dc2626",
+  Possible: "#f59e0b",
+  "Not shown": "var(--muted-foreground)",
+};
+
+// The checker's JSON field names, in words an officer reads.
+//
+// Kept on the client rather than sent from the server because these are pure
+// presentation: the field names are the model's contract and must not drift,
+// while the wording here can be improved freely without touching a prompt.
+const AI_FIELD_LABELS = {
+  group_appears_to_be_drinking_together: "Drinking together",
+  table_chairs_or_seating_visible: "Seating",
+  drinking_items_visible: "Drinks set out",
+  smoking_item_visible: "Smoking item",
+  object_pointed_at_a_person: "Pointed at a person",
+  victim_response_visible: "Victim reacting",
+  appears_to_be_a_holdup: "Looks like a holdup",
+};
+
+// The two choice fields, and which of their answers mean "ordinary activity".
+// Those answers are what cut a score to a quarter, so they are the one thing on
+// this card that must be impossible to miss.
+const AI_ORDINARY = {
+  scene_type: "other_activity",
+  hand_to_mouth_activity: ["drinking", "eating", "phone"],
+};
+
+function aiReadsAsOrdinary(answers) {
+  return Object.entries(AI_ORDINARY).some(([field, ordinary]) => {
+    const value = answers?.[field];
+    return Array.isArray(ordinary) ? ordinary.includes(value) : value === ordinary;
+  });
+}
+
+// What the AI context card shows. Separated from the markup so the rules are
+// readable on their own: which answers are booleans, which are choices, and
+// which are not worth a chip at all.
+function aiChips(answers) {
+  const chips = [];
+  for (const [field, value] of Object.entries(answers ?? {})) {
+    const label = AI_FIELD_LABELS[field];
+    if (label) {
+      chips.push({ key: field, label, yes: value === true });
+      continue;
+    }
+    // A choice field. "unclear" is skipped: it is the model declining to
+    // answer, and a chip reading "Scene: unclear" is noise on a card that is
+    // already dense.
+    if (field in AI_ORDINARY && value && value !== "unclear") {
+      chips.push({
+        key: field,
+        label: `${field === "scene_type" ? "Scene" : "Hand to mouth"}: ` +
+               String(value).replace(/_/g, " "),
+        plain: true,
+      });
+    }
+  }
+  return chips;
+}
+
 export function QuietCard({ label, value, mono, valueColor, tooltip,
                            tooltipAlign = "left", tooltipSpan = "auto" }) {
   // A fixed-width tooltip overflows a narrow card. These sit in the 2fr side of
@@ -1437,7 +1509,14 @@ export function ViolationModal({
   // in a position to say an incident was dealt with.
   //
   // "both" (Officer & Dispatcher) keeps it -- that role IS an officer.
-  const canResolve = userRole !== "dispatcher";
+  // An explicit allowlist, not "anyone who is not a dispatcher".
+  //
+  // The old form failed OPEN: RecordsPage rendered this modal without passing
+  // userRole, so the prop was undefined, `undefined !== "dispatcher"` was true,
+  // and a dispatcher got the Mark resolved button on the Records page -- the
+  // exact thing the check existed to prevent. A missing prop must hide a
+  // privileged action, never reveal one.
+  const canResolve = ["admin", "officer", "both"].includes(userRole);
   // Icon + color identity from violationTypes.js (same source the rest of
   // the app's chips use). It's deliberately scoped to smoking/drinking/
   // parking/theft, so curfew/waste/noise fall through to
@@ -1556,7 +1635,19 @@ export function ViolationModal({
                     {scfg.label}
                   </span>
                 </div>
-                <div className="mt-1.5 flex items-center gap-2">
+                <div className="mt-1 text-[13px]" style={{ color: "var(--muted-foreground)" }}>
+                  <span style={{ fontFamily: "'DM Mono', monospace" }}>{alert.id}</span>
+                  {" · "}{alert.cameraZone}
+                </div>
+              </div>
+            </div>
+
+            {/* WHEN and WHERE, right-aligned. Both answer "where do I go and
+                was this just now?", which is what an officer reads first --
+                and neither competes with the violation type on the left. */}
+            <div className="flex items-start gap-3 flex-shrink-0">
+              <div className="text-right min-w-0">
+                <div className="flex items-center justify-end gap-2">
                   <Clock size={17} style={{ color: "var(--muted-foreground)", flexShrink: 0 }} />
                   <span className="text-[20px] leading-tight" style={{ color: "var(--foreground)" }}>
                     <span style={{ fontWeight: 500 }}>{formatStamp(alert.timestamp).date}</span>
@@ -1564,16 +1655,23 @@ export function ViolationModal({
                     <span style={{ fontWeight: 700 }}>{formatStamp(alert.timestamp).time}</span>
                   </span>
                 </div>
-                <div className="mt-1 text-[13px]" style={{ color: "var(--muted-foreground)" }}>
-                  <span style={{ fontFamily: "'DM Mono', monospace" }}>{alert.id}</span>
-                  {" · "}{alert.cameraZone}
-                </div>
+                {/* The camera's own address. Absent until someone types one in
+                    Live Feeds, so the line is omitted rather than showing an
+                    empty pin that reads like missing data. */}
+                {alert.cameraAddress ? (
+                  <div className="mt-1 flex items-center justify-end gap-1.5">
+                    <MapPin size={14} style={{ color: "var(--muted-foreground)", flexShrink: 0 }} />
+                    <span className="text-[14px] break-words" style={{ color: "var(--muted-foreground)" }}>
+                      {alert.cameraAddress}
+                    </span>
+                  </div>
+                ) : null}
               </div>
+              <button onClick={onClose} className="p-2 rounded-lg flex-shrink-0 self-start"
+                style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}>
+                <X size={15} />
+              </button>
             </div>
-            <button onClick={onClose} className="p-2 rounded-lg flex-shrink-0"
-              style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}>
-              <X size={15} />
-            </button>
           </div>
 
           {/* Body — video left (60%), stacked reference cards right (40%);
@@ -1789,27 +1887,49 @@ export function ViolationModal({
                        figure hid exactly that gap. */
                     <>
                       <QuietCard label="Camera" value={alert.camera} mono />
-                      {/* v3 2: the level and the evidence, not the number.
-                          "A score of 68 versus 73 means nothing to a tanod and
-                          reads like a percentage, which it is not." The score
-                          is still stored; it is simply not what an officer is
-                          asked to act on. */}
-                      <QuietCard
-                        label="Assessment"
-                        value={alert.levelLabel || "Possible"}
-                        valueColor={vcfg.color}
-                        tooltip={
-                          <>
-                            <div className="font-semibold mb-1" style={{ color: "var(--foreground)" }}>How this is assessed</div>
-                            Each piece of evidence below adds points, and the total decides the
-                            level. The system proposes; you confirm.
-                            <div className="mt-1.5" style={{ opacity: 0.85 }}>
-                              Possible - listed and notified.<br />
-                              Likely - full alert with video evidence.
-                            </div>
-                          </>
-                        }
-                      />
+                      {/* Status and Object detection, side by side.
+                          Separate on purpose: they answer different questions
+                          and routinely disagree. "How sure is the detector that
+                          this is a bottle?" is not "how likely is it that this
+                          is a drinking violation?" -- a crisp bottle detection
+                          on a man walking home is high on the right and low on
+                          the left, and one merged figure hid exactly that gap. */}
+                      <div className="grid grid-cols-2 gap-2 min-w-0">
+                        <QuietCard
+                          label="Status"
+                          value={alert.levelLabel || "Possible"}
+                          valueColor={LEVEL_COLORS[alert.levelLabel] || vcfg.color}
+                          tooltipSpan="row"
+                          tooltip={
+                            <>
+                              <div className="font-semibold mb-1" style={{ color: "var(--foreground)" }}>Status</div>
+                              Shows how strongly it points to a violation. It is based only on
+                              what the system detected (such as objects), not on the AI.
+                              <div className="mt-1.5" style={{ opacity: 0.85 }}>
+                                Possible — listed and notified.<br />
+                                Likely — full alert with video evidence.
+                              </div>
+                            </>
+                          }
+                        />
+                        <QuietCard
+                          label="Object detection"
+                          value={
+                            alert.objectConfidence != null
+                              ? `${(alert.objectConfidence * 100).toFixed(0)}%`
+                              : "—"
+                          }
+                          tooltipAlign="right"
+                          tooltipSpan="row"
+                          tooltip={
+                            <>
+                              <div className="font-semibold mb-1" style={{ color: "var(--foreground)" }}>Object confidence</div>
+                              How confident the YOLOv8 model detected the respective object of
+                              the violation.
+                            </>
+                          }
+                        />
+                      </div>
                       {alert.checklist && (
                         <div className="rounded-lg px-3 py-2.5 min-w-0"
                           style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
@@ -1823,6 +1943,23 @@ export function ViolationModal({
                               <span className="break-words">{line}</span>
                             </div>
                           ))}
+                          {alert.vlmReason && (
+                            /* The checker's own sentence. Marked as
+                               AI-generated and set in italics because a
+                               reviewer must be able to tell a model's words
+                               from a dispatcher's note at a glance --
+                               especially when the sentence argues AGAINST the
+                               alert it is attached to. */
+                            <div className="mt-2 pt-2" style={{ borderTop: "1px solid var(--border)" }}>
+                              <div className="text-[13px] mb-1" style={{ color: "var(--muted-foreground)" }}>
+                                AI checker said
+                              </div>
+                              <div className="text-[14px] leading-snug italic break-words"
+                                style={{ color: "var(--muted-foreground)" }}>
+                                &ldquo;{alert.vlmReason}&rdquo;
+                              </div>
+                            </div>
+                          )}
                           {alert.checklist.reduced_by?.length > 0 && (
                             /* Shown because it explains why an alert the
                                indicators would have raised was held back --
@@ -1845,8 +1982,62 @@ export function ViolationModal({
                     </>
                   )}
 
-                {/* What was detected — the alert's own description, full width */}
-                <QuietCard label="What was detected" value={alert.description || "—"} />
+                {/* What the checker made of the scene.
+                    Shown INSTEAD of the raw description when there is a reading
+                    to show: the description is the detector restating its own
+                    trigger ("knife on person #2, present 3s"), which tells a
+                    reviewer nothing they cannot see in the video. The checker's
+                    sentence is the only line on this card that describes the
+                    situation rather than the detection. */}
+                {alert.vlmReason ? (
+                  <div className="rounded-lg px-3 py-2.5 min-w-0"
+                    style={{ background: "var(--secondary)", border: "1px dashed var(--border)" }}>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 text-[13px]"
+                        style={{ color: "var(--muted-foreground)" }}>
+                        <Sparkles size={13} />
+                        AI context
+                      </div>
+                      {/* Stated every time, not only when it is wrong. A model's
+                          sentence reads as authoritative precisely because it is
+                          fluent, and an officer acting on it deserves to know
+                          which lines a machine wrote. */}
+                      <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>
+                        AI-generated · may be wrong
+                      </div>
+                    </div>
+
+                    {aiReadsAsOrdinary(alert.ai?.cues) && (
+                      <div className="mt-2 inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[13px] font-medium"
+                        style={{ background: "rgba(245,158,11,0.15)", color: "#b45309" }}>
+                        <AlertTriangle size={12} /> May be ordinary activity
+                      </div>
+                    )}
+
+                    <div className="mt-2 text-[15px] leading-snug italic break-words"
+                      style={{ color: "var(--foreground)" }}>
+                      &ldquo;{alert.vlmReason}&rdquo;
+                    </div>
+
+                    <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px]"
+                      style={{ color: "var(--muted-foreground)" }}>
+                      {aiChips(alert.ai?.cues).map((chip) => (
+                        <span key={chip.key} className="inline-flex items-center gap-1">
+                          {chip.plain ? null : chip.yes
+                            ? <Check size={12} style={{ color: vcfg.color }} />
+                            : <X size={12} />}
+                          {chip.label}
+                        </span>
+                      ))}
+                      {alert.ai?.tier && <span>Confidence: {alert.ai.tier}</span>}
+                    </div>
+                  </div>
+                ) : (
+                  /* No reading to show -- the checker is off, or it failed and
+                     the alert published on the geometry alone. Fall back to the
+                     detector's own description rather than an empty card. */
+                  <QuietCard label="What was detected" value={alert.description || "—"} />
+                )}
 
                 {/* Detected object (the model's class label — NOT a resident
                     match; see the module notes above SetCandidateModal) paired

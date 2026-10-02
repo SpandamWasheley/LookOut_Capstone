@@ -18,6 +18,7 @@ from django.conf import settings as django_settings
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from django.core.mail import send_mail
+import threading
 from django.core.validators import validate_email
 from django.db import transaction
 from django.db.models import Count
@@ -60,6 +61,37 @@ from .throttling import (
     PasswordResetConfirmThrottle,
     PasswordResetSendThrottle,
 )
+
+def send_mail_async(subject, body, recipient):
+    """Queue an email and return immediately.
+
+    SMTP is slow -- Gmail measured at ~6.6s from this machine -- and it used to
+    run inside the request. React Native's HTTP client gives up after 10s, so a
+    phone on Wi-Fi would abort while the server was still talking to Gmail: the
+    code arrived in the inbox, the app showed a network error, and the screen
+    never advanced to the code input.
+
+    The caller no longer waits. The recipient does not care whether the message
+    took 200ms or 8s to leave, and nothing in the response depends on it: the
+    endpoint deliberately returns the same body whether or not an account
+    exists, so there was never anything to report back.
+
+    A daemon thread rather than a task queue: this is one email on a verification
+    path, and Celery or Redis for it would be a lot of moving parts for a problem
+    that is four lines. Daemon so a shutdown is not held open by a pending send.
+    """
+    def _send():
+        try:
+            send_mail(subject, body, django_settings.DEFAULT_FROM_EMAIL,
+                      [recipient], fail_silently=False)
+        except Exception:
+            # Logged, never surfaced. A delivery failure must not tell a caller
+            # whether the address belongs to a real account.
+            logger.exception("Failed to send mail to %s", recipient)
+
+    threading.Thread(target=_send, daemon=True).start()
+
+
 
 CODE_EXPIRY_MINUTES = 10
 logger = logging.getLogger(__name__)
@@ -156,6 +188,16 @@ def send_officer_code(request):
         return Response({"email": "An account with this email already exists."}, status=400)
 
     code = f"{random.randint(0, 999999):06d}"
+    # Deliberately SYNCHRONOUS, unlike the password-reset path above.
+    #
+    # Registration happens on the web dashboard, where the browser has no short
+    # fetch timeout, and waiting buys something real: a typo'd address is caught
+    # here and reported, instead of the user staring at a code that will never
+    # arrive. There is no anti-enumeration concern either -- this endpoint
+    # already says whether an account exists.
+    #
+    # The reset path has the opposite shape: it runs on a phone whose HTTP
+    # client aborts at 10s, and it must never reveal whether delivery worked.
     try:
         send_mail(
             "Your LookOut verification code",
@@ -315,22 +357,19 @@ def forgot_password_send_code(request):
     user = User.objects.filter(email__iexact=email).first()
     if user:
         code = f"{random.randint(0, 999999):06d}"
-        try:
-            send_mail(
-                "Your LookOut password reset code",
-                f"Your password reset code is {code}. It expires in {CODE_EXPIRY_MINUTES} minutes. "
-                "If you didn't request this, you can ignore this email.",
-                django_settings.DEFAULT_FROM_EMAIL,
-                [email],
-                fail_silently=False,
-            )
-        except Exception:
-            # Logged only — the response below stays identical either way so a
-            # delivery failure can't be used to distinguish a real account from
-            # a fake one (same anti-enumeration reasoning as the user lookup above).
-            logger.exception("Failed to send password reset email to %s", email)
-        else:
-            EmailVerificationCode.objects.create(email=email, code=code)
+        # The row is written FIRST, then the mail is queued. It used to be the
+        # other way round -- row only on a successful send -- which was neat but
+        # meant the caller had to wait for SMTP to know whether to write it.
+        # Writing first costs an unused row when delivery fails, and buys a
+        # response that returns in milliseconds instead of seconds.
+        EmailVerificationCode.objects.create(email=email, code=code)
+        send_mail_async(
+            "Your LookOut password reset code",
+            f"Your password reset code is {code}. It expires in "
+            f"{CODE_EXPIRY_MINUTES} minutes. If you didn't request this, you "
+            "can ignore this email.",
+            email,
+        )
     # Same response whether or not the email exists, so this can't be used to enumerate accounts.
     return Response({"detail": "If an account exists for this email, a reset code has been sent."})
 

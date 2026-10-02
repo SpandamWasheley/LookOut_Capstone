@@ -162,6 +162,15 @@ class Command(BaseCommand):
             endpoint=_vlm_cfg.vlm_endpoint,
         )
         self.vlm_min_confidence = _vlm_cfg.vlm_min_confidence
+        self.vlm_async = _vlm_cfg.vlm_async
+        self.frame_buffer = vlm.FrameBuffer(store_edge=_vlm_cfg.vlm_max_edge)
+        # How much work each call is allowed to cost. Read once, with the
+        # verifier, rather than per alert.
+        self.vlm_cost = {
+            "max_edge": _vlm_cfg.vlm_max_edge,
+            "send_scene": _vlm_cfg.vlm_send_scene,
+            "max_images": (1 if _vlm_cfg.vlm_send_scene else 0) + _vlm_cfg.vlm_frames,
+        }
         self.stdout.write(vlm.describe(self.vlm, _vlm_cfg.vlm_model))
 
         self.far = not options["fast"]
@@ -223,6 +232,13 @@ class Command(BaseCommand):
         cmd.ablate = set()
         cmd.vlm = self.vlm
         cmd.vlm_min_confidence = self.vlm_min_confidence
+        cmd.vlm_cost = self.vlm_cost
+        cmd.vlm_async = self.vlm_async
+        # ONE buffer shared by all three engines, not one each. They watch the
+        # same camera and the same frames, so three copies of the same seconds
+        # is three times the memory for identical pixels -- which is what ran a
+        # 16 GB machine out of memory on 2560x1440 footage.
+        cmd.frame_buffer = self.frame_buffer
         cmd.stats = Counter()
         cmd._alert_log = []
         cmd.stdout = self.stdout
@@ -515,7 +531,10 @@ class Command(BaseCommand):
         for name in active:
             cmd = self.engines[name]["cmd"]
             cmd.clip.add(frame, now)
-            cmd.frame_buffer.add(frame, now)
+        # Fed once, outside the per-engine loop: it is one buffer now, and
+        # adding the same frame three times would evict the history it exists
+        # to keep.
+        self.frame_buffer.add(frame, now)
 
     def _log_calibration_rows(self, dets, persons, ids, frame_idx, timestamp):
         """Writes one CSV row per raw detection, before routing, per-engine

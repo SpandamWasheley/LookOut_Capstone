@@ -122,6 +122,14 @@ class Command(BaseCommand):
             endpoint=_vlm_cfg.vlm_endpoint,
         )
         self.vlm_min_confidence = _vlm_cfg.vlm_min_confidence
+        self.vlm_async = _vlm_cfg.vlm_async
+        # How much work each call is allowed to cost. Read once, with the
+        # verifier, rather than per alert.
+        self.vlm_cost = {
+            "max_edge": _vlm_cfg.vlm_max_edge,
+            "send_scene": _vlm_cfg.vlm_send_scene,
+            "max_images": (1 if _vlm_cfg.vlm_send_scene else 0) + _vlm_cfg.vlm_frames,
+        }
         self.stdout.write(vlm.describe(self.vlm, _vlm_cfg.vlm_model))
 
         self.pose = options["pose"]
