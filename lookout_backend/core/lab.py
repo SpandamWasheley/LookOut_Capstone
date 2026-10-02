@@ -17,13 +17,12 @@ import base64
 import time
 
 import numpy as np
-from django.conf import settings
 from django.http import JsonResponse
 from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
 
 from core.models import SystemSettings
-from core.vision import recognition, scoring, vlm
+from core.vision import ai_checker, ai_status, recognition, scoring
 
 # Which prompt spec and weight table belong to each violation.
 KINDS = {
@@ -48,7 +47,6 @@ def page(request):
         "model_path": recognition.MERGED_MODEL_PATH.name,
         "model_exists": recognition.MERGED_MODEL_PATH.exists(),
         "vlm_model": cfg.vlm_model,
-        "vlm_provider": cfg.vlm_provider,
         "vlm_enabled": cfg.vlm_enabled,
         "thresholds": {
             "drinking": cfg.drinking_confidence,
@@ -82,8 +80,7 @@ EDITABLE = {
     "vlm_async": None,            # bool
     "vlm_model": None,            # free text -- an ollama tag
     "vlm_max_edge": (128, 2048),
-    "vlm_frames": (0, 5),
-    "vlm_send_scene": None,       # bool
+    "vlm_frames": (1, 12),
     "vlm_timeout": (5, 3600),
 }
 
@@ -441,28 +438,31 @@ def _score_for(kind, detections, person_count, request):
 
 
 def _ask(frame, kind, cfg):
-    """One checker call, timed, with every failure reported rather than hidden."""
-    verifier = vlm.build_verifier(
-        enabled=True, provider=cfg.vlm_provider,
-        api_key=cfg.vlm_api_key or None, model=cfg.vlm_model,
-        timeout=max(cfg.vlm_timeout, 1800), endpoint=cfg.vlm_endpoint)
-    if isinstance(verifier, vlm.DisabledVerifier):
-        return {"ok": False, "error": verifier.reason}
+    """One checker call on a single frame (a still has no motion, so the same frame is
+    sent a few times), timed, with every failure reported rather than hidden."""
+    import cv2
 
-    verdict = vlm.verify_frame(
-        verifier, frame, kind, box=None,
-        max_edge=cfg.vlm_max_edge, send_scene=cfg.vlm_send_scene,
-        max_images=(1 if cfg.vlm_send_scene else 0) + cfg.vlm_frames)
+    kind = ai_checker.kind_for(kind) or "smoking"
+    client = ai_checker.OllamaClient(model=cfg.vlm_model, endpoint=cfg.vlm_endpoint,
+                                     timeout=max(cfg.vlm_timeout, 600))
+    ok, why = client.available()
+    if not ok:
+        return {"ok": False, "error": why}
+    h, w = frame.shape[:2]
+    scale = min(1.0, cfg.vlm_max_edge / float(max(h, w)))
+    img = cv2.resize(frame, (int(w * scale), int(h * scale))) if scale < 1 else frame
+    data = ai_checker.encode(img)
+    result = ai_checker.check(client, kind, ai_checker.system_note(kind), [data] * 2)
+    ctx = ai_status.ai_context(kind, {"state": "done", "reply": result.reply, "model": result.model,
+                                      "seconds": result.seconds}, "warning")
     return {
-        "ok": verdict.ok,
-        "error": verdict.error,
-        "verdict": verdict.verdict,
-        "tier": verdict.tier if verdict.ok else "low",
-        "reason": verdict.reason,
-        "cues": verdict.cues,
-        "multipliers": verdict.enum_multipliers(),
-        "seconds": round(verdict.latency or 0, 1),
-        "model": verdict.model,
+        "ok": result.ok,
+        "error": result.error,
+        "reply": result.reply,
+        "badge": ctx["badge"]["text"],
+        "checklist": ctx["checklist"],
+        "seconds": round(result.seconds or 0, 1),
+        "model": result.model,
     }
 
 

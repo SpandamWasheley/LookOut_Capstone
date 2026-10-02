@@ -240,7 +240,16 @@ class Alert(models.Model):
     # is the whole point of the scoring layer.
     object_confidence = models.FloatField(null=True, blank=True)
 
-    # --- VLM verification (core/vision/vlm.py) ------------------------------
+    # --- AI checker (core/vision/ai_checker.py), spec v6 section 8 ------------
+    # {"state": "pending" | "done" | "unavailable", "reply": {...the validated JSON...},
+    #  "model", "seconds", "frame_files": [urls of the frames sent], "system_note",
+    #  "trigger_level", "error"}. Empty when the checker was off. The suggested status and
+    # the badge are NOT stored: they are recomputed from this and the CURRENT official
+    # status every time the alert is read (core/vision/ai_status.ai_context).
+    ai = models.JSONField(default=dict, blank=True)
+
+    # --- legacy VLM columns (no longer written; removed in the Part 5 migration
+    # together with the web / officer-app readers) -----------------------------
     # Verdict on the evidence crop: yes / no / unclear, or blank when the VLM is
     # disabled or the call failed. NEVER gates alert creation -- a VLM that is
     # down must not stop a security system from alerting.
@@ -475,7 +484,7 @@ class SystemSettings(models.Model):
 
     # --- VLM verification ---------------------------------------------------
     # Second-stage vision-language check on the evidence crop at alert time
-    # (core/vision/vlm.py).
+    # (core/vision/ai_checker.py).
     #
     # ON by default, because the safe behaviour is already the DEFAULT one: with
     # no credentials configured, build_verifier hands back an inert verifier and
@@ -492,7 +501,6 @@ class SystemSettings(models.Model):
     # is the context geometry can't see (is this inuman or a family lunch? a
     # holdup or a fish vendor?) and a readable reason on the alert card.
     vlm_enabled = models.BooleanField(default=True)
-    vlm_provider = models.CharField(max_length=20, default="ollama")
     # Where the local Ollama server listens. v3 §8 runs the checker on this
     # machine, so there is no API key and no outbound request -- what used to
     # be "is the credential valid" is now "is the server up and is the model
@@ -501,16 +509,12 @@ class SystemSettings(models.Model):
                                     default="http://localhost:11434")
     # Held as a setting because model ids turn over far faster than this code
     # will. If a run reports the model as not found, change it here.
-    vlm_model = models.CharField(max_length=60, default="qwen3-vl:4b")
-    # Blank falls back to the GOOGLE_API_KEY (or GEMINI_API_KEY) environment
-    # variable, which is where it belongs in a deployment — the field exists so
-    # a barangay admin can set it from the dashboard without shell access.
-    vlm_api_key = models.CharField(max_length=200, blank=True)
+    vlm_model = models.CharField(max_length=60, default="qwen3-vl:2b-instruct")
     # Seconds before a call is abandoned and treated as unavailable. The alert
     # is published either way; this only bounds how long it waits.
     # A local 4B model on CPU is slower than a cloud call, and the alert path
     # can afford to wait -- the frame loop has already moved on.
-    vlm_timeout = models.PositiveSmallIntegerField(default=60)
+    vlm_timeout = models.PositiveSmallIntegerField(default=120)
 
     # --- per-call cost (the only knobs that matter on CPU-only hardware) -----
     # A vision call's wall clock is dominated by PREFILL: every image becomes
@@ -522,19 +526,14 @@ class SystemSettings(models.Model):
     # They trade accuracy for speed honestly, and the trade should be reported:
     # fewer images means the motion questions (hand_to_mouth_activity compares
     # frames) have less to compare, and a smaller edge means small objects are
-    # harder to see. Measure with `manage.py vlm_selftest --benchmark` rather
+    # harder to see. Measure with detection_sandbox/ai_checker_bench.py rather
     # than guessing which setting your hardware needs.
     #
-    # Total images sent = 1 scene frame (if enabled) + up to vlm_frames crops.
-    vlm_frames = models.PositiveSmallIntegerField(default=3)
+    # Frames sent per call: vlm_frames crops (spec: 8-12). Each costs ~1,100 tokens.
+    vlm_frames = models.PositiveSmallIntegerField(default=8)
     # Longest edge of each image in pixels. Visual tokens grow with AREA, so
     # 1024 -> 512 is roughly a 4x cut in prefill work.
-    vlm_max_edge = models.PositiveSmallIntegerField(default=1024)
-    # The full uncropped frame. It is what makes the scene questions ("is this
-    # a store?", "is there seating?") answerable at all, so turn it off only
-    # when the machine cannot afford it.
-    vlm_send_scene = models.BooleanField(default=True)
-
+    vlm_max_edge = models.PositiveSmallIntegerField(default=640)
     # Run the checker WITHOUT making the alert wait for it (spec 6: "Async:
     # never block the video loop").
     #
@@ -555,11 +554,6 @@ class SystemSettings(models.Model):
     # Default ON, because an alert that arrives now with context later beats an
     # alert that arrives minutes late, and beats no checker at all.
     vlm_async = models.BooleanField(default=True)
-    # Minimum self-reported certainty for a verdict to score at all. Below this
-    # the verdict is recorded on the alert for audit but contributes no cue —
-    # the model saying "maybe, 20%" is not evidence.
-    vlm_min_confidence = models.PositiveSmallIntegerField(default=50)
-
 
     alert_cooldown = models.PositiveSmallIntegerField(default=120)
     # How long alert evidence (images and clips) is kept before

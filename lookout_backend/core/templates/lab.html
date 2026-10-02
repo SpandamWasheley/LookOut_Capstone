@@ -87,8 +87,7 @@
           <div class="meta" style="margin-bottom:6px">AI checker</div>
           <label class="meta">model <input class="num" data-f="vlm_model" type="text" style="width:150px"></label>
           <label class="meta">image size <input class="num" data-f="vlm_max_edge" type="number" min="128" max="2048"></label>
-          <label class="meta">extra frames <input class="num" data-f="vlm_frames" type="number" min="0" max="5"></label>
-          <label class="meta"><input class="chk" data-f="vlm_send_scene" type="checkbox"> send full scene</label>
+          <label class="meta">frames <input class="num" data-f="vlm_frames" type="number" min="1" max="12"></label>
           <label class="meta"><input class="chk" data-f="vlm_enabled" type="checkbox"> enabled (live runs)</label>
         </div>
       </div>
@@ -227,13 +226,12 @@ function render(d) {
           <strong>AI context</strong>
           <span class="meta">AI-generated · may be wrong · ${v.seconds}s · ${v.model}</span>
         </div>
-        ${Object.keys(v.multipliers).length ? `<div class="warnbox" style="margin-top:9px">⚠ Reads as ordinary activity — would cut the score to a quarter</div>` : ""}
-        <div style="margin-top:9px;font-style:italic">${v.reason ? "“" + v.reason + "”" : "<span class='muted'>(no sentence returned)</span>"}</div>
+        <div style="margin-top:9px;font-style:italic">${v.reply.observations ? "“" + v.reply.observations + "”" : ""}</div>
         <div style="margin-top:9px">
-          ${Object.entries(v.cues).map(([k, val]) =>
-            `<span class="chip">${val === true ? "✓" : val === false ? "✗" : ""} ${k}${typeof val === "string" ? ": " + val : ""}</span>`).join("")}
-          <span class="chip">verdict: ${v.verdict}</span>
-          <span class="chip">confidence: ${v.tier}</span>
+          ${v.checklist.map(c =>
+            `<span class="chip">${c.value === true ? "✓" : c.value === false ? "✗" : ""} ${c.label}${typeof c.value === "string" ? ": " + c.value : ""}</span>`).join("")}
+          <span class="chip">${v.badge}</span>
+          <span class="chip">confidence: ${v.reply.confidence}</span>
         </div>
       </div>`
       : `<div class="ai" style="color:var(--bad)">AI checker failed: ${v.error}</div>`;

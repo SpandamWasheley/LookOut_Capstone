@@ -1130,13 +1130,17 @@ class TheftEngine:
             # Spec v6 section 7: a second person must be NEAR the knife holder
             # (within near_person_heights of the HOLDER's height) to go above
             # Monitoring.
-            near = any(o is not t and _person_norm_distance(t.box, o.box) <= self.near_person_heights
-                       for o in tracks)
-            out.append(self._evidence(
+            others = [(o, _person_norm_distance(t.box, o.box)) for o in tracks if o is not t]
+            nearest = min(others, key=lambda x: x[1], default=None)
+            near = nearest is not None and nearest[1] <= self.near_person_heights
+            ev = self._evidence(
                 "weapon", t.box, cues, mult, abstained, [t.id],
                 f"weapon visible: {label} on person #{t.id}",
                 people_near=near,
-            ))
+            )
+            # Where the other person is, so the AI checker's crop can take in both people.
+            ev.partner_box = tuple(nearest[0].box) if near else None
+            out.append(ev)
         return out
 
     def _evidence(self, *args, **kw):

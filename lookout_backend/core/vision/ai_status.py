@@ -172,3 +172,58 @@ def suggest_status(official_level, kind, reply, puff_only=False):
                 "suggested": higher, "changed": True, "direction": "up"}
 
     return same(f"No change — {official}")
+
+
+# --- what the API serves for an alert (recomputed on every read) -------------
+
+_FIELD_LABELS = {
+    "table_chairs_or_seating_visible": "Table, chairs or seating visible",
+    "drinking_items_visible": "Drinks or items set out",
+    "smoking_item_visible": "Smoking item visible",
+    "object_pointed_at_a_person": "Object pointed at a person",
+    "victim_response_visible": "Person reacting (hands up, backing away)",
+}
+_CHOICE_LABELS = {
+    "drinking_likelihood": "Drinking likelihood",
+    "holdup_likelihood": "Holdup likelihood",
+    "scene_type": "Scene",
+    "hand_to_mouth_activity": "Hand-to-mouth activity",
+}
+
+
+def ai_checklist(kind, reply):
+    """The answered fields as a checklist: [{"field", "label", "value"}], true/false
+    fields first. Empty for an invalid / missing reply."""
+    r = validate_reply(kind, reply) if reply is not None else None
+    if r is None:
+        return []
+    out = []
+    for field in REQUIRED_FIELDS[kind]:
+        if field in _FIELD_LABELS:
+            out.append({"field": field, "label": _FIELD_LABELS[field], "value": bool(r[field])})
+    for field in REQUIRED_FIELDS[kind]:
+        if field in _CHOICE_LABELS:
+            out.append({"field": field, "label": _CHOICE_LABELS[field], "value": r[field].replace("_", " ")})
+    return out
+
+
+def ai_context(kind, ai, official_level, puff_only=False):
+    """Everything the AI cards need, from the stored `Alert.ai` and the alert's CURRENT
+    official level. Display only: the suggested status is recomputed here on every
+    read, so it always follows the official status as it moves."""
+    ai = ai or {}
+    reply = ai.get("reply")
+    valid = validate_reply(kind, reply) if (kind and reply is not None) else None
+    state = ai.get("state") or ""
+    if valid is None:
+        shown = "pending" if state == "pending" else "unavailable"
+        return {"state": shown, "badge": {"code": "unavailable", "text": UNAVAILABLE},
+                "suggestion": {"text": UNAVAILABLE, "suggested": None, "changed": False, "direction": "none"},
+                "observations": "", "checklist": [], "confidence": None,
+                "model": ai.get("model", ""), "seconds": ai.get("seconds"), "frames": ai.get("frame_files", []),
+                "system_note": ai.get("system_note", ""), "error": ai.get("error", "")}
+    return {"state": "done", "badge": ai_badge(kind, valid),
+            "suggestion": suggest_status(official_level, kind, valid, puff_only=puff_only),
+            "observations": valid["observations"], "checklist": ai_checklist(kind, valid),
+            "confidence": valid["confidence"], "model": ai.get("model", ""), "seconds": ai.get("seconds"),
+            "frames": ai.get("frame_files", []), "system_note": ai.get("system_note", ""), "error": ""}

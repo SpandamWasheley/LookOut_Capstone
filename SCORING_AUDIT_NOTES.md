@@ -80,3 +80,50 @@ f. **Tune momentum on the 3 smoking clips.** Report hit rate, confidence and mom
 g. **A cigarette alone (0.40) must show as Monitoring** per spec v6 (today the 0.35-0.55 band is WATCH and not stored).
 h. **Re-run `detection_sandbox/funnel_run.py` on the 3 clips**: before vs after the fixes.
 i. **After the defense:** fine-tune merged_v2 with more Cigarette examples at CCTV height.
+
+## Round 2 findings from the Part 3 smoke test (not tuned; for Round 2)
+
+Smoke test: Trim2 and the Holdup clip, `--clock`, `watch_merged`, DB copy. Evidence crops saved in
+`detection_sandbox/output/audit_crops/`.
+
+**a. Trim2 smoking Possible, "cigarette seen, 0 puffs" (alert 398).** Cues were `cigarette 0.40` +
+`near_mouth 0.15` = 0.55, exactly the Possible cutoff. The Cigarette object cue was ON (momentum peaked at the
+3.0 cap, detection 76%) and the item was within the mouth distance, so the "item at the mouth" point was earned.
+No puff had been counted yet (gesture 0). Likely a real smoker (man at the curb, hand at the face), but it shows
+that object + near-mouth alone reaches Possible with a single sustained detection. Round 2: check against
+ground truth on more smoking clips before deciding whether the near_mouth point needs a stricter distance.
+
+**b. Holdup clip smoking Possible/Likely (alert 402).** False positive. The "Cigarette" (50%) is a yellow phone
+case held to the ear of a woman walking past (crop: `holdup_clip_smoking_FP_cigarette.jpg`). Cues were
+`cigarette 0.40` + `gesture 0.20` (one hand-to-face movement counted as a puff) = 0.60 Possible, later 0.75
+(Likely) when near_mouth was added. A phone call is exactly the case the AI checker's
+`hand_to_mouth_activity = other_activity` is for (display only), but the official score is unchanged by it.
+Round 2: the merged model fires on phones; consider a hard-negative set (phones at the ear) for retraining, and
+whether a gesture counted while the item never moves to the mouth region should earn the puff point.
+
+**c. Trim2 drinking gathering counted a passing motorbike rider (alert 400, "3 persons").** The row's cues were
+only `bottle 0.40` + `time_band 0.05` = Monitoring. The gathering cue was NOT earned, so the rider did not add
+points, but the description counts three people because cluster membership is just proximity
+(`GROUP_CLUSTER_DIST` = 1.8 box-widths) of any person box, with no per-member movement check. "Stationary" is
+defined on the CLUSTER, not its members: `Cluster.stationary(now, window)` requires the union box centre to
+stay within `STATIONARY_DIST` = 0.6 mean box-widths over the window (>= 5 s, up to 30 s for the `gathering`
+cue; the full group-duration window for `gathering_duration`). A moving member shifts the union box and fails
+the check, which is why no gathering points were earned here. The Monitoring row came from a Bottle detection
+(a carried bag) on a walking pedestrian, which spec v6 allows (a bottle carried past is Monitoring). Round 2:
+count only members that are themselves roughly stationary when reporting the group size, and review whether a
+moving person should be allowed to create a gathering row at all.
+
+## AI checker model choice (Part 4)
+
+Benchmarked on the real crop path (smoker at curb, the passing-bike "gathering", the holdup knife), GPU 6 GB:
+
+| Config | Valid JSON | s/call (alone) | s/call (detection running) | Memory |
+|---|---|---|---|---|
+| 2B-instruct, 8 frames, ctx 10240 | 3/3 | 8.8 | 11.3 | 100% GPU, 2.8 GB |
+| 2B-instruct, 12 frames, ctx 16384 | 3/3 | 13.8 | n/a | 100% GPU, 3.4 GB |
+| 4B-instruct, 8 frames, ctx 10240 | 3/3 | 26.0 | 20.8 | 23% CPU / 77% GPU (spills), 4.8 GB |
+
+Chosen: 2B-instruct, 8 frames, ctx 10240. Each image costs about 1,100 tokens regardless of crop size, so 12
+frames need ctx 16384 and 12 frames at ctx 8192 fails with HTTP 400. Upscaling the small smoker crop to 512 px
+changed nothing useful (left off). The 2B model misses the knife confrontation (said "unlikely", the 4B said
+"likely"); the cost is only a missing upward suggestion, since the AI never changes the official status.

@@ -11,14 +11,15 @@ The three watchers (smoking, drinking, thief) mix this in and supply two small
 callables: how to create the row, and how to describe it.
 """
 
-from django.utils import timezone
-
+import os
 from collections import namedtuple
 
 import cv2
+from django.utils import timezone
 
-from core.models import Alert
-from core.vision import momentum, recognition, scoring
+from core.media import violation_media_path
+from core.models import Alert, SystemSettings
+from core.vision import ai_checker, momentum, recognition, scoring
 
 CLIP_REFRESH_SECONDS = 15.0     # while Possible / Likely continues
 ROW_UPDATE_SECONDS = 5.0        # throttle for score / last_seen writes
@@ -40,6 +41,41 @@ class Incident:
         self.announced = False      # the first row (or its dry-run log line) was handled
 
 
+def ai_setup(stdout, off=False):
+    """Build the AI checker's shared state from SystemSettings: the Ollama client (None
+    when switched off or unusable, with the reason printed), the full-resolution frame
+    ring, and the per-call knobs. Returns a dict that watchers copy onto themselves
+    (and onto the engines they drive), so one ring and one client serve all of them."""
+    cfg = SystemSettings.load()
+    client, why = None, "switched off"
+    if cfg.vlm_enabled and not off:
+        candidate = ai_checker.OllamaClient(model=cfg.vlm_model, endpoint=cfg.vlm_endpoint,
+                                            timeout=cfg.vlm_timeout)
+        ok, why = candidate.available()
+        client = candidate if ok else None
+    stdout.write(f"AI checker: ON ({cfg.vlm_model}, {cfg.vlm_frames} frames)" if client
+                 else f"AI checker: OFF — {why}")
+    return {
+        "ai_client": client,
+        "ai_ring": ai_checker.FrameRing() if client else None,
+        "ai_frames": cfg.vlm_frames,
+        "ai_edge": cfg.vlm_max_edge,
+        "ai_wait": not cfg.vlm_async,
+    }
+
+
+def store_ai_result(alert_id, result, trigger_level):
+    """Write a finished check onto its Alert. Runs on the worker thread; only touches
+    the one row by primary key."""
+    data = result.as_dict()
+    data.update({
+        "state": "done" if result.ok else "unavailable",
+        "trigger_level": trigger_level,
+        "finished_at": timezone.now().isoformat(),
+    })
+    Alert.objects.filter(pk=alert_id).update(ai=data)
+
+
 ObjectCue = namedtuple("ObjectCue", "on label conf momentum snapshot")
 NO_CUE = ObjectCue(False, None, None, 0.0, None)
 
@@ -47,6 +83,43 @@ NO_CUE = ObjectCue(False, None, None, 0.0, None)
 class IncidentMixin:
     """Mix into a watch_* Command. Needs: self.dry_run, self.stdout, self.style,
     self.stats, self._alert_log, and the watcher's own _save_clips()."""
+
+    # ---- AI checker (display only; never changes the score or status) ------
+
+    ai_client = None
+    ai_ring = None
+    ai_frames = ai_checker.FRAMES_DEFAULT
+    ai_edge = ai_checker.SEND_EDGE
+    ai_wait = False
+
+    def _ai_setup(self, off=False):
+        self.ai_state = ai_setup(self.stdout, off=off)
+        self.__dict__.update(self.ai_state)
+
+    def _ai_note(self, key, box):
+        """Remember where a subject is in THIS frame (every frame, not only once an incident
+        exists), so the AI checker's crops can follow it back through the pre-trigger frames."""
+        if self.ai_ring is not None and box is not None:
+            self.ai_ring.note_box(key, box)
+
+    def _ai_trigger(self, alert, ai, key, now, level):
+        """Start the check for a NEW incident row (entering Monitoring, or a puff-only
+        incident reaching Possible -- both are the moment the row is created)."""
+        if alert is None or self.ai_client is None or self.ai_ring is None:
+            return
+        keys = list(ai.get("keys") or [("track", key[1])])
+        pk = alert.pk
+        Alert.objects.filter(pk=pk).update(ai={
+            "state": "pending", "trigger_level": level, "system_note": ai["note"],
+            "model": self.ai_client.model})
+        root = str(self.violations_dir)
+        ai_checker.check_async(
+            self.ai_client, self.ai_ring, ai["kind"], keys, now, ai["note"],
+            on_done=lambda result: store_ai_result(pk, result, level),
+            save_dir=os.path.join(root, "ai", f"alert{pk}"), label="ai",
+            frames=self.ai_frames, edge=self.ai_edge, wait=self.ai_wait,
+            url_for=lambda p: violation_media_path(os.path.relpath(p, root).replace(os.sep, "/")))
+        self.stats["ai check started"] += 1
 
     # ---- object cue: momentum per (track, class) ---------------------------
 
@@ -66,6 +139,7 @@ class IncidentMixin:
         """
         book = self._momentum_book()
         self._seen_track_ids.add(track.id)
+        self._ai_note(("track", track.id), track.box)
         confs, names = {}, {}
         for d in dets:
             cls = str(d[5]).lower()
@@ -120,13 +194,15 @@ class IncidentMixin:
         return inc.level if inc is not None else None
 
     def _incident_sync(self, key, score, now, *, create, describe=None, frame=None,
-                       blocked=None, box=None, extra_cues=None):
+                       blocked=None, box=None, extra_cues=None, ai=None):
         """Apply `score` (a scoring.Score) to the incident `key`.
 
         create(level, with_clip) -> Alert | None    builds the first row
         describe(score) -> str                      refreshed description
         blocked() -> bool                           cooldown check for a NEW row
         extra_cues                                  merged into Alert.cues (audit data)
+        ai                                          {"kind", "note", "keys"}: asks the AI
+                                                    checker once, when the row is first created
         Returns the Alert (None in --dry-run or when nothing is shown).
         """
         book = self._incident_book()
@@ -162,6 +238,8 @@ class IncidentMixin:
                 return None
             alert = create(level, score.alerting)
             inc.alert = alert
+            if ai is not None:
+                self._ai_trigger(alert, ai, key, now, level)
             inc.clip_base = getattr(self, "_last_clip_base", None)
             if score.alerting:
                 inc.last_clip_at = now
@@ -238,6 +316,8 @@ class IncidentMixin:
         """
         # Momentum slots of tracks that were not processed this frame are lost
         # with their track (no leak, no carry-over to a new id).
+        if self.ai_ring is not None:
+            self.ai_ring.commit(now)
         mbook = self._momentum_book()
         dropped = mbook.drop_missing(self._seen_track_ids)
         if dropped:

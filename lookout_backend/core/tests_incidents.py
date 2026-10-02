@@ -10,7 +10,7 @@ from django.test import TestCase
 
 from core.management.commands.watch_smoking import Command as SmokingCommand
 from core.models import Alert, Camera, ViolationType
-from core.vision import scoring, tracking, vlm
+from core.vision import scoring, tracking
 
 BOX = (400, 200, 520, 500)
 CIG = (440, 230, 450, 245, 0.8, "Cigarette")
@@ -28,8 +28,6 @@ class SmokingIncidentTests(TestCase):
         cmd.smoking_type = self.vtype
         cmd.violations_dir = Path(self.tmp.name)
         cmd.clip = None
-        cmd.vlm = vlm.DisabledVerifier("test")
-        cmd.vlm_async = False
         cmd.ablate = set()
         self.clip_calls = []
 
@@ -234,3 +232,74 @@ class HiResCheckTests(SmokingIncidentTests):
         with mock.patch.object(recognition, "detect_smoking_cascade") as cascade:
             self.cmd._hires_check(self.frame, {self.track: []}, 6.0)   # window over
         self.assertFalse(cascade.called)
+
+
+class FakeAIClient:
+    model = "fake-qwen"
+
+    def __init__(self, text):
+        self.text, self.calls = text, 0
+
+    def chat(self, kind, note, images):
+        self.calls += 1
+        self.last = (kind, note, len(images))
+        return self.text, 0.5, {}
+
+
+class AICheckerWiringTests(SmokingIncidentTests):
+    """The AI check starts once, when the incident row is created, and its answer is stored
+    on that row without touching the official level."""
+
+    REPLY = ('{"observations": "A man holds a small object near his mouth", "smoking_item_visible": true,'
+             ' "hand_to_mouth_activity": "smoking", "confidence": "high"}')
+
+    def setUp(self):
+        super().setUp()
+        from core.vision import ai_checker
+        self.client = FakeAIClient(self.REPLY)
+        self.cmd.ai_client = self.client
+        self.cmd.ai_ring = ai_checker.FrameRing(min_gap=0.0)
+        self.cmd.ai_wait = True
+        self._sleep = ai_checker.time.sleep
+        ai_checker.time.sleep = lambda s: None            # do not wait for post-trigger frames
+        self.addCleanup(setattr, ai_checker.time, "sleep", self._sleep)
+
+    def frame_step(self, t, dets, **kw):
+        self.cmd.ai_ring.stash(self.frame)
+        self.step(t, dets, **kw)
+        self.cmd._incident_gc(t, self.frame)
+
+    def test_checker_runs_once_per_incident_and_is_stored_on_the_row(self):
+        for i in range(30):
+            self.frame_step(i * 0.25, [CIG])
+        self.assertEqual(self.client.calls, 1)
+        self.assertEqual(self.client.last[0], "smoking")
+        self.assertEqual(self.client.last[1], "smoking item detected")
+        row = self.rows()[0]
+        self.assertEqual(row.level, scoring.MONITORING)       # the AI never changes the status
+        self.assertEqual(row.ai["state"], "done")
+        self.assertEqual(row.ai["reply"]["hand_to_mouth_activity"], "smoking")
+        self.assertEqual(row.ai["trigger_level"], scoring.MONITORING)
+        self.assertTrue(row.ai["frame_files"])               # the frames sent are saved with the alert
+        self.assertTrue(Path(self.tmp.name, "ai", f"alert{row.pk}").is_dir())
+
+    def test_suggested_status_follows_the_current_official_level(self):
+        from core.vision import ai_status
+        row = Alert.objects.create(type=self.vtype, camera=self.cam, confidence=0.4, level="monitoring",
+                                   timestamp=__import__("django.utils.timezone", fromlist=["now"]).now(),
+                                   ai={"state": "done", "reply": __import__("json").loads(self.REPLY),
+                                       "model": "m", "seconds": 1.0, "frame_files": []})
+        up = ai_status.ai_context("smoking", row.ai, "monitoring")
+        self.assertEqual(up["suggestion"]["text"], "Monitoring → Possible (suggested) — AI sees smoking")
+        top = ai_status.ai_context("smoking", row.ai, "violation")
+        self.assertEqual(top["suggestion"]["text"], "Likely — AI agrees")
+        self.assertEqual(ai_status.ai_context("smoking", {}, "warning")["suggestion"]["text"],
+                         "AI context unavailable")
+
+    def test_a_failed_check_leaves_the_alert_alone(self):
+        self.client.text = "not json"
+        for i in range(30):
+            self.frame_step(i * 0.25, [CIG])
+        row = self.rows()[0]
+        self.assertEqual(row.ai["state"], "unavailable")
+        self.assertEqual(row.level, scoring.MONITORING)

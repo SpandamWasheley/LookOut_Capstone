@@ -11,9 +11,8 @@ from django.utils import timezone
 from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
-from core.vision import recognition, scoring, tracking, vlm
+from core.vision import recognition, scoring, tracking, ai_checker
 from ._incidents import IncidentMixin
-from ._vlm_followup import attach_verdict
 
 SMOKING_CAMERA_CODE = "CAM-SMOKE-01"
 SETTINGS_REFRESH_SECONDS = 5  # re-poll SystemSettings this often, not every frame
@@ -154,18 +153,6 @@ class Command(IncidentMixin, BaseCommand):
         # this) — stays None for --image test mode and file sources, both of
         # which _create_alert's raw-clip fallback already guards for.
         self._raw_buffer = None
-        # Inert by default. handle() replaces this with a real
-        # verifier; watch_merged drives this class WITHOUT calling
-        # handle(), so the attribute has to exist from construction or
-        # _score() raises AttributeError at the first alert.
-        self.vlm = vlm.DisabledVerifier("not configured by this runner")
-        self.vlm_min_confidence = 50
-        self.vlm_cost = {}
-        self.vlm_async = True
-        # Spec §6: the last few frames, so the VLM judges an EVENT rather than a
-        # still. Fed from the frame loop; empty means the current frame alone,
-        # which is what every existing test exercises.
-        self.frame_buffer = vlm.FrameBuffer()
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -356,32 +343,8 @@ class Command(IncidentMixin, BaseCommand):
         self.require_puff = options["require_puff"] and "puff" not in self.ablate
         self.pose = not options.get("no_pose") and "pose" not in self.ablate
 
-        # Second-stage VLM verifier. Built once here rather than per alert so
-        # the HTTP connection survives; build_verifier returns an inert
-        # DisabledVerifier for every unusable configuration, so nothing
-        # downstream needs to branch on "is it on?".
-        _vlm_cfg = SystemSettings.load()
-        self.vlm = vlm.build_verifier(
-            enabled=_vlm_cfg.vlm_enabled and "vlm" not in self.ablate,
-            provider=_vlm_cfg.vlm_provider,
-            api_key=_vlm_cfg.vlm_api_key or None,
-            model=_vlm_cfg.vlm_model,
-            timeout=_vlm_cfg.vlm_timeout,
-            endpoint=_vlm_cfg.vlm_endpoint,
-        )
-        self.vlm_min_confidence = _vlm_cfg.vlm_min_confidence
-        self.vlm_async = _vlm_cfg.vlm_async
-        # Sized from the configured call cost: there is no reason to hold a
-        # frame larger than the checker will ever be sent.
-        self.frame_buffer = vlm.FrameBuffer(store_edge=_vlm_cfg.vlm_max_edge)
-        # How much work each call is allowed to cost. Read once, with the
-        # verifier, rather than per alert.
-        self.vlm_cost = {
-            "max_edge": _vlm_cfg.vlm_max_edge,
-            "send_scene": _vlm_cfg.vlm_send_scene,
-            "max_images": (1 if _vlm_cfg.vlm_send_scene else 0) + _vlm_cfg.vlm_frames,
-        }
-        self.stdout.write(vlm.describe(self.vlm, _vlm_cfg.vlm_model))
+        # AI checker (spec v6 section 8): local Qwen3-VL, display-only, asynchronous.
+        self._ai_setup(off="vlm" in self.ablate)
 
         if self.pose:
             self.stdout.write(
@@ -768,6 +731,8 @@ class Command(IncidentMixin, BaseCommand):
                 # touches it — see RawFrameRecorder.
                 if self._raw_buffer is not None:
                     self._raw_buffer.add(frame, time.time())
+                if self.ai_ring is not None:
+                    self.ai_ring.stash(frame)     # clean pixels for the AI checker's crops
 
                 # Enhance dim/noisy frames before detection (daytime bypasses).
                 frame = self._preprocess(frame)
@@ -829,10 +794,6 @@ class Command(IncidentMixin, BaseCommand):
                 # Buffer this annotated frame for the evidence clip.
                 self.clip.add(frame, now_ts)
                 self._incident_gc(now_ts, frame)   # close incidents whose object is gone
-                # Spec §6: the same frames feed the VLM's multi-frame send, so
-                # it judges a short event rather than one still. The buffer
-                # keeps them ~1s apart and holds only three.
-                self.frame_buffer.add(frame, now_ts)
 
                 # Confirmation is time-based, but VOTE_MIN_FRAMES still needs a
                 # few frames to land inside the window — below ~2 FPS that floor,
@@ -948,16 +909,14 @@ class Command(IncidentMixin, BaseCommand):
                 box=box, now=now_ts, score_obj=score, object_confidence=best_score,
                 with_clip=with_clip)
 
-        alert = self._incident_sync(
+        self._incident_sync(
             key, score, now_ts, create=create, describe=describe, frame=frame, box=box,
             blocked=lambda: "cooldown" not in self.ablate and self._cooldown_blocks(box, now_ts, cooldown),
+            ai={"kind": "smoking", "keys": [("track", track.id)],
+                "note": ai_checker.system_note("smoking", puff_only=score.puff_only, puffs=puffs)},
             extra_cues={"puffs_seen": puffs, "momentum": cue.snapshot,
                         "object_confidence": None if best_score is None else round(best_score, 3)},
         )
-        inc = self._incident_book().get(key)
-        if alert is not None and inc is not None and not getattr(inc, "ai_queued", False):
-            inc.ai_queued = True
-            self._queue_context(alert, "smoking", frame, box=box)
 
     def _near_mouth(self, track, now_ts):
         """True when this track had a face-anchored object AT the mouth recently.
@@ -983,25 +942,6 @@ class Command(IncidentMixin, BaseCommand):
 
     # ---- shared alert creation --------------------------------------------
 
-
-    def _queue_context(self, alert, kind, frame, box=None, context=""):
-        """Ask the checker in the background and attach the answer when it comes.
-
-        Called AFTER the alert exists, because the answer is written back by
-        primary key. Returns immediately -- the frame loop never waits on a
-        model that may take minutes on CPU-only hardware.
-        """
-        if alert is None or not self.vlm_async or "vlm" in self.ablate:
-            return
-        if isinstance(self.vlm, vlm.DisabledVerifier):
-            return
-        alert_id = alert.pk
-        vlm.verify_frame_async(
-            self.vlm, frame, kind,
-            on_done=lambda verdict: attach_verdict(alert_id, verdict, kind),
-            box=box, context=context,
-            frames=self.frame_buffer.recent(), **self.vlm_cost)
-        self.stats["ai context queued"] += 1
 
     def _save_clips(self, base, frame, now):
         """Write (or rewrite) the annotated and raw evidence clips named `base`.
@@ -1053,7 +993,7 @@ class Command(IncidentMixin, BaseCommand):
         return video_url, raw_video_url
 
     def _create_alert(self, score, label, frame, description, box=None,
-                      now=None, score_obj=None, verdict=None, object_confidence=None, with_clip=True):
+                      now=None, score_obj=None, object_confidence=None, with_clip=True):
         ts_label = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         base = f"{ts_label}_smoking_{label}"
         self._last_clip_base = base
@@ -1089,18 +1029,8 @@ class Command(IncidentMixin, BaseCommand):
             last_seen_at=timezone.now(),
             suspect=label,
             level=score_obj.level if score_obj is not None else "",
-            # The checker's own answers, stored alongside the score vector.
-            # Verdict.as_dict() already carried all of it -- the verdict, the
-            # tier, the reason and every field it answered -- but only three
-            # columns were being kept, so the per-question answers were thrown
-            # away. The violation card needs them to show WHAT the checker saw,
-            # not just what it concluded.
-            cues={**(score_obj.as_dict() if score_obj is not None else {}),
-                  "vlm": verdict.as_dict() if verdict is not None else {}},
+            cues=score_obj.as_dict() if score_obj is not None else {},
             # The DETECTOR's own confidence in the anchoring box, kept apart
             # from `confidence` (the violation likelihood). See Alert.object_confidence.
             object_confidence=object_confidence,
-            vlm_verdict=verdict.verdict if (verdict is not None and verdict.ok) else "",
-            vlm_confidence=verdict.confidence if (verdict is not None and verdict.ok) else None,
-            vlm_reason=verdict.reason if (verdict is not None and verdict.ok) else "",
         )

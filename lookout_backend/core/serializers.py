@@ -195,6 +195,19 @@ class AlertSerializer(serializers.ModelSerializer):
     # which is what the score actually measures. Derived here rather than mapped
     # in the client so both dashboards and the officer app agree by default.
     level_label = serializers.SerializerMethodField()
+    # AI checker cards (display only): badge, observations, checklist and the suggested
+    # status, recomputed on every read from the stored reply and the CURRENT level.
+    ai_context = serializers.SerializerMethodField()
+
+    def get_ai_context(self, obj):
+        from core.vision import ai_checker, ai_status
+        cues = obj.cues or {}
+        kind = ai_checker.kind_for(cues.get("kind"))
+        ctx = ai_status.ai_context(kind, obj.ai, obj.level, puff_only=bool(cues.get("puff_only")))
+        request = self.context.get("request")
+        if request is not None:
+            ctx["frames"] = [request.build_absolute_uri(u) for u in ctx["frames"]]
+        return ctx
 
     def get_level_label(self, obj):
         from core.vision.scoring import label_of
@@ -213,7 +226,7 @@ class AlertSerializer(serializers.ModelSerializer):
             # used to. `cues` is the audit trail: which indicators fired and
             # what each was worth.
             "level", "level_label", "last_seen_at",
-            "object_confidence", "cues",
+            "object_confidence", "cues", "ai_context",
             # VLM second-stage verification. `vlm_reason` is the sentence worth
             # showing a reviewer -- a readable justification, not another number.
             "vlm_verdict", "vlm_confidence", "vlm_reason",
@@ -226,7 +239,7 @@ class AlertSerializer(serializers.ModelSerializer):
             # Written by the detectors through the ORM only. A client that
             # could PATCH its own cue vector could rewrite the calibration
             # training data after the fact.
-            "level", "level_label", "last_seen_at", "object_confidence", "cues",
+            "level", "level_label", "last_seen_at", "object_confidence", "cues", "ai_context",
             "vlm_verdict", "vlm_confidence", "vlm_reason",
             # Who reviewed it is recorded FROM the authenticated request, so a
             # client cannot name somebody else as the reviewer.
@@ -284,20 +297,12 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
             "drinking_mouth_proximity", "drinking_cooldown_center_dist",
             "drinking_hours_enabled", "drinking_start", "drinking_end",
             "drinking_min_group", "drinking_group_duration",
-            "vlm_enabled", "vlm_provider", "vlm_model", "vlm_api_key", "vlm_endpoint",
-            "vlm_timeout", "vlm_min_confidence",
-            "vlm_frames", "vlm_max_edge", "vlm_send_scene", "vlm_async",
+            "vlm_enabled", "vlm_model", "vlm_endpoint",
+            "vlm_timeout",
+            "vlm_frames", "vlm_max_edge", "vlm_async",
             "alert_cooldown", "evidence_retention_days", "evidence_auto_purge",
             "updated_at",
         ]
-        extra_kwargs = {
-            # Settable from the dashboard, never returned by a GET. The endpoint
-            # is admin-only, but a credential echoed back lands in browser
-            # history, proxy logs and anything that caches the response. Blank
-            # means "fall back to GOOGLE_API_KEY", which is where it belongs in
-            # a real deployment.
-            "vlm_api_key": {"write_only": True},
-        }
         read_only_fields = ["updated_at"]
 
 

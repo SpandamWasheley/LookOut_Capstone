@@ -30,8 +30,9 @@ from django.utils import timezone
 from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
-from core.vision import recognition, tracking, vlm
+from core.vision import recognition, tracking
 
+from ._incidents import ai_setup
 from .watch_smoking import Command as SmokingCommand
 from .watch_thief import Command as ThiefCommand
 from .watch_drinking import Command as DrinkingCommand
@@ -124,29 +125,8 @@ class Command(BaseCommand):
         self.schedule = options["schedule"]
         self.preprocess = options["preprocess"]
         self.sharpen = options["sharpen"]
-        # One VLM verifier shared by every detector this runner drives. Built
-        # here so the connection is created once; build_verifier returns an
-        # inert verifier for any unusable configuration, so a missing key or a
-        # missing package degrades to "no VLM" and never to a crash.
-        _vlm_cfg = SystemSettings.load()
-        self.vlm = vlm.build_verifier(
-            enabled=_vlm_cfg.vlm_enabled,
-            provider=_vlm_cfg.vlm_provider,
-            api_key=_vlm_cfg.vlm_api_key or None,
-            model=_vlm_cfg.vlm_model,
-            timeout=_vlm_cfg.vlm_timeout,
-            endpoint=_vlm_cfg.vlm_endpoint,
-        )
-        self.vlm_min_confidence = _vlm_cfg.vlm_min_confidence
-        self.vlm_async = _vlm_cfg.vlm_async
-        # How much work each call is allowed to cost. Read once, with the
-        # verifier, rather than per alert.
-        self.vlm_cost = {
-            "max_edge": _vlm_cfg.vlm_max_edge,
-            "send_scene": _vlm_cfg.vlm_send_scene,
-            "max_images": (1 if _vlm_cfg.vlm_send_scene else 0) + _vlm_cfg.vlm_frames,
-        }
-        self.stdout.write(vlm.describe(self.vlm, _vlm_cfg.vlm_model))
+        # One AI checker (client + full-res frame ring) shared by every detector this runner drives.
+        self.ai_state = ai_setup(self.stdout)
 
         self.pose = options["pose"]
         if self.pose:
@@ -236,11 +216,7 @@ class Command(BaseCommand):
             cmd.layer_e = False
             cmd.layer_e_only = False
         cmd.ablate = set()
-        # ONE verifier shared by every detector in this runner: a single
-        # connection and a single settings read. verify_frame() picks the prompt
-        # spec per call, so sharing costs nothing in specificity.
-        cmd.vlm = self.vlm
-        cmd.vlm_min_confidence = self.vlm_min_confidence
+        cmd.__dict__.update(self.ai_state)      # one AI client + frame ring for every detector
         # The pose gesture cue -- the reason this flag exists. watch_smoking_pose
         # is a standalone command this runner never invokes, so before this the
         # "Strong" hand-to-mouth indicator scored nothing in any real deployment.
@@ -360,6 +336,8 @@ class Command(BaseCommand):
 
                 # Shared person pass — computed once, fed to whichever person-based
                 # detectors are due this frame.
+                if self.ai_state["ai_ring"] is not None:
+                    self.ai_state["ai_ring"].stash(frame)     # clean pixels for the AI checker's crops
                 need_persons = any(n in due for n in self.engines)
                 persons = recognition.detect_persons(frame) if need_persons else []
                 for name, eng in self.engines.items():
