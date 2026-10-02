@@ -1,36 +1,6 @@
-import { useState, useEffect } from "react";
-import { Camera, Clock, AlertTriangle, Moon, Sun } from "lucide-react";
-import { getSettings } from "./api";
-
-function formatHour12(timeStr) {
-  if (!timeStr) return "--";
-  const [h, m] = timeStr.split(":").map(Number);
-  const period = h >= 12 ? "PM" : "AM";
-  const h12 = h % 12 === 0 ? 12 : h % 12;
-  return m === 0 ? `${h12} ${period}` : `${h12}:${String(m).padStart(2, "0")} ${period}`;
-}
-
-function isWithinWindow(now, startStr, endStr) {
-  if (!startStr || !endStr) return false;
-  const [sh, sm] = startStr.split(":").map(Number);
-  const [eh, em] = endStr.split(":").map(Number);
-  const nowMin = now.getHours() * 60 + now.getMinutes();
-  const startMin = sh * 60 + sm;
-  const endMin = eh * 60 + em;
-  if (startMin <= endMin) return nowMin >= startMin && nowMin < endMin;
-  return nowMin >= startMin || nowMin < endMin; // overnight window
-}
+import { Camera, Clock, AlertTriangle } from "lucide-react";
 
 export function SystemStatusCard({ alerts = [], cameras = [] }) {
-  const [settings, setSettings] = useState(null);
-  const [now, setNow] = useState(new Date());
-
-  useEffect(() => {
-    getSettings().then(setSettings).catch(() => {});
-    const id = window.setInterval(() => setNow(new Date()), 30000);
-    return () => window.clearInterval(id);
-  }, []);
-
   const onlineCams = cameras.filter((c) => c.status === "online").length;
   const totalCams  = cameras.length;
   const degraded   = cameras.filter((c) => c.status === "degraded").length;
@@ -38,8 +8,6 @@ export function SystemStatusCard({ alerts = [], cameras = [] }) {
   const pending    = alerts.filter((a) => a.status === "active" || a.status === "acknowledged").length;
 
   const latest = [...alerts].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0];
-
-  const isNight = settings ? isWithinWindow(now, settings.curfew_start, settings.curfew_end) : null;
 
   const kpis = [
     {
@@ -63,17 +31,10 @@ export function SystemStatusCard({ alerts = [], cameras = [] }) {
       sub: `${pending} pending`,
       accent: "#ef4444",
     },
-    {
-      icon: isNight ? Moon : Sun,
-      value: settings ? (isNight ? "Active" : "Inactive") : "—",
-      label: "Curfew Status",
-      sub: settings ? `${formatHour12(settings.curfew_start)} – ${formatHour12(settings.curfew_end)}` : "—",
-      accent: isNight ? "#a78bfa" : "#10b981",
-    },
   ];
 
   return (
-    <div className="grid grid-cols-4 gap-4">
+    <div className="grid grid-cols-3 gap-4">
       {kpis.map((kpi) => {
         const Icon = kpi.icon;
         return (

@@ -4,7 +4,7 @@ import { resolveViolationType, violationDisplay } from "./constants/violationTyp
 import { ViolationModal } from "./ViolationModal";
 import { DispatchModal } from "./DispatchModal";
 import { TypeFilterDropdown } from "./TypeFilterDropdown";
-import { getAlerts, getOfficers, getCameras, getHouseholds, getResidents, updateAlert } from "./api";
+import { getAlerts, getOfficers, getCameras, updateAlert } from "./api";
 
 function mapAlert(raw) {
   return {
@@ -515,8 +515,6 @@ export function AlertFeed({ showFilters = false, user }) {
   const [alerts, setAlerts] = useState([]);
   const [officers, setOfficers] = useState([]);
   const [cameras, setCameras] = useState([]);
-  const [households, setHouseholds] = useState([]);
-  const [residents, setResidents] = useState([]);
   const [selectedAlert, setSelectedAlert] = useState(null);
   const [dispatchingAlert, setDispatchingAlert] = useState(null);
   const [dismissTarget, setDismissTarget] = useState(null);
@@ -661,19 +659,12 @@ export function AlertFeed({ showFilters = false, user }) {
   };
 
   const refresh = async () => {
-    // households/residents are Phase-1-retired endpoints (404 now) — only
-    // SetCandidateModal/ContactGuardianModal's suspect-tagging still reads
-    // them, so degrade those to empty rather than letting a 404 here take
-    // down the alert list itself via Promise.all's fail-fast behavior.
-    const [alertsRes, officersRes, camerasRes, householdsRes, residentsRes] = await Promise.all([
+    const [alertsRes, officersRes, camerasRes] = await Promise.all([
       getAlerts(), getOfficers(), getCameras(),
-      getHouseholds().catch(() => []), getResidents().catch(() => []),
     ]);
     setAlerts((alertsRes.results ?? alertsRes).map(mapAlert));
     setOfficers((officersRes.results ?? officersRes).map(mapOfficer));
     setCameras(camerasRes.results ?? camerasRes);
-    setHouseholds(householdsRes.results ?? householdsRes);
-    setResidents(residentsRes.results ?? residentsRes);
   };
 
   useEffect(() => {
@@ -726,17 +717,6 @@ export function AlertFeed({ showFilters = false, user }) {
     }
   };
 
-  const handleUpdateSuspect = async (alertId, names) => {
-    const a = alerts.find((x) => x.id === alertId);
-    if (!a) return;
-    try {
-      await updateAlert(a.dbId, { suspect: names ?? "" });
-      await refresh();
-    } catch (err) {
-      setActionError(err.message || "Failed to update candidate.");
-    }
-  };
-
   // Resolution itself now happens server-side inside the citation POST (see
   // CitationFormModal / core/views.py CitationViewSet.perform_create) — this
   // just refreshes the list and closes up once that's already succeeded.
@@ -760,16 +740,12 @@ export function AlertFeed({ showFilters = false, user }) {
         <ViolationModal
           alert={selectedAlert}
           assignedOfficerNames={assignedOfficerNames(selectedAlert.id)}
-          households={households}
-          residents={residents}
           officers={officers}
           currentOfficerId={user?.role === "officer" || user?.role === "both" ? user?.officerId : null}
-          verifierName={user?.name}
           userRole={user?.role}
           onClose={() => setSelectedAlert(null)}
           onDismiss={() => setDismissTarget(selectedAlert)}
           onResolved={handleCitationResolved}
-          onUpdateSuspect={(names) => handleUpdateSuspect(selectedAlert.id, names)}
           onDispatch={() => { setDispatchingAlert(selectedAlert); setSelectedAlert(null); }}
         />
       )}

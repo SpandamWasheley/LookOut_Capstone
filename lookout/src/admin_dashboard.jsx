@@ -67,7 +67,7 @@ function AdminDashboard({ user, onLogout }) {
   const [activePage, setActivePage] = useState(allowed[0]);
   const safePage = allowed.includes(activePage) ? activePage : allowed[0];
 
-  const { alerts, cameras, officers } = useLiveOverviewData();
+  const { alerts, officers } = useLiveOverviewData();
 
   const activeAlerts = alerts.filter((a) => a.status === "active");
   const dispatchedAlerts = alerts.filter((a) => a.status === "dispatched");

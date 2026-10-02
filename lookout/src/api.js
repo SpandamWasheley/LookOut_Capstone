@@ -103,23 +103,6 @@ async function apiUpload(path, formData) {
   return response.json();
 }
 
-export const getHouseholds = () => apiFetch("/households/");
-export const createHousehold = (payload) =>
-  apiFetch("/households/", { method: "POST", body: JSON.stringify(payload) });
-export const updateHousehold = (id, payload) =>
-  apiFetch(`/households/${id}/`, { method: "PATCH", body: JSON.stringify(payload) });
-
-export const createHouseholdMember = (payload) =>
-  apiFetch("/household-members/", { method: "POST", body: JSON.stringify(payload) });
-export const updateHouseholdMember = (id, payload) =>
-  apiFetch(`/household-members/${id}/`, { method: "PATCH", body: JSON.stringify(payload) });
-export const deleteHouseholdMember = (id) =>
-  apiFetch(`/household-members/${id}/`, { method: "DELETE" });
-
-export const getResidents = () => apiFetch("/residents/");
-export const createResident = (payload) =>
-  apiFetch("/residents/", { method: "POST", body: JSON.stringify(payload) });
-
 export const getPersons = () => apiFetch("/persons/");
 export const createPerson = (payload) =>
   apiFetch("/persons/", { method: "POST", body: JSON.stringify(payload) });
@@ -274,5 +257,3 @@ export const resetForgotPassword = (email, code, newPassword) =>
     method: "POST",
     body: JSON.stringify({ email, code, new_password: newPassword }),
   });
-export const sendSms = (payload) =>
-  apiFetch("/sms/send/", { method: "POST", body: JSON.stringify(payload) });

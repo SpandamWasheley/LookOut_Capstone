@@ -440,8 +440,8 @@ def dashboard_stats(request):
     )
 
     return Response({
-        "cameras_online": Camera.objects.filter(status=Camera.Status.ONLINE).count(),
-        "cameras_total": Camera.objects.count(),
+        "cameras_online": Camera.objects.exclude(code__endswith="-TEST").filter(status=Camera.Status.ONLINE).count(),
+        "cameras_total": Camera.objects.exclude(code__endswith="-TEST").count(),
         "alerts_by_status": by_status,
         "alerts_by_type_7d": by_type,
         "weekly_trend": list(weekly_trend),
@@ -509,7 +509,10 @@ class ViolationTypeViewSet(viewsets.ModelViewSet):
 
 
 class CameraViewSet(viewsets.ModelViewSet):
-    queryset = Camera.objects.select_related("zone").all()
+    # "-TEST" cameras exist only to tag alerts from uploaded footage (see
+    # DetectionJobViewSet.create). They are not real cameras, so they never
+    # appear in any camera list; their alerts are still shown.
+    queryset = Camera.objects.select_related("zone").exclude(code__endswith="-TEST")
     serializer_class = CameraSerializer
     filterset_fields = ["zone", "status"]
     permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
@@ -1192,6 +1195,10 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
                 return Response({"detail": "No file uploaded."}, status=400)
 
             source_arg = str(saved_path)
+            # The "-TEST" suffix is load-bearing: it marks alerts from uploaded
+            # footage (kept for accuracy evaluation) so they stay separable from
+            # live-camera alerts, and CameraViewSet / dashboard_stats hide any
+            # camera with that suffix. Do not rename or drop it.
             camera_code = f"CAM-{violation_type.upper()}-TEST"
 
             # Parking-only: edges drawn against the staged frame are written onto

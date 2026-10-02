@@ -76,7 +76,7 @@ function OfficerRow({ officer, count, isChecked, onToggle }) {
 export function DispatchModal({ alert, officers, alerts, onAssign, onClose }) {
   // Same icon/color source as ViolationModal (violationTypes.js) — see
   // violationDisplay's own doc comment for why this never shows a raw db
-  // code even for curfew/waste/noise (out of violationTypes.js's scope).
+  // code even for an unmapped (out-of-scope) type.
   const vcfg = violationDisplay(alert.type);
   const VIcon = vcfg.icon;
 
