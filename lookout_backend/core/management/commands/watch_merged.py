@@ -61,7 +61,7 @@ from .watch_smoking import Command as SmokingCommand
 from .watch_thief import Command as ThiefCommand
 from .watch_drinking import Command as DrinkingCommand
 
-MERGED_CAMERA_CODE = "CAM-MERGED-TEST"
+MERGED_CAMERA_CODE = "CAM-SMOKE-01"
 SETTINGS_REFRESH_SECONDS = 5
 
 # Merged model class name -> which rule engine owns it. Matched
@@ -144,7 +144,7 @@ class Command(BaseCommand):
 
         self.camera, _ = Camera.objects.get_or_create(
             code=options["camera"],
-            defaults={"name": "Merged-Model Monitor", "status": Camera.Status.ONLINE},
+            defaults={"name": "Hikvision DS-2CD1047G2", "status": Camera.Status.ONLINE},
         )
         self.violations_dir = settings.MEDIA_ROOT / "violations"
         os.makedirs(self.violations_dir, exist_ok=True)

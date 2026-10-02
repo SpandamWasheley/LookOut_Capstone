@@ -174,7 +174,7 @@ function AdminDashboard({ user, onLogout }) {
                       style={{ color: "var(--muted-foreground)" }}
                       onClick={() => setActivePage("cameras")}
                     >
-                      View all <ArrowUpRight size={11} />
+                      Open Live Feeds <ArrowUpRight size={11} />
                     </button>
                   </div>
                 </div>

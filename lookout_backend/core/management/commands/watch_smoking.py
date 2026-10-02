@@ -15,7 +15,7 @@ from core.vision import preprocess as preproc
 from core.vision import recognition, scoring, tracking, vlm
 from ._vlm_followup import attach_verdict
 
-SMOKING_CAMERA_CODE = "CAM-SMOKING"
+SMOKING_CAMERA_CODE = "CAM-SMOKE-01"
 SETTINGS_REFRESH_SECONDS = 5  # re-poll SystemSettings this often, not every frame
 PRESENCE_GRACE_SECONDS = 2    # tolerate a couple smoke-free frames before resetting dwell
 
@@ -298,7 +298,7 @@ class Command(BaseCommand):
         )
         self.camera, _ = Camera.objects.get_or_create(
             code=options["camera"],
-            defaults={"name": "Smoking Monitor", "status": Camera.Status.ONLINE},
+            defaults={"name": "Hikvision DS-2CD1047G2", "status": Camera.Status.ONLINE},
         )
         self.violations_dir = settings.MEDIA_ROOT / "violations"
         os.makedirs(self.violations_dir, exist_ok=True)

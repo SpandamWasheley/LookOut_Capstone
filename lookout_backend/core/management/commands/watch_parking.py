@@ -14,7 +14,7 @@ from core.vision import preprocess as preproc
 from core.vision import obstruction as obs
 from core.vision import recognition
 
-PARKING_CAMERA_CODE = "CAM-PARKING"
+PARKING_CAMERA_CODE = "CAM-SMOKE-01"
 # BGR, matched to detection_sandbox/obstruction_web.py's SIDE_COLOURS and the
 # dashboard's EdgeCanvas (left orange, right cyan) so the --debug preview
 # tells the two edges apart the same way the drawing screen did. Previously
@@ -165,7 +165,7 @@ class Command(BaseCommand):
         )
         self.camera, _ = Camera.objects.get_or_create(
             code=options["camera"],
-            defaults={"name": "Parking Monitor", "status": Camera.Status.ONLINE},
+            defaults={"name": "Hikvision DS-2CD1047G2", "status": Camera.Status.ONLINE},
         )
         self.violations_dir = settings.MEDIA_ROOT / "violations"
         os.makedirs(self.violations_dir, exist_ok=True)

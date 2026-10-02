@@ -16,7 +16,7 @@ from core.vision import preprocess as preproc
 from core.vision import recognition, scoring, theft, tracking, vlm
 from ._vlm_followup import attach_verdict
 
-THIEF_CAMERA_CODE = "CAM-THIEF"
+THIEF_CAMERA_CODE = "CAM-SMOKE-01"
 SETTINGS_REFRESH_SECONDS = 5  # re-poll SystemSettings this often, not every frame
 # Tolerate this many clean seconds before resetting dwell. Must stay ABOVE
 # knife's stale_scale-derived accrual window (currently 0.5*6.0 = 3.0s — see
@@ -379,7 +379,7 @@ class Command(BaseCommand):
         )
         self.camera, _ = Camera.objects.get_or_create(
             code=options["camera"],
-            defaults={"name": "Thief Monitor", "status": Camera.Status.ONLINE},
+            defaults={"name": "Hikvision DS-2CD1047G2", "status": Camera.Status.ONLINE},
         )
         self.violations_dir = settings.MEDIA_ROOT / "violations"
         os.makedirs(self.violations_dir, exist_ok=True)

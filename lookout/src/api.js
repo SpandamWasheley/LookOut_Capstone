@@ -42,6 +42,9 @@ export async function login(username, password) {
 
   accessToken = data.access;
 
+  // Layout used to be remembered in localStorage; drop the stale value.
+  try { localStorage.removeItem("lookout.cameraLayout"); } catch { /* storage unavailable */ }
+
   return user;
 }
 

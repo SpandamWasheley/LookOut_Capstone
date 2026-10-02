@@ -1,35 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { Save, RotateCcw, Moon, Volume2, Trash2, Car, Cigarette, Siren, Beer, AlertTriangle, Loader2 } from "lucide-react";
+import { Save, RotateCcw, Car, Cigarette, Siren, Beer, AlertTriangle, Loader2 } from "lucide-react";
 import { getSettings, saveSettings } from "./api";
 
 const trimSeconds = (t) => (t ? t.slice(0, 5) : t);
 
-// Map noise dB ↔ sensitivity index (0=Very Low … 4=Very High)
-const SENSITIVITY_DB = [80, 70, 65, 55, 45];
-const dbToSensitivity = (db) => {
-  let best = 0, bestDiff = Infinity;
-  SENSITIVITY_DB.forEach((v, i) => { const d = Math.abs(v - db); if (d < bestDiff) { bestDiff = d; best = i; } });
-  return best;
-};
-
 function fromApi(s) {
   return {
-    curfewStart: trimSeconds(s.curfew_start),
-    curfewEnd: trimSeconds(s.curfew_end),
-    curfewAge: s.curfew_age,
-    curfewConf: s.curfew_confidence,
-    curfewDwell: s.curfew_dwell,
-    guardianCheck: s.guardian_check,
-    unknownAlert: s.unknown_alert,
-    noiseEnabled: s.noise_enabled,
-    noiseDb: s.noise_threshold_db,
-    noiseSensitivity: dbToSensitivity(s.noise_threshold_db),
-    noiseDur: s.noise_duration,
-    wasteEnabled: s.waste_enabled,
-    wasteConf: s.waste_confidence,
-    wasteDwell: s.waste_dwell,
-    wasteCollectionStart: trimSeconds(s.waste_collection_start),
-    wasteCollectionEnd: trimSeconds(s.waste_collection_end),
     parkingEnabled: s.parking_enabled,
     parkingConf: s.parking_confidence,
     parkingDwell: s.parking_dwell,
@@ -54,27 +30,11 @@ function fromApi(s) {
     retention: s.evidence_retention_days,
     autoDispatch: s.auto_dispatch,
     emailAlerts: s.email_alerts,
-    smsAlerts: s.sms_alerts,
   };
 }
 
 function toApi(f) {
   return {
-    curfew_start: f.curfewStart,
-    curfew_end: f.curfewEnd,
-    curfew_age: f.curfewAge,
-    curfew_confidence: f.curfewConf,
-    curfew_dwell: f.curfewDwell,
-    guardian_check: f.guardianCheck,
-    unknown_alert: f.unknownAlert,
-    noise_enabled: f.noiseEnabled,
-    noise_threshold_db: SENSITIVITY_DB[f.noiseSensitivity],
-    noise_duration: f.noiseDur,
-    waste_enabled: f.wasteEnabled,
-    waste_confidence: f.wasteConf,
-    waste_dwell: f.wasteDwell,
-    waste_collection_start: f.wasteCollectionStart,
-    waste_collection_end: f.wasteCollectionEnd,
     parking_enabled: f.parkingEnabled,
     parking_confidence: f.parkingConf,
     parking_dwell: f.parkingDwell,
@@ -99,14 +59,10 @@ function toApi(f) {
     evidence_retention_days: f.retention,
     auto_dispatch: f.autoDispatch,
     email_alerts: f.emailAlerts,
-    sms_alerts: f.smsAlerts,
   };
 }
 
 const sections = [
-  // { id: "curfew", label: "Curfew", icon: Moon,    color: "#f59e0b" },
-  // { id: "noise",  label: "Noise",  icon: Volume2, color: "#a78bfa" },
-  // { id: "waste",  label: "Waste",  icon: Trash2,  color: "#84cc16" },
   { id: "parking", label: "Parking", icon: Car,    color: "#ef4444" },
   { id: "smoking", label: "Smoking", icon: Cigarette, color: "#f97316" },
   { id: "thief",   label: "Holdup",   icon: Siren,  color: "#dc2626" },
@@ -147,39 +103,6 @@ function Slider({ label, value, min, max, step = 1, unit, desc, onChange }) {
         />
       </div>
       {desc && <p className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>{desc}</p>}
-    </div>
-  );
-}
-
-// ── SensitivitySelector ───────────────────────────────────────────────────────
-const SENSITIVITY_LEVELS = ["Very Low", "Low", "Medium", "High", "Very High"];
-
-function SensitivitySelector({ label, value, onChange }) {
-  return (
-    <div className="space-y-2.5">
-      <div className="flex justify-between items-center">
-        <span className="text-xs font-medium" style={{ color: "var(--muted-foreground)" }}>{label}</span>
-        <span className="text-xs font-semibold px-2 py-0.5 rounded-md"
-          style={{ color: "var(--primary)", background: "var(--secondary)" }}>
-          {SENSITIVITY_LEVELS[value]}
-        </span>
-      </div>
-      <div className="flex gap-1.5">
-        {SENSITIVITY_LEVELS.map((lvl, i) => (
-          <button
-            key={lvl}
-            onClick={() => onChange(i)}
-            className="flex-1 py-2 rounded-lg text-[13px] font-medium transition-all"
-            style={{
-              background: value === i ? "var(--primary)" : "var(--secondary)",
-              color: value === i ? "var(--primary-foreground)" : "var(--muted-foreground)",
-              border: `1px solid ${value === i ? "var(--primary)" : "var(--border)"}`,
-            }}
-          >
-            {lvl}
-          </button>
-        ))}
-      </div>
     </div>
   );
 }
@@ -250,28 +173,13 @@ function TimeInput({ label, value, onChange }) {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 export function SystemConfig() {
-  const [active, setActive] = useState("curfew");
+  const [active, setActive] = useState("parking");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [pendingAction, setPendingAction] = useState(null); // null | "reset" | "save"
 
-  const [curfewStart, setCurfewStart] = useState("22:00");
-  const [curfewEnd, setCurfewEnd] = useState("06:00");
-  const [curfewAge, setCurfewAge] = useState(18);
-  const [curfewConf, setCurfewConf] = useState(75);
-  const [curfewDwell, setCurfewDwell] = useState(5);
-  const [guardianCheck, setGuardianCheck] = useState(true);
-  const [unknownAlert, setUnknownAlert] = useState(true);
-  const [noiseEnabled, setNoiseEnabled] = useState(true);
-  const [noiseSensitivity, setNoiseSensitivity] = useState(2);
-  const [noiseDur, setNoiseDur] = useState(10);
-  const [wasteEnabled, setWasteEnabled] = useState(true);
-  const [wasteConf, setWasteConf] = useState(70);
-  const [wasteDwell, setWasteDwell] = useState(8);
-  const [wasteCollectionStart, setWasteCollectionStart] = useState("06:00");
-  const [wasteCollectionEnd, setWasteCollectionEnd] = useState("09:00");
   const [parkingEnabled, setParkingEnabled] = useState(true);
   const [parkingConf, setParkingConf] = useState(35);
   const [parkingDwell, setParkingDwell] = useState(60);
@@ -296,25 +204,9 @@ export function SystemConfig() {
   const [retention, setRetention] = useState(30);
   const [autoDispatch, setAutoDispatch] = useState(false);
   const [emailAlerts, setEmailAlerts] = useState(true);
-  const [smsAlerts, setSmsAlerts] = useState(true);
   const [savedSnapshot, setSavedSnapshot] = useState(null);
 
   const applySettings = (f) => {
-    setCurfewStart(f.curfewStart);
-    setCurfewEnd(f.curfewEnd);
-    setCurfewAge(f.curfewAge);
-    setCurfewConf(f.curfewConf);
-    setCurfewDwell(f.curfewDwell);
-    setGuardianCheck(f.guardianCheck);
-    setUnknownAlert(f.unknownAlert);
-    setNoiseEnabled(f.noiseEnabled);
-    setNoiseSensitivity(f.noiseSensitivity);
-    setNoiseDur(f.noiseDur);
-    setWasteEnabled(f.wasteEnabled);
-    setWasteConf(f.wasteConf);
-    setWasteDwell(f.wasteDwell);
-    setWasteCollectionStart(f.wasteCollectionStart);
-    setWasteCollectionEnd(f.wasteCollectionEnd);
     setParkingEnabled(f.parkingEnabled);
     setParkingConf(f.parkingConf);
     setParkingDwell(f.parkingDwell);
@@ -339,26 +231,10 @@ export function SystemConfig() {
     setRetention(f.retention);
     setAutoDispatch(f.autoDispatch);
     setEmailAlerts(f.emailAlerts);
-    setSmsAlerts(f.smsAlerts);
     setSavedSnapshot(f);
   };
 
   const isDirty = !!savedSnapshot && (
-    curfewStart !== savedSnapshot.curfewStart ||
-    curfewEnd !== savedSnapshot.curfewEnd ||
-    curfewAge !== savedSnapshot.curfewAge ||
-    curfewConf !== savedSnapshot.curfewConf ||
-    curfewDwell !== savedSnapshot.curfewDwell ||
-    guardianCheck !== savedSnapshot.guardianCheck ||
-    unknownAlert !== savedSnapshot.unknownAlert ||
-    noiseEnabled !== savedSnapshot.noiseEnabled ||
-    noiseSensitivity !== savedSnapshot.noiseSensitivity ||
-    noiseDur !== savedSnapshot.noiseDur ||
-    wasteEnabled !== savedSnapshot.wasteEnabled ||
-    wasteConf !== savedSnapshot.wasteConf ||
-    wasteDwell !== savedSnapshot.wasteDwell ||
-    wasteCollectionStart !== savedSnapshot.wasteCollectionStart ||
-    wasteCollectionEnd !== savedSnapshot.wasteCollectionEnd ||
     parkingEnabled !== savedSnapshot.parkingEnabled ||
     parkingConf !== savedSnapshot.parkingConf ||
     parkingDwell !== savedSnapshot.parkingDwell ||
@@ -382,8 +258,7 @@ export function SystemConfig() {
     cooldown !== savedSnapshot.cooldown ||
     retention !== savedSnapshot.retention ||
     autoDispatch !== savedSnapshot.autoDispatch ||
-    emailAlerts !== savedSnapshot.emailAlerts ||
-    smsAlerts !== savedSnapshot.smsAlerts
+    emailAlerts !== savedSnapshot.emailAlerts
   );
 
   const load = async () => {
@@ -404,16 +279,13 @@ export function SystemConfig() {
     setSaving(true);
     try {
       const updated = await saveSettings(toApi({
-        curfewStart, curfewEnd, curfewAge, curfewConf, curfewDwell,
-        guardianCheck, unknownAlert, noiseEnabled, noiseSensitivity, noiseDur,
-        wasteEnabled, wasteConf, wasteDwell, wasteCollectionStart, wasteCollectionEnd,
         parkingEnabled, parkingConf, parkingDwell, parkingMove,
         smokingEnabled, smokingConf, smokingDwell,
         thiefEnabled, thiefConf, thiefDwell,
         drinkingEnabled, drinkingConf, drinkingDwell,
         drinkingHeldDwell, drinkingEvidenceMaxAge, drinkingMouthProximity, drinkingCooldownDist,
         drinkingHoursEnabled, drinkingStart, drinkingEnd,
-        cooldown, retention, autoDispatch, emailAlerts, smsAlerts,
+        cooldown, retention, autoDispatch, emailAlerts,
       }));
       applySettings(fromApi(updated));
       setSaved(true);
@@ -426,47 +298,6 @@ export function SystemConfig() {
   };
 
   const content = {
-    curfew: (
-      <div className="space-y-6">
-        <div className="grid grid-cols-2 gap-4">
-          <TimeInput label="Curfew start" value={curfewStart} onChange={setCurfewStart} />
-          <TimeInput label="Curfew end" value={curfewEnd} onChange={setCurfewEnd} />
-        </div>
-        <Slider label="Minor age threshold" value={curfewAge} min={15} max={20} unit=" yrs" onChange={setCurfewAge} />
-        <Slider
-          label="Detection confidence" value={curfewConf} min={20} max={90} unit="%"
-          desc="Face-match similarity score — a genuine match typically scores 35–70%. Values above ~75% are rarely reached."
-          onChange={setCurfewConf}
-        />
-        <Slider label="Dwell time before alert" value={curfewDwell} min={2} max={30} unit="s" onChange={setCurfewDwell} />
-        <div>
-          <Toggle label="Guardian co-presence check" desc="Verify adult accompaniment — applies Ordinance No. 636 exemptions" value={guardianCheck} onChange={setGuardianCheck} />
-          <Toggle label="Unknown person alert" desc="Alert for faces not in the resident database" value={unknownAlert} onChange={setUnknownAlert} />
-        </div>
-      </div>
-    ),
-    noise: (
-      <div className="space-y-6">
-        <Toggle label="Noise detection enabled" desc="Monitor ambient audio levels via camera microphones" value={noiseEnabled} onChange={setNoiseEnabled} />
-        <SensitivitySelector label="Detection sensitivity" value={noiseSensitivity} onChange={setNoiseSensitivity} />
-        <Slider label="Sustained duration before alert" value={noiseDur} min={5} max={60} unit="s" onChange={setNoiseDur} />
-        <div className="rounded-xl p-4 text-xs leading-relaxed"
-          style={{ background: "rgba(167,139,250,0.06)", border: "1px solid rgba(167,139,250,0.15)", color: "var(--muted-foreground)" }}>
-          Quiet hours run <strong style={{ color: "#a78bfa" }}>22:00 – 06:00</strong>. Noise sustained above the threshold during these hours triggers a violation alert.
-        </div>
-      </div>
-    ),
-    waste: (
-      <div className="space-y-6">
-        <Toggle label="Waste detection enabled" desc="Detect improper disposal outside collection hours" value={wasteEnabled} onChange={setWasteEnabled} />
-        <Slider label="Detection confidence" value={wasteConf} min={50} max={99} unit="%" onChange={setWasteConf} />
-        <Slider label="Object dwell time" value={wasteDwell} min={3} max={30} unit="s" onChange={setWasteDwell} />
-        <div className="grid grid-cols-2 gap-4">
-          <TimeInput label="Collection hours start" value={wasteCollectionStart} onChange={setWasteCollectionStart} />
-          <TimeInput label="Collection hours end" value={wasteCollectionEnd} onChange={setWasteCollectionEnd} />
-        </div>
-      </div>
-    ),
     parking: (
       <div className="space-y-6">
         <Toggle label="Illegal parking detection enabled" desc="Flag vehicles parked / obstructing beyond the dwell time" value={parkingEnabled} onChange={setParkingEnabled} />
@@ -586,7 +417,6 @@ export function SystemConfig() {
         <div>
           <Toggle label="Auto-assign officer on critical alert" desc="Notify nearest on-duty officer automatically" value={autoDispatch} onChange={setAutoDispatch} />
           <Toggle label="Email notifications" desc="Send alert emails to administrators" value={emailAlerts} onChange={setEmailAlerts} />
-          <Toggle label="SMS notifications" desc="Send SMS to dispatchers and officers" value={smsAlerts} onChange={setSmsAlerts} />
         </div>
         <div className="rounded-xl p-4 space-y-2" style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
           <div className="text-xs font-medium mb-3" style={{ color: "var(--foreground)" }}>System info</div>
@@ -697,7 +527,7 @@ export function SystemConfig() {
           : {
               iconColor: "#10b981", iconBg: "rgba(16,185,129,0.12)", Icon: Save,
               title: "Save these settings?",
-              message: "Changes apply immediately across the system — curfew, waste, and noise detection will use these values right away.",
+              message: "Changes apply immediately across the system — the detectors will use these values right away.",
               confirmLabel: "Yes, save", confirmColor: "#10b981",
               run: save,
             };

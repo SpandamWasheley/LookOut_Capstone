@@ -67,8 +67,6 @@ const LAYOUTS = [
   { key: "4x4", label: "4 × 4", tiles: 16, cols: 4 },
 ];
 
-const LAYOUT_STORAGE_KEY = "lookout.cameraLayout";
-
 function timeAgo(iso) {
   if (!iso) return "—";
   const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
@@ -508,9 +506,9 @@ export function CameraGrid({ compact = false, isAdmin = false }) {
   const [selected, setSelected] = useState(null);
   const [allCameras, setAllCameras] = useState([]);
   const [alerts, setAlerts] = useState([]);
-  const [layoutKey, setLayoutKey] = useState(
-    () => localStorage.getItem(LAYOUT_STORAGE_KEY) || "2x2"
-  );
+  // Always opens 1x1. Switching layout is a per-visit choice and is deliberately
+  // not persisted, so leaving the tab or logging out resets it.
+  const [layoutKey, setLayoutKey] = useState("1x1");
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef(null);
   const [showUpload, setShowUpload] = useState(false);
@@ -597,15 +595,14 @@ export function CameraGrid({ compact = false, isAdmin = false }) {
 
   const selectLayout = (key) => {
     setLayoutKey(key);
-    localStorage.setItem(LAYOUT_STORAGE_KEY, key);
     setMenuOpen(false);
   };
 
-  // Compact (dashboard overview) keeps its simple fixed 2×2 of the first 4 cams.
+  // Compact (dashboard overview) shows the single camera at full card width.
   if (compact) {
     return (
-      <div className="grid gap-3 grid-cols-2">
-        {allCameras.slice(0, 4).map((cam) => (
+      <div className="grid gap-3 grid-cols-1">
+        {allCameras.slice(0, 1).map((cam) => (
           <CameraTile
             key={cam.id}
             cam={cam}

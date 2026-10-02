@@ -89,3 +89,14 @@ staticfiles/
 # record of how the deployed weights were trained.
 /merged_v2_best.pt
 *_v1_backup.pt
+
+# Recorder process id file
+lookout_backend/recorder.pid
+
+# Local database / file backups (keep out of git)
+*.sqlite3.*
+*.sqlite3-*
+*.bak
+*.bak-*
+*.backup
+*.pt.bak*

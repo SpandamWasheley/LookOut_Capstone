@@ -65,8 +65,8 @@ class Command(BaseCommand):
                  "lower frame rate. The temporal rules are time-based, so they "
                  "stay correct at the reduced rate.",
         )
-        parser.add_argument("--camera", default="CAM-ALL",
-                            help="Camera code all alerts attach to (default CAM-ALL).")
+        parser.add_argument("--camera", default="CAM-SMOKE-01",
+                            help="Camera code all alerts attach to (default CAM-SMOKE-01).")
         parser.add_argument("--far", action="store_true",
                             help="Deprecated / no-op: tiling is now ON by default for "
                                  "every detector (near+far combined). Kept so existing "
@@ -96,7 +96,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         self.camera, _ = Camera.objects.get_or_create(
             code=options["camera"],
-            defaults={"name": "All-Violation Monitor", "status": Camera.Status.ONLINE},
+            defaults={"name": "Hikvision DS-2CD1047G2", "status": Camera.Status.ONLINE},
         )
         self.violations_dir = settings.MEDIA_ROOT / "violations"
         os.makedirs(self.violations_dir, exist_ok=True)
