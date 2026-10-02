@@ -43,8 +43,8 @@ COOLDOWN_CENTER_DIST = 1.5
 # footage be replayed with a single rule removed, so each rule's contribution to
 # the true/false alert counts can be measured rather than asserted. Everything is
 # ON by default; this exists for evaluation, not for production tuning.
-# ("face" is the same switch as --no-face-check, exposed here for symmetry.)
-ABLATABLE = ("class-floor", "face", "vote", "dwell", "cooldown", "puff", "preprocess",
+# ("mouth" is the same switch as --no-mouth-check, exposed here for symmetry.)
+ABLATABLE = ("class-floor", "mouth", "vote", "dwell", "cooldown", "puff", "preprocess",
              "pose", "scoring", "vlm")
 
 # Per-class policy, same idea as watch_thief's. The model's classes are not
@@ -80,8 +80,8 @@ DEFAULT_POLICY = {"conf_scale": 1.0, "dwell_scale": 1.0}
 # Matched case-insensitively, for the same reason as CLASS_POLICY: a model that
 # exports "Cigarette" instead of "cigarette" would otherwise skip the rule
 # entirely and no longer check the mouth at all.
-FACE_ANCHORED_CLASSES = {"cigarette", "vape", "smoking"}
-FACE_PROXIMITY = 2.5    # allowed distance from the mouth, in face widths
+MOUTH_ANCHORED_CLASSES = {"cigarette", "vape", "smoking"}
+MOUTH_PROXIMITY = 2.5    # allowed distance from the mouth, in face widths
 
 # How recently an at-the-mouth sighting must have happened for the `near_mouth`
 # cue to still count at alert time. Matched to the vote window's order of
@@ -99,15 +99,15 @@ POSE_MATCH_IOU = 0.3
 PUFF_MIN_CYCLES = 1
 
 
-def _is_face_anchored(label):
-    return label.lower() in FACE_ANCHORED_CLASSES
+def _is_mouth_anchored(label):
+    return label.lower() in MOUTH_ANCHORED_CLASSES
 
-# A face pass costs ~400ms per person — about 4x the person + smoking detectors
+# A pose pass costs ~35ms per person (insightface was ~150-400ms) — about 4x the person + smoking detectors
 # combined — so running it every frame would drop the pipeline under 2 FPS with a
 # single smoker in view. The anchor is cached per track and stored relative to
 # the person box, so it re-projects as they move; it is only re-detected this
 # often, which is frequent enough to follow someone turning their head.
-FACE_CACHE_SECONDS = 1.0
+MOUTH_CACHE_SECONDS = 1.0
 
 
 class Command(BaseCommand):
@@ -125,7 +125,7 @@ class Command(BaseCommand):
         self._alert_log = []   # (box, timestamp) — cooldown that survives track churn
         self.dry_run = False
         self.tracker_name = "greedy"
-        self.face_check = True
+        self.mouth_check = True
         self.require_puff = False
         self.pose = False
         self.cascade = False
@@ -209,15 +209,16 @@ class Command(BaseCommand):
             "--stats",
             action="store_true",
             help="On exit, print how many detections each stage discarded "
-                 "(class floor / face rule / vote / dwell / cooldown) plus "
+                 "(class floor / mouth rule / vote / dwell / cooldown) plus "
                  "effective FPS. Use this to tune the thresholds against real "
                  "footage instead of guessing.",
         )
         parser.add_argument(
-            "--no-face-check",
+            "--no-mouth-check", "--no-face-check",
+            dest="no_mouth_check",
             action="store_true",
             help="Disable the mouth-proximity rule, accepting any cigarette/vape "
-                 "found anywhere on a person's body. Faster (skips a face pass "
+                 "found anywhere on a person's body. Faster (skips a pose pass "
                  "per smoker) and more permissive.",
         )
         parser.add_argument(
@@ -337,8 +338,8 @@ class Command(BaseCommand):
                 "measurement run, not a production configuration."
             ))
 
-        # --no-face-check and --ablate face are the same switch.
-        self.face_check = not options["no_face_check"] and "face" not in self.ablate
+        # --no-mouth-check and --ablate mouth are the same switch.
+        self.mouth_check = not options["no_mouth_check"] and "mouth" not in self.ablate
         self.require_puff = options["require_puff"] and "puff" not in self.ablate
         self.pose = options["pose"] and "pose" not in self.ablate
 
@@ -437,57 +438,57 @@ class Command(BaseCommand):
     def _mouth_anchor(self, frame, track, now_ts):
         """Mouth position and face width for a track, in full-frame coordinates.
 
-        Cached per track for FACE_CACHE_SECONDS and held relative to the person
-        box, so a moving smoker keeps a valid anchor without paying for a face
-        pass every frame. Returns None when no face could be found.
+        Cached per track for MOUTH_CACHE_SECONDS and held relative to the person
+        box, so a moving smoker keeps a valid anchor without paying for a pose
+        pass every frame. Returns None when no mouth anchor could be found.
         """
         bx1, by1, bx2, by2 = track.box
         bw, bh = max(bx2 - bx1, 1), max(by2 - by1, 1)
 
-        cached = track.face_anchor
-        if cached is not None and now_ts - cached[3] < FACE_CACHE_SECONDS:
+        cached = track.mouth_anchor
+        if cached is not None and now_ts - cached[3] < MOUTH_CACHE_SECONDS:
             rel_x, rel_y, rel_w, _ = cached
-            self.stats["face rule: anchor cache hit"] += 1
+            self.stats["mouth rule: anchor cache hit"] += 1
             return bx1 + rel_x * bw, by1 + rel_y * bh, rel_w * bw
 
-        found = recognition.find_mouth(frame, track.box)
+        found = recognition.find_mouth_pose(frame, track.box)
         if found is None:
             return None
         mx, my, face_w = found
-        track.face_anchor = ((mx - bx1) / bw, (my - by1) / bh, face_w / bw, now_ts)
+        track.mouth_anchor = ((mx - bx1) / bw, (my - by1) / bh, face_w / bw, now_ts)
         return mx, my, face_w
 
-    def _apply_face_rule(self, frame, per_track, now_ts):
+    def _apply_mouth_rule(self, frame, per_track, now_ts):
         """Mouth-proximity rule: a held smoking object must be near the person's
         mouth, not merely somewhere on their body.
 
         Runs per person and only when that person actually has a held-object
-        detection, so the extra face pass costs nothing on empty frames. When no
+        detection, so the extra pose pass costs nothing on empty frames. When no
         face can be found the detection is KEPT, not rejected — see
-        recognition.find_mouth for why treating "no face" as "not smoking" would
+        recognition.find_mouth_pose for why treating "no mouth anchor" as "not smoking" would
         quietly switch the whole detector off at CCTV range.
         """
-        if not self.face_check:
+        if not self.mouth_check:
             return per_track
 
         for track, dets in per_track.items():
             if track.is_scene or not dets:
                 continue
-            if not any(_is_face_anchored(d[5]) for d in dets):
+            if not any(_is_mouth_anchored(d[5]) for d in dets):
                 continue
 
             anchor = self._mouth_anchor(frame, track, now_ts)
             if anchor is None:
-                self.stats["face rule: no face found, kept"] += 1
+                self.stats["mouth rule: no mouth anchor found, kept"] += 1
                 recognition.log_mouth(kind="smoking", t=now_ts, track=track.id, anchor=None)
                 continue
 
             mx, my, face_w = anchor
-            limit = face_w * FACE_PROXIMITY
+            limit = face_w * MOUTH_PROXIMITY
             kept = []
             nearest_ratio = None   # closest cigarette->mouth distance, in face-widths
             for d in dets:
-                if not _is_face_anchored(d[5]):
+                if not _is_mouth_anchored(d[5]):
                     kept.append(d)
                     continue
                 cx, cy = (d[0] + d[2]) / 2, (d[1] + d[3]) / 2
@@ -498,21 +499,21 @@ class Command(BaseCommand):
                 if dist <= limit:
                     kept.append(d)
                 else:
-                    self.stats[f"cut by face rule:{d[5]}"] += 1
+                    self.stats[f"cut by mouth rule:{d[5]}"] += 1
             per_track[track] = kept
 
             # Feed the closest object's mouth distance into the puff-cycle state
             # machine so the rhythm (raise-lower-raise) can be counted per person.
-            recognition.log_mouth(kind="smoking", t=now_ts, track=track.id, anchor="insightface",
+            recognition.log_mouth(kind="smoking", t=now_ts, track=track.id, anchor="pose",
                                   face_w=face_w, ratio=nearest_ratio, kept=len(kept), of=len(dets))
             if nearest_ratio is not None:
                 n = track.update_puff(nearest_ratio, now_ts)
                 if n:
                     self.stats[f"puffs observed (person #{track.id})"] = n
                 # Stamped on the track so the scoring layer can tell "kept
-                # because it was at the mouth" from "kept because no face was
+                # because it was at the mouth" from "kept because no mouth anchor was
                 # resolvable". Only the first is evidence; the second is the
-                # detector declining to reject (see find_mouth's docstring).
+                # detector declining to reject (see find_mouth_pose's docstring).
                 track.last_mouth_ratio = nearest_ratio
                 track.last_mouth_seen = now_ts
         return per_track
@@ -703,7 +704,7 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(
             f"Watching {source} for public smoking "
             f"[{mode} mode, {self.tracker_name} tracker, "
-            f"face check {'on' if self.face_check else 'off'}] "
+            f"mouth check {'on' if self.mouth_check else 'off'}] "
             f"(dwell {self.dwell_override or cfg.smoking_dwell}s, "
             f"reads live from Settings). Press Ctrl+C to stop."
         ))
@@ -771,7 +772,7 @@ class Command(BaseCommand):
 
                 tracks = tracker.update(persons, now_ts, ids=ids)
                 self._feed_pose(frame, tracks, now_ts)
-                per_track = self._apply_face_rule(
+                per_track = self._apply_mouth_rule(
                     frame, tracker.assign(smokes, now_ts), now_ts,
                 )
 
@@ -813,7 +814,7 @@ class Command(BaseCommand):
                             f"Running at {fps:.1f} FPS — below ~2 FPS it takes "
                             f"{tracking.VOTE_MIN_FRAMES / fps:.0f}s just to confirm "
                             "a detection. Use fewer --tiles, a smaller frame, or "
-                            "--no-face-check."
+                            "--no-mouth-check."
                         ))
 
                 if debug:
@@ -1070,7 +1071,7 @@ class Command(BaseCommand):
     def _near_mouth(self, track, now_ts):
         """True when this track had a face-anchored object AT the mouth recently.
 
-        Deliberately not "the face rule didn't reject it" -- a detection kept
+        Deliberately not "the mouth rule didn't reject it" -- a detection kept
         because no face could be resolved is not evidence that anything was
         near a mouth.
         """
@@ -1078,7 +1079,7 @@ class Command(BaseCommand):
         ratio = getattr(track, "last_mouth_ratio", None)
         if seen is None or ratio is None:
             return False
-        return (now_ts - seen) <= MOUTH_CUE_MAX_AGE and ratio <= FACE_PROXIMITY
+        return (now_ts - seen) <= MOUTH_CUE_MAX_AGE and ratio <= MOUTH_PROXIMITY
 
     def _cooldown_blocks(self, box, now, cooldown):
         """True if we already alerted near roughly this spot inside the

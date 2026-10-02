@@ -71,9 +71,9 @@ PRESENCE_GRACE_SECONDS = 2    # tolerate a couple bottle-free frames before rese
 # controls whether these COCO boxes are added as detection candidates at all.
 GENERIC_LABELS = set(recognition.VESSEL_CLASS_IDS.values())
 
-# A face pass costs ~400ms per person, so the anchor is cached per track and
+# A pose pass costs ~35ms per person (insightface was ~150-400ms), so the anchor is cached per track and
 # stored relative to the person box, re-projecting as they move.
-FACE_CACHE_SECONDS = 1.0
+MOUTH_CACHE_SECONDS = 1.0
 
 # Ablation switches — see HEURISTIC_RULES.md. Everything ON by default.
 ABLATABLE = (
@@ -143,7 +143,7 @@ class Command(BaseCommand):
         self._cluster_centroids = {}
         self.dry_run = False
         self.tracker_name = "bytetrack"
-        self.face_check = True
+        self.mouth_check = True
         self.include_generic = False
         self.zones = []
         self.preprocess = False
@@ -252,10 +252,11 @@ class Command(BaseCommand):
                  "the posture mix, plus effective FPS.",
         )
         parser.add_argument(
-            "--no-face-check",
+            "--no-mouth-check", "--no-face-check",
+            dest="no_mouth_check",
             action="store_true",
             help="Disable posture classification: every bottle on a person is "
-                 "treated as 'held'. Faster (skips a face pass per person).",
+                 "treated as 'held'. Faster (skips a pose pass per person).",
         )
         parser.add_argument(
             "--ablate",
@@ -349,8 +350,8 @@ class Command(BaseCommand):
         self.preprocess = options["preprocess"] and "preprocess" not in self.ablate
         self.sharpen = options["sharpen"]
 
-        # --no-face-check and --ablate posture are the same switch.
-        self.face_check = not options["no_face_check"] and "posture" not in self.ablate
+        # --no-mouth-check and --ablate posture are the same switch.
+        self.mouth_check = not options["no_mouth_check"] and "posture" not in self.ablate
 
         # Second-stage VLM verifier. Built once here rather than per alert so
         # the HTTP connection survives; build_verifier returns an inert
@@ -494,23 +495,23 @@ class Command(BaseCommand):
         """Mouth position and face width for a track, in full-frame coordinates.
 
         Cached per track and held relative to the person box, so a moving subject
-        keeps a valid anchor without paying for a face pass every frame. Returns
-        None when no face could be found.
+        keeps a valid anchor without paying for a pose pass every frame. Returns
+        None when no mouth anchor could be found.
         """
         bx1, by1, bx2, by2 = track.box
         bw, bh = max(bx2 - bx1, 1), max(by2 - by1, 1)
 
-        cached = track.face_anchor
-        if cached is not None and now_ts - cached[3] < FACE_CACHE_SECONDS:
+        cached = track.mouth_anchor
+        if cached is not None and now_ts - cached[3] < MOUTH_CACHE_SECONDS:
             rel_x, rel_y, rel_w, _ = cached
             self.stats["posture: anchor cache hit"] += 1
             return bx1 + rel_x * bw, by1 + rel_y * bh, rel_w * bw
 
-        found = recognition.find_mouth(frame, track.box)
+        found = recognition.find_mouth_pose(frame, track.box)
         if found is None:
             return None
         mx, my, face_w = found
-        track.face_anchor = ((mx - bx1) / bw, (my - by1) / bh, face_w / bw, now_ts)
+        track.mouth_anchor = ((mx - bx1) / bw, (my - by1) / bh, face_w / bw, now_ts)
         return mx, my, face_w
 
     def _posture(self, frame, track, dets, now_ts, mouth_proximity):
@@ -518,18 +519,18 @@ class Command(BaseCommand):
 
         Returns 'held' or 'at-mouth' — never 'unattended', since scene
         (no-person) tracks are discarded outright in _process_track before
-        this is ever called. When posture checking is off, or no face can be
+        this is ever called. When posture checking is off, or no mouth anchor can be
         resolved, the result is 'held' — the conservative middle: not treated
         as consumption, but not dismissed either. Reading an unresolvable face
         as 'not drinking' would disable the escalation at exactly the CCTV
         distances where faces stop being detectable.
         """
-        if not self.face_check or not dets:
+        if not self.mouth_check or not dets:
             return "held"
 
         anchor = self._mouth_anchor(frame, track, now_ts)
         if anchor is None:
-            self.stats["posture: no face found, treated as held"] += 1
+            self.stats["posture: no mouth anchor found, treated as held"] += 1
             recognition.log_mouth(kind="drinking", t=now_ts, track=track.id, anchor=None)
             return "held"
 
@@ -537,7 +538,7 @@ class Command(BaseCommand):
         limit = face_w * mouth_proximity
         nearest = min((((((d[0] + d[2]) / 2 - mx) ** 2 + ((d[1] + d[3]) / 2 - my) ** 2) ** 0.5) / max(face_w, 1)
                        for d in dets), default=None)
-        recognition.log_mouth(kind="drinking", t=now_ts, track=track.id, anchor="insightface",
+        recognition.log_mouth(kind="drinking", t=now_ts, track=track.id, anchor="pose",
                               face_w=face_w, ratio=nearest, limit_ratio=mouth_proximity)
         for d in dets:
             cx, cy = (d[0] + d[2]) / 2, (d[1] + d[3]) / 2
@@ -666,7 +667,7 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(
             f"Watching {source} for public drinking "
             f"[{mode} mode, {self.tracker_name} tracker, "
-            f"posture check {'on' if self.face_check else 'off'}"
+            f"posture check {'on' if self.mouth_check else 'off'}"
             + (", +generic vessels" if self.include_generic else "")
             + (f", zones {len(self.zones)}" if self.zones else "")
             + "] "
@@ -823,7 +824,7 @@ class Command(BaseCommand):
                         self.stdout.write(self.style.WARNING(
                             f"Running at {fps:.1f} FPS — below ~2 FPS it takes "
                             f"{tracking.VOTE_MIN_FRAMES / fps:.0f}s just to confirm "
-                            "a detection. Use fewer --tiles or --no-face-check."
+                            "a detection. Use fewer --tiles or --no-mouth-check."
                         ))
 
                 if debug:

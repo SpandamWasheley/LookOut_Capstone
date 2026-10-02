@@ -68,7 +68,7 @@ DEFAULT_POLICY = {"conf_scale": 1.0, "dwell_scale": 1.0, "ratio_scale": 1.0, "st
 # constrained WHERE on a person a weapon detection could sit, so a box drawn
 # around someone's head/shoulders counted exactly the same as one at their
 # hand — geometrically impossible for a knife, but nothing rejected it.
-# Mirrors watch_smoking._apply_face_rule's placement: gated on the vote
+# Mirrors watch_smoking._apply_mouth_rule's placement: gated on the vote
 # input (per_track), before track.vote()/tick() ever sees the detection, so
 # a geometrically implausible box can't build dwell at all — not just a
 # check at the moment of alerting.
@@ -519,10 +519,10 @@ class Command(BaseCommand):
         that person's own box to plausibly be that object, or isn't actually
         near a HAND (see KNIFE_MAX_WRIST_DIST_FRAC).
 
-        Mirrors watch_smoking._apply_face_rule's placement exactly: this runs
+        Mirrors watch_smoking._apply_mouth_rule's placement exactly: this runs
         on `per_track` right after tracker.assign(), so a rejected detection
         never reaches track.vote()/tick() at all — it can't build dwell, not
-        just get blocked at the final alert check. Unlike the face rule,
+        just get blocked at the final alert check. Unlike the mouth rule,
         there's no "keep it if we can't tell" fallback for the wrist check:
         a frame where neither wrist resolves confidently is rejected, not
         waved through — an unresolvable case is exactly the kind of thing

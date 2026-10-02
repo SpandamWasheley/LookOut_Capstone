@@ -703,7 +703,7 @@ def find_mouth(frame, box):
 # coordinates, or None when it can't be told. "Face width" is a PROXY built
 # from whichever of ear-to-ear / eye-to-eye / shoulder-to-shoulder keypoints are
 # confident, scaled so it matches the width the rules were tuned in
-# (FACE_PROXIMITY / drinking_mouth_proximity are in face-widths). The scale
+# (MOUTH_PROXIMITY / drinking_mouth_proximity are in face-widths). The scale
 # factors come from detection_sandbox/mouth_calibration.py run on the test clips
 # (1,547 person boxes, 5 clips): medians of insightface width / pose width, and
 # of (insightface mouth - nose) in face-widths.

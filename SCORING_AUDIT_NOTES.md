@@ -1,0 +1,74 @@
+# Scoring / detection audit notes
+
+Working notes, not a spec. Nothing here has been changed in code unless stated.
+
+## Findings from the baseline run (merged_v2, insightface mouth anchor, 5 clips)
+
+1. **Detection confidence floor.** `detect_*(conf=...)` never goes below 0.25, because `conf` is only used to filter the
+   result afterwards; it is not passed to the model call, so ultralytics' default of 0.25 applies first.
+   `detect_merged`'s default of 0.15 is therefore effectively 0.25. In `watch_merged` itself the requested floor is
+   `min(smoking, drinking, thief confidence)` = 0.30 with current Settings, so production runs at 0.30; the 0.25 limit
+   only bites for Settings below 25%, the `detect_merged` default, and `--calibration-csv` (which claims a 0.01 floor but
+   is silently clipped to 0.25). Decide the intended floor, with the vote/dwell gate ("momentum") in mind.
+2. **False knife alerts on non-holdup clips.** 3 knife-only alerts (cue `E14` only), scores 0.74-0.84, on `Aug18_18 - Trim2`,
+   `Aug18_4 - DrinkingEveningFar3` and `Aug18_5 - DrinkingKabilangRoad1`. Per spec v6 a lone knife is 45 points
+   (Monitoring only) and a holdup needs >= 2 people. Check: knife scoring, the 2-person gate, and the knife filters
+   (head/shoulder region, > 1/4 person height, near-wrist).
+3. **Drinking alerts with no cues.** Two `Bottle` alerts at 0.65 on `DrinkingKabilangRoad1` logged `cues: []`.
+   They are Path B (gathering) alerts: `watch_drinking.py` calls `_create_alert(...)` for the gathering path **without
+   `score_obj`**, so the cue list and the level are not passed through (and `Alert.level` is stored empty for them).
+   Check what scores them and pass `score_obj` through.
+4. **Level / status empty (`''`) on every logged alert.** Two causes: (a) the drinking gathering path above really does
+   store no level; (b) for thief alerts it is a logging artefact only: the run-log hook reads `.level`, but a theft
+   `Evidence` carries its band in `.band`. Smoking and drinking solo alerts do pass `score_obj`, so their level is set.
+5. **Processing speed.** About 5-7.6 fps on 10 fps clips (slower than real time) on the dev laptop. Per frame the far
+   path runs 1 whole-frame + 4 tile + about 2 person-crop model calls, plus person tracking and the mouth anchor. Note for
+   performance work.
+6. **insightface mouth anchor on the night-far smoking clip.** No face found on 151 of 184 attempts. Compare against the
+   pose anchor in the after-run.
+7. **Test clip coverage is weak.** Staged clips from the Hikvision camera position will be added to `TEST_CLIPS.md`.
+
+## Findings from the "no smoking alert" diagnostic
+
+8. **A lone cigarette cannot alert by design.** `cigarette` weighs 0.40; alerting needs a score >= 0.55 (`SCORE_WARNING`),
+   0.35-0.55 is only WATCH. A cigarette held at the side stays WATCH; it needs `near_mouth` (+0.15 = exactly 0.55),
+   `gesture` or `puffs` to alert. In the clips most cigarettes are held at the side.
+9. **The vote / dwell gate is what blocks merged_v2.** A track only accrues dwell while a detection is no older than
+   0.5 s (`ACCRUAL_STALE_SECONDS`) and >= 40% of the last 5 s of frames are positive (`VOTE_MIN_RATIO`), then needs 3 s of
+   accrued time. merged_v2 detects a cigarette in too few frames to hold that (see the model comparison), so no track
+   reached scoring (zero WATCH lines).
+10. **merged_v2 vs smoking_v5, identical pipeline and settings** (`watch_smoking`, dry run, 3 smoking clips):
+    detections >= 0.30 after NMS 102 / 214 / 199 (merged_v2) vs 406 / 485 / 484 (smoking_v5). smoking_v5 produced 2
+    smoking alerts and 25 WATCH; merged_v2 produced none. smoking_v5 also fires on blurred vehicles, so its higher count
+    is not all true positives.
+11. **`_detect_far` ignores `NEAR_IMGSZ`.** Its whole-frame, tile and person-crop calls use ultralytics' default
+    imgsz 640 (the near path uses 960). The whole-frame pass downscales 2560 px to 640 (4x); it finds almost nothing
+    (7 of 250 detections >= 0.30 on one clip). Person crops (x2 upscale, then scaled to 640) find most of them.
+12. **`watch_merged` refuses a model without Bottle and knife** (route-coverage check), so smoking_v5 cannot be tried
+    in that command; compare via `watch_smoking` with `LOOKOUT_MODEL`.
+
+## For later (Step 5): puff scoring source
+Per scoring spec v6, the smoking puff points (1 puff 20, 2+ puffs 20, 3+ in 5 min 15) should come from the pose gesture
+counter (hand to mouth), and "item at the mouth" (15) from object-to-mouth distance. Currently puffs are counted from
+cigarette-to-mouth distance, so a puff-only path (no cigarette detected) cannot work. Also check that `scoring.py`
+weights such as 0.15 / 0.20 match the spec points.
+
+## Cigarette recall plan (merged_v2)
+Smoking stays on merged_v2: no hybrid with smoking_v5. To do right after Steps 2-6 (pose swap, after-run, face removal,
+`at_mouth` fix, notes, insightface delete), in this order:
+
+a. **Native-resolution cascade pass for Cigarette in `watch_merged` / `watch_all`** (`detect_smoking_cascade`: person crops
+   at native resolution). Measured on merged_v2: roughly 4x cheaper than the production far path (about 0.04 s vs 0.16 s per
+   frame, so roughly 6 fps -> 5 fps) and as good or better on two of the three clips.
+b. **Fix the 640 vs 960 `imgsz` mismatch** for the whole-frame, tile and person-crop calls in `_detect_far` (near path uses
+   `NEAR_IMGSZ`, far path uses ultralytics' default 640).
+c. **Pass `conf` explicitly to the model call** so floors below 0.25 work (see finding 1).
+d. **Momentum object cue** from the Object Cue Accumulation spec, per (track_id, class), configurable
+   `DECAY` / `ON` / `OFF` / `MAX` with defaults 0.90 / 1.5 / 0.4 / 3.0, replacing the 40% / 5 s vote and the 3 s dwell gate.
+   Processing runs at about 6 fps, so momentum updates once per *processed* frame (not per source frame).
+e. **Tune momentum on the 3 smoking clips.** Report hit rate, confidence and momentum traces; try `DECAY` 0.90 vs 0.95 (and
+   the `ON` threshold if needed). Pick values where real held cigarettes turn ON and stay ON while the vehicle / motorcycle
+   false hits do not.
+f. **A cigarette alone (0.40) must show as Monitoring** per spec v6 (today the 0.35-0.55 band is WATCH and not stored).
+g. **Re-run `detection_sandbox/funnel_run.py` on the 3 clips**: before vs after the fixes.
+h. **After the defense:** fine-tune merged_v2 with more Cigarette examples at CCTV height.

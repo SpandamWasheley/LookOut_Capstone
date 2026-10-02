@@ -238,8 +238,8 @@ class Command(BaseCommand):
         # its evidence video.
         cmd.clip = recognition.ClipRecorder(seconds=30, label=self.camera.code)
         # detector-specific extras
-        if hasattr(cmd, "face_check"):
-            cmd.face_check = True
+        if hasattr(cmd, "mouth_check"):
+            cmd.mouth_check = True
         if hasattr(cmd, "include_generic"):
             cmd.include_generic = False
             cmd.zones = []
@@ -392,7 +392,7 @@ class Command(BaseCommand):
         tracks = tracker.update(persons, now)
         per_track = tracker.assign(dets, now)
         if name == "smoking":
-            per_track = cmd._apply_face_rule(frame, per_track, now)
+            per_track = cmd._apply_mouth_rule(frame, per_track, now)
 
         if name == "drinking":
             self._run_gathering(eng, tracks, per_track, now, cfg, frame, debug, clean_frame)

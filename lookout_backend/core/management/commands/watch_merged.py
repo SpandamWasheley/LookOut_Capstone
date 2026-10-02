@@ -260,9 +260,9 @@ class Command(BaseCommand):
         # anything run through it — don't repeat that here.
         cmd.clip = recognition.ClipRecorder(seconds=30, label=self.camera.code)
         if name == "smoking":
-            cmd.face_check = True
+            cmd.mouth_check = True
         elif name == "drinking":
-            cmd.face_check = True
+            cmd.mouth_check = True
             cmd.include_generic = False  # skipped for v1 — see watch_merged's design notes
             cmd.zones = []
             cmd.min_group_override = None
@@ -512,7 +512,7 @@ class Command(BaseCommand):
             tracks = tracker.update(persons, now, ids=ids)
             per_track = tracker.assign(filtered, now)
             if name == "smoking":
-                per_track = cmd._apply_face_rule(frame, per_track, now)
+                per_track = cmd._apply_mouth_rule(frame, per_track, now)
             elif name == "thief":
                 per_track = cmd._apply_weapon_region_rule(per_track, frame)
 
