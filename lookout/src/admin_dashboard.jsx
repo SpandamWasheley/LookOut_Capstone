@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { AlertTriangle, Camera, Users, Zap, ArrowUpRight, Radio } from "lucide-react";
 import { AlertFeed } from "./AlertFeed";
+import { MonitoringWatchlist } from "./MonitoringWatchlist";
 import { CameraGrid } from "./CameraGrid";
 import { RecordsPage } from "./RecordsPage";
 import { Sidebar } from "./Sidebar";
@@ -181,9 +182,10 @@ function AdminDashboard({ user, onLogout }) {
                 </div>
               </div>
 
-              {/* Alert feed */}
+              {/* Alert feed + the quiet Monitoring watchlist underneath */}
+              <div className="flex flex-col min-h-0 gap-3">
               <div
-                className="flex flex-col min-h-0 rounded-xl overflow-hidden"
+                className="flex flex-col min-h-0 flex-1 rounded-xl overflow-hidden"
                 style={{ background: "var(--card)", border: "1px solid var(--border)" }}
               >
                 <div
@@ -206,6 +208,8 @@ function AdminDashboard({ user, onLogout }) {
                 <div className="flex-1 min-h-0 overflow-hidden p-4">
                   <AlertFeed compact user={user} />
                 </div>
+              </div>
+              <MonitoringWatchlist user={user} />
               </div>
             </div>
           </div>

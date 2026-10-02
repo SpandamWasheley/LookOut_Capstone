@@ -2,58 +2,10 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Bell, Clock, AlertTriangle, Radio, CheckCircle, X, Camera as CameraIcon, Moon, Sun, Sunset, ChevronRight, Search } from "lucide-react";
 import { resolveViolationType, violationDisplay } from "./constants/violationTypes";
 import { ViolationModal } from "./ViolationModal";
+import { mapAlert, reviewTag, levelColor } from "./alertModel";
 import { DispatchModal } from "./DispatchModal";
 import { TypeFilterDropdown } from "./TypeFilterDropdown";
 import { getAlerts, getOfficers, getCameras, updateAlert } from "./api";
-
-function mapAlert(raw) {
-  return {
-    id: raw.code,
-    dbId: raw.id,
-    type: raw.type,
-    status: raw.status,
-    camera: raw.camera,
-    cameraZone: raw.camera_zone,
-    // Where the camera is, typed in Live Feeds. Shown as the violation's
-    // location, since the camera's position is what the system actually knows.
-    cameraAddress: raw.camera_address ?? "",
-    timestamp: raw.timestamp,
-    confidence: raw.confidence,
-    description: raw.description,
-    imageUrl: raw.image_url,
-    videoUrl: raw.video_url,
-    rawVideoUrl: raw.raw_video_url,
-    officersAssignedIds: raw.officers_assigned ?? [],
-    officersAssignedNames: raw.officers_assigned_names ?? [],
-    suspect: raw.suspect,
-    notes: raw.notes,
-    // Weighted-sum scoring (core/vision/scoring.py). `level` is the band the
-    // score fell into; `confidence` above is now a violation likelihood rather
-    // than a raw YOLO box score, so the two should be read together.
-    level: raw.level,
-    // Spec 2's human-facing name (Monitoring / Possible / Confirmed). Derived
-    // server-side so the dashboards and the officer app cannot drift apart.
-    levelLabel: raw.level_label || "",
-    // What the OBJECT DETECTOR was sure of, kept apart from `confidence`
-    // (the violation likelihood). Null on alerts filed before the two were
-    // separated, which is why every read of it is guarded.
-    objectConfidence: raw.object_confidence,
-    // v3 2: the evidence the tanod reads instead of the score. Built
-    // server-side so both clients show the same words.
-    checklist: raw.cues?.checklist ?? null,
-    // The checker's own per-question answers, so the card can show WHAT it saw
-    // rather than only what it concluded.
-    ai: raw.cues?.vlm ?? null,
-    cues: raw.cues,
-    reviewedValid: raw.reviewed_valid,
-    // VLM second stage. `vlmReason` is the sentence worth showing a reviewer.
-    vlmVerdict: raw.vlm_verdict,
-    vlmConfidence: raw.vlm_confidence,
-    vlmReason: raw.vlm_reason,
-    reviewedBy: raw.reviewed_by_name,
-    reviewedAt: raw.reviewed_at,
-  };
-}
 
 function mapOfficer(raw) {
   return { id: raw.id, name: raw.name, status: raw.status, location: raw.location, badge: raw.badge, address: raw.address ?? "" };
@@ -112,7 +64,7 @@ function alertSearchScore(alert, typeLabel, query) {
 }
 
 const statusConfig = {
-  active:       { label: "Active",     color: "#ef4444", bg: "rgba(239,68,68,0.1)"   },
+  active:       { label: "Unassigned", color: "#ef4444", bg: "rgba(239,68,68,0.1)"   },
   acknowledged: { label: "Dismissed",  color: "#64748b", bg: "rgba(100,116,139,0.1)" },
   dispatched:   { label: "Assigned",   color: "#3b82f6", bg: "rgba(59,130,246,0.1)"  },
   resolved:     { label: "Resolved",   color: "#10b981", bg: "rgba(16,185,129,0.1)"  },
@@ -248,6 +200,7 @@ function AlertCard({ alert, onView, thin = false, extraPad = 0 }) {
   const VIcon = vcfg.icon;
   const scfg = statusConfig[alert.status] ?? statusConfig.acknowledged;
   const officerCount = alert.officersAssignedNames.length;
+  const review = reviewTag(alert);
 
   return (
     <div
@@ -287,6 +240,11 @@ function AlertCard({ alert, onView, thin = false, extraPad = 0 }) {
                 <span className="text-[15px] font-semibold truncate" style={{ color: "var(--foreground)" }}>
                   {vcfg.label}
                 </span>
+                {alert.levelLabel && (
+                  <span className="text-[12px] font-semibold flex-shrink-0" style={{ color: levelColor(alert.levelLabel) }}>
+                    {alert.levelLabel}
+                  </span>
+                )}
               </div>
               {/* Row 2: alert ID + reported time + optional officers */}
               <div className="flex items-center gap-2 text-[12px] overflow-hidden" style={{ color: "var(--muted-foreground)" }}>
@@ -317,10 +275,23 @@ function AlertCard({ alert, onView, thin = false, extraPad = 0 }) {
                 <span className="text-[15px] font-semibold" style={{ color: "var(--foreground)" }}>
                   {vcfg.label}
                 </span>
+                {alert.levelLabel && (
+                  <span className="text-[13px] font-semibold px-2 py-0.5 rounded-full"
+                    style={{ background: "var(--secondary)", color: levelColor(alert.levelLabel),
+                             border: `1px solid ${levelColor(alert.levelLabel)}55` }}>
+                    {alert.levelLabel}
+                  </span>
+                )}
                 <span className="text-[13px] font-medium px-2 py-0.5 rounded-full"
-                  style={{ background: scfg.bg, color: scfg.color }}>
-                  {scfg.label}
+                  style={{ background: review.bg, color: review.color }}>
+                  {review.label}
                 </span>
+                {(alert.status === "dispatched" || alert.status === "resolved") && (
+                  <span className="text-[13px] font-medium px-2 py-0.5 rounded-full"
+                    style={{ background: scfg.bg, color: scfg.color }}>
+                    {scfg.label}
+                  </span>
+                )}
               </div>
               {/* Row 2: alert ID + time */}
               <div className="flex items-center gap-3 text-[13px]" style={{ color: "var(--muted-foreground)" }}>
@@ -331,11 +302,9 @@ function AlertCard({ alert, onView, thin = false, extraPad = 0 }) {
               </div>
             </div>
 
-            {/* Right: confidence + officer count */}
+            {/* Right: officer count. No percentage: the status and its evidence checklist
+                replace the confidence figure (a score reads like a percentage; it is not). */}
             <div className="flex flex-col items-end gap-1 flex-shrink-0">
-              <span className="text-[13px] font-medium" style={{ color: vcfg.color }}>
-                {(alert.confidence * 100).toFixed(0)}% conf
-              </span>
               {officerCount > 0 && (
                 <span className="flex items-center gap-1 text-[13px] font-medium" style={{ color: "#3b82f6" }}>
                   <Radio size={9} />
@@ -485,14 +454,14 @@ function RightPanel({ alerts, cameras }) {
                   style={{ background: "var(--secondary)", borderLeft: `3px solid ${vcfg.color}`, border: "1px solid var(--border)" }}>
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-[14px] font-semibold truncate pr-1" style={{ color: "var(--foreground)" }}>{vcfg.label}</span>
-                    <span className="text-[12px] font-medium px-1.5 py-0.5 rounded flex-shrink-0"
-                      style={{ background: scfg.bg, color: scfg.color }}>
-                      {scfg.label}
+                    <span className="text-[12px] font-semibold px-1.5 py-0.5 rounded flex-shrink-0"
+                      style={{ background: scfg.bg, color: a.levelLabel ? levelColor(a.levelLabel) : scfg.color }}>
+                      {a.levelLabel || scfg.label}
                     </span>
                   </div>
                   <div className="flex items-center gap-2 text-[12px]" style={{ color: "var(--muted-foreground)" }}>
                     <span className="flex items-center gap-1"><Clock size={9} /> {formatTime(a.timestamp)}</span>
-                    <span className="ml-auto font-medium" style={{ color: vcfg.color }}>{(a.confidence * 100).toFixed(0)}%</span>
+                    <span className="ml-auto font-medium" style={{ color: reviewTag(a).color }}>{reviewTag(a).label}</span>
                   </div>
                 </div>
               );
@@ -516,6 +485,10 @@ export function AlertFeed({ showFilters = false, user }) {
   const [dispatchingAlert, setDispatchingAlert] = useState(null);
   const [dismissTarget, setDismissTarget] = useState(null);
   const [statusFilter, setStatusFilter] = useState("all");
+  // Monitoring = an object was seen but the evidence is still thin: a quiet watchlist, hidden
+  // here by default (Possible / Likely only). The toggle adds those events to the list.
+  const [showMonitoring, setShowMonitoring] = useState(false);
+  const showMonitoringRef = useRef(false);
   const [typeFilter, setTypeFilter] = useState(new Set());
   const [search, setSearch] = useState("");
   const [sortOrder, setSortOrder] = useState("newest"); // "newest" | "oldest"
@@ -657,7 +630,7 @@ export function AlertFeed({ showFilters = false, user }) {
 
   const refresh = async () => {
     const [alertsRes, officersRes, camerasRes] = await Promise.all([
-      getAlerts(), getOfficers(), getCameras(),
+      getAlerts(showMonitoringRef.current ? { include_monitoring: 1 } : undefined), getOfficers(), getCameras(),
     ]);
     setAlerts((alertsRes.results ?? alertsRes).map(mapAlert));
     setOfficers((officersRes.results ?? officersRes).map(mapOfficer));
@@ -669,6 +642,23 @@ export function AlertFeed({ showFilters = false, user }) {
     const id = setInterval(() => refresh().catch(() => {}), 4000);
     return () => clearInterval(id);
   }, []);
+
+  const toggleMonitoring = () => {
+    showMonitoringRef.current = !showMonitoringRef.current;
+    setShowMonitoring(showMonitoringRef.current);
+    refresh().catch(() => {});
+  };
+
+  // Review tag written by the tanod: Verified (true) / Dismissed (false) / Pending (null).
+  const handleReview = async (alert, value) => {
+    setActionError("");
+    try {
+      await updateAlert(alert.dbId, { reviewed_valid: value });
+      await refresh();
+    } catch (err) {
+      setActionError(err.message || "Could not save the review.");
+    }
+  };
 
   // Keep the open modal's alert in sync with the latest fetch — otherwise
   // saves (candidate, dispatch, etc.) only show up after closing/reopening.
@@ -741,6 +731,7 @@ export function AlertFeed({ showFilters = false, user }) {
           currentOfficerId={user?.role === "officer" || user?.role === "both" ? user?.officerId : null}
           userRole={user?.role}
           onClose={() => setSelectedAlert(null)}
+          onReview={(value) => handleReview(selectedAlert, value)}
           onDismiss={() => setDismissTarget(selectedAlert)}
           onResolved={handleCitationResolved}
           onDispatch={() => { setDispatchingAlert(selectedAlert); setSelectedAlert(null); }}
@@ -912,6 +903,18 @@ export function AlertFeed({ showFilters = false, user }) {
                   </button>
                 );
               })}
+
+              <button
+                onClick={toggleMonitoring}
+                className="px-3 py-1 text-xs font-medium rounded-full transition-all"
+                title="Monitoring events: an object was seen, the evidence is still thin. A quiet watchlist with no notification."
+                style={{
+                  background: showMonitoring ? "rgba(100,116,139,0.18)" : "var(--secondary)",
+                  color: showMonitoring ? "#64748b" : "var(--muted-foreground)",
+                  border: `1px solid ${showMonitoring ? "#64748b66" : "var(--border)"}`,
+                }}>
+                {showMonitoring ? "✓ " : ""}Include Monitoring
+              </button>
 
               {/* Type filter — shared with the Violator Log's, so the two
                   can't drift into different rules/looks again. Checkbox

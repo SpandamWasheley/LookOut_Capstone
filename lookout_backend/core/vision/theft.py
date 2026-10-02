@@ -849,13 +849,15 @@ class TheftEngine:
     """
 
     def __init__(self, ablate=(), baseline=None, stats=None,
-                 weapon_alone_alerts=None, near_person_heights=NEAR_PERSON_HEIGHTS):
+                 weapon_alone_alerts=None, near_person_heights=NEAR_PERSON_HEIGHTS,
+                 loiter_seconds=LOITER_SECONDS):
         self.ablate = {r.lower() for r in ablate}
         self.baseline = baseline or SceneBaseline()
         self.anchors = AnchorStore()
         self.pairs = {}
         self.stats = stats if stats is not None else {}
         self.near_person_heights = near_person_heights
+        self.loiter_seconds = loiter_seconds
         self._converge_log = deque()   # (t, target_id, other_id) for E13
         self._weapon_emitted = {}      # track id -> last E14 emission
 
@@ -1015,7 +1017,7 @@ class TheftEngine:
         for t in (ta, tb):
             eff = t.path_efficiency(now)
             if (eff is not None and eff < EFF_LOITER
-                    and t.age(now) >= LOITER_SECONDS):
+                    and t.age(now) >= self.loiter_seconds):
                 loiterer = t
                 break
         if loiterer is not None:

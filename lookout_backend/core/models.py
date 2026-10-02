@@ -248,19 +248,6 @@ class Alert(models.Model):
     # status every time the alert is read (core/vision/ai_status.ai_context).
     ai = models.JSONField(default=dict, blank=True)
 
-    # --- legacy VLM columns (no longer written; removed in the Part 5 migration
-    # together with the web / officer-app readers) -----------------------------
-    # Verdict on the evidence crop: yes / no / unclear, or blank when the VLM is
-    # disabled or the call failed. NEVER gates alert creation -- a VLM that is
-    # down must not stop a security system from alerting.
-    vlm_verdict = models.CharField(max_length=10, blank=True)
-    # The model's own certainty in its verdict, 0-1. Distinct from
-    # `confidence`, which is the violation likelihood across all indicators.
-    vlm_confidence = models.FloatField(null=True, blank=True)
-    # One sentence, shown on the violation card. The main reason the VLM is
-    # worth its latency: a human-readable justification instead of a number.
-    vlm_reason = models.TextField(blank=True)
-
     class Meta:
         ordering = ["-timestamp"]
 
@@ -375,6 +362,9 @@ class DetectionJob(models.Model):
     # Tail of the subprocess's combined stdout/stderr log — only set on failure.
     error = models.TextField(blank=True)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name="detection_jobs")
+    # When the uploaded footage was recorded (local time, as typed). Passed to the detector as
+    # --clock so the holdup time block and the drinking evening band use the footage's clock.
+    recorded_at = models.CharField(max_length=20, blank=True)
 
     class Meta:
         ordering = ["-started_at"]
@@ -554,6 +544,28 @@ class SystemSettings(models.Model):
     # Default ON, because an alert that arrives now with context later beats an
     # alert that arrives minutes late, and beats no checker at all.
     vlm_async = models.BooleanField(default=True)
+
+    # --- indicator timings / conditions (scoring spec v6; core/vision/spec_settings.py) -----
+    # Only timings and conditions are adjustable. The points per indicator and the 55 / 75
+    # cutoffs are fixed by the spec and are NOT settings. "Reset to spec defaults" restores
+    # these per violation. The active values are logged with every alert (cues["settings"]).
+    #
+    # How long an object must be seen before the event starts as Monitoring (about 2 s in the
+    # spec). Mapped onto the momentum object cue's ON threshold.
+    object_confirm_seconds = models.FloatField(default=2.0)
+    # Smoking: this many hand-to-mouth puffs within the window earn the repeated-puff-pattern
+    # indicator (and open the puff-only path when no item is detected).
+    smoking_puff_count = models.PositiveSmallIntegerField(default=3)
+    smoking_puff_window_minutes = models.FloatField(default=5.0)
+    # Holdup: how long someone must linger before the "loitering first" indicator counts, and
+    # how close the second person must be to the knife holder (in holder heights).
+    holdup_loiter_seconds = models.PositiveSmallIntegerField(default=20)
+    holdup_near_person_heights = models.FloatField(default=1.75)
+    # AI checker model for holdup checks. The 2B model misread the real holdup clip; the 4B
+    # got it right but is slower and does not fit in GPU memory beside the 2B, so Ollama
+    # swaps models (the AI card for a holdup appears later; detection is not blocked).
+    # Blank = use vlm_model.
+    vlm_model_holdup = models.CharField(max_length=60, default="qwen3-vl:4b-instruct", blank=True)
 
     alert_cooldown = models.PositiveSmallIntegerField(default=120)
     # How long alert evidence (images and clips) is kept before

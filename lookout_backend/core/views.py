@@ -409,6 +409,23 @@ class SystemSettingsView(generics.RetrieveUpdateAPIView):
         return SystemSettings.load()
 
 
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated, IsAdmin])
+def reset_spec_defaults(request):
+    """'Reset to spec defaults' for one violation group: {"violation": "drinking" | "smoking" |
+    "holdup" | "all"}. Only the adjustable timings / conditions are touched."""
+    from core.vision import spec_settings
+    group = request.data.get("violation", "")
+    if group not in spec_settings.GROUPS:
+        return Response({"detail": f"violation must be one of {', '.join(spec_settings.GROUPS)}."}, status=400)
+    cfg = SystemSettings.load()
+    fields = spec_settings.defaults_for(group)
+    for name, value in fields.items():
+        setattr(cfg, name, value)
+    cfg.save(update_fields=list(fields))
+    return Response(SystemSettingsSerializer(cfg).data)
+
+
 @api_view(["GET"])
 @permission_classes([permissions.IsAuthenticated])
 def dashboard_stats(request):
@@ -791,6 +808,11 @@ class AlertViewSet(viewsets.ModelViewSet):
             user = self.request.user
             alert.reviewed_by = user if user and user.is_authenticated else None
             alert.reviewed_at = timezone.now()
+            # The Review tag follows the workflow unless the tanod already set it by hand:
+            # dismissed as a false alarm -> Dismissed; attended and resolved -> Verified.
+            if alert.reviewed_valid is None:
+                alert.reviewed_valid = alert.status == Alert.Status.RESOLVED
+                alert.save(update_fields=["reviewed_valid"])
         else:
             # Reopened -- back to active or dispatched. The previous reviewer
             # no longer closed anything, so their name goes with the status.
@@ -1110,6 +1132,19 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
             # watchers never define this flag, so passing it to them would
             # make argparse reject the whole command outright.
             cascade_args = ["--cascade"] if violation_type == "smoking" else []
+            # Footage start time ("recorded at"): drives the holdup time block and the drinking
+            # evening band. Only for uploaded clips, and only the commands that take --clock.
+            recorded_at = (request.data.get("recorded_at") or "").strip().replace("T", " ")[:16]
+            if recorded_at and camera is None and violation_type in ("drinking", "thief", "merged"):
+                from core.vision.clock import parse_clock
+                try:
+                    parse_clock(recorded_at)
+                except ValueError:
+                    log_file.close()
+                    return Response({"detail": "recorded_at must look like 2026-08-24 16:17."}, status=400)
+                cascade_args += ["--clock", recorded_at]
+            else:
+                recorded_at = ""
             proc = subprocess.Popen(
                 [sys.executable, "manage.py", command,
                  "--source", source_arg, "--camera", camera_code, *cascade_args],
@@ -1129,6 +1164,7 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
             status=DetectionJob.Status.RUNNING,
             pid=proc.pid,
             created_by=request.user,
+            recorded_at=recorded_at,
         )
 
         threading.Thread(

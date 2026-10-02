@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
+import { IndicatorTimings } from "./IndicatorTimings";
 import { Save, RotateCcw, Car, Cigarette, Siren, Beer, AlertTriangle, Loader2, SlidersHorizontal } from "lucide-react";
 import { getSettings, saveSettings } from "./api";
 
@@ -51,9 +52,6 @@ function toApi(f) {
     drinking_evidence_max_age: f.drinkingEvidenceMaxAge,
     drinking_mouth_proximity: f.drinkingMouthProximity,
     drinking_cooldown_center_dist: f.drinkingCooldownDist,
-    drinking_hours_enabled: f.drinkingHoursEnabled,
-    drinking_start: f.drinkingStart,
-    drinking_end: f.drinkingEnd,
     alert_cooldown: f.cooldown,
     evidence_retention_days: f.retention,
     evidence_auto_purge: f.autoPurge,
@@ -128,48 +126,6 @@ function Toggle({ label, desc, value, onChange }) {
 }
 
 // ── TimeInput ─────────────────────────────────────────────────────────────────
-function TimeInput({ label, value, onChange }) {
-  const inputRef = useRef(null);
-  const [focused, setFocused] = useState(false);
-  const [hovered, setHovered] = useState(false);
-  const active = focused || hovered;
-
-  const openPicker = () => {
-    const el = inputRef.current;
-    if (!el) return;
-    if (typeof el.showPicker === "function") el.showPicker();
-    else el.focus();
-  };
-
-  return (
-    <div className="space-y-1.5">
-      <label className="text-xs font-medium" style={{ color: "var(--muted-foreground)" }}>{label}</label>
-      <div
-        onClick={openPicker}
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
-        className="flex items-center gap-2 w-full px-3 py-2 rounded-lg cursor-pointer transition-all"
-        style={{
-          background: active ? "var(--secondary)" : "var(--secondary)",
-          border: `1px solid ${active ? "var(--primary)" : "var(--border)"}`,
-          boxShadow: focused ? "0 0 0 3px rgba(var(--primary-rgb, 11 84 113) / 0.15)" : "none",
-        }}
-      >
-        <input
-          ref={inputRef}
-          type="time" value={value}
-          onChange={(e) => onChange(e.target.value)}
-          onFocus={() => setFocused(true)}
-          onBlur={() => setFocused(false)}
-          className="flex-1 bg-transparent text-sm outline-none cursor-pointer"
-          style={{ color: "var(--primary)", fontFamily: "'DM Mono', monospace" }}
-        />
-      </div>
-    </div>
-  );
-}
-
-// ── Main ──────────────────────────────────────────────────────────────────────
 export function SystemConfig() {
   const [active, setActive] = useState("parking");
   const [saving, setSaving] = useState(false);
@@ -334,6 +290,7 @@ export function SystemConfig() {
           style={{ background: "rgba(249,115,22,0.06)", border: "1px solid rgba(249,115,22,0.15)", color: "var(--muted-foreground)" }}>
           Detects <strong style={{ color: "#f97316" }}>cigarettes</strong>. Sustained presence past the dwell time raises a <strong style={{ color: "#f97316" }}>Public Smoking</strong> alert with an evidence snapshot.
         </div>
+        <IndicatorTimings group="smoking" />
       </div>
     ),
     thief: (
@@ -353,6 +310,7 @@ export function SystemConfig() {
           style={{ background: "rgba(220,38,38,0.06)", border: "1px solid rgba(220,38,38,0.15)", color: "var(--muted-foreground)" }}>
           Detects <strong style={{ color: "#dc2626" }}>Knife</strong> as anchor for the potential violation. Sustained presence past the dwell time raises a <strong style={{ color: "#dc2626" }}>Holdup</strong> alert with an evidence snapshot.
         </div>
+        <IndicatorTimings group="holdup" />
       </div>
     ),
     drinking: (
@@ -388,21 +346,11 @@ export function SystemConfig() {
           desc="How close (as a fraction of person height) a new alert must be to a recent one to count as 'the same spot' and get suppressed by cooldown."
           onChange={setDrinkingCooldownDist}
         />
-        <Toggle
-          label="Restrict to ordinance hours"
-          desc="Only alert inside the hours below. Off means the detector alerts around the clock."
-          value={drinkingHoursEnabled} onChange={setDrinkingHoursEnabled}
-        />
-        {drinkingHoursEnabled && (
-          <div className="grid grid-cols-2 gap-4">
-            <TimeInput label="Drinking ban starts" value={drinkingStart} onChange={setDrinkingStart} />
-            <TimeInput label="Drinking ban ends" value={drinkingEnd} onChange={setDrinkingEnd} />
-          </div>
-        )}
         <div className="rounded-xl p-4 text-xs leading-relaxed"
           style={{ background: "rgba(139,92,246,0.06)", border: "1px solid rgba(139,92,246,0.15)", color: "var(--muted-foreground)" }}>
           Detects <strong style={{ color: "#8b5cf6" }}>bottles</strong>. Sustained presence past the dwell time raises a <strong style={{ color: "#8b5cf6" }}>Public Drinking</strong> alert with an evidence snapshot, reflecting inuman culture practices.
         </div>
+        <IndicatorTimings group="drinking" />
       </div>
     ),
     system: (
@@ -418,6 +366,8 @@ export function SystemConfig() {
           desc="OFF by default. When on, a scheduled run of `manage.py purge_old_evidence --auto` deletes evidence older than the retention period. Nothing is deleted while this is off."
           value={autoPurge} onChange={setAutoPurge}
         />
+        <IndicatorTimings group="all" />
+        <IndicatorTimings group="ai" />
       </div>
     ),
   };

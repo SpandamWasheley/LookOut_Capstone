@@ -6,16 +6,10 @@ import {
   Clock, Check, Minus, MapPin, Sparkles,
 } from "lucide-react";
 import { violationDisplay } from "./constants/violationTypes";
+import { reviewTag, levelColor } from "./alertModel";
 import { getViolationTypes, getBarangays, createCitation, searchViolators } from "./api";
 
 const SUFFIX_OPTIONS = ["", "Jr.", "Sr.", "II", "III", "IV"];
-
-const statusConfig = {
-  active:       { label: "Active",     color: "#ef4444", bg: "rgba(239,68,68,0.1)" },
-  acknowledged: { label: "Dismissed",  color: "#64748b", bg: "rgba(100,116,139,0.1)" },
-  dispatched:   { label: "Assigned",   color: "#3b82f6", bg: "rgba(59,130,246,0.1)" },
-  resolved:     { label: "Resolved",   color: "#10b981", bg: "rgba(16,185,129,0.1)" },
-};
 
 function formatFull(ts) {
   return new Date(ts).toLocaleString("en-PH", {
@@ -663,78 +657,6 @@ function CitationFormModal({ alert, vcfg, officers = [], currentOfficerId, onRes
 // What was detected, Detected object, Assigned officers) — an 11px muted
 // label above a 13px value, on a quiet surface so these read as reference
 // details rather than competing with the video or footer actions.
-// v3 2's two visible levels, by severity.
-//
-// Deliberately NOT the violation type's colour, which is what this used to use:
-// a smoking alert and a holdup alert each have their own hue, so "Possible" and
-// "Likely" rendered identically within a type and the level carried no visual
-// weight at all. Since the level is now the main thing a tanod reads, it needs
-// to be the thing that changes colour.
-//
-// Amber for Possible, red for Likely -- the same two the spec uses, and the
-// pairing a barangay officer already reads correctly from traffic lights.
-const LEVEL_COLORS = {
-  Likely: "#dc2626",
-  Possible: "#f59e0b",
-  "Not shown": "var(--muted-foreground)",
-};
-
-// The checker's JSON field names, in words an officer reads.
-//
-// Kept on the client rather than sent from the server because these are pure
-// presentation: the field names are the model's contract and must not drift,
-// while the wording here can be improved freely without touching a prompt.
-const AI_FIELD_LABELS = {
-  group_appears_to_be_drinking_together: "Drinking together",
-  table_chairs_or_seating_visible: "Seating",
-  drinking_items_visible: "Drinks set out",
-  smoking_item_visible: "Smoking item",
-  object_pointed_at_a_person: "Pointed at a person",
-  victim_response_visible: "Victim reacting",
-  appears_to_be_a_holdup: "Looks like a holdup",
-};
-
-// The two choice fields, and which of their answers mean "ordinary activity".
-// Those answers are what cut a score to a quarter, so they are the one thing on
-// this card that must be impossible to miss.
-const AI_ORDINARY = {
-  scene_type: "other_activity",
-  hand_to_mouth_activity: ["drinking", "eating", "phone"],
-};
-
-function aiReadsAsOrdinary(answers) {
-  return Object.entries(AI_ORDINARY).some(([field, ordinary]) => {
-    const value = answers?.[field];
-    return Array.isArray(ordinary) ? ordinary.includes(value) : value === ordinary;
-  });
-}
-
-// What the AI context card shows. Separated from the markup so the rules are
-// readable on their own: which answers are booleans, which are choices, and
-// which are not worth a chip at all.
-function aiChips(answers) {
-  const chips = [];
-  for (const [field, value] of Object.entries(answers ?? {})) {
-    const label = AI_FIELD_LABELS[field];
-    if (label) {
-      chips.push({ key: field, label, yes: value === true });
-      continue;
-    }
-    // A choice field. "unclear" is skipped: it is the model declining to
-    // answer, and a chip reading "Scene: unclear" is noise on a card that is
-    // already dense.
-    if (field in AI_ORDINARY && value && value !== "unclear") {
-      chips.push({
-        key: field,
-        label: `${field === "scene_type" ? "Scene" : "Hand to mouth"}: ` +
-               String(value).replace(/_/g, " "),
-        plain: true,
-      });
-    }
-  }
-  return chips;
-}
-
 export function QuietCard({ label, value, mono, valueColor, tooltip,
                            tooltipAlign = "left", tooltipSpan = "auto" }) {
   // A fixed-width tooltip overflows a narrow card. These sit in the 2fr side of
@@ -790,10 +712,217 @@ export function QuietCard({ label, value, mono, valueColor, tooltip,
   );
 }
 
+
+// ── Alert detail cards (scoring spec v6, sections 2 and 8) ─────────────────────
+// Three kinds of card, told apart at a glance:
+//   Status                 solid border  - the official status, from system indicators only
+//   AI context             dashed border - what the AI checker saw (AI-generated, may be wrong)
+//   Status with AI context dashed border - a SUGGESTION; the official status never changes
+// The status is never shown as a number: a score reads like a percentage, which it is not.
+
+const STATUS_TOOLTIP = (
+  <>
+    <div className="font-semibold mb-1" style={{ color: "var(--foreground)" }}>Status</div>
+    Shows how strongly the detected evidence points to a violation. It&rsquo;s based only on
+    what the system detected (objects, movement, duration, and time), not on the AI.
+    <div className="mt-1.5" style={{ opacity: 0.9 }}>
+      <b>Monitoring:</b> An object linked to a violation was detected. Watch the scene.<br />
+      <b>Possible:</b> Some signs of a violation, but not enough to be sure. Review the alert before acting.<br />
+      <b>Likely:</b> Strong evidence of a violation. Review and respond.
+    </div>
+  </>
+);
+
+const SUGGESTED_TOOLTIP = (
+  <>
+    <div className="font-semibold mb-1" style={{ color: "var(--foreground)" }}>Status with AI context</div>
+    What the status would be if the AI&rsquo;s view of the scene were taken into account.
+    This is only a suggestion. The official status does not change.
+    <div className="mt-1.5" style={{ opacity: 0.9 }}>
+      If the AI is confident the scene is a violation, it may suggest one step higher.
+      If it is confident the scene is ordinary activity (such as vending, selling, or
+      eating), it may suggest one step lower. Review the clip to decide.
+    </div>
+  </>
+);
+
+function InfoCard({ label, tooltip, dashed, icon, aside, children }) {
+  return (
+    <div className="rounded-lg px-3 py-2.5 min-w-0 relative group"
+      style={{ background: "var(--secondary)", border: `1px ${dashed ? "dashed" : "solid"} var(--border)` }}>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 text-[13px]" style={{ color: "var(--muted-foreground)" }}>
+          {icon}
+          {label}
+          {tooltip && <Info size={11} style={{ cursor: "pointer" }} />}
+        </div>
+        {aside && <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>{aside}</div>}
+      </div>
+      {tooltip && (
+        <div className="absolute left-0 top-7 w-[min(22rem,100%)] rounded-xl px-3 py-2.5 text-[13px] leading-relaxed pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity z-50 shadow-xl"
+          style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--muted-foreground)" }}>
+          {tooltip}
+        </div>
+      )}
+      {children}
+    </div>
+  );
+}
+
+function StatusCard({ alert }) {
+  const label = alert.levelLabel || "—";
+  const color = levelColor(label);
+  const found = alert.checklist?.found ?? [];
+  const adjusted = alert.checklist?.adjusted_by ?? alert.checklist?.reduced_by ?? [];
+  const tag = alert.checklist?.tag;
+  return (
+    <InfoCard label="Status" tooltip={STATUS_TOOLTIP}>
+      <div className="text-[18px] font-semibold mt-0.5" style={{ color }}>{label}</div>
+      {tag ? (
+        <div className="mt-1 text-[13px] italic" style={{ color: "var(--muted-foreground)" }}>{tag}</div>
+      ) : null}
+      {found.length > 0 && (
+        <div className="mt-2 pt-2" style={{ borderTop: "1px solid var(--border)" }}>
+          <div className="text-[12px] mb-1" style={{ color: "var(--muted-foreground)" }}>Evidence found</div>
+          {found.map((line) => (
+            <div key={line} className="flex items-start gap-1.5 text-[14px] leading-snug mt-0.5"
+              style={{ color: "var(--foreground)" }}>
+              <Check size={13} className="flex-shrink-0 mt-0.5" style={{ color }} />
+              <span className="break-words">{line}</span>
+            </div>
+          ))}
+          {adjusted.map((line) => (
+            <div key={line} className="flex items-start gap-1.5 text-[13px] leading-snug mt-0.5"
+              style={{ color: "var(--muted-foreground)" }}>
+              <Minus size={13} className="flex-shrink-0 mt-0.5" />
+              <span className="break-words">Adjusted by: {line}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </InfoCard>
+  );
+}
+
+const AI_BADGE_STYLE = {
+  supports:    { color: "#047857", bg: "rgba(16,185,129,0.14)", icon: Check },
+  ordinary:    { color: "#b45309", bg: "rgba(245,158,11,0.16)", icon: AlertTriangle },
+  unclear:     { color: "var(--muted-foreground)", bg: "rgba(100,116,139,0.14)", icon: Info },
+  unavailable: { color: "var(--muted-foreground)", bg: "rgba(100,116,139,0.14)", icon: Info },
+};
+
+function AIContextCard({ ai }) {
+  const state = ai?.state ?? "unavailable";
+  const badge = ai?.badge ?? { code: "unavailable", text: "AI context unavailable" };
+  const style = AI_BADGE_STYLE[badge.code] ?? AI_BADGE_STYLE.unavailable;
+  const BadgeIcon = style.icon;
+  const frames = ai?.frames ?? [];
+  return (
+    <InfoCard dashed label="AI context" icon={<Sparkles size={13} />}
+      aside="AI-generated · may be wrong">
+      {state === "pending" ? (
+        <div className="mt-2 flex items-center gap-2 text-[14px]" style={{ color: "var(--muted-foreground)" }}>
+          <Loader2 size={14} className="animate-spin" /> AI is checking this event…
+        </div>
+      ) : (
+        <>
+          <div className="mt-2 inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[13px] font-medium"
+            style={{ background: style.bg, color: style.color }}>
+            <BadgeIcon size={12} /> {badge.text}
+            {state === "done" && ai.confidence ? <span style={{ opacity: 0.8 }}>· {ai.confidence} confidence</span> : null}
+          </div>
+          {state === "done" && (
+            <>
+              {ai.observations && (
+                <div className="mt-2 text-[15px] leading-snug italic break-words" style={{ color: "var(--foreground)" }}>
+                  &ldquo;{ai.observations}&rdquo;
+                </div>
+              )}
+              <div className="mt-2 flex flex-col gap-1">
+                {ai.checklist.map((c) => (
+                  <div key={c.field} className="flex items-center gap-1.5 text-[14px]" style={{ color: "var(--foreground)" }}>
+                    {c.value === true ? <Check size={13} style={{ color: "#10b981" }} />
+                      : c.value === false ? <X size={13} style={{ color: "var(--muted-foreground)" }} />
+                      : <Minus size={13} style={{ color: "var(--muted-foreground)" }} />}
+                    <span>{c.label}{typeof c.value === "string" ? `: ${c.value}` : ""}</span>
+                  </div>
+                ))}
+              </div>
+              {frames.length > 0 && (
+                <details className="mt-2 text-[13px]" style={{ color: "var(--muted-foreground)" }}>
+                  <summary className="cursor-pointer">Frames the AI saw ({frames.length})</summary>
+                  <div className="mt-1.5 grid grid-cols-4 gap-1">
+                    {frames.map((u) => (
+                      <a key={u} href={u} target="_blank" rel="noreferrer">
+                        <img src={u} alt="frame sent to the AI" loading="lazy"
+                          className="w-full h-14 object-cover rounded" />
+                      </a>
+                    ))}
+                  </div>
+                </details>
+              )}
+            </>
+          )}
+        </>
+      )}
+    </InfoCard>
+  );
+}
+
+function SuggestedStatusCard({ ai }) {
+  const sug = ai?.suggestion;
+  const text = ai?.state === "pending" ? "AI context pending…" : (sug?.text || "AI context unavailable");
+  const color = sug?.direction === "up" ? "#dc2626" : sug?.direction === "down" ? "#b45309" : "var(--foreground)";
+  return (
+    <InfoCard dashed label="Status with AI context" icon={<Sparkles size={13} />}
+      tooltip={SUGGESTED_TOOLTIP} aside="suggestion only">
+      <div className="mt-1.5 text-[16px] font-medium leading-snug break-words" style={{ color }}>
+        {text}
+      </div>
+    </InfoCard>
+  );
+}
+
+// Review (header tag): Pending / Verified / Dismissed, set by the tanod. It records the human
+// decision on whether the event was a real violation (it also labels data for checking the
+// thresholds). Separate from the Dismiss / Assign / Resolve workflow below.
+function ReviewControl({ alert, onReview }) {
+  const tag = reviewTag(alert);
+  const options = [
+    { key: "verified", label: "Verified", value: true, color: "#10b981" },
+    { key: "dismissed", label: "Dismissed", value: false, color: "#64748b" },
+    { key: "pending", label: "Pending", value: null, color: "#f59e0b" },
+  ];
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-[13px] font-medium px-2 py-0.5 rounded-full"
+        style={{ background: tag.bg, color: tag.color }}>
+        {tag.label}
+      </span>
+      {onReview && (
+        <div className="flex items-center gap-0.5 p-0.5 rounded-full"
+          style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
+          {options.map((o) => (
+            <button key={o.key} onClick={() => onReview(o.value)}
+              className="px-2 py-0.5 text-[12px] font-medium rounded-full transition-all"
+              title={o.value === null ? "Mark as not yet reviewed" : `Mark this event ${o.label.toLowerCase()}`}
+              style={{
+                background: tag.key === o.key ? o.color + "26" : "transparent",
+                color: tag.key === o.key ? o.color : "var(--muted-foreground)",
+              }}>
+              {o.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main modal ─────────────────────────────────────────────────────────────────
 export function ViolationModal({
   alert, assignedOfficerNames, officers = [], currentOfficerId,
-  onDismiss, onDispatch, onResolved, onClose,
+  onDismiss, onDispatch, onResolved, onClose, onReview,
   userRole,
 }) {
   // Resolving closes a violation and is what a citation is filed against, so
@@ -817,7 +946,6 @@ export function ViolationModal({
   // never (as watch_thief.py's now-fixed code split used to cause)
   // something as opaque as "thief".
   const vcfg = violationDisplay(alert.type);
-  const scfg = statusConfig[alert.status] ?? statusConfig.acknowledged;
   const VIcon = vcfg.icon;
   const [showResolveChecklist, setShowResolveChecklist] = useState(false);
   const [showAllOfficers, setShowAllOfficers] = useState(false);
@@ -912,14 +1040,11 @@ export function ViolationModal({
               <div>
                 <div className="flex items-center gap-2">
                   <span className="text-[17px] font-semibold" style={{ color: "var(--foreground)" }}>{vcfg.label}</span>
-                  <span className="text-[13px] font-medium px-2 py-0.5 rounded-full"
-                    style={{ background: scfg.bg, color: scfg.color }}>
-                    {scfg.label}
-                  </span>
+                  <ReviewControl alert={alert} onReview={onReview} />
                 </div>
                 <div className="mt-1 text-[13px]" style={{ color: "var(--muted-foreground)" }}>
                   <span style={{ fontFamily: "'DM Mono', monospace" }}>{alert.id}</span>
-                  {" · "}{alert.cameraZone}
+                  {" · "}{alert.cameraZone || alert.camera}
                 </div>
               </div>
             </div>
@@ -967,169 +1092,11 @@ export function ViolationModal({
 
               {/* Right: stacked reference-detail cards */}
               <div className="flex flex-col gap-3 min-w-0">
-                    /* Camera on its own row — monospace camera codes (e.g.
-                       CAM-DRINKING-TEST) truncate badly at half width — then
-                       the two confidences side by side.
-
-                       They are SEPARATE cards on purpose. One number used to
-                       carry both meanings, and they answer different questions:
-                       "how sure is the model that this is a bottle?" is not
-                       "how likely is it that this is a drinking violation?".
-                       A crisp bottle detection on a man walking home is high on
-                       the first and low on the second, and showing a single
-                       figure hid exactly that gap. */
-                    <>
-                      <QuietCard label="Camera" value={alert.camera} mono />
-                      {/* Status and Object detection, side by side.
-                          Separate on purpose: they answer different questions
-                          and routinely disagree. "How sure is the detector that
-                          this is a bottle?" is not "how likely is it that this
-                          is a drinking violation?" -- a crisp bottle detection
-                          on a man walking home is high on the right and low on
-                          the left, and one merged figure hid exactly that gap. */}
-                      <div className="grid grid-cols-2 gap-2 min-w-0">
-                        <QuietCard
-                          label="Status"
-                          value={alert.levelLabel || "Possible"}
-                          valueColor={LEVEL_COLORS[alert.levelLabel] || vcfg.color}
-                          tooltipSpan="row"
-                          tooltip={
-                            <>
-                              <div className="font-semibold mb-1" style={{ color: "var(--foreground)" }}>Status</div>
-                              Shows how strongly it points to a violation. It is based only on
-                              what the system detected (such as objects), not on the AI.
-                              <div className="mt-1.5" style={{ opacity: 0.85 }}>
-                                Possible — listed and notified.<br />
-                                Likely — full alert with video evidence.
-                              </div>
-                            </>
-                          }
-                        />
-                        <QuietCard
-                          label="Object detection"
-                          value={
-                            alert.objectConfidence != null
-                              ? `${(alert.objectConfidence * 100).toFixed(0)}%`
-                              : "—"
-                          }
-                          tooltipAlign="right"
-                          tooltipSpan="row"
-                          tooltip={
-                            <>
-                              <div className="font-semibold mb-1" style={{ color: "var(--foreground)" }}>Object confidence</div>
-                              How confident the YOLOv8 model detected the respective object of
-                              the violation.
-                            </>
-                          }
-                        />
-                      </div>
-                      {alert.checklist && (
-                        <div className="rounded-lg px-3 py-2.5 min-w-0"
-                          style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-                          <div className="text-[13px] mb-1.5" style={{ color: "var(--muted-foreground)" }}>
-                            Evidence found
-                          </div>
-                          {alert.checklist.found?.map((line) => (
-                            <div key={line} className="flex items-start gap-1.5 text-[14px] leading-snug mt-0.5"
-                              style={{ color: "var(--foreground)" }}>
-                              <Check size={13} className="flex-shrink-0 mt-0.5" style={{ color: vcfg.color }} />
-                              <span className="break-words">{line}</span>
-                            </div>
-                          ))}
-                          {alert.vlmReason && (
-                            /* The checker's own sentence. Marked as
-                               AI-generated and set in italics because a
-                               reviewer must be able to tell a model's words
-                               from a dispatcher's note at a glance --
-                               especially when the sentence argues AGAINST the
-                               alert it is attached to. */
-                            <div className="mt-2 pt-2" style={{ borderTop: "1px solid var(--border)" }}>
-                              <div className="text-[13px] mb-1" style={{ color: "var(--muted-foreground)" }}>
-                                AI checker said
-                              </div>
-                              <div className="text-[14px] leading-snug italic break-words"
-                                style={{ color: "var(--muted-foreground)" }}>
-                                &ldquo;{alert.vlmReason}&rdquo;
-                              </div>
-                            </div>
-                          )}
-                          {alert.checklist.reduced_by?.length > 0 && (
-                            /* Shown because it explains why an alert the
-                               indicators would have raised was held back --
-                               the single most useful line when it fires. */
-                            <div className="mt-2 pt-2" style={{ borderTop: "1px solid var(--border)" }}>
-                              <div className="text-[13px] mb-1" style={{ color: "var(--muted-foreground)" }}>
-                                Score reduced by
-                              </div>
-                              {alert.checklist.reduced_by.map((line) => (
-                                <div key={line} className="flex items-start gap-1.5 text-[14px] leading-snug"
-                                  style={{ color: "var(--muted-foreground)" }}>
-                                  <Minus size={13} className="flex-shrink-0 mt-0.5" />
-                                  <span className="break-words">{line}</span>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </>
-
-                {/* What the checker made of the scene.
-                    Shown INSTEAD of the raw description when there is a reading
-                    to show: the description is the detector restating its own
-                    trigger ("knife on person #2, present 3s"), which tells a
-                    reviewer nothing they cannot see in the video. The checker's
-                    sentence is the only line on this card that describes the
-                    situation rather than the detection. */}
-                {alert.vlmReason ? (
-                  <div className="rounded-lg px-3 py-2.5 min-w-0"
-                    style={{ background: "var(--secondary)", border: "1px dashed var(--border)" }}>
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-1.5 text-[13px]"
-                        style={{ color: "var(--muted-foreground)" }}>
-                        <Sparkles size={13} />
-                        AI context
-                      </div>
-                      {/* Stated every time, not only when it is wrong. A model's
-                          sentence reads as authoritative precisely because it is
-                          fluent, and an officer acting on it deserves to know
-                          which lines a machine wrote. */}
-                      <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>
-                        AI-generated · may be wrong
-                      </div>
-                    </div>
-
-                    {aiReadsAsOrdinary(alert.ai?.cues) && (
-                      <div className="mt-2 inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[13px] font-medium"
-                        style={{ background: "rgba(245,158,11,0.15)", color: "#b45309" }}>
-                        <AlertTriangle size={12} /> May be ordinary activity
-                      </div>
-                    )}
-
-                    <div className="mt-2 text-[15px] leading-snug italic break-words"
-                      style={{ color: "var(--foreground)" }}>
-                      &ldquo;{alert.vlmReason}&rdquo;
-                    </div>
-
-                    <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px]"
-                      style={{ color: "var(--muted-foreground)" }}>
-                      {aiChips(alert.ai?.cues).map((chip) => (
-                        <span key={chip.key} className="inline-flex items-center gap-1">
-                          {chip.plain ? null : chip.yes
-                            ? <Check size={12} style={{ color: vcfg.color }} />
-                            : <X size={12} />}
-                          {chip.label}
-                        </span>
-                      ))}
-                      {alert.ai?.tier && <span>Confidence: {alert.ai.tier}</span>}
-                    </div>
-                  </div>
-                ) : (
-                  /* No reading to show -- the checker is off, or it failed and
-                     the alert published on the geometry alone. Fall back to the
-                     detector's own description rather than an empty card. */
-                  <QuietCard label="What was detected" value={alert.description || "—"} />
-                )}
+                {/* Where: the camera's name (and address), never its code. */}
+                <QuietCard label="Camera" value={alert.cameraZone || alert.cameraAddress || "—"} />
+                <StatusCard alert={alert} />
+                <AIContextCard ai={alert.aiContext} />
+                <SuggestedStatusCard ai={alert.aiContext} />
 
                 {/* Detected object (the model's class label) paired with Assigned officers. */}
                 <div className="grid grid-cols-2 gap-3">

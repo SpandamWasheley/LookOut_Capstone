@@ -19,7 +19,7 @@ from django.utils import timezone
 
 from core.media import violation_media_path
 from core.models import Alert, SystemSettings
-from core.vision import ai_checker, momentum, recognition, scoring
+from core.vision import ai_checker, momentum, recognition, scoring, spec_settings
 
 CLIP_REFRESH_SECONDS = 15.0     # while Possible / Likely continues
 ROW_UPDATE_SECONDS = 5.0        # throttle for score / last_seen writes
@@ -48,15 +48,31 @@ def ai_setup(stdout, off=False):
     (and onto the engines they drive), so one ring and one client serve all of them."""
     cfg = SystemSettings.load()
     client, why = None, "switched off"
+    by_kind = {}
     if cfg.vlm_enabled and not off:
         candidate = ai_checker.OllamaClient(model=cfg.vlm_model, endpoint=cfg.vlm_endpoint,
                                             timeout=cfg.vlm_timeout)
         ok, why = candidate.available()
         client = candidate if ok else None
-    stdout.write(f"AI checker: ON ({cfg.vlm_model}, {cfg.vlm_frames} frames)" if client
-                 else f"AI checker: OFF — {why}")
+        # Holdup can use a larger model (default 4B: the 2B misread the real holdup clip).
+        # Ollama swaps models in and out of GPU memory, so a holdup check pays a model-load
+        # delay; it is asynchronous, so only the AI card waits.
+        holdup_model = getattr(cfg, "vlm_model_holdup", "") or ""
+        if client and holdup_model and holdup_model != cfg.vlm_model:
+            big = ai_checker.OllamaClient(model=holdup_model, endpoint=cfg.vlm_endpoint,
+                                          timeout=max(cfg.vlm_timeout, 180))
+            big_ok, big_why = big.available()
+            if big_ok:
+                by_kind["holdup"] = big
+            else:
+                stdout.write(f"AI checker: holdup model unavailable ({big_why}); holdup uses {cfg.vlm_model}")
+    stdout.write(
+        f"AI checker: ON ({cfg.vlm_model}"
+        + (f", holdup: {by_kind['holdup'].model}" if "holdup" in by_kind else "")
+        + f", {cfg.vlm_frames} frames)" if client else f"AI checker: OFF — {why}")
     return {
         "ai_client": client,
+        "ai_clients": by_kind,
         "ai_ring": ai_checker.FrameRing() if client else None,
         "ai_frames": cfg.vlm_frames,
         "ai_edge": cfg.vlm_max_edge,
@@ -84,9 +100,36 @@ class IncidentMixin:
     """Mix into a watch_* Command. Needs: self.dry_run, self.stdout, self.style,
     self.stats, self._alert_log, and the watcher's own _save_clips()."""
 
+    # ---- adjustable timings / conditions (Settings; spec v6 defaults) -------
+
+    puff_count = 3
+    puff_window = 300.0
+    drinking_band = scoring.DRINKING_HIGH_BAND
+    spec_snapshot = None
+
+    def apply_spec_settings(self, cfg):
+        """Read the adjustable indicator timings from SystemSettings. Cheap to call every
+        frame (it only acts when the settings row changed), so edits made in Settings take
+        effect within the runner's normal 5-second settings refresh."""
+        stamp = getattr(cfg, "updated_at", None)
+        if stamp is not None and stamp == self.__dict__.get("_spec_stamp"):
+            return
+        self._spec_stamp = stamp
+        if not os.environ.get("LOOKOUT_MOMENTUM"):          # a tuning run's override wins
+            self._momentum_book().cfg = spec_settings.momentum_config(cfg.object_confirm_seconds)
+        self.puff_count = int(cfg.smoking_puff_count)
+        self.puff_window = float(cfg.smoking_puff_window_minutes) * 60.0
+        self.drinking_band = (cfg.drinking_start, cfg.drinking_end)
+        engine = self.__dict__.get("engine")
+        if engine is not None:
+            engine.near_person_heights = float(cfg.holdup_near_person_heights)
+            engine.loiter_seconds = int(cfg.holdup_loiter_seconds)
+        self.spec_snapshot = spec_settings.snapshot(cfg)
+
     # ---- AI checker (display only; never changes the score or status) ------
 
     ai_client = None
+    ai_clients = {}
     ai_ring = None
     ai_frames = ai_checker.FRAMES_DEFAULT
     ai_edge = ai_checker.SEND_EDGE
@@ -108,13 +151,14 @@ class IncidentMixin:
         if alert is None or self.ai_client is None or self.ai_ring is None:
             return
         keys = list(ai.get("keys") or [("track", key[1])])
+        client = self.ai_clients.get(ai["kind"], self.ai_client)
         pk = alert.pk
         Alert.objects.filter(pk=pk).update(ai={
             "state": "pending", "trigger_level": level, "system_note": ai["note"],
-            "model": self.ai_client.model})
+            "model": client.model})
         root = str(self.violations_dir)
         ai_checker.check_async(
-            self.ai_client, self.ai_ring, ai["kind"], keys, now, ai["note"],
+            client, self.ai_ring, ai["kind"], keys, now, ai["note"],
             on_done=lambda result: store_ai_result(pk, result, level),
             save_dir=os.path.join(root, "ai", f"alert{pk}"), label="ai",
             frames=self.ai_frames, edge=self.ai_edge, wait=self.ai_wait,
@@ -238,6 +282,11 @@ class IncidentMixin:
                 return None
             alert = create(level, score.alerting)
             inc.alert = alert
+            if alert is not None and self.spec_snapshot is not None:
+                # Log the active settings with the alert, so the timings behind this status
+                # are on record (calibration, and answering "why did this fire?").
+                alert.cues = {**(alert.cues or {}), "settings": self.spec_snapshot}
+                Alert.objects.filter(pk=alert.pk).update(cues=alert.cues)
             if ai is not None:
                 self._ai_trigger(alert, ai, key, now, level)
             inc.clip_base = getattr(self, "_last_clip_base", None)
@@ -285,6 +334,8 @@ class IncidentMixin:
             fields["description"] = describe(score)
         cues = dict(Alert.objects.filter(pk=alert.pk).values_list("cues", flat=True).first() or {})
         cues.update(score.as_dict())
+        if self.spec_snapshot is not None:
+            cues["settings"] = self.spec_snapshot
         if extra_cues:
             cues.update(extra_cues)
         fields["cues"] = cues

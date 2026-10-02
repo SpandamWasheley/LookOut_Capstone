@@ -227,9 +227,6 @@ class AlertSerializer(serializers.ModelSerializer):
             # what each was worth.
             "level", "level_label", "last_seen_at",
             "object_confidence", "cues", "ai_context",
-            # VLM second-stage verification. `vlm_reason` is the sentence worth
-            # showing a reviewer -- a readable justification, not another number.
-            "vlm_verdict", "vlm_confidence", "vlm_reason",
             # `reviewed_valid` is the only one of these a client writes: it is
             # the human label calibrate_weights fits the final weights against.
             # The reviewer's identity is stamped server-side alongside it.
@@ -240,7 +237,6 @@ class AlertSerializer(serializers.ModelSerializer):
             # could PATCH its own cue vector could rewrite the calibration
             # training data after the fact.
             "level", "level_label", "last_seen_at", "object_confidence", "cues", "ai_context",
-            "vlm_verdict", "vlm_confidence", "vlm_reason",
             # Who reviewed it is recorded FROM the authenticated request, so a
             # client cannot name somebody else as the reviewer.
             "reviewed_by", "reviewed_by_name", "reviewed_at",
@@ -285,6 +281,14 @@ class AlertSerializer(serializers.ModelSerializer):
 
 
 class SystemSettingsSerializer(serializers.ModelSerializer):
+    # The spec value of every adjustable timing, so the UI can show 'default' and reset.
+    spec_defaults = serializers.SerializerMethodField()
+
+    def get_spec_defaults(self, obj):
+        import datetime
+        from core.vision.spec_settings import SPEC_DEFAULTS
+        return {k: (v.strftime('%H:%M:%S') if isinstance(v, datetime.time) else v) for k, v in SPEC_DEFAULTS.items()}
+
     class Meta:
         model = SystemSettings
         fields = [
@@ -297,13 +301,26 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
             "drinking_mouth_proximity", "drinking_cooldown_center_dist",
             "drinking_hours_enabled", "drinking_start", "drinking_end",
             "drinking_min_group", "drinking_group_duration",
-            "vlm_enabled", "vlm_model", "vlm_endpoint",
+            "vlm_enabled", "vlm_model", "vlm_model_holdup", "vlm_endpoint",
             "vlm_timeout",
+            "object_confirm_seconds", "smoking_puff_count", "smoking_puff_window_minutes",
+            "holdup_loiter_seconds", "holdup_near_person_heights",
             "vlm_frames", "vlm_max_edge", "vlm_async",
             "alert_cooldown", "evidence_retention_days", "evidence_auto_purge",
-            "updated_at",
+            "updated_at", "spec_defaults",
         ]
-        read_only_fields = ["updated_at"]
+        read_only_fields = ["updated_at", "spec_defaults"]
+
+    def validate(self, attrs):
+        """Timings / conditions stay inside the ranges that still mean what the spec says."""
+        from core.vision.spec_settings import LIMITS
+        errors = {}
+        for field, (low, high) in LIMITS.items():
+            if field in attrs and not (low <= attrs[field] <= high):
+                errors[field] = f"Must be between {low:g} and {high:g}."
+        if errors:
+            raise serializers.ValidationError(errors)
+        return attrs
 
 
 class DetectionJobSerializer(serializers.ModelSerializer):
@@ -318,7 +335,7 @@ class DetectionJobSerializer(serializers.ModelSerializer):
         model = DetectionJob
         fields = [
             "id", "violation_type", "source_filename", "status", "started_at",
-            "finished_at", "error", "created_by_name", "camera_code", "is_live",
+            "finished_at", "error", "created_by_name", "camera_code", "is_live", "recorded_at",
         ]
         # Every field here is set by the server (upload handling / the watcher
         # thread) — the client only ever POSTs the file + violation_type (or

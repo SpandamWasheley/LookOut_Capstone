@@ -18,18 +18,17 @@ export interface Assignment {
   description: string;
   location: string;
   cameraCode: string | null;
-  // The violation score, 0-100. Kept for the record; NOT what the officer is
-   // shown, because a score of 68 versus 73 means nothing to a tanod and reads
-  // like a percentage, which it is not.
-  confidence: number;
-  // What the officer actually reads: "Possible" or "Likely".
+  // What the officer reads: the Status, "Possible" or "Likely". There is deliberately no
+  // score or percentage: it would read like a probability, which it is not.
   levelLabel: string;
   // What the object detector was sure of, separately from the score above.
   objectConfidence: number | null;
-  // Plain-language evidence lines, and anything that cut the score.
-  checklist: { found: string[]; reduced_by: string[] } | null;
-  // The AI checker's one-sentence reading, shown marked as AI-generated.
-  aiReason: string;
+  // Plain-language evidence lines, and anything that adjusted the status.
+  checklist: { found: string[]; adjusted_by: string[]; tag: string } | null;
+  // The AI checker's context card and suggested status (display only).
+  ai: api.ApiAiContext | null;
+  // Review tag set by the tanod: Pending / Verified / Dismissed.
+  reviewedValid: boolean | null;
   dispatchedAt: string;
   assignedOfficerIds: number[];
   assignedOfficerNames: string[];
@@ -50,11 +49,17 @@ function mapAlert(raw: api.ApiAlert, typesByCode: Record<string, ViolationTypeMe
     description: raw.description,
     location: raw.camera_zone || "Unknown location",
     cameraCode: raw.camera,
-    confidence: Math.round(raw.confidence * 100),
     levelLabel: raw.level_label || "",
     objectConfidence: raw.object_confidence ?? null,
-    checklist: raw.cues?.checklist ?? null,
-    aiReason: raw.vlm_reason || "",
+    checklist: raw.cues?.checklist
+      ? {
+          found: raw.cues.checklist.found ?? [],
+          adjusted_by: raw.cues.checklist.adjusted_by ?? [],
+          tag: raw.cues.checklist.tag ?? "",
+        }
+      : null,
+    ai: raw.ai_context ?? null,
+    reviewedValid: raw.reviewed_valid ?? null,
     dispatchedAt: raw.timestamp,
     assignedOfficerIds: raw.officers_assigned,
     assignedOfficerNames: raw.officers_assigned_names,

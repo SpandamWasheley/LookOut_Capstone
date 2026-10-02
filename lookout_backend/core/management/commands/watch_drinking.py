@@ -391,6 +391,8 @@ class Command(IncidentMixin, BaseCommand):
             return
 
         cfg = SystemSettings.load()
+
+        self.apply_spec_settings(cfg)
         if not cfg.drinking_enabled:
             self.stdout.write(self.style.WARNING(
                 "Drinking detection is disabled in Settings (drinking_enabled=False). "
@@ -623,6 +625,8 @@ class Command(IncidentMixin, BaseCommand):
         self._raw_buffer = recognition.RawFrameRecorder() if is_live else None
 
         cfg = SystemSettings.load()
+
+        self.apply_spec_settings(cfg)
         cfg_loaded_at = time.time()
 
         # Per-person tracking: the bottle is what's detected, but the PERSON
@@ -688,6 +692,7 @@ class Command(IncidentMixin, BaseCommand):
                 wall_now = time.time()
                 if wall_now - cfg_loaded_at >= SETTINGS_REFRESH_SECONDS:
                     cfg = SystemSettings.load()
+                    self.apply_spec_settings(cfg)
                     cfg_loaded_at = wall_now
 
                 if not cfg.drinking_enabled:
@@ -904,7 +909,7 @@ class Command(IncidentMixin, BaseCommand):
 
     def _time_band_cue(self, now_ts=None):
         """The Omamalin high band (16:00-24:00) as a scored cue, not a gate."""
-        start, end = scoring.DRINKING_HIGH_BAND
+        start, end = self.drinking_band
         return scoring.in_time_band(
             vclock.clock_now(self.clock_start, now_ts, self._source_path is not None), start, end)
 

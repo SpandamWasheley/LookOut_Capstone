@@ -199,6 +199,15 @@ export const getOfficers = () => apiFetch<{ results: ApiOfficer[] } | ApiOfficer
 export const updateOfficer = (id: number, payload: Partial<ApiOfficer>) =>
   apiFetch<ApiOfficer>(`/officers/${id}/`, { method: "PATCH", body: JSON.stringify(payload) });
 
+export interface ApiAiContext {
+  state: "pending" | "done" | "unavailable";
+  badge: { code: "supports" | "ordinary" | "unclear" | "unavailable"; text: string };
+  suggestion: { text: string; suggested: string | null; changed: boolean; direction: "up" | "down" | "none" };
+  observations: string;
+  checklist: { field: string; label: string; value: boolean | string }[];
+  confidence: string | null;
+}
+
 export interface ApiAlert {
   id: number;
   code: string;
@@ -221,7 +230,7 @@ export interface ApiAlert {
   // `confidence` above is the VIOLATION SCORE, not the detector's certainty --
   // the two were conflated until the scoring layer separated them. What the
   // officer is shown is `level_label`; the number stays for the record.
-  level: "" | "none" | "watch" | "warning" | "violation";
+  level: "" | "none" | "monitoring" | "warning" | "violation";
   level_label: string;
   // What the object detector itself was sure of. Null on alerts filed before
   // the two were separated, so every read of it is guarded.
@@ -230,15 +239,16 @@ export interface ApiAlert {
   // the alert card shows -- built server-side so this app and the web
   // dashboard cannot drift apart on wording.
   cues: {
-    checklist?: { found: string[]; reduced_by: string[] };
+    checklist?: { found: string[]; adjusted_by?: string[]; tag?: string };
     [key: string]: unknown;
   } | null;
+  // Reviewed by the tanod: null = Pending, true = Verified, false = Dismissed.
+  reviewed_valid: boolean | null;
 
-  // --- AI context checker (core/vision/vlm.py) -------------------------------
-  // One sentence a barangay official can read. Shown marked as AI-generated.
-  vlm_verdict: string;
-  vlm_confidence: number | null;
-  vlm_reason: string;
+  // --- AI checker (core/vision/ai_checker.py) --------------------------------
+  // Display only: computed by the server on every read from the stored AI reply and the
+  // alert's CURRENT status. It never changes the official status.
+  ai_context: ApiAiContext | null;
 }
 
 export const getAlerts = () => apiFetch<{ results: ApiAlert[] } | ApiAlert[]>("/alerts/");

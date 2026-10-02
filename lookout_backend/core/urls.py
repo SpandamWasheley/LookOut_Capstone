@@ -28,6 +28,7 @@ urlpatterns = [
     path("dashboard/stats/", views.dashboard_stats, name="dashboard_stats"),
     path("barangays/", views.barangays, name="barangays"),
     path("settings/", views.SystemSettingsView.as_view(), name="system_settings"),
+    path("settings/reset/", views.reset_spec_defaults, name="reset_spec_defaults"),
     path("officers/send-code/", views.send_officer_code, name="send_officer_code"),
     path("officers/verify-code/", views.verify_officer_code, name="verify_officer_code"),
     path("personnel/register/", views.register_personnel, name="register_personnel"),

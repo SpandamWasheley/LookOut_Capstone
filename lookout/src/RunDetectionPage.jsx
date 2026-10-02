@@ -62,6 +62,9 @@ export function RunDetectionPage() {
   const [pct, setPct] = useState(50);
   const [minutes, setMinutes] = useState(5);
 
+  // When the clip was recorded, as typed (datetime-local). Optional; passed to the detector as
+  // --clock so the holdup time block and the drinking evening band use the footage's own clock.
+  const [recordedAt, setRecordedAt] = useState("");
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState("");
   const [job, setJob] = useState(null);
@@ -118,6 +121,9 @@ export function RunDetectionPage() {
     }
   };
 
+  // Only holdup and drinking read the time of day (and "merged", which runs them).
+  const usesClock = source === "file" && ["thief", "drinking", "merged"].includes(violationType);
+
   const canStart = source === "camera"
     ? !!cameraId
     : staged && (!needsEdges || canSaveEdges);
@@ -133,6 +139,7 @@ export function RunDetectionPage() {
             stagedToken: staged.stagedToken,
             sourceFilename: staged.sourceFilename,
             violationType,
+            recordedAt: usesClock ? recordedAt : "",
             ...(needsEdges ? {
               edges: edgeSpec,
               edgesWidth: staged.frame.width,
@@ -155,6 +162,7 @@ export function RunDetectionPage() {
     setStaged(null);
     setStageError("");
     setCameraId("");
+    setRecordedAt("");
     setEdgeSpec({});
     setCanSaveEdges(false);
     setPct(50);
@@ -415,6 +423,25 @@ export function RunDetectionPage() {
                     minutes={minutes}
                     onMinutesChange={setMinutes}
                     onChange={(spec, can) => { setEdgeSpec(spec); setCanSaveEdges(can); }}
+                  />
+                </div>
+              )}
+
+              {/* Optional: when the clip was recorded */}
+              {canStart && usesClock && (
+                <div className="rounded-xl p-4 flex flex-wrap items-center justify-between gap-3"
+                  style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
+                  <div className="text-[14px]" style={{ color: "var(--muted-foreground)" }}>
+                    <span style={{ color: "var(--foreground)" }}>Recorded at</span> (optional) — the date and time the
+                    clip starts. Holdup scoring uses the time of day, and drinking counts the 4 PM to midnight band.
+                    Left blank, the current clock is used.
+                  </div>
+                  <input
+                    type="datetime-local"
+                    value={recordedAt}
+                    onChange={(e) => setRecordedAt(e.target.value)}
+                    className="px-2.5 py-1.5 rounded-lg text-[14px] outline-none"
+                    style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
                   />
                 </div>
               )}

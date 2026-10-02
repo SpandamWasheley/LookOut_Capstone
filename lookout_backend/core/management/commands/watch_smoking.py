@@ -98,7 +98,7 @@ POSE_MATCH_IOU = 0.3
 PUFF_MIN_CYCLES = 1
 # Spec v6 section 6: 1 puff 20, 2+ puffs 20, 3+ puffs within 5 minutes 15 -- all
 # counted by the POSE hand-to-mouth counter (tracking.Track.update_gesture).
-PUFF_PATTERN_COUNT = 3
+PUFF_PATTERN_COUNT = 3     # spec default; the live value is self.puff_count (Settings)
 # Path 2 (a puff but no item detected): for this long after the first gesture the
 # cigarette detector runs on a native-resolution crop of that person's head and
 # hands. Found -> the normal path; not found -> the puff is only logged.
@@ -365,6 +365,8 @@ class Command(IncidentMixin, BaseCommand):
             return
 
         cfg = SystemSettings.load()
+
+        self.apply_spec_settings(cfg)
         if not cfg.smoking_enabled:
             self.stdout.write(self.style.WARNING(
                 "Smoking detection is disabled in Settings (smoking_enabled=False). "
@@ -555,7 +557,7 @@ class Command(IncidentMixin, BaseCommand):
                 if iou > best_iou:
                     best, best_iou = track, iou
             if best is not None and best_iou >= POSE_MATCH_IOU:
-                n = best.update_gesture(ratio, now_ts)
+                n = best.update_gesture(ratio, now_ts, self.puff_window)
                 if n:
                     self.stats[f"hand-to-mouth gestures (person #{best.id})"] = n
                 # A NEW puff starts the high-resolution cigarette check (path 2).
@@ -680,6 +682,7 @@ class Command(IncidentMixin, BaseCommand):
         # so edits made in the dashboard's Smoking config take effect live, without
         # a restart. CLI flags, if given, still win over the stored values.
         cfg = SystemSettings.load()
+        self.apply_spec_settings(cfg)
         cfg_loaded_at = time.time()
 
         # Per-person tracking: the cigarette itself is too small/transient to
@@ -740,6 +743,7 @@ class Command(IncidentMixin, BaseCommand):
                 wall_now = time.time()
                 if wall_now - cfg_loaded_at >= SETTINGS_REFRESH_SECONDS:
                     cfg = SystemSettings.load()
+                    self.apply_spec_settings(cfg)
                     cfg_loaded_at = wall_now
 
                 if not cfg.smoking_enabled:
@@ -872,7 +876,7 @@ class Command(IncidentMixin, BaseCommand):
             self.stats["held back: momentum below ON"] += 1
 
         # --- the cues (spec v6 section 6) ---
-        puffs = track.gesture_count(now_ts)          # pose counter, 5-minute window
+        puffs = track.gesture_count(now_ts, self.puff_window)   # pose counter (Settings window)
         cues = set()
         if object_on:
             cues.add("cigarette")
@@ -882,7 +886,7 @@ class Command(IncidentMixin, BaseCommand):
             cues.add("gesture")
         if puffs >= 2:
             cues.add("puffs")
-        if puffs >= PUFF_PATTERN_COUNT:
+        if puffs >= self.puff_count:
             cues.add("puff_pattern")
 
         key = ("smoke", track.id)

@@ -370,6 +370,7 @@ class Command(BaseCommand):
     # ---- per-detector drivers (reuse each command's own methods) ---------
 
     def _run_person_detector(self, name, eng, frame, persons, now, cfg, debug):
+        eng["cmd"].apply_spec_settings(cfg)
         cmd, tracker = eng["cmd"], eng["tracker"]
         conf = getattr(cfg, f"{name}_confidence") / 100
         dwell = getattr(cfg, f"{name}_dwell")

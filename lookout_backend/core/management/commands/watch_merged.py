@@ -435,6 +435,8 @@ class Command(BaseCommand):
     # ---- per-frame: one merged pass, routed to each engine ------------------
 
     def _process_frame(self, frame, now, cfg, active, debug, frame_idx=None, timestamp=None):
+        for _name in active:
+            self.engines[_name]["cmd"].apply_spec_settings(cfg)
         # One shared person pass per frame. bytetrack is safe here — see the
         # module docstring for why this differs from watch_all's hardcoded
         # greedy matcher.

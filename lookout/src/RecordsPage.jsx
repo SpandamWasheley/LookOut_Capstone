@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { CheckCircle, X, MapPin, Clock, Shield, Search, FileText } from "lucide-react";
 import { violationDisplay } from "./constants/violationTypes";
 import { ViolationModal } from "./ViolationModal";
-import { getAlerts } from "./api";
+import { mapAlert } from "./alertModel";
+import { getAlerts, updateAlert } from "./api";
 
 const outcomeConfig = {
   resolved:     { label: "Resolved",  color: "#10b981", bg: "rgba(16,185,129,0.1)",  icon: CheckCircle },
@@ -14,48 +15,6 @@ function formatFull(ts) {
     month: "short", day: "numeric", year: "numeric",
     hour: "2-digit", minute: "2-digit", hour12: false,
   });
-}
-
-function mapAlert(raw) {
-  return {
-    id: raw.code,
-    // Needed by the review control in ViolationModal: the label is PATCHed by
-    // numeric pk, while `id` above is the business code (ALT-0042).
-    dbId: raw.id,
-    type: raw.type,
-    status: raw.status,
-    camera: raw.camera,
-    cameraZone: raw.camera_zone,
-    cameraAddress: raw.camera_address ?? "",
-    timestamp: raw.timestamp,
-    confidence: raw.confidence,
-    description: raw.description,
-    imageUrl: raw.image_url,
-    officersAssignedIds: raw.officers_assigned ?? [],
-    officersAssignedNames: raw.officers_assigned_names ?? [],
-    suspect: raw.suspect,
-    notes: raw.notes,
-    level: raw.level,
-    levelLabel: raw.level_label || "",
-    // What the OBJECT DETECTOR was sure of, kept apart from `confidence`
-    // (the violation likelihood). Null on alerts filed before the two were
-    // separated, which is why every read of it is guarded.
-    objectConfidence: raw.object_confidence,
-    // v3 2: the evidence the tanod reads instead of the score. Built
-    // server-side so both clients show the same words.
-    checklist: raw.cues?.checklist ?? null,
-    // The checker's own per-question answers, so the card can show WHAT it saw
-    // rather than only what it concluded.
-    ai: raw.cues?.vlm ?? null,
-    cues: raw.cues,
-    reviewedValid: raw.reviewed_valid,
-    // VLM second stage. `vlmReason` is the sentence worth showing a reviewer.
-    vlmVerdict: raw.vlm_verdict,
-    vlmConfidence: raw.vlm_confidence,
-    vlmReason: raw.vlm_reason,
-    reviewedBy: raw.reviewed_by_name,
-    reviewedAt: raw.reviewed_at,
-  };
 }
 
 export function RecordsPage({ user }) {
@@ -290,6 +249,10 @@ export function RecordsPage({ user }) {
         <ViolationModal
           alert={selected}
           assignedOfficerNames={selected.officersAssignedNames ?? []}
+          onReview={async (value) => {
+            await updateAlert(selected.dbId, { reviewed_valid: value });
+            setSelected({ ...selected, reviewedValid: value });
+          }}
           onDismiss={() => {}}
           onDispatch={() => {}}
           onResolved={() => {}}

@@ -1163,13 +1163,10 @@ export default function AssignmentDetailScreen() {
           <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>LOCATION</Text>
           {[
             { icon: "map-pin" as const, label: "Zone / Camera", value: assignment.location },
-            // The score is deliberately NOT here any more. It used to read
-            // "AI Confidence 77%", which was wrong twice over: the number is
-            // the violation score rather than the detector's certainty, and a
-            // percentage invites an officer to read it as a probability it is
-            // not. What replaces it is the level and the evidence below.
+            // No score or percentage here: it would read as a probability it is not. The Status
+            // and the evidence checklist below replace it.
             ...(assignment.levelLabel
-              ? [{ icon: "shield" as const, label: "Assessment", value: assignment.levelLabel }]
+              ? [{ icon: "shield" as const, label: "Status", value: assignment.levelLabel }]
               : []),
             ...(assignment.objectConfidence != null
               ? [{
@@ -1201,13 +1198,11 @@ export default function AssignmentDetailScreen() {
               </View>
             ))}
 
-            {assignment.checklist.reduced_by.length > 0 && (
-              /* Shown because it explains why an alert the indicators alone
-                 would have raised was held back -- the most useful line on the
-                 card when it fires. */
+            {assignment.checklist.adjusted_by.length > 0 && (
+              /* What moved the status up or down besides the objects (for example the time of day). */
               <View style={[styles.evidenceDivider, { borderTopColor: c.border }]}>
-                <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>SCORE REDUCED BY</Text>
-                {assignment.checklist.reduced_by.map((line) => (
+                <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>ADJUSTED BY</Text>
+                {assignment.checklist.adjusted_by.map((line) => (
                   <View key={line} style={styles.evidenceRow}>
                     <Feather name="minus" size={14} color={c.mutedForeground} />
                     <Text style={[styles.evidenceText, { color: c.mutedForeground }]}>{line}</Text>
@@ -1216,18 +1211,57 @@ export default function AssignmentDetailScreen() {
               </View>
             )}
 
-            {assignment.aiReason ? (
-              /* Marked as AI-generated on purpose: an officer must be able to
-                 tell a model's sentence from a dispatcher's note at a glance. */
-              <View style={[styles.evidenceDivider, { borderTopColor: c.border }]}>
-                <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>AI CHECKER SAID</Text>
-                <Text style={[styles.aiReason, { color: c.mutedForeground }]}>
-                  &ldquo;{assignment.aiReason}&rdquo;
-                </Text>
-              </View>
-            ) : null}
           </View>
         )}
+
+        {/* AI context: what a local vision model saw. Marked AI-generated, dashed border. It
+            never changes the Status above. */}
+        <View style={[styles.card, styles.aiCard, { backgroundColor: c.card, borderColor: c.border }]}>
+          <View style={styles.aiHeader}>
+            <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>AI CONTEXT</Text>
+            <Text style={[styles.aiNote, { color: c.mutedForeground }]}>AI-generated · may be wrong</Text>
+          </View>
+          {assignment.ai?.state === "done" ? (
+            <>
+              <Text style={[styles.aiBadge, { color: assignment.ai.badge.code === "ordinary" ? "#b45309" : c.foreground }]}>
+                {assignment.ai.badge.text}
+                {assignment.ai.confidence ? ` · ${assignment.ai.confidence} confidence` : ""}
+              </Text>
+              {assignment.ai.observations ? (
+                <Text style={[styles.aiReason, { color: c.foreground }]}>
+                  &ldquo;{assignment.ai.observations}&rdquo;
+                </Text>
+              ) : null}
+              {assignment.ai.checklist.map((item) => (
+                <View key={item.field} style={styles.evidenceRow}>
+                  <Feather
+                    name={item.value === true ? "check" : item.value === false ? "x" : "minus"}
+                    size={14}
+                    color={item.value === true ? "#10b981" : c.mutedForeground}
+                  />
+                  <Text style={[styles.evidenceText, { color: c.foreground }]}>
+                    {item.label}{typeof item.value === "string" ? `: ${item.value}` : ""}
+                  </Text>
+                </View>
+              ))}
+            </>
+          ) : (
+            <Text style={[styles.aiReason, { color: c.mutedForeground }]}>
+              {assignment.ai?.state === "pending" ? "AI is checking this event…" : "AI context unavailable"}
+            </Text>
+          )}
+        </View>
+
+        {/* Status with AI context: a suggestion only. The official Status does not change. */}
+        <View style={[styles.card, styles.aiCard, { backgroundColor: c.card, borderColor: c.border }]}>
+          <View style={styles.aiHeader}>
+            <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>STATUS WITH AI CONTEXT</Text>
+            <Text style={[styles.aiNote, { color: c.mutedForeground }]}>suggestion only</Text>
+          </View>
+          <Text style={[styles.aiSuggestion, { color: c.foreground }]}>
+            {assignment.ai?.state === "pending" ? "AI context pending…" : (assignment.ai?.suggestion.text ?? "AI context unavailable")}
+          </Text>
+        </View>
 
         <View style={[styles.card, { backgroundColor: c.card, borderColor: c.border }]}>
           <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>ASSIGNMENT INFO</Text>
@@ -1479,6 +1513,11 @@ const styles = StyleSheet.create({
     marginTop: 10,
     paddingTop: 10,
   },
+  aiCard: { borderStyle: "dashed" },
+  aiHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  aiNote: { fontSize: 11, fontFamily: "Inter_400Regular" },
+  aiBadge: { fontSize: 14, fontFamily: "Inter_600SemiBold", marginTop: 6 },
+  aiSuggestion: { fontSize: 15, fontFamily: "Inter_600SemiBold", marginTop: 6 },
   aiReason: {
     fontSize: 14,
     lineHeight: 19,

@@ -127,3 +127,32 @@ Chosen: 2B-instruct, 8 frames, ctx 10240. Each image costs about 1,100 tokens re
 frames need ctx 16384 and 12 frames at ctx 8192 fails with HTTP 400. Upscaling the small smoker crop to 512 px
 changed nothing useful (left off). The 2B model misses the knife confrontation (said "unlikely", the 4B said
 "likely"); the cost is only a missing upward suggestion, since the AI never changes the official status.
+
+## Holdup AI accuracy test (before Part 5)
+
+Holdup clip (staged knife confrontation), same crop path:
+
+| Config | Answer | s/call |
+|---|---|---|
+| 2B-instruct, 8 frames | unlikely / other_activity | 3.6 warm (15 cold) |
+| 2B-instruct, 12 frames (context 17408) | unlikely / other_activity, high | 4.1 warm (20 cold) |
+| 4B-instruct, 8 frames | likely / confrontation, object pointed, high | 16.9 warm, 52-56 on a model switch |
+
+More frames did not fix the 2B. With detection running (Holdup clip, `watch_merged --dry-run`) while the AI
+calls alternated 2B -> 4B -> 4B -> 2B -> 4B continuously: nothing crashed or blocked, but the clip took
+191 s against 156 s and 152 s alone (about +23% for the minutes the AI was busy). Only one model fits the
+6 GB GPU well beside detection, so each switch costs a reload (about 50 s for the 4B). That is a worst case
+(back-to-back calls); a real holdup is rare and the call is asynchronous, so only the AI card waits.
+
+Decision: per-violation AI model. Smoking and drinking use the 2B, holdup uses the 4B (`vlm_model_holdup`,
+Settings > System > AI checker; blank = use the main model). Limitation to state plainly: during a holdup
+check detection may slow by roughly a fifth for under a minute, and the holdup AI card appears later than the
+others.
+
+## Part 5 notes
+
+- The old ordinance-hours gate shared the `drinking_start/end` columns with the spec's evening band. Migration
+  0049 moves rows whose gate is off to the spec band (16:00-24:00) and the Settings toggle was removed; the
+  dormant gate code in `watch_drinking` is still there (default off) and should be deleted in Round 2.
+- `drinking_group_duration` on the live DB is 25 s (a testing value). It shows as "changed" next to the
+  spec default of 10 minutes; use "Reset to spec defaults" before measurement runs.

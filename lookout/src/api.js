@@ -104,6 +104,8 @@ async function apiUpload(path, formData) {
 }
 
 export const getSettings = () => apiFetch("/settings/");
+export const resetSpecDefaults = (violation) =>
+  apiFetch("/settings/reset/", { method: "POST", body: JSON.stringify({ violation }) });
 export const saveSettings = (payload) =>
   apiFetch("/settings/", { method: "PATCH", body: JSON.stringify(payload) });
 
@@ -125,7 +127,10 @@ export const updateDispatcher = (id, payload) =>
 export const deleteDispatcher = (id) =>
   apiFetch(`/dispatchers/${id}/`, { method: "DELETE" });
 
-export const getAlerts = () => apiFetch("/alerts/");
+// params: {include_monitoring: 1} adds the quiet Monitoring watchlist to the list;
+// {level: "monitoring"} returns only that watchlist. The default list is Possible / Likely.
+export const getAlerts = (params) =>
+  apiFetch("/alerts/" + (params ? `?${new URLSearchParams(params)}` : ""));
 export const updateAlert = (id, payload) =>
   apiFetch(`/alerts/${id}/`, { method: "PATCH", body: JSON.stringify(payload) });
 
@@ -188,12 +193,15 @@ export const stageDetectionFrame = (file) => {
 // EdgeEditorModal writes via updateCamera, plus the frame size it was drawn
 // against so the backend can rescale it correctly at analysis time.
 export const startStagedDetectionJob = (
-  { stagedToken, sourceFilename, violationType, edges, edgesWidth, edgesHeight, obstructionPct, obstructionMinutes },
+  { stagedToken, sourceFilename, violationType, recordedAt, edges, edgesWidth, edgesHeight, obstructionPct, obstructionMinutes },
 ) => {
   const formData = new FormData();
   formData.append("staged_token", stagedToken);
   formData.append("source_filename", sourceFilename);
   formData.append("violation_type", violationType);
+  // When the clip was recorded (local time). Drives the holdup time block and the drinking
+  // evening band; the detector is started with --clock. Optional.
+  if (recordedAt) formData.append("recorded_at", recordedAt);
   if (edges) {
     formData.append("edges", JSON.stringify(edges));
     formData.append("edges_width", edgesWidth);

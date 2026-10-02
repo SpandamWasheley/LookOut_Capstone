@@ -428,6 +428,8 @@ class Command(IncidentMixin, BaseCommand):
             return
 
         cfg = SystemSettings.load()
+
+        self.apply_spec_settings(cfg)
         if not cfg.thief_enabled:
             self.stdout.write(self.style.WARNING(
                 "Thief detection is disabled in Settings (thief_enabled=False). "
@@ -663,6 +665,7 @@ class Command(IncidentMixin, BaseCommand):
         # so edits made in the dashboard take effect live, without a restart.
         # CLI flags, if given, still win over the stored values.
         cfg = SystemSettings.load()
+        self.apply_spec_settings(cfg)
         cfg_loaded_at = time.time()
 
         # Per-person tracking: person boxes are matched across frames (IoU, with
@@ -731,6 +734,7 @@ class Command(IncidentMixin, BaseCommand):
                 wall_now = time.time()
                 if wall_now - cfg_loaded_at >= SETTINGS_REFRESH_SECONDS:
                     cfg = SystemSettings.load()
+                    self.apply_spec_settings(cfg)
                     cfg_loaded_at = wall_now
 
                 if not cfg.thief_enabled:
