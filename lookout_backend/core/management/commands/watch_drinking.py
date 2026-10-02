@@ -530,10 +530,15 @@ class Command(BaseCommand):
         anchor = self._mouth_anchor(frame, track, now_ts)
         if anchor is None:
             self.stats["posture: no face found, treated as held"] += 1
+            recognition.log_mouth(kind="drinking", t=now_ts, track=track.id, anchor=None)
             return "held"
 
         mx, my, face_w = anchor
         limit = face_w * mouth_proximity
+        nearest = min((((((d[0] + d[2]) / 2 - mx) ** 2 + ((d[1] + d[3]) / 2 - my) ** 2) ** 0.5) / max(face_w, 1)
+                       for d in dets), default=None)
+        recognition.log_mouth(kind="drinking", t=now_ts, track=track.id, anchor="insightface",
+                              face_w=face_w, ratio=nearest, limit_ratio=mouth_proximity)
         for d in dets:
             cx, cy = (d[0] + d[2]) / 2, (d[1] + d[3]) / 2
             if ((cx - mx) ** 2 + (cy - my) ** 2) ** 0.5 <= limit:
@@ -1328,6 +1333,11 @@ class Command(BaseCommand):
                 "  raw clip not produced (see ffmpeg log above if one was attempted)"
             ))
 
+        # Optional run log ($LOOKOUT_MOUTH_LOG): what fired and with which cues,
+        # even in --dry-run, so before/after comparisons need no database rows.
+        recognition.log_mouth(kind="alert", engine="drinking", label=label, score=score,
+                              level=getattr(score_obj, "level", ""),
+                              cues=sorted(getattr(score_obj, "cues", None) or []))
         if self.dry_run:
             return None
 

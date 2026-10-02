@@ -696,6 +696,122 @@ def find_mouth(frame, box):
     return (mx + x1, my + y1, fx2 - fx1)
 
 
+# --- pose-based mouth anchor ---------------------------------------------------
+#
+# Locates a person's mouth from YOLOv8-pose keypoints alone (no face detector),
+# with the same contract as find_mouth(): (x, y, face_width) in full-frame
+# coordinates, or None when it can't be told. "Face width" is a PROXY built
+# from whichever of ear-to-ear / eye-to-eye / shoulder-to-shoulder keypoints are
+# confident, scaled so it matches the width the rules were tuned in
+# (FACE_PROXIMITY / drinking_mouth_proximity are in face-widths). The scale
+# factors come from detection_sandbox/mouth_calibration.py run on the test clips
+# (1,547 person boxes, 5 clips): medians of insightface width / pose width, and
+# of (insightface mouth - nose) in face-widths.
+POSE_CROP_PAD = 0.10          # extra margin around the person box before pose
+POSE_CROP_IMGSZ = 640         # pose inference size on that crop
+POSE_EAR_TO_FACE = 0.92       # face width = ear-to-ear distance x this
+POSE_EYE_TO_FACE = 2.51       # ... or eye-to-eye distance x this
+POSE_SHOULDER_TO_FACE = 0.55  # ... or shoulder-to-shoulder distance x this
+POSE_MOUTH_DY = 0.29          # mouth sits this many face-widths below the nose
+
+KP_LEYE, KP_REYE, KP_LEAR, KP_REAR = 1, 2, 3, 4
+
+
+def pose_on_box(frame, box):
+    """Runs YOLOv8-pose on ONE person's padded box and returns the (17, 3)
+    keypoints, in FULL-FRAME coordinates, of the pose that belongs to that
+    person -- or None. Only the box is processed, so it costs one small pose
+    pass per queried person, not a full-frame one."""
+    h, w = frame.shape[:2]
+    x1, y1, x2, y2 = (int(v) for v in box[:4])
+    bw, bh = max(x2 - x1, 1), max(y2 - y1, 1)
+    cx1 = max(int(x1 - bw * POSE_CROP_PAD), 0)
+    cy1 = max(int(y1 - bh * POSE_CROP_PAD), 0)
+    cx2 = min(int(x2 + bw * POSE_CROP_PAD), w)
+    cy2 = min(int(y2 + bh * POSE_CROP_PAD), h)
+    crop = frame[cy1:cy2, cx1:cx2]
+    if crop.size == 0:
+        return None
+    res = load_pose()(crop, verbose=False, imgsz=POSE_CROP_IMGSZ)[0]
+    if res.keypoints is None or res.boxes is None or len(res.boxes) == 0:
+        return None
+    kpts = res.keypoints.data.cpu().numpy()
+    best, best_score = None, 0.0
+    for i in range(len(kpts)):
+        bx1, by1, bx2, by2 = (float(v) for v in res.boxes.xyxy[i].tolist())
+        mx, my = (bx1 + bx2) / 2 + cx1, (by1 + by2) / 2 + cy1
+        if not (x1 <= mx <= x2 and y1 <= my <= y2):
+            continue                      # a different person caught in the margin
+        score = float(res.boxes.conf[i]) * (bx2 - bx1) * (by2 - by1)
+        if score > best_score:
+            best, best_score = i, score
+    if best is None:
+        return None
+    out = kpts[best].copy()
+    out[:, 0] += cx1
+    out[:, 1] += cy1
+    return out
+
+
+def _kp_dist(kpts, a, b):
+    """Pixel distance between two keypoints, or None unless both are confident."""
+    if kpts[a][2] < KP_MIN_CONF or kpts[b][2] < KP_MIN_CONF:
+        return None
+    return float(((kpts[a][0] - kpts[b][0]) ** 2 + (kpts[a][1] - kpts[b][1]) ** 2) ** 0.5)
+
+
+def pose_face_metrics(kpts):
+    """Raw widths (pixels) the face-width proxy is built from: ear-to-ear,
+    eye-to-eye, shoulder-to-shoulder. Each is None when its keypoints aren't
+    confident. Exposed so the calibration script can fit the scale factors."""
+    return {
+        "ear": _kp_dist(kpts, KP_LEAR, KP_REAR),
+        "eye": _kp_dist(kpts, KP_LEYE, KP_REYE),
+        "shoulder": _kp_dist(kpts, KP_LSHOULDER, KP_RSHOULDER),
+    }
+
+
+def pose_face_width(kpts):
+    """(face_width_proxy, source) using the first confident of ear -> eye ->
+    shoulder, or (None, None)."""
+    m = pose_face_metrics(kpts)
+    for src, factor in (("ear", POSE_EAR_TO_FACE), ("eye", POSE_EYE_TO_FACE),
+                        ("shoulder", POSE_SHOULDER_TO_FACE)):
+        if m[src]:
+            return m[src] * factor, src
+    return None, None
+
+
+def find_mouth_pose(frame, box, with_source=False):
+    """Pose-based twin of find_mouth(): the mouth is the nose plus a small
+    downward offset, and the face width is the proxy from pose_face_width().
+
+    Returns (x, y, face_width) in FULL-FRAME coordinates, or None when the nose
+    or every width keypoint is unconfident. None means UNKNOWN, exactly as with
+    find_mouth -- callers must keep the detection rather than reject it.
+    With with_source=True returns (x, y, face_width, source) instead.
+    """
+    kpts = pose_on_box(frame, box)
+    if kpts is None or kpts[KP_NOSE][2] < KP_MIN_CONF:
+        return None
+    face_w, source = pose_face_width(kpts)
+    if face_w is None:
+        return None
+    mx = float(kpts[KP_NOSE][0])
+    my = float(kpts[KP_NOSE][1]) + POSE_MOUTH_DY * face_w
+    return (mx, my, face_w, source) if with_source else (mx, my, face_w)
+
+
+def log_mouth(**fields):
+    """Appends one JSON line to $LOOKOUT_MOUTH_LOG when that variable is set;
+    a no-op otherwise. Used to compare mouth distances before/after the swap."""
+    path = os.environ.get("LOOKOUT_MOUTH_LOG")
+    if not path:
+        return
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(fields, default=float) + chr(10))
+
+
 def detect_persons_tracked(frame, conf=0.5, tracker="bytetrack.yaml", imgsz=None):
     """detect_persons, but with ultralytics' built-in multi-object tracker.
 

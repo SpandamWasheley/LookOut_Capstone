@@ -479,6 +479,7 @@ class Command(BaseCommand):
             anchor = self._mouth_anchor(frame, track, now_ts)
             if anchor is None:
                 self.stats["face rule: no face found, kept"] += 1
+                recognition.log_mouth(kind="smoking", t=now_ts, track=track.id, anchor=None)
                 continue
 
             mx, my, face_w = anchor
@@ -502,6 +503,8 @@ class Command(BaseCommand):
 
             # Feed the closest object's mouth distance into the puff-cycle state
             # machine so the rhythm (raise-lower-raise) can be counted per person.
+            recognition.log_mouth(kind="smoking", t=now_ts, track=track.id, anchor="insightface",
+                                  face_w=face_w, ratio=nearest_ratio, kept=len(kept), of=len(dets))
             if nearest_ratio is not None:
                 n = track.update_puff(nearest_ratio, now_ts)
                 if n:
@@ -1160,6 +1163,11 @@ class Command(BaseCommand):
                 "  raw clip not produced (see ffmpeg log above if one was attempted)"
             ))
 
+        # Optional run log ($LOOKOUT_MOUTH_LOG): what fired and with which cues,
+        # even in --dry-run, so before/after comparisons need no database rows.
+        recognition.log_mouth(kind="alert", engine="smoking", label=label, score=score,
+                              level=getattr(score_obj, "level", ""),
+                              cues=sorted(getattr(score_obj, "cues", None) or []))
         if self.dry_run:
             return None
 

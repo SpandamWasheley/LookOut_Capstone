@@ -1273,6 +1273,11 @@ class Command(BaseCommand):
                 "  raw clip not produced (see ffmpeg log above if one was attempted)"
             ))
 
+        # Optional run log ($LOOKOUT_MOUTH_LOG): what fired and with which cues,
+        # even in --dry-run, so before/after comparisons need no database rows.
+        recognition.log_mouth(kind="alert", engine="thief", label=label, score=score,
+                              level=getattr(evidence, "level", ""),
+                              cues=sorted(getattr(evidence, "cues", None) or []))
         if self.dry_run:
             return None
 
