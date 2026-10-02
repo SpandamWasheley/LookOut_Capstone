@@ -28,18 +28,13 @@ PRESENCE_GRACE_SECONDS = 4
 
 # Temporal voting is time-based (see tracking.VOTE_WINDOW_SECONDS): a frame
 # counts as "threat present" only if enough of the last few SECONDS of frames
-# were positive. Guns/knives are small hand-held objects and "robbery activity"
-# /"stealing" are pose-like classes, so single-frame hits flicker; the vote
-# turns them into a stable signal before the dwell timer even starts counting.
+# were positive. A knife is a small hand-held object, so single-frame hits
+# flicker; the vote turns them into a stable signal before the dwell timer
+# even starts counting.
 
-# Per-class policy. The four classes are not equally trustworthy: gun and knife
-# are compact objects a frame-wise detector localises well, while "robbery
-# activity" and "stealing" are *actions* being inferred from a single still
-# frame — something an object detector is structurally weak at, and the usual
-# source of false alerts (someone reaching into a bag, crouching, hugging).
-# So the pose-like classes must clear a higher confidence bar and hold for
-# longer before they can raise an alert, while a weapon alerts at the settings
-# dwell. Scales multiply the dashboard values, so tuning Settings still works.
+# Per-class policy. LookOut's holdup detection is knife-only (the shared
+# merged_v2 model has no other holdup class). Scales multiply the dashboard
+# values, so tuning Settings still works.
 #
 # ratio_scale/stale_scale multiply tracking.VOTE_MIN_RATIO/ACCRUAL_STALE_SECONDS
 # the same way conf_scale/dwell_scale multiply the dashboard's confidence/dwell
@@ -63,13 +58,9 @@ PRESENCE_GRACE_SECONDS = 4
 # additional false-positive track surviving to a full alert (3/17 vs the
 # 2/17 that already survive today at the shared defaults) — not zero, but far
 # from the ~374 raw phantom detections the vote gate exists to suppress in the
-# first place. Gun is left at the shared defaults: it's a comparably compact,
-# well-localised object and hasn't shown the same recall gap.
+# first place.
 CLASS_POLICY = {
-    "gun":              {"conf_scale": 1.0, "dwell_scale": 1.0, "ratio_scale": 1.0,  "stale_scale": 1.0},
     "knife":            {"conf_scale": 1.0, "dwell_scale": 1.0, "ratio_scale": 0.25, "stale_scale": 6.0},
-    "robbery activity": {"conf_scale": 1.6, "dwell_scale": 2.0, "ratio_scale": 1.0,  "stale_scale": 1.0},
-    "stealing":         {"conf_scale": 1.6, "dwell_scale": 2.0, "ratio_scale": 1.0,  "stale_scale": 1.0},
 }
 DEFAULT_POLICY = {"conf_scale": 1.0, "dwell_scale": 1.0, "ratio_scale": 1.0, "stale_scale": 1.0}
 

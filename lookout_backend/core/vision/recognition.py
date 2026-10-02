@@ -436,33 +436,27 @@ class LatestFrameReader:
 VISION_DIR = Path(__file__).resolve().parent
 FACE_DB_PATH = VISION_DIR / "face_db.json"
 
-# Custom-trained smoking detector (cigarette/smoke/vape/smoking). Unlike the
-# COCO yolov8n used for persons/vehicles, this is a separate fine-tuned model,
-# so it loads its own weights. Override with the SMOKING_MODEL env var.
-SMOKING_MODEL_PATH = Path(os.environ.get("SMOKING_MODEL", str(VISION_DIR / "smoking_v5.pt")))
+# LookOut uses a single merged model (merged_v2: Bottle, Cigarette, knife) for all
+# violations. Vapes have no class (puff-only path). Holdup detects knives only.
+#
+# Override with the LOOKOUT_MODEL env var. The per-violation names below are
+# aliases of this one path, kept so callers and error messages keep working;
+# each detector keeps only its own classes (see SMOKING_CLASSES etc.).
+#
+# Labels come from the model's own names dict (see _smoking_boxes_from_result),
+# so class index/order is irrelevant -- only the name strings matter, matched
+# case-insensitively (Bottle / Cigarette / knife).
+MODEL_PATH = Path(os.environ.get("LOOKOUT_MODEL", str(VISION_DIR / "merged_v2.pt")))
+SMOKING_MODEL_PATH = THIEF_MODEL_PATH = DRINKING_MODEL_PATH = MERGED_MODEL_PATH = MODEL_PATH
 
-# Custom-trained thief/robbery detector (gun/knife/robbery activity/stealing).
-# Same deal as the smoking model: separate fine-tuned weights, trained with
-# detection_sandbox/train_thief.py. Override with the THIEF_MODEL env var.
-THIEF_MODEL_PATH = Path(os.environ.get("THIEF_MODEL", str(VISION_DIR / "thief.pt")))
+SMOKING_CLASSES = {"cigarette", "vape"}
+DRINKING_CLASSES = {"bottle"}
+THIEF_CLASSES = {"knife"}
 
-# Custom-trained public-drinking detector. NOTE: this model has a single class,
-# "Red Horse" — it detects one beer BRAND, i.e. a product, not the act of
-# drinking. The watcher's heuristics carry the gap between "a bottle is present"
-# and "someone is drinking in public"; see watch_drinking.py. Override with the
-# DRINKING_MODEL env var.
-DRINKING_MODEL_PATH = Path(os.environ.get("DRINKING_MODEL", str(VISION_DIR / "drinking.pt")))
 
-# Merged detector: a single fine-tuned model covering Bottle/Cigarette/knife in
-# one network, used by watch_merged.py to run one detection pass per frame and
-# route each class to its own rule engine (smoking/drinking/thief). Labels come
-# from THIS model's own names dict (see _smoking_boxes_from_result), so the
-# per-model class index/order used during training is irrelevant here — only
-# the class-name strings matter, and they must match what each rule engine's
-# CLASS_POLICY/FACE_ANCHORED_CLASSES/GENERIC_LABELS expect (case rules differ
-# per engine; see watch_merged.py's module docstring). Override with the
-# MERGED_MODEL env var.
-MERGED_MODEL_PATH = Path(os.environ.get("MERGED_MODEL", str(VISION_DIR / "merged.pt")))
+def _only(dets, classes):
+    """Keeps detections whose label is in `classes` (case-insensitive)."""
+    return [d for d in dets if str(d[5]).lower() in classes]
 
 PERSON_CLASS_ID = 0  # COCO class id for "person"
 
@@ -537,9 +531,6 @@ CASCADE_IMGSZ = int(os.environ.get("LOOKOUT_CASCADE_IMGSZ", 1280))
 
 _yolo_model = None
 _face_app = None
-_smoking_model = None
-_thief_model = None
-_drinking_model = None
 _merged_model = None
 _pose_model = None
 
@@ -622,20 +613,8 @@ def smoking_model_available():
 
 
 def load_smoking_model():
-    """Lazy-loads the custom smoking detector. Raises if the weights are missing —
-    stock YOLOv8 (COCO) has no cigarette/smoking class, so this model is required."""
-    global _smoking_model
-    if _smoking_model is None:
-        if not SMOKING_MODEL_PATH.exists():
-            raise FileNotFoundError(
-                f"Smoking model not found at {SMOKING_MODEL_PATH}. Train one with "
-                "detection_sandbox/train_smoking.py and copy best.pt here, or set "
-                "the SMOKING_MODEL env var."
-            )
-        from ultralytics import YOLO
-
-        _smoking_model = YOLO(str(SMOKING_MODEL_PATH))
-    return _smoking_model
+    """Smoking uses the shared merged model; see MODEL_PATH."""
+    return load_merged_model()
 
 
 def load_face_app():
@@ -950,7 +929,7 @@ def detect_smoking(frame, conf=0.3, imgsz=None):
     """
     model = load_smoking_model()
     results = model(frame, verbose=False, imgsz=imgsz or NEAR_IMGSZ)[0]
-    return _smoking_boxes_from_result(results, conf)
+    return _only(_smoking_boxes_from_result(results, conf), SMOKING_CLASSES)
 
 
 def _iter_tiles(frame, rows, cols, overlap):
@@ -1065,8 +1044,8 @@ def _detect_far(model, frame, conf, tiles, overlap, person_boxes, upscale):
 def detect_smoking_far(frame, conf=0.3, tiles=(2, 2), overlap=0.2,
                        person_boxes=None, upscale=2.0):
     """Long-range smoking detection — see _detect_far for how the cascade works."""
-    return _detect_far(load_smoking_model(), frame, conf, tiles, overlap,
-                       person_boxes, upscale)
+    return _only(_detect_far(load_smoking_model(), frame, conf, tiles, overlap,
+                             person_boxes, upscale), SMOKING_CLASSES)
 
 
 def detect_on_person_crops(model, frame, person_boxes, conf, pad=0.35,
@@ -1109,8 +1088,8 @@ def detect_on_person_crops(model, frame, person_boxes, conf, pad=0.35,
 def detect_smoking_cascade(frame, person_boxes, conf=0.3, pad=0.35, crop_imgsz=640):
     """Smoking detection by native-res person crops — see detect_on_person_crops.
     Frame must be native resolution (main stream) for the pixels to be there."""
-    return detect_on_person_crops(load_smoking_model(), frame, person_boxes,
-                                  conf, pad, crop_imgsz)
+    return _only(detect_on_person_crops(load_smoking_model(), frame, person_boxes,
+                                        conf, pad, crop_imgsz), SMOKING_CLASSES)
 
 
 def thief_model_available():
@@ -1119,45 +1098,30 @@ def thief_model_available():
 
 
 def load_thief_model():
-    """Lazy-loads the custom thief/robbery detector. Raises if the weights are
-    missing — stock YOLOv8 (COCO) has no gun/knife/robbery class, so this model
-    is required."""
-    global _thief_model
-    if _thief_model is None:
-        if not THIEF_MODEL_PATH.exists():
-            raise FileNotFoundError(
-                f"Thief model not found at {THIEF_MODEL_PATH}. Train one with "
-                "detection_sandbox/train_thief.py and copy best.pt here, or set "
-                "the THIEF_MODEL env var."
-            )
-        from ultralytics import YOLO
-
-        _thief_model = YOLO(str(THIEF_MODEL_PATH))
-    return _thief_model
+    """Holdup uses the shared merged model; see MODEL_PATH."""
+    return load_merged_model()
 
 
 def detect_thief(frame, conf=0.3, imgsz=None):
     """Single-pass thief/robbery detection over the whole frame (the fast path).
 
     Returns the same (x1,y1,x2,y2,conf,label) tuples as detect_smoking; labels
-    come from the trained model (gun/knife/robbery activity/stealing). Guns,
-    knives and whole-body actions are far larger than a cigarette, so this
-    covers more range than detect_smoking does — but at real CCTV distance a
-    handgun still shrinks to a few pixels; use detect_thief_far there. `imgsz`
+    come from the shared model, filtered to knife. A knife is larger than a
+    cigarette, so this covers more range than detect_smoking does — but at
+    real CCTV distance it still shrinks to a few pixels; use detect_thief_far there. `imgsz`
     raises the inference resolution (default NEAR_IMGSZ).
     """
     model = load_thief_model()
     results = model(frame, verbose=False, imgsz=imgsz or NEAR_IMGSZ)[0]
-    return _smoking_boxes_from_result(results, conf)
+    return _only(_smoking_boxes_from_result(results, conf), THIEF_CLASSES)
 
 
 def detect_thief_far(frame, conf=0.3, tiles=(2, 2), overlap=0.2,
                      person_boxes=None, upscale=2.0):
     """Long-range thief/robbery detection — see _detect_far for the cascade.
-    Mainly helps the small handheld classes (gun/knife); the whole-body classes
-    (robbery activity/stealing) usually don't need it."""
-    return _detect_far(load_thief_model(), frame, conf, tiles, overlap,
-                       person_boxes, upscale)
+    Helps the small handheld knife class at CCTV range."""
+    return _only(_detect_far(load_thief_model(), frame, conf, tiles, overlap,
+                             person_boxes, upscale), THIEF_CLASSES)
 
 
 def drinking_model_available():
@@ -1166,20 +1130,8 @@ def drinking_model_available():
 
 
 def load_drinking_model():
-    """Lazy-loads the custom public-drinking detector. Raises if the weights are
-    missing — stock YOLOv8 (COCO) has a `bottle` class but not a brand/alcohol
-    class, so this model is required."""
-    global _drinking_model
-    if _drinking_model is None:
-        if not DRINKING_MODEL_PATH.exists():
-            raise FileNotFoundError(
-                f"Drinking model not found at {DRINKING_MODEL_PATH}. Train one "
-                "and copy best.pt here, or set the DRINKING_MODEL env var."
-            )
-        from ultralytics import YOLO
-
-        _drinking_model = YOLO(str(DRINKING_MODEL_PATH))
-    return _drinking_model
+    """Drinking uses the shared merged model; see MODEL_PATH."""
+    return load_merged_model()
 
 
 def detect_drinking(frame, conf=0.35):
@@ -1191,14 +1143,14 @@ def detect_drinking(frame, conf=0.35):
     """
     model = load_drinking_model()
     results = model(frame, verbose=False)[0]
-    return _smoking_boxes_from_result(results, conf)
+    return _only(_smoking_boxes_from_result(results, conf), DRINKING_CLASSES)
 
 
 def detect_drinking_far(frame, conf=0.35, tiles=(2, 2), overlap=0.2,
                         person_boxes=None, upscale=2.0):
     """Long-range public-drinking detection — see _detect_far for the cascade."""
-    return _detect_far(load_drinking_model(), frame, conf, tiles, overlap,
-                       person_boxes, upscale)
+    return _only(_detect_far(load_drinking_model(), frame, conf, tiles, overlap,
+                             person_boxes, upscale), DRINKING_CLASSES)
 
 
 def merged_model_available():

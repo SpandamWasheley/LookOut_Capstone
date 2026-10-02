@@ -33,8 +33,8 @@ PRESENCE_GRACE_SECONDS = 2    # tolerate a couple bottle-free frames before rese
 # constant — see _cooldown_blocks' cooldown_center_dist param.
 
 # --- The product/behaviour gap -------------------------------------------
-# This detector has ONE class, "Red Horse": it recognises a beer brand, which is
-# an object, not an act. A bottle in a sari-sari store, in a shopping bag, empty
+# This detector uses the shared merged_v2 model's "Bottle" class: it recognises
+# a bottle, which is an object, not an act. A bottle in a sari-sari store, in a shopping bag, empty
 # in a bin, or held by a bystander all look identical to one being drunk from.
 # Public-drinking ordinances concern CONSUMPTION, so the heuristics below carry
 # the whole distance between "a bottle is visible" and "someone is drinking".
@@ -45,9 +45,9 @@ PRESENCE_GRACE_SECONDS = 2    # tolerate a couple bottle-free frames before rese
 # held — including when no face could be resolved to check posture at all,
 # common at CCTV range — is weaker evidence and must persist for the
 # separately-configured, longer `drinking_held_dwell` instead. Every bottle
-# class is judged identically here (Phase B3 follow-up) — there is no more
-# branded-vs-generic distinction; "Red Horse" and a merged-model "Bottle"
-# detection go through the exact same posture/dwell logic. A bottle with no
+# class is judged identically here (Phase B3 follow-up) — there is no
+# branded-vs-generic distinction; every "Bottle" detection goes through the
+# exact same posture/dwell logic. A bottle with no
 # person at all (a "scene" track) isn't scored by posture at all — see
 # _process_track — it's discarded outright, the same as watch_smoking treats
 # an unattributed detection.
