@@ -55,20 +55,28 @@ weights such as 0.15 / 0.20 match the spec points.
 
 ## Cigarette recall plan (merged_v2)
 Smoking stays on merged_v2: no hybrid with smoking_v5. To do right after Steps 2-6 (pose swap, after-run, face removal,
-`at_mouth` fix, notes, insightface delete), in this order:
+`at_mouth` fix, notes, insightface delete), in this order (item 0 first):
 
-a. **Native-resolution cascade pass for Cigarette in `watch_merged` / `watch_all`** (`detect_smoking_cascade`: person crops
+0. **Mouth rule: hard reject -> `near_mouth` cue (+0.15). Do this FIRST, on its own, so the funnel test measures it
+   separately.** Today `_apply_mouth_rule` *removes* a cigarette/vape detection that is more than `MOUTH_PROXIMITY`
+   (2.5 face-widths) from the mouth, so a held-away cigarette never reaches scoring. With the pose anchor the rule now
+   applies to far people insightface used to skip: on the baseline-vs-pose runs it cut 25 -> 29, 8 -> 16, 44 -> 99, 1 -> 30
+   and 77 -> 114 detections (Aug14_3, Night-Far1, Trim2, Aug18_4, Kabilang), and about half of the events that previously had
+   no anchor are now rejected. The crops show these are mostly real cigarettes held at the side. Instead: keep every
+   detection, set the `near_mouth` cue only when the cigarette is within `MOUTH_PROXIMITY` of the mouth, so a lone cigarette
+   (0.40) reaches scoring and shows as Monitoring per spec v6 (item g below).
+b. **Native-resolution cascade pass for Cigarette in `watch_merged` / `watch_all`** (`detect_smoking_cascade`: person crops
    at native resolution). Measured on merged_v2: roughly 4x cheaper than the production far path (about 0.04 s vs 0.16 s per
    frame, so roughly 6 fps -> 5 fps) and as good or better on two of the three clips.
-b. **Fix the 640 vs 960 `imgsz` mismatch** for the whole-frame, tile and person-crop calls in `_detect_far` (near path uses
+c. **Fix the 640 vs 960 `imgsz` mismatch** for the whole-frame, tile and person-crop calls in `_detect_far` (near path uses
    `NEAR_IMGSZ`, far path uses ultralytics' default 640).
-c. **Pass `conf` explicitly to the model call** so floors below 0.25 work (see finding 1).
-d. **Momentum object cue** from the Object Cue Accumulation spec, per (track_id, class), configurable
+d. **Pass `conf` explicitly to the model call** so floors below 0.25 work (see finding 1).
+e. **Momentum object cue** from the Object Cue Accumulation spec, per (track_id, class), configurable
    `DECAY` / `ON` / `OFF` / `MAX` with defaults 0.90 / 1.5 / 0.4 / 3.0, replacing the 40% / 5 s vote and the 3 s dwell gate.
    Processing runs at about 6 fps, so momentum updates once per *processed* frame (not per source frame).
-e. **Tune momentum on the 3 smoking clips.** Report hit rate, confidence and momentum traces; try `DECAY` 0.90 vs 0.95 (and
+f. **Tune momentum on the 3 smoking clips.** Report hit rate, confidence and momentum traces; try `DECAY` 0.90 vs 0.95 (and
    the `ON` threshold if needed). Pick values where real held cigarettes turn ON and stay ON while the vehicle / motorcycle
    false hits do not.
-f. **A cigarette alone (0.40) must show as Monitoring** per spec v6 (today the 0.35-0.55 band is WATCH and not stored).
-g. **Re-run `detection_sandbox/funnel_run.py` on the 3 clips**: before vs after the fixes.
-h. **After the defense:** fine-tune merged_v2 with more Cigarette examples at CCTV height.
+g. **A cigarette alone (0.40) must show as Monitoring** per spec v6 (today the 0.35-0.55 band is WATCH and not stored).
+h. **Re-run `detection_sandbox/funnel_run.py` on the 3 clips**: before vs after the fixes.
+i. **After the defense:** fine-tune merged_v2 with more Cigarette examples at CCTV height.

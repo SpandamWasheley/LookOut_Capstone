@@ -450,8 +450,13 @@ class Command(BaseCommand):
             self.stats["mouth rule: anchor cache hit"] += 1
             return bx1 + rel_x * bw, by1 + rel_y * bh, rel_w * bw
 
+        # An unknown anchor (person facing away / too far) is also cached, briefly,
+        # so pose is not re-run on the same track every frame just to fail again.
+        if now_ts < track.mouth_miss_until:
+            return None
         found = recognition.find_mouth_pose(frame, track.box)
         if found is None:
+            track.mouth_miss_until = now_ts + recognition.MOUTH_MISS_CACHE_SECONDS
             return None
         mx, my, face_w = found
         track.mouth_anchor = ((mx - bx1) / bw, (my - by1) / bh, face_w / bw, now_ts)

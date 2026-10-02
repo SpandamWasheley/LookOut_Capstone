@@ -541,13 +541,34 @@ def load_yolo():
 
 def load_pose():
     """Lazy-loads YOLOv8-pose (person keypoints). Auto-downloads yolov8n-pose.pt
-    on first use, like the plain detector."""
+    on first use, like the plain detector. Prints the device it ends up on once,
+    so a run log shows whether pose is on the GPU and in half precision."""
     global _pose_model
     if _pose_model is None:
         from ultralytics import YOLO
 
         _pose_model = YOLO("yolov8n-pose.pt")
     return _pose_model
+
+
+_pose_logged = False
+
+
+def _log_pose_device_once():
+    """Prints where pose inference REALLY runs. Must be called after the first
+    prediction: ultralytics only moves the model to the GPU (and applies half
+    precision) when it first predicts, so the device at load time is misleading."""
+    global _pose_logged
+    if _pose_logged:
+        return
+    _pose_logged = True
+    m = load_pose()
+    try:
+        pred = m.predictor
+        print(f"[pose] YOLOv8n-pose running on {pred.device}, "
+              f"{'FP16' if pred.args.half else 'FP32'}", flush=True)
+    except Exception:
+        print("[pose] YOLOv8n-pose device unknown", flush=True)
 
 
 def detect_pose(frame, conf=0.4, imgsz=None):
@@ -637,6 +658,8 @@ def detect_persons(frame, conf=0.5, imgsz=None):
 # (1,547 person boxes, 5 clips, fitted against insightface's face width, since
 # removed): medians of that width / pose width, and of (mouth - nose) in
 # face-widths.
+POSE_HALF = _gpu_available()  # FP16 inference on CUDA (ultralytics rejects half on CPU)
+MOUTH_MISS_CACHE_SECONDS = 0.5   # after "no mouth anchor", don't re-run pose for this long (per track)
 POSE_CROP_PAD = 0.10          # extra margin around the person box before pose
 POSE_CROP_IMGSZ = 640         # pose inference size on that crop
 POSE_EAR_TO_FACE = 0.92       # face width = ear-to-ear distance x this
@@ -662,7 +685,8 @@ def pose_on_box(frame, box):
     crop = frame[cy1:cy2, cx1:cx2]
     if crop.size == 0:
         return None
-    res = load_pose()(crop, verbose=False, imgsz=POSE_CROP_IMGSZ)[0]
+    res = load_pose()(crop, verbose=False, imgsz=POSE_CROP_IMGSZ, half=POSE_HALF)[0]
+    _log_pose_device_once()
     if res.keypoints is None or res.boxes is None or len(res.boxes) == 0:
         return None
     kpts = res.keypoints.data.cpu().numpy()
