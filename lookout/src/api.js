@@ -171,6 +171,17 @@ export const uploadCameraEdgeFrame = (id, file) => {
 // instead of the terminal. Launches a subprocess server-side; this call
 // returns as soon as the job row is created, not when detection finishes.
 export const getDetectionJobs = () => apiFetch("/detection-jobs/");
+
+// Live processing view (what the detector is tracking, plus its latest clean frame). `since` is
+// the sequence number the page already has, so an unchanged frame is not sent again.
+const sinceQuery = (since) => (since != null ? `?since=${since}` : "");
+export const getJobState = (id, since) => apiFetch(`/detection-jobs/${id}/state/${sinceQuery(since)}`);
+
+// Live monitoring of the camera (admin only): start / stop / status / processing view.
+export const getMonitor = () => apiFetch("/monitor/");
+export const startMonitor = () => apiFetch("/monitor/start/", { method: "POST", body: "{}" });
+export const stopMonitor = () => apiFetch("/monitor/stop/", { method: "POST", body: "{}" });
+export const getMonitorState = (since) => apiFetch(`/monitor/state/${sinceQuery(since)}`);
 export const uploadDetectionJob = (file, violationType) => {
   const formData = new FormData();
   formData.append("file", file);

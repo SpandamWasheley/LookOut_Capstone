@@ -612,6 +612,7 @@ export function CameraGrid({ compact = false, isAdmin: isAdminRole = false }) {
   if (compact) {
     return (
       <div className="grid gap-3 grid-cols-1">
+        {allCameras.length === 0 && <EmptyTile />}
         {allCameras.slice(0, 1).map((cam) => (
           <CameraTile
             key={cam.id}

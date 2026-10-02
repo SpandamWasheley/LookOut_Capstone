@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { violationDisplay } from "./constants/violationTypes";
 import { reviewTag, levelColor } from "./alertModel";
+import { useTestingTools } from "./useTestingTools";
 import { getViolationTypes, getBarangays, createCitation, searchViolators } from "./api";
 
 const SUFFIX_OPTIONS = ["", "Jr.", "Sr.", "II", "III", "IV"];
@@ -883,6 +884,65 @@ function SuggestedStatusCard({ ai }) {
   );
 }
 
+// TESTING VIEW: how the status was reached, indicator by indicator. Shown only while "Show testing
+// tools" is on (Settings -> System). Plain numbers on purpose: this is for checking the system,
+// not for the tanod.
+function ScoreBreakdown({ alert }) {
+  const c = alert.cues || {};
+  const indicators = Object.entries(c.cues || {}).sort((a, b) => b[1] - a[1]);
+  const multipliers = Object.entries(c.multipliers || {});
+  const pts = (v) => Math.round(Number(v) * 100);
+  const settings = c.settings ? Object.entries(c.settings) : [];
+  const mono = { fontFamily: "'DM Mono', monospace" };
+  return (
+    <InfoCard dashed label="Testing view · score breakdown" aside="testing tools on">
+      <table className="w-full mt-2 text-[13px]" style={{ color: "var(--foreground)", ...mono }}>
+        <tbody>
+          {indicators.map(([name, w]) => (
+            <tr key={name}>
+              <td className="py-0.5">{name.replace(/_/g, " ")}</td>
+              <td className="py-0.5 text-right">+{pts(w)}</td>
+            </tr>
+          ))}
+          {indicators.length === 0 && <tr><td className="py-0.5" colSpan={2}>no indicators fired</td></tr>}
+          <tr style={{ borderTop: "1px solid var(--border)" }}>
+            <td className="py-0.5">sum of indicators</td>
+            <td className="py-0.5 text-right">{c.raw_score != null ? pts(c.raw_score) : "—"}</td>
+          </tr>
+          {multipliers.map(([name, v]) => (
+            <tr key={name}>
+              <td className="py-0.5">time multiplier ({name})</td>
+              <td className="py-0.5 text-right">×{v}</td>
+            </tr>
+          ))}
+          <tr style={{ borderTop: "1px solid var(--border)", fontWeight: 600 }}>
+            <td className="py-0.5">total (capped at 100)</td>
+            <td className="py-0.5 text-right">{c.score != null ? pts(c.score) : "—"}</td>
+          </tr>
+          <tr>
+            <td className="py-0.5">status</td>
+            <td className="py-0.5 text-right">{c.label || alert.levelLabel || "—"}{c.tag ? ` · ${c.tag}` : ""}</td>
+          </tr>
+          <tr>
+            <td className="py-0.5">momentum</td>
+            <td className="py-0.5 text-right">
+              {c.momentum ? `${c.momentum.momentum} (peak ${c.momentum.peak}; on ${c.momentum.on}, off ${c.momentum.off}, decay ${c.momentum.decay})` : "—"}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      {settings.length > 0 && (
+        <details className="mt-2 text-[12px]" style={{ color: "var(--muted-foreground)", ...mono }}>
+          <summary className="cursor-pointer">Settings logged with this alert</summary>
+          <div className="mt-1 space-y-0.5">
+            {settings.map(([k, v]) => <div key={k}>{k}: {String(v)}</div>)}
+          </div>
+        </details>
+      )}
+    </InfoCard>
+  );
+}
+
 // Review (header tag): Pending / Verified / Dismissed, set by the tanod. It records the human
 // decision on whether the event was a real violation (it also labels data for checking the
 // thresholds). Separate from the Dismiss / Assign / Resolve workflow below.
@@ -947,6 +1007,8 @@ export function ViolationModal({
   // something as opaque as "thief".
   const vcfg = violationDisplay(alert.type);
   const VIcon = vcfg.icon;
+  // Testing view (score breakdown): admin only, and only while "Show testing tools" is on.
+  const testingTools = useTestingTools(userRole === "admin");
   const [showResolveChecklist, setShowResolveChecklist] = useState(false);
   const [showAllOfficers, setShowAllOfficers] = useState(false);
 
@@ -1097,6 +1159,7 @@ export function ViolationModal({
                 <StatusCard alert={alert} />
                 <AIContextCard ai={alert.aiContext} />
                 <SuggestedStatusCard ai={alert.aiContext} />
+                {testingTools && <ScoreBreakdown alert={alert} />}
 
                 {/* Detected object (the model's class label) paired with Assigned officers. */}
                 <div className="grid grid-cols-2 gap-3">

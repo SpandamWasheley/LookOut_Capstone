@@ -11,7 +11,7 @@ import { Cigarette, Beer, Car, ShieldAlert, Layers } from "lucide-react";
 export const DETECTION_TYPES = [
   { key: "smoking", label: "Smoking", icon: Cigarette, color: "#f59e0b" },
   { key: "drinking", label: "Drinking", icon: Beer, color: "#8b5cf6" },
-  { key: "thief", label: "Theft (Holdup)", icon: ShieldAlert, color: "#ef4444" },
+  { key: "thief", label: "Holdup", icon: ShieldAlert, color: "#ef4444" },
   { key: "parking", label: "Parking", icon: Car, color: "#f97316" },
   { key: "merged", label: "Merged (All 3)", icon: Layers, color: "#22c55e" },
 ];

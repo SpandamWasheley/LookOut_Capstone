@@ -25,7 +25,7 @@ const STATIC_DEFAULTS = {
   thief_enabled: true, thief_confidence: 30,
   drinking_enabled: true, drinking_confidence: 35,
   drinking_mouth_proximity: 3.0, drinking_cooldown_center_dist: 1.5,
-  alert_cooldown: 120, evidence_retention_days: 30, evidence_auto_purge: false, show_testing_tools: false,
+  alert_cooldown: 120, evidence_retention_days: 30, evidence_auto_purge: false, show_testing_tools: false, auto_start_detection: false,
   vlm_enabled: true, vlm_model: "qwen3-vl:2b-instruct", vlm_model_holdup: "qwen3-vl:4b-instruct", vlm_frames: 8,
 };
 
@@ -407,7 +407,7 @@ export function SystemConfig() {
     system: (
       <TwoCols
         left={
-          <Card title="Alerts and records" onReset={() => resetKeys(["alert_cooldown", "evidence_retention_days", "evidence_auto_purge", "show_testing_tools"])}>
+          <Card title="Alerts and records" onReset={() => resetKeys(["alert_cooldown", "evidence_retention_days", "evidence_auto_purge", "show_testing_tools", "auto_start_detection"])}>
             <Slider label="Alert cooldown" value={form.alert_cooldown} min={30} max={600} unit=" sec"
               differs={differs("alert_cooldown")}
               desc="How long the system waits before reporting the same spot again."
@@ -420,6 +420,10 @@ export function SystemConfig() {
               desc="Off by default. When on, evidence older than the retention period is deleted on a schedule. Nothing is deleted while this is off."
               value={form.evidence_auto_purge} differs={differs("evidence_auto_purge")}
               onChange={(v) => set("evidence_auto_purge", v)} />
+            <Toggle label="Start detection automatically when LookOut starts"
+              desc="Off by default. When on, live monitoring of the camera starts by itself a few seconds after LookOut starts. You can still stop it from Live Feeds."
+              value={form.auto_start_detection} differs={differs("auto_start_detection")}
+              onChange={(v) => set("auto_start_detection", v)} />
             <Toggle label="Show testing tools"
               desc="Shows Run Detection, and Upload Video and History on Live Feeds, for trying the system on recorded footage. Leave off for normal use."
               value={form.show_testing_tools} differs={differs("show_testing_tools")}

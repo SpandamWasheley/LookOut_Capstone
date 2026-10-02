@@ -58,6 +58,8 @@ from core.models import Camera, SystemSettings, ViolationType
 from core.vision import clock as vclock
 from core.vision import recognition, tracking
 
+from core.vision import debug_view
+
 from ._incidents import ai_setup
 
 from .watch_smoking import Command as SmokingCommand
@@ -167,6 +169,7 @@ class Command(BaseCommand):
 
         # One AI checker (client + full-res frame ring) shared by all three engines.
         self.ai_state = ai_setup(self.stdout)
+        self.debug_pub = debug_view.DebugPublisher.from_env()    # None unless LOOKOUT_DEBUG_DIR is set
 
         self.far = not options["fast"]
         self.dry_run = options["dry_run"]
@@ -230,6 +233,8 @@ class Command(BaseCommand):
         cmd.ablate = set()
         # ONE ring and one client shared by all three engines (same camera, same frames).
         cmd.__dict__.update(self.ai_state)
+        cmd.debug_pub = self.debug_pub        # one live-view publisher for all three engines
+        cmd._debug_checked = True
         cmd.stats = Counter()
         cmd._alert_log = []
         cmd.stdout = self.stdout
@@ -372,6 +377,8 @@ class Command(BaseCommand):
                         cmd._raw_buffer.add(frame, time.time())
                 if self.ai_state["ai_ring"] is not None:
                     self.ai_state["ai_ring"].stash(frame)     # clean pixels for the AI checker's crops
+                if self.debug_pub is not None:
+                    self.debug_pub.stash(frame)               # and for the live processing view
 
                 wall_now = time.time()
                 if wall_now - cfg_at >= SETTINGS_REFRESH_SECONDS:

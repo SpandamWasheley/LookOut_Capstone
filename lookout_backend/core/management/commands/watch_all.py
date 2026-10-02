@@ -32,6 +32,8 @@ from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
 from core.vision import recognition, tracking
 
+from core.vision import debug_view
+
 from ._incidents import ai_setup
 from .watch_smoking import Command as SmokingCommand
 from .watch_thief import Command as ThiefCommand
@@ -127,6 +129,7 @@ class Command(BaseCommand):
         self.sharpen = options["sharpen"]
         # One AI checker (client + full-res frame ring) shared by every detector this runner drives.
         self.ai_state = ai_setup(self.stdout)
+        self.debug_pub = debug_view.DebugPublisher.from_env()
 
         self.pose = options["pose"]
         if self.pose:
@@ -217,6 +220,8 @@ class Command(BaseCommand):
             cmd.layer_e_only = False
         cmd.ablate = set()
         cmd.__dict__.update(self.ai_state)      # one AI client + frame ring for every detector
+        cmd.debug_pub = self.debug_pub
+        cmd._debug_checked = True
         # The pose gesture cue -- the reason this flag exists. watch_smoking_pose
         # is a standalone command this runner never invokes, so before this the
         # "Strong" hand-to-mouth indicator scored nothing in any real deployment.
@@ -338,6 +343,8 @@ class Command(BaseCommand):
                 # detectors are due this frame.
                 if self.ai_state["ai_ring"] is not None:
                     self.ai_state["ai_ring"].stash(frame)     # clean pixels for the AI checker's crops
+                if self.debug_pub is not None:
+                    self.debug_pub.stash(frame)
                 need_persons = any(n in due for n in self.engines)
                 persons = recognition.detect_persons(frame) if need_persons else []
                 for name, eng in self.engines.items():

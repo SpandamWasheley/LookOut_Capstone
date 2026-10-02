@@ -3,28 +3,28 @@ import { Cigarette, Beer, Car, Siren, ShieldCheck, Lock, Users, Info } from "luc
 // About page. Plain language for barangay staff: no points, scores or numbers about how an alert is
 // rated. EDIT THE CONSTANTS BELOW to fill in the study title and team.
 
-const STUDY_TITLE = "LookOut: AI-Assisted CCTV Monitoring of Public-Order Violations in the Barangay";   // TODO: replace with the full study title
+const STUDY_TITLE = "LookOut: A Computer Vision-Based System for Detecting Selected Barangay Ordinance Violations with Automated Barangay Authority Response in Zamboanga City";   // TODO: replace with the full study title
 const TAGLINE =
-  "LookOut watches the barangay CCTV feed for four public-order violations and proposes an alert " +
+  "LookOut watches a CCTV feed or footage for four violations it then detects possible violations and proposes an alert " +
   "for an officer to review. It never decides on its own.";
 const VERSION = "Version 1.0";
 const TEAM = [
-  { name: "[Team member name]", role: "[Role]" },
-  { name: "[Team member name]", role: "[Role]" },
-  { name: "[Team member name]", role: "[Role]" },
-  { name: "[Adviser name]", role: "Adviser" },
+  { name: "Mathew T. Angeles", role: "Project Manager" },
+  { name: "Sheena Dianne L. De Guzman", role: "UI/UX Designer" },
+  { name: "Alsamhel J. Jawadil", role: "Lead Developer" },
+  { name: "Dr. John Ed Augustus A. Escorial", role: "Adviser" },
 ];
 
 const VIOLATIONS = [
-  { icon: Cigarette, color: "#f97316", name: "Smoking", law: "Ord. No. 532", note: "Smoking in public places." },
-  { icon: Beer, color: "#8b5cf6", name: "Drinking", law: "Ord. No. 469", note: "Drinking alcohol in public." },
-  { icon: Car, color: "#ef4444", name: "Parking Obstruction", law: "Ord. No. 601", note: "Vehicles obstructing the road." },
-  { icon: Siren, color: "#dc2626", name: "Holdup", law: "Public-safety incident", note: "A person threatening another with a knife." },
+  { icon: Cigarette, color: "#f97316", name: "Smoking", law: "", note: "Smoking in public places." },
+  { icon: Beer, color: "#8b5cf6", name: "Drinking", law: "", note: "Drinking in public." },
+  { icon: Car, color: "#ef4444", name: "Parking Obstruction", law: "", note: "Vehicles obstructing the road." },
+  { icon: Siren, color: "#dc2626", name: "Holdup", law: "", note: "A person threatening another with a knife." },
 ];
 
 const STATUSES = [
   { name: "Monitoring", color: "#64748b",
-    text: "An object linked to a violation was detected. Watch the scene. It stays quiet: no notification is sent, and it can be viewed on the Violations page with the Include Monitoring filter." },
+    text: "An object linked to a violation was detected." },
   { name: "Possible", color: "#f59e0b",
     text: "Some signs of a violation, but not enough to be sure. Review the alert before acting." },
   { name: "Likely", color: "#dc2626",
@@ -78,9 +78,8 @@ export function AboutPage() {
 
           <Section icon={ShieldCheck} title="The system proposes, the officer confirms">
             <p className="text-[14px] leading-relaxed mb-3" style={{ color: "var(--muted-foreground)" }}>
-              LookOut only looks for evidence: an object such as a bottle, a cigarette or a knife, how people are
-              moving, how long they stay, and the time of day. From that it proposes a status. An officer then reviews
-              the alert and marks it <b>Verified</b> or <b>Dismissed</b>. A person always makes the final call.
+              LookOut specifically detects 3 types of classes or objects: a bottle for the drinking violation, a cigarette for smoking and a knife for Holdup. Once the heuristic rules are applied, it proposes a alert with a status. An officer then reviews
+              the alert and marks it accordingly. A person always makes the final call.
             </p>
             <div className="space-y-2">
               {STATUSES.map((s) => (

@@ -427,6 +427,44 @@ def reset_spec_defaults(request):
 
 
 @api_view(["GET"])
+@permission_classes([permissions.IsAuthenticated, IsAdmin])
+def monitor_status(request):
+    """Live monitoring status for the Live Feeds page (admin only)."""
+    from core.monitor import monitor
+    return Response(monitor.status())
+
+
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated, IsAdmin])
+def monitor_start(request):
+    from core.monitor import monitor
+    ok, message = monitor.start(request.user)
+    body = monitor.status()
+    body["detail"] = message
+    return Response(body, status=200 if ok else 400)
+
+
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated, IsAdmin])
+def monitor_stop(request):
+    from core.monitor import monitor
+    monitor.stop()
+    return Response(monitor.status())
+
+
+@api_view(["GET"])
+@permission_classes([permissions.IsAuthenticated, IsAdmin])
+def monitor_state(request):
+    """The live processing view of the running live monitor (same shape as a job's /state/)."""
+    from core import debug_state
+    from core.monitor import live_dir, monitor
+    since = request.query_params.get("since")
+    data = debug_state.payload(live_dir(), int(since) if since and since.isdigit() else None)
+    data["monitor"] = monitor.status()
+    return Response(data)
+
+
+@api_view(["GET"])
 @permission_classes([permissions.IsAuthenticated])
 def dashboard_stats(request):
     now = timezone.now()
@@ -1145,27 +1183,39 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
                 cascade_args += ["--clock", recorded_at]
             else:
                 recorded_at = ""
-            proc = subprocess.Popen(
-                [sys.executable, "manage.py", command,
-                 "--source", source_arg, "--camera", camera_code, *cascade_args],
-                cwd=str(django_settings.BASE_DIR),
-                stdout=log_file, stderr=subprocess.STDOUT,
-                env=env,
+            job = DetectionJob.objects.create(
+                violation_type=violation_type,
+                source_filename=source_filename,
+                source_path=source_arg,
+                camera=camera,
+                status=DetectionJob.Status.RUNNING,
+                pid=None,
+                created_by=request.user,
+                recorded_at=recorded_at,
             )
+            # Where the detector publishes its live processing view (Run Detection page).
+            from core import monitor as live_monitor
+            view_dir = live_monitor.job_dir(job.id)
+            os.makedirs(view_dir, exist_ok=True)
+            env["LOOKOUT_DEBUG_DIR"] = str(view_dir)
+            try:
+                proc = subprocess.Popen(
+                    [sys.executable, "manage.py", command,
+                     "--source", source_arg, "--camera", camera_code, *cascade_args],
+                    cwd=str(django_settings.BASE_DIR),
+                    stdout=log_file, stderr=subprocess.STDOUT,
+                    env=env,
+                )
+            except OSError:
+                job.status = DetectionJob.Status.FAILED
+                job.finished_at = timezone.now()
+                job.save(update_fields=["status", "finished_at"])
+                raise
+            job.pid = proc.pid
+            job.save(update_fields=["pid"])
         finally:
             # The child inherits its own duplicated handle — safe to close ours.
             log_file.close()
-
-        job = DetectionJob.objects.create(
-            violation_type=violation_type,
-            source_filename=source_filename,
-            source_path=source_arg,
-            camera=camera,
-            status=DetectionJob.Status.RUNNING,
-            pid=proc.pid,
-            created_by=request.user,
-            recorded_at=recorded_at,
-        )
 
         threading.Thread(
             target=_watch_detection_job,
@@ -1174,6 +1224,18 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
         ).start()
 
         return Response(self.get_serializer(job).data, status=201)
+
+    @action(detail=True, methods=["get"], url_path="state")
+    def state(self, request, pk=None):
+        """The live processing view of one job: the tracked subjects and the latest clean frame.
+        ?since=<seq> leaves the frame out when the page already has it."""
+        from core import debug_state, monitor as live_monitor
+        job = self.get_object()
+        since = request.query_params.get("since")
+        data = debug_state.payload(live_monitor.job_dir(job.id), int(since) if since and since.isdigit() else None)
+        data["job"] = {"id": job.id, "status": job.status, "violation_type": job.violation_type,
+                       "started_at": job.started_at, "finished_at": job.finished_at}
+        return Response(data)
 
     @action(detail=True, methods=["post"])
     def cancel(self, request, pk=None):

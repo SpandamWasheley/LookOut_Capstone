@@ -683,8 +683,7 @@ class Command(IncidentMixin, BaseCommand):
                 # RawFrameRecorder.
                 if self._raw_buffer is not None:
                     self._raw_buffer.add(frame, time.time())
-                if self.ai_ring is not None:
-                    self.ai_ring.stash(frame)     # clean pixels for the AI checker's crops
+                self._frame_start(frame)      # clean pixels for the AI checker and the live view
 
                 # Enhance dim/noisy frames before detection (daytime bypasses).
                 frame = self._preprocess(frame)
@@ -996,6 +995,7 @@ class Command(IncidentMixin, BaseCommand):
         key = ("drink", track.id)
         score = scoring.Score("drinking", scoring.DRINKING_WEIGHTS, cues,
                               previous_level=self._incident_level(key), object_on=object_on)
+        self._debug_note("Drinking", key, track.id, track.box, score, cue.momentum)
         if not score.stored:
             self._incident_sync(key, score, now_ts, create=None)
             return
@@ -1086,6 +1086,8 @@ class Command(IncidentMixin, BaseCommand):
         key = ("cluster", cluster.id)
         score = scoring.Score("drinking", scoring.DRINKING_WEIGHTS, cues,
                               previous_level=self._incident_level(key), object_on=object_on)
+        self._debug_note("Drinking (group)", key, "G%s" % cluster.id, cluster.bbox, score,
+                         slot.momentum if slot else 0.0)
         if not score.stored:
             self._incident_sync(key, score, now_ts, create=None)
             return

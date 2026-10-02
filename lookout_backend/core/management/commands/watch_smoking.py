@@ -734,8 +734,7 @@ class Command(IncidentMixin, BaseCommand):
                 # touches it — see RawFrameRecorder.
                 if self._raw_buffer is not None:
                     self._raw_buffer.add(frame, time.time())
-                if self.ai_ring is not None:
-                    self.ai_ring.stash(frame)     # clean pixels for the AI checker's crops
+                self._frame_start(frame)      # clean pixels for the AI checker and the live view
 
                 # Enhance dim/noisy frames before detection (daytime bypasses).
                 frame = self._preprocess(frame)
@@ -892,6 +891,7 @@ class Command(IncidentMixin, BaseCommand):
         key = ("smoke", track.id)
         score = scoring.Score("smoking", scoring.SMOKING_WEIGHTS, cues,
                               previous_level=self._incident_level(key), object_on=object_on)
+        self._debug_note("Smoking", key, track.id, track.box, score, cue.momentum)
         if not score.stored:
             if puffs and not object_on:
                 self.stats[f"puffs logged only ({puffs})"] += 1

@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { AlertTriangle, Camera, Users, Zap, ArrowUpRight, Radio } from "lucide-react";
 import { AlertFeed } from "./AlertFeed";
 import { CameraGrid } from "./CameraGrid";
+import { LiveMonitor } from "./LiveMonitor";
 import { RecordsPage } from "./RecordsPage";
 import { Sidebar } from "./Sidebar";
 import { OfficersPage } from "./OfficersPage";
@@ -230,6 +231,7 @@ function AdminDashboard({ user, onLogout }) {
               <h1 className="text-xl font-bold" style={{ color: "var(--foreground)" }}>Live Feeds</h1>
             </div>
             <div className="flex-1 overflow-auto p-6">
+              {role === "admin" && <LiveMonitor />}
               <CameraGrid isAdmin={role === "admin"} />
             </div>
           </div>

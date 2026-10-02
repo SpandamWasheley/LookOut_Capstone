@@ -570,6 +570,8 @@ class SystemSettings(models.Model):
     # Testing tools (admin only): Run Detection in the sidebar, and Upload Video / History on
     # Live Feeds. OFF by default so normal operation never shows them.
     show_testing_tools = models.BooleanField(default=False)
+    # Start live detection on the camera by itself when LookOut (the web server) starts.
+    auto_start_detection = models.BooleanField(default=False)
 
     alert_cooldown = models.PositiveSmallIntegerField(default=120)
     # How long alert evidence (images and clips) is kept before

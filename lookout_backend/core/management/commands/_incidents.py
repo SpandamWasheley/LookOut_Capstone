@@ -19,7 +19,7 @@ from django.utils import timezone
 
 from core.media import violation_media_path
 from core.models import Alert, SystemSettings
-from core.vision import ai_checker, momentum, recognition, scoring, spec_settings
+from core.vision import ai_checker, debug_view, momentum, recognition, scoring, spec_settings
 
 CLIP_REFRESH_SECONDS = 15.0     # while Possible / Likely continues
 ROW_UPDATE_SECONDS = 5.0        # throttle for score / last_seen writes
@@ -99,6 +99,42 @@ NO_CUE = ObjectCue(False, None, None, 0.0, None)
 class IncidentMixin:
     """Mix into a watch_* Command. Needs: self.dry_run, self.stdout, self.style,
     self.stats, self._alert_log, and the watcher's own _save_clips()."""
+
+    # ---- live processing view (Run Detection / Live Feeds; only with LOOKOUT_DEBUG_DIR) ----
+
+    debug_pub = None
+    _debug_checked = False
+
+    def _frame_start(self, frame):
+        """Called once per frame BEFORE any drawing: keeps clean pixels for the AI checker's
+        crops and for the live processing view."""
+        if not self._debug_checked:
+            self._debug_checked = True
+            self.debug_pub = debug_view.DebugPublisher.from_env()
+        if self.ai_ring is not None:
+            self.ai_ring.stash(frame)
+        if self.debug_pub is not None:
+            self.debug_pub.stash(frame)
+
+    def _debug_note(self, violation, key, ident, box, score, momentum_value):
+        """Tell the live view about one tracked subject (any status, including below
+        Monitoring). Subjects with no signal at all are skipped so the list stays readable."""
+        pub = self.debug_pub
+        if pub is None:
+            return
+        status = debug_view.status_for(score)
+        cues = getattr(score, "cues", None) or {}
+        # Context-only indicators (the evening hours, being in a group) are present for almost
+        # everyone on the street; a person is only listed below Monitoring when there is a real
+        # signal: an object building up, or a behaviour indicator.
+        signal = [c for c in cues if c not in ("time_band", "gathering", "gathering_duration")]
+        if status == debug_view.BELOW and not signal and (momentum_value or 0) < 0.3:
+            return
+        pub.note(key, violation, ident, box, status,
+                 int(round(float(getattr(score, "score", 0) or 0) * 100)),
+                 debug_view.indicator_list(score) if score is not None else [],
+                 {k: round(float(v), 2) for k, v in (getattr(score, "multipliers", None) or {}).items()},
+                 momentum_value or 0.0)
 
     # ---- adjustable timings / conditions (Settings; spec v6 defaults) -------
 
@@ -369,6 +405,8 @@ class IncidentMixin:
         # with their track (no leak, no carry-over to a new id).
         if self.ai_ring is not None:
             self.ai_ring.commit(now)
+        if self.debug_pub is not None:
+            self.debug_pub.commit(now)
         mbook = self._momentum_book()
         dropped = mbook.drop_missing(self._seen_track_ids)
         if dropped:

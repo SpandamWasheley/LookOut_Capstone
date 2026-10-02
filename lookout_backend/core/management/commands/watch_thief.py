@@ -725,8 +725,7 @@ class Command(IncidentMixin, BaseCommand):
                 # touches it — see RawFrameRecorder.
                 if self._raw_buffer is not None:
                     self._raw_buffer.add(frame, time.time())
-                if self.ai_ring is not None:
-                    self.ai_ring.stash(frame)     # clean pixels for the AI checker's crops
+                self._frame_start(frame)      # clean pixels for the AI checker and the live view
 
                 # Enhance dim/noisy frames before detection (daytime bypasses).
                 frame = self._preprocess(frame)
@@ -896,6 +895,7 @@ class Command(IncidentMixin, BaseCommand):
         if not cue.on:
             if dets:
                 self.stats["held back: momentum below ON"] += 1
+            self._debug_note("Holdup", ("knife", track.id), track.id, track.box, None, cue.momentum)
             return
         best_label, best_score = cue.label, cue.conf
         present_for = cue.momentum
@@ -907,6 +907,7 @@ class Command(IncidentMixin, BaseCommand):
         # the holder -- never the raw YOLO box confidence.
         evidence = self._knife_evidence(track, best_label, present_for, now_ts, box)
         self._ai_note(("partner", track.id), getattr(evidence, "partner_box", None))
+        self._debug_note("Holdup", ("knife", track.id), track.id, box, evidence, cue.momentum)
         who = track.display
         summary = ", ".join(sorted({s[5] for s in track.dets}))
 
