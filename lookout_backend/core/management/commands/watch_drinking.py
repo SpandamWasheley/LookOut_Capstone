@@ -1073,7 +1073,10 @@ class Command(BaseCommand):
         # still a GATE above (nothing is scored until it elapses), and the spec
         # folds "group stationary" into the gathering cue itself.
         cues = {"bottle"}
-        if posture == "at mouth":
+        # _posture() returns "at-mouth" (hyphenated). This used to compare against
+        # "at mouth" (a space), which never matched, so the at_mouth cue (0.15)
+        # never scored and a bottle at the mouth stayed at the bare 0.40.
+        if posture == "at-mouth":
             cues.add("at_mouth")
         if self._time_band_cue():
             cues.add("time_band")

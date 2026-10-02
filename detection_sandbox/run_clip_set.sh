@@ -13,6 +13,8 @@ CLIPS=("Smoking/Aug14_3 - MorningMediumBldg - Trim.mp4" "Smoking/Aug18_18 - Trim
 cd "$ROOT/lookout_backend"
 touch "$OUT/.stamp"
 for c in "${CLIPS[@]}"; do
+  # optional filter: ONLY=Kabilang bash run_clip_set.sh <label>
+  if [ -n "${ONLY:-}" ] && [[ "$c" != *"$ONLY"* ]]; then continue; fi
   n="$(basename "$c" .mp4 | tr ' ' '_')"; rm -f "$OUT/$n.jsonl"
   s=$(date +%s)
   LOOKOUT_MOUTH_LOG="$OUT/$n.jsonl" python manage.py watch_merged --source "$V/$c" --dry-run --stats --camera CAM-SMOKE-01 > "$OUT/$n.log" 2>&1
