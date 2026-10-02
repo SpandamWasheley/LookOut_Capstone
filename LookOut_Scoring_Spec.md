@@ -1,3 +1,5 @@
+> **SUPERSEDED by docs/specs/LookOut_Scoring_Spec_v6.md** — this file is kept for history only. Do not implement from it.
+
 # LookOut — Indicator Scoring + VLM Verification Spec
 
 Version 2.0 · object-gated · working document for implementation and Chapter 3
