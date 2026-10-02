@@ -11,6 +11,7 @@ from django.utils import timezone
 from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
+from core.vision import clock as vclock
 from core.vision import recognition, scoring, tracking, vlm
 from ._incidents import IncidentMixin
 from ._vlm_followup import attach_verdict
@@ -143,6 +144,7 @@ class Command(IncidentMixin, BaseCommand):
         self._cluster_centroids = {}
         self.dry_run = False
         self._cluster_of = {}                 # track id -> its Cluster this frame
+        self.clock_start = None               # --clock footage start (file sources only)
         self._gathering_params = (2, 600)     # (min_group, group_duration)
         self.tracker_name = "bytetrack"
         self.mouth_check = True
@@ -231,6 +233,13 @@ class Command(IncidentMixin, BaseCommand):
             "--dry-run",
             action="store_true",
             help="Detect and save evidence images but never write Alert rows.",
+        )
+        parser.add_argument(
+            "--clock", default="",
+            help="Footage start time for an uploaded / test clip, e.g. "
+                 "\"2026-08-18 19:30\". Drives the holdup time block and the "
+                 "drinking evening band (position in the video is added to it). "
+                 "Ignored for live streams; without it the wall clock is used.",
         )
         parser.add_argument(
             "--tracker",
@@ -331,6 +340,7 @@ class Command(IncidentMixin, BaseCommand):
         # --fast opts out to the single near pass.
         self.far = not options["fast"]
         self.dry_run = options["dry_run"]
+        self.clock_start = vclock.parse_clock(options.get("clock"))
         self.tracker_name = options["tracker"]
         self.show_stats = options["stats"]
 
@@ -930,10 +940,11 @@ class Command(IncidentMixin, BaseCommand):
 
     # ---- weighted scoring (core/vision/scoring.py) -------------------------
 
-    def _time_band_cue(self):
+    def _time_band_cue(self, now_ts=None):
         """The Omamalin high band (16:00-24:00) as a scored cue, not a gate."""
         start, end = scoring.DRINKING_HIGH_BAND
-        return scoring.in_time_band(datetime.datetime.now(), start, end)
+        return scoring.in_time_band(
+            vclock.clock_now(self.clock_start, now_ts, self._source_path is not None), start, end)
 
     def note_clusters(self, clusters, min_group, group_duration):
         """Remember this frame's gatherings so a person's own score can include
@@ -1035,7 +1046,7 @@ class Command(IncidentMixin, BaseCommand):
         # Group and duration points accumulate silently and appear the moment the
         # bottle cue turns ON (30 + 40 = 70 opens at Possible, skipping Monitoring).
         cues |= self._gathering_cues(self._cluster_of.get(track.id), now_ts)
-        if self._time_band_cue():
+        if self._time_band_cue(now_ts):
             cues.add("time_band")
 
         key = ("drink", track.id)
@@ -1122,7 +1133,7 @@ class Command(IncidentMixin, BaseCommand):
             ev_score, ev_label = 0.0, "Gathering"
             if cluster.evidence is not None:
                 self.stats["gathering scored without bottle: evidence stale"] += 1
-        if self._time_band_cue():
+        if self._time_band_cue(now_ts):
             cues.add("time_band")
 
         key = ("cluster", cluster.id)

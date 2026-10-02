@@ -13,6 +13,7 @@ from django.utils import timezone
 from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
+from core.vision import clock as vclock
 from core.vision import recognition, scoring, theft, tracking, vlm
 from ._incidents import IncidentMixin
 from ._vlm_followup import attach_verdict
@@ -219,6 +220,7 @@ class Command(IncidentMixin, BaseCommand):
         self.layer_e = True
         self.layer_e_only = False
         self._frame_tracks = []
+        self.clock_start = None       # --clock footage start (file sources only)
         self._holdup_cues = {}        # holder track id -> (time, Layer E cues seen recently)
         self.observe_log = None
         self.engine = None
@@ -339,6 +341,13 @@ class Command(IncidentMixin, BaseCommand):
                  "current conjunctive gate'). A lone weapon is Monitoring only.",
         )
         parser.add_argument(
+            "--clock", default="",
+            help="Footage start time for an uploaded / test clip, e.g. "
+                 "\"2026-08-18 19:30\". Drives the holdup time block and the "
+                 "drinking evening band (position in the video is added to it). "
+                 "Ignored for live streams; without it the wall clock is used.",
+        )
+        parser.add_argument(
             "--observe-log",
             default=None,
             help="Append near-miss evidence (no knife, or nobody near it) to this file as "
@@ -428,6 +437,7 @@ class Command(IncidentMixin, BaseCommand):
         self.layer_e = not options["no_layer_e"] and "layer-e" not in self.ablate
         self.layer_e_only = options["layer_e_only"] and self.layer_e
         self.observe_log = options["observe_log"]
+        self.clock_start = vclock.parse_clock(options.get("clock"))
         if self.layer_e:
             # The engine shares self.stats, so --stats reports Layer E's
             # suppressions and cue counts in the same table as the legacy gate's.
@@ -807,7 +817,7 @@ class Command(IncidentMixin, BaseCommand):
 
                 # Layer E: pattern rules over the tracks, scored and banded.
                 if self.layer_e:
-                    wall_now = datetime.datetime.now()
+                    wall_now = self._clock_now(now_ts)
                     evidence = self.engine.update(
                         tracks, carriables, vehicles, threats, now_ts,
                         is_night=_is_night(wall_now),
@@ -1006,6 +1016,10 @@ class Command(IncidentMixin, BaseCommand):
         if alert is not None or self.dry_run:
             self.stats[f"status:{evidence.band}:{best_label}"] += 1
 
+    def _clock_now(self, now_ts):
+        """Time of day for scoring: the --clock footage time for a file, else the wall clock."""
+        return vclock.clock_now(self.clock_start, now_ts, self._source_path is not None)
+
     def _describe(self, ev, summary, who, present_for):
         status = scoring.label_of(ev.band)
         note = " Second person nearby." if ev.people_near else " No second person near the holder."
@@ -1021,7 +1035,7 @@ class Command(IncidentMixin, BaseCommand):
             for rule in seen[1]:
                 cues[rule] = theft.WEIGHTS[rule]
         mult = {}
-        factor = scoring.manila_time_multiplier(datetime.datetime.now())
+        factor = scoring.manila_time_multiplier(self._clock_now(now_ts))
         if factor != 1.0 and "e20" not in self.ablate:
             mult["E20"] = factor
         near = any(o is not track and not getattr(o, "is_scene", False)

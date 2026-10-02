@@ -90,6 +90,7 @@ Scale: the internal 0-1 scale is kept; 40 pts = 0.40, Possible = 0.55, Likely = 
 | Reset to spec defaults per violation | none | MISSING | button in Settings per violation panel |
 | Points and the 55 / 75 cut-offs | module constants | MATCHES | **not editable** (stay in code) |
 | Active settings logged with each alert | not logged | MISSING | `cues["settings"]` snapshot on every Alert |
+| Footage clock for uploaded clips (`--clock "YYYY-MM-DD HH:MM"`) | CLI option built in Part 3 (`core/vision/clock.py`); Run Detection does not pass it yet | PARTLY | Part 5: a "footage start time" field in the Run Detection upload form that passes `--clock` to the job |
 
 ## G. Momentum spec (M)
 | Item | Current | Verdict | Change |

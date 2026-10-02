@@ -55,6 +55,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 
 from core.models import Camera, SystemSettings, ViolationType
+from core.vision import clock as vclock
 from core.vision import recognition, tracking, vlm
 
 from .watch_smoking import Command as SmokingCommand
@@ -100,6 +101,13 @@ class Command(BaseCommand):
                                  "distant objects.")
         parser.add_argument("--tiles", default="2x2",
                             help="Far-mode tiling grid ROWSxCOLS (default 2x2).")
+        parser.add_argument(
+            "--clock", default="",
+            help="Footage start time for an uploaded / test clip, e.g. "
+                 "\"2026-08-18 19:30\". Drives the holdup time block and the "
+                 "drinking evening band (position in the video is added to it). "
+                 "Ignored for live streams; without it the wall clock is used.",
+        )
         parser.add_argument("--dry-run", action="store_true",
                             help="Detect and save evidence but write no Alert rows.")
         parser.add_argument("--debug", action="store_true",
@@ -175,6 +183,7 @@ class Command(BaseCommand):
 
         self.far = not options["fast"]
         self.dry_run = options["dry_run"]
+        self.clock_start = vclock.parse_clock(options.get("clock"))
         self.tracker_name = options["tracker"]
         self.show_stats = options["stats"]
         try:
@@ -223,6 +232,7 @@ class Command(BaseCommand):
         cmd.camera = self.camera
         cmd.violations_dir = self.violations_dir
         cmd.dry_run = self.dry_run
+        cmd.clock_start = self.clock_start     # drinking evening band, holdup time block
         cmd.far = self.far
         cmd.tiles = self.tiles
         cmd.conf_override = None

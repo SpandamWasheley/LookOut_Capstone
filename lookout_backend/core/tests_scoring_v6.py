@@ -296,3 +296,48 @@ class Cap(SimpleTestCase):
         s = smoking({"cigarette", "gesture", "puffs", "puff_pattern", "near_mouth"})
         self.assertEqual(round(s.raw_score * 100), 110)
         self.assertEqual(round(s.score * 100), 100)
+
+
+class FootageClock(SimpleTestCase):
+    """--clock: uploaded footage is scored by the time it was FILMED, not run."""
+
+    def test_parse(self):
+        from core.vision import clock
+        self.assertEqual(clock.parse_clock("2026-08-18 19:30"), datetime.datetime(2026, 8, 18, 19, 30))
+        self.assertEqual(clock.parse_clock("2026-08-18T19:30:15"), datetime.datetime(2026, 8, 18, 19, 30, 15))
+        self.assertIsNone(clock.parse_clock(""))
+        with self.assertRaises(ValueError):
+            clock.parse_clock("tonight")
+
+    def test_file_sources_follow_the_video_position(self):
+        from core.vision import clock
+        start = datetime.datetime(2026, 8, 18, 23, 59, 0)
+        self.assertEqual(clock.clock_now(start, 90, True), datetime.datetime(2026, 8, 19, 0, 0, 30))
+
+    def test_live_streams_and_no_override_use_the_wall_clock(self):
+        from core.vision import clock
+        start = datetime.datetime(2020, 1, 1, 3, 0)
+        live = clock.clock_now(start, 90, False)
+        self.assertGreater(live, datetime.datetime(2026, 1, 1))
+        self.assertGreater(clock.clock_now(None, 90, True), datetime.datetime(2026, 1, 1))
+
+    def test_it_drives_both_time_indicators(self):
+        from core.management.commands.watch_drinking import Command as Drinking
+        d = Drinking()
+        d._source_path = "clip.mp4"
+        d.clock_start = datetime.datetime(2026, 8, 18, 19, 30)
+        self.assertTrue(d._time_band_cue(0.0))             # 19:30 is in 16:00-24:00
+        d.clock_start = datetime.datetime(2026, 8, 18, 10, 0)
+        self.assertFalse(d._time_band_cue(0.0))            # 10:00 is not
+        self.assertTrue(d._time_band_cue(6.5 * 3600))      # ...but 16:30 into the clip is
+        d._source_path = None                              # live: override ignored
+        d.clock_start = datetime.datetime(2026, 8, 18, 3, 0)
+        self.assertEqual(d._time_band_cue(0.0),
+                         scoring.in_time_band(datetime.datetime.now(), *scoring.DRINKING_HIGH_BAND))
+        from core.management.commands.watch_thief import Command as Thief
+        t = Thief()
+        t._source_path = "clip.mp4"
+        t.clock_start = datetime.datetime(2026, 8, 18, 7, 0)
+        self.assertEqual(scoring.manila_time_multiplier(t._clock_now(0.0)), 0.56)
+        t.clock_start = datetime.datetime(2026, 8, 18, 16, 0)
+        self.assertEqual(scoring.manila_time_multiplier(t._clock_now(0.0)), 1.36)
