@@ -334,7 +334,7 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
             "drinking_min_group", "drinking_group_duration",
             "vlm_enabled", "vlm_model", "vlm_model_holdup", "vlm_endpoint",
             "vlm_timeout",
-            "object_confirm_seconds", "smoking_puff_count", "smoking_puff_window_minutes",
+            "object_confirm_seconds", "cue_hold_seconds", "monitoring_min_seconds", "smoking_puff_count", "smoking_puff_window_minutes",
             "holdup_loiter_seconds", "holdup_near_person_heights",
             "vlm_frames", "vlm_max_edge", "vlm_async",
             "alert_cooldown", "evidence_retention_days", "evidence_auto_purge", "show_testing_tools", "auto_start_detection",

@@ -172,3 +172,39 @@ After momentum replaced the vote and dwell gate, `smoking_dwell`, `thief_dwell`,
 passed into `_process_track` but never used). Their Settings sliders were removed. The columns remain in the
 database and should be dropped, with the `--dwell` flags and the `dwell` arguments, in a Round 2 migration.
 `parking_dwell` is still used (parking has its own timer) and stays.
+
+## Monitoring noise and status flicker (diagnosis and fix)
+
+Clips: `Aug18_18 - Trim2` (recorded 19:04) and `TrimCigaretteNightFar1` (19:06), one smoker in the scene.
+
+**Diagnosis (before).** Trim2 produced 4 events (1 Possible, 3 Monitoring) and Far1 6 (1 Possible, 5 Monitoring),
+most lasting 0.6-3 s. Contact sheet: `detection_sandbox/output/monitoring_diag/contact_sheet_before.jpg`.
+- One real smoker (tan jacket, left side). His tracker id changed several times (Trim2 #1 -> #4 at 25.3/25.9 s;
+  Far1 #7 -> #24, with a smaller second box #30 on him at the same time). Each new id ended his event at the
+  switch, and the 120 s alert-cooldown then SUPPRESSED the rest of his smoking (354 frames on Trim2) instead of
+  continuing the row.
+- Every other event was a Cigarette (once a Bottle/knife) detection on a passing motorbike, rider, tuk-tuk or a
+  bag. Their object confidence was high (median 0.79, up to 0.85), so a per-class confidence floor does NOT
+  separate them from the real cigarette (0.47-0.85). Track speed did not either (these boxes are short-lived and
+  hardly move). What does separate them is duration: false object cues lasted 0.2-3.1 s, the smoker's 22-29 s.
+- Momentum alone turns ON within two frames of a confident detection, so "about 2 s" was not honoured.
+
+**Fix.** (1) The object cue must stay ON for the object-confirmation time (2 s, Settings) before it counts.
+(2) A Monitoring event shorter than "Shortest event worth keeping" (3 s) that never rose is deleted with its
+image and AI frames; the AI check now waits until the event has proved itself. (3) A "new" track at the same
+place and similar size as an event whose track is gone (within 15 s) CONTINUES that event (same Alert row); a
+person still in view is never taken over, so two people visible together stay two events. (4) A person who
+belongs to a drinking gathering no longer also gets their own Drinking event; the gathering is one event
+(a member's bottle at the mouth counts for the group).
+
+**Result (same clips, same settings).** Trim2: 4 events -> 1 (the smoker, one row for his whole 45 s). Far1: 6
+events -> 1 (50 s). Holdup clip: 4 events -> 2. No Monitoring row from a vehicle remained.
+
+**Round 2 ideas.** Hard negatives for motorbikes/tuk-tuks/riders when fine-tuning merged_v2 (the real fix for the
+false Cigarette hits); the second overlapping person box on the same man (Far1 #30) is still a separate track
+and is only held back by the same-spot cooldown.
+
+**Status flicker.** The smoker's Possible<->Likely flip (near-mouth cue present on some frames only) is fixed by
+holding behaviour cues for `cue_hold_seconds` (5 s, Settings): the near-mouth latest-ratio test was replaced by
+"it fired within the hold window". Holdup clip (the phone-call false positive): 6 status changes in 0.8 s
+before, 0 after. The timeline records every rise but coalesces flicker.

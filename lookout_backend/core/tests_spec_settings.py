@@ -8,20 +8,37 @@ from core.models import SystemSettings
 from core.vision import spec_settings
 
 
-class MomentumMappingTests(SimpleTestCase):
-    def test_two_seconds_is_the_spec_momentum_default(self):
-        cfg = spec_settings.momentum_config(2.0)
-        self.assertEqual((cfg.decay, cfg.on, cfg.off, cfg.max), (0.90, 1.5, 0.4, 3.0))
+class ConfirmationTests(SimpleTestCase):
+    def test_a_cue_must_stay_on_for_the_confirmation_time(self):
+        from core.vision import momentum
+        slot = momentum.Slot()
+        cfg = momentum.MomentumConfig()
+        momentum.update_momentum(slot, 0.9, cfg, now=10.0)
+        momentum.update_momentum(slot, 0.9, cfg, now=10.1)
+        self.assertTrue(slot.cue_on)                                  # momentum turned ON within two frames ...
+        self.assertFalse(momentum.confirmed(slot, 10.1, 2.0))        # ... but it is not confirmed yet
+        momentum.update_momentum(slot, 0.9, cfg, now=12.2)
+        self.assertTrue(momentum.confirmed(slot, 12.2, 2.0))
 
-    def test_longer_confirmation_raises_the_on_threshold_and_keeps_headroom(self):
-        cfg = spec_settings.momentum_config(4.0)
-        self.assertEqual(cfg.on, 3.0)
-        self.assertGreaterEqual(cfg.max, cfg.on * 2)
+    def test_going_off_restarts_the_confirmation_clock(self):
+        from core.vision import momentum
+        slot = momentum.Slot()
+        cfg = momentum.MomentumConfig()
+        for t in (0.0, 0.1):
+            momentum.update_momentum(slot, 0.9, cfg, now=t)
+        for t in (0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 2.0, 2.1, 2.2, 2.3, 2.4):
+            momentum.update_momentum(slot, 0.0, cfg, now=t)
+        self.assertFalse(slot.cue_on)
+        self.assertIsNone(slot.on_since)
 
     def test_points_and_cutoffs_are_not_adjustable(self):
         adjustable = {f for fields in spec_settings.GROUPS.values() for f in fields}
         for name in adjustable:
             self.assertFalse(any(w in name for w in ("points", "cutoff", "threshold_55", "threshold_75")), name)
+
+    def test_the_new_timings_have_spec_defaults(self):
+        self.assertEqual(spec_settings.SPEC_DEFAULTS["cue_hold_seconds"], 5.0)
+        self.assertEqual(spec_settings.SPEC_DEFAULTS["monitoring_min_seconds"], 3.0)
 
 
 class SettingsApiTests(TestCase):

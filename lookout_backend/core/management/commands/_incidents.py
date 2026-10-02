@@ -22,12 +22,16 @@ from django.utils import timezone
 from core.media import violation_media_path
 from core.models import Alert, SystemSettings
 from core import timeline
-from core.vision import ai_checker, debug_view, momentum, recognition, scoring, spec_settings
+from core.vision import ai_checker, debug_view, momentum, recognition, scoring, spec_settings, tracking
 
 CLIP_REFRESH_SECONDS = 15.0     # while Possible / Likely continues
 ROW_UPDATE_SECONDS = 5.0        # throttle for score / last_seen writes
 STATUS_EVENT_GAP = 5.0          # seconds between recorded status changes on the timeline
 END_GRACE_SECONDS = 3.0         # no update for this long -> the incident has ended
+CONTINUE_SECONDS = 15.0         # a closed event is continued (same Alert row) if the same subject reappears within this
+CONTINUE_MIN_GAP = 1.0          # a track processed this recently is still in view: its event is NOT up for continuation
+CONTINUE_DIST = 0.8             # "same place": centres within this x the mean box size
+CONTINUE_SIZE = (0.45, 2.2)     # ... and a similar size (height ratio)
 
 
 class Incident:
@@ -43,6 +47,8 @@ class Incident:
         self.last_row_write = None
         self.peak = scoring.NONE
         self.announced = False      # the first row (or its dry-run log line) was handled
+        self.box = None             # where the subject last was (for continuing it under a new track id)
+        self.pending_ai = None      # AI check waiting until the event has proved it is not a flicker
 
 
 def ai_setup(stdout, off=False):
@@ -122,12 +128,14 @@ class IncidentMixin:
         return "recorded" if getattr(self, "clock_start", None) is not None else "processed"
 
     @staticmethod
-    def _status_event_due(events, when):
-        """A status can flicker between Possible and Likely several times a second as one indicator
-        comes and goes. The timeline records a change only once the previous recorded status change
-        is at least STATUS_EVENT_GAP seconds old, so it stays readable."""
+    def _status_event_due(events, when, level):
+        """The timeline records every RISE to a higher status than the last one recorded (so
+        Possible and Likely are never lost), and other changes only once the previous recorded
+        change is at least STATUS_EVENT_GAP seconds old, so a status that flickers does not fill it."""
         last = [e for e in (events or []) if e.get("type") == "status"]
         if not last:
+            return True
+        if scoring.LEVEL_ORDER.get(level, 0) > scoring.LEVEL_ORDER.get(last[-1].get("level"), 0):
             return True
         try:
             previous = datetime.datetime.fromisoformat(last[-1]["t"])
@@ -173,6 +181,9 @@ class IncidentMixin:
 
     # ---- adjustable timings / conditions (Settings; spec v6 defaults) -------
 
+    confirm_seconds = 2.0       # an object must stay detected this long before it counts
+    cue_hold = 5.0              # a behaviour cue (at the mouth) is held this long after it last fired
+    monitoring_min = 3.0        # a Monitoring event shorter than this that never rose is dropped
     puff_count = 3
     puff_window = 300.0
     drinking_band = scoring.DRINKING_HIGH_BAND
@@ -186,8 +197,12 @@ class IncidentMixin:
         if stamp is not None and stamp == self.__dict__.get("_spec_stamp"):
             return
         self._spec_stamp = stamp
-        if not os.environ.get("LOOKOUT_MOMENTUM"):          # a tuning run's override wins
-            self._momentum_book().cfg = spec_settings.momentum_config(cfg.object_confirm_seconds)
+        # Tuning-run overrides (environment) win over the Settings row.
+        self.confirm_seconds = float(os.environ.get("LOOKOUT_CONFIRM") or cfg.object_confirm_seconds)
+        self.cue_hold = float(os.environ.get("LOOKOUT_CUE_HOLD") or getattr(cfg, "cue_hold_seconds", 5.0))
+        if os.environ.get("LOOKOUT_CUE_HOLD") == "0":
+            self.cue_hold = 0.0
+        self.monitoring_min = float(getattr(cfg, "monitoring_min_seconds", 3.0))
         self.puff_count = int(cfg.smoking_puff_count)
         self.puff_window = float(cfg.smoking_puff_window_minutes) * 60.0
         self.drinking_band = (cfg.drinking_start, cfg.drinking_end)
@@ -236,6 +251,33 @@ class IncidentMixin:
             url_for=lambda p: violation_media_path(os.path.relpath(p, root).replace(os.sep, "/")))
         self.stats["ai check started"] += 1
 
+    # ---- behaviour cues that come and go: held for a while -------------------------
+
+    def _sticky(self, key, name, fired, now_ts):
+        """True while the behaviour `name` of `key` was seen within the last `cue_hold` seconds.
+
+        A hand at the mouth, a bottle at the lips or a frozen pair is visible for a few frames and
+        then not, over and over. Scoring each frame on its own makes the status flip between Possible
+        and Likely several times a second. Here, once it fires it stays on for the hold window and
+        is refreshed every time it fires again; only when it has been ABSENT for longer than the
+        window does it drop (and the normal hysteresis then applies).
+        """
+        seen = self.__dict__.setdefault("_cue_seen", {})
+        k = (key, name)
+        if fired:
+            seen[k] = now_ts
+            return True
+        last = seen.get(k)
+        return last is not None and (now_ts - last) <= self.cue_hold
+
+    def _sticky_forget(self, now_ts):
+        """Drop hold records that can no longer matter (keeps the dict from growing all day)."""
+        seen = self.__dict__.get("_cue_seen")
+        if seen:
+            horizon = max(self.cue_hold * 3, 30.0)
+            for k in [k for k, t in seen.items() if now_ts - t > horizon]:
+                del seen[k]
+
     # ---- object cue: momentum per (track, class) ---------------------------
 
     def _momentum_book(self):
@@ -254,6 +296,7 @@ class IncidentMixin:
         """
         book = self._momentum_book()
         self._seen_track_ids.add(track.id)
+        self.__dict__.setdefault("_alive", {})[track.id] = now_ts      # this track is in view right now
         self._ai_note(("track", track.id), track.box)
         confs, names = {}, {}
         for d in dets:
@@ -261,7 +304,7 @@ class IncidentMixin:
             if d[4] > confs.get(cls, 0.0):
                 confs[cls] = float(d[4])
             names.setdefault(cls, d[5])
-        slots = book.step(track.id, confs)
+        slots = book.step(track.id, confs, now_ts)
         # Optional run log ($LOOKOUT_MOUTH_LOG): the raw per-frame input of every slot,
         # so momentum settings can be replayed offline without re-running the models.
         if confs or slots:
@@ -271,7 +314,8 @@ class IncidentMixin:
                 on=[c for c, sl in slots.items() if sl.cue_on])
         for cls in slots:
             names.setdefault(cls, cls)
-        on = [c for c, sl in slots.items() if sl.cue_on]
+        # ON for at least the object confirmation time (not just a momentum spike).
+        on = [c for c, sl in slots.items() if momentum.confirmed(sl, now_ts, self.confirm_seconds)]
         if not on:
             top = max(slots.values(), key=lambda sl: sl.momentum, default=None)
             return ObjectCue(False, None, None, top.momentum if top else 0.0, None)
@@ -296,6 +340,64 @@ class IncidentMixin:
             else:
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
             recognition.draw_label(frame, text, x1, max(y1 - 8, 0), color)
+
+    # ---- one event per subject: continue it when the track id changes ------------------
+
+    @staticmethod
+    def _same_subject(a, b):
+        """Two boxes are about the same place and size: the same person/object."""
+        if a is None or b is None:
+            return False
+        if tracking._center_proximity(a, b, CONTINUE_DIST) <= 0:
+            return False
+        ha, hb = max(a[3] - a[1], 1), max(b[3] - b[1], 1)
+        return CONTINUE_SIZE[0] <= hb / ha <= CONTINUE_SIZE[1]
+
+    def _incident_continue(self, key, box, now):
+        """A "new" subject that appears where an event was a moment ago IS that event (a tracker id
+        switch, or the object briefly lost): reuse its incident, and so its Alert row.
+
+        Never merges two subjects visible at the same time: an open event is only a candidate when
+        it has not been updated for CONTINUE_MIN_GAP seconds (its track is gone), and a closed one
+        only within CONTINUE_SECONDS of ending.
+        """
+        if box is None:
+            return None
+        book = self._incident_book()
+        alive = self.__dict__.get("_alive", {})
+        for k, inc in list(book.items()):
+            # Only an event whose track is GONE can be continued: a person who is still in view
+            # keeps their own event, so two people visible together are never merged.
+            gone = k[0] == "cluster" or now - alive.get(k[1], -1e9) >= CONTINUE_MIN_GAP
+            if k != key and k[0] == key[0] and gone and now - inc.last_active >= CONTINUE_MIN_GAP \
+                    and self._same_subject(inc.box, box):
+                del book[k]
+                self.stats["event continued under a new track id"] += 1
+                return inc
+        closed = self.__dict__.setdefault("_closed_incidents", [])
+        closed[:] = [c for c in closed if now - c[2] <= CONTINUE_SECONDS]
+        for c in closed:
+            kind, inc, _ = c
+            if kind == key[0] and self._same_subject(inc.box, box):
+                closed.remove(c)
+                self.stats["event continued after a gap"] += 1
+                return inc
+        return None
+
+    def _incident_discard(self, inc):
+        """Remove a Monitoring event that was only a flicker: its row, its image, its AI frames."""
+        import shutil
+        alert = inc.alert
+        if alert is None:
+            return
+        base = os.path.basename(alert.image_url or "")
+        if base:
+            try:
+                os.remove(os.path.join(str(self.violations_dir), base))
+            except OSError:
+                pass
+        shutil.rmtree(os.path.join(str(self.violations_dir), "ai", f"alert{alert.pk}"), ignore_errors=True)
+        Alert.objects.filter(pk=alert.pk).delete()
 
     def _incident_book(self):
         book = self.__dict__.get("_incidents")
@@ -332,9 +434,11 @@ class IncidentMixin:
             return inc.alert if inc is not None else None
 
         if inc is None:
-            inc = Incident(now)
+            inc = self._incident_continue(key, box, now) or Incident(now)
             book[key] = inc
         inc.last_active = now
+        if box is not None:
+            inc.box = tuple(box)
         previous = inc.level
         rose = scoring.LEVEL_ORDER[level] > scoring.LEVEL_ORDER[previous]
 
@@ -362,9 +466,11 @@ class IncidentMixin:
                     extra["settings"] = self.spec_snapshot
                 alert.cues = {**(alert.cues or {}), **extra}
                 first = timeline.make_event("status", scoring.label_of(level), self._event_time(now))
+                first["level"] = level
                 Alert.objects.filter(pk=alert.pk).update(cues=alert.cues, timeline=[first])
             if ai is not None:
-                self._ai_trigger(alert, ai, key, now, level)
+                # The AI check waits until the event has proved it is not a flicker.
+                inc.pending_ai = (ai, key)
             inc.clip_base = getattr(self, "_last_clip_base", None)
             if score.alerting:
                 inc.last_clip_at = now
@@ -391,6 +497,14 @@ class IncidentMixin:
                 self._incident_clip(inc, frame, now)
                 inc.last_clip_at = now
 
+        if inc.pending_ai is not None and inc.alert is not None and (
+                level in scoring.NOTIFY_LEVELS or now - inc.started >= self.monitoring_min):
+            ai_req, ai_key = inc.pending_ai
+            inc.pending_ai = None
+            self._ai_trigger(inc.alert, ai_req, ai_key, now, level)
+        if previous != level and inc.announced and previous != scoring.NONE:
+            self.stats["status changes (flips)"] += 1
+            recognition.log_mouth(kind="status", key=str(key), t=round(now, 2), frm=previous, to=level)
         if rose:
             self.stats[f"status: {scoring.label_of(level)}"] += 1
         inc.level = level
@@ -410,9 +524,10 @@ class IncidentMixin:
             fields["description"] = describe(score)
         row = Alert.objects.filter(pk=alert.pk).values("cues", "timeline").first() or {}
         cues = dict(row.get("cues") or {})
-        if changed and self._status_event_due(row.get("timeline"), fields["last_seen_at"]):
-            fields["timeline"] = timeline.appended(
-                row.get("timeline"), timeline.make_event("status", scoring.label_of(level), fields["last_seen_at"]))
+        if changed and self._status_event_due(row.get("timeline"), fields["last_seen_at"], level):
+            ev = timeline.make_event("status", scoring.label_of(level), fields["last_seen_at"])
+            ev["level"] = level
+            fields["timeline"] = timeline.appended(row.get("timeline"), ev)
         cues.update(score.as_dict())
         if self.spec_snapshot is not None:
             cues["settings"] = self.spec_snapshot
@@ -457,8 +572,19 @@ class IncidentMixin:
             self.stats["momentum slots cleaned"] += dropped
         self._seen_track_ids = set()
         book = self._incident_book()
+        self._sticky_forget(now)
+        closed = self.__dict__.setdefault("_closed_incidents", [])
         for key in [k for k, inc in book.items() if now - inc.last_active > END_GRACE_SECONDS]:
             inc = book.pop(key)
+            if inc.peak == scoring.MONITORING and inc.last_active - inc.started < self.monitoring_min:
+                # Seen, but never grew and was gone almost at once: a flicker, not an event.
+                if not self.dry_run:
+                    self._incident_discard(inc)
+                self.stats["Monitoring dropped (too short, never rose)"] += 1
+                recognition.log_mouth(kind="incident", event="drop", key=str(key),
+                                      seconds=round(inc.last_active - inc.started, 2))
+                continue
+            closed.append((key[0], inc, now))
             if inc.alert is not None and not self.dry_run:
                 Alert.objects.filter(pk=inc.alert.pk).update(
                     last_seen_at=self._event_time(inc.last_active))

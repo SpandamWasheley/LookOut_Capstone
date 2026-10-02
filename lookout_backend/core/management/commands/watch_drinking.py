@@ -12,7 +12,7 @@ from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
 from core.vision import clock as vclock
-from core.vision import recognition, scoring, tracking, ai_checker
+from core.vision import ai_checker, momentum, recognition, scoring, tracking
 from ._incidents import IncidentMixin
 
 DRINKING_CAMERA_CODE = "CAM-SMOKE-01"
@@ -984,8 +984,14 @@ class Command(IncidentMixin, BaseCommand):
         cues = set()
         if object_on:
             cues.add("bottle")
-            if posture == "at-mouth":
+            at_mouth_now = posture == "at-mouth"
+            # Held for `cue_hold` seconds after it last fired (the bottle goes to the lips and away
+            # again frame to frame); the group the person belongs to is told as well.
+            if self._sticky(("drink", track.id), "at_mouth", at_mouth_now, now_ts):
                 cues.add("at_mouth")
+            member_of = self._cluster_of.get(track.id)
+            if at_mouth_now and member_of is not None:
+                self._sticky(("cluster", member_of.id), "at_mouth", True, now_ts)
         # Group and duration points accumulate silently and appear the moment the
         # bottle cue turns ON (30 + 40 = 70 opens at Possible, skipping Monitoring).
         cues |= self._gathering_cues(self._cluster_of.get(track.id), now_ts)
@@ -996,6 +1002,13 @@ class Command(IncidentMixin, BaseCommand):
         score = scoring.Score("drinking", scoring.DRINKING_WEIGHTS, cues,
                               previous_level=self._incident_level(key), object_on=object_on)
         self._debug_note("Drinking", key, track.id, track.box, score, cue.momentum)
+        group = self._cluster_of.get(track.id)
+        params = getattr(self, "_gathering_params", None)
+        if group is not None and params is not None and len(group.member_ids) >= params[0]:
+            # One gathering is ONE event for the whole group (its own row, below). This person's
+            # bottle already counts there, so they do not get a second event of their own.
+            self.stats["person event folded into the group's event"] += 1
+            return
         if not score.stored:
             self._incident_sync(key, score, now_ts, create=None)
             return
@@ -1070,9 +1083,9 @@ class Command(IncidentMixin, BaseCommand):
         self._momentum_book()
         self._seen_track_ids.add(mkey)
         frame_conf = getattr(cluster, "frame_conf", 0.0)
-        slots = self._momentum_book().step(mkey, {"bottle": frame_conf} if frame_conf > 0 else {})
+        slots = self._momentum_book().step(mkey, {"bottle": frame_conf} if frame_conf > 0 else {}, now_ts)
         slot = slots.get("bottle")
-        object_on = bool(slot and slot.cue_on)
+        object_on = momentum.confirmed(slot, now_ts, self.confirm_seconds)
         evidence = cluster.evidence
         if object_on:
             self._gathering_funnel["evidence"].add(cluster.id)
@@ -1080,6 +1093,8 @@ class Command(IncidentMixin, BaseCommand):
             _, _, _, _, ev_score, ev_label = evidence if evidence else (0, 0, 0, 0, frame_conf, "Bottle")
         else:
             ev_score, ev_label = 0.0, "Gathering"
+        if object_on and self._sticky(("cluster", cluster.id), "at_mouth", False, now_ts):
+            cues.add("at_mouth")           # a member raised the bottle to their mouth (held)
         if self._time_band_cue(now_ts):
             cues.add("time_band")
 

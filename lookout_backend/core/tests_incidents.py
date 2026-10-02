@@ -334,3 +334,92 @@ class FootageTimeTests(SmokingIncidentTests):
 def timezone_now():
     from django.utils import timezone
     return timezone.now()
+
+
+class StickyAndContinuityTests(SmokingIncidentTests):
+    """Behaviour cues are held; one subject is one event; flickers are not events."""
+
+    def reach_likely(self):
+        for i in range(12):
+            self.step(i * 0.25, [CIG])                       # object confirmed (2 s) -> Monitoring
+        self.puff(3.0)
+        for i in range(12):
+            self.step(3.0 + i * 0.25, [CIG], near_mouth=True)   # item 40 + puff 20 + at mouth 15 = 75
+        self.assertEqual(self.rows()[-1].level, scoring.VIOLATION)
+
+    def mouth(self, t, near):
+        """A frame where the mouth check ran: near (ratio inside the limit) or far."""
+        self.track.box = BOX
+        self.track.last_seen = t
+        self.track.last_mouth_ratio, self.track.last_mouth_seen = (0.8 if near else 6.0), t
+        self.cmd._process_track(self.track, [CIG], t, 2.0, 120, self.frame, False)
+
+    def test_at_mouth_flickering_every_other_frame_does_not_flip_the_status(self):
+        self.reach_likely()
+        before = self.cmd.stats["status changes (flips)"]
+        for i in range(40):                                  # 10 s of near / far / near / far ...
+            self.mouth(6.0 + i * 0.25, near=(i % 2 == 0))
+        self.assertEqual(self.rows()[-1].level, scoring.VIOLATION)
+        self.assertEqual(self.cmd.stats["status changes (flips)"], before)
+
+    def test_absent_longer_than_the_hold_window_drops_it_by_hysteresis(self):
+        self.reach_likely()
+        t = 6.0
+        for i in range(int((self.cmd.cue_hold + 3) / 0.25)):   # never near again
+            self.mouth(t + i * 0.25, near=False)
+        self.assertEqual(self.rows()[-1].level, scoring.WARNING)   # 60 < 70: back to Possible
+
+    def test_no_row_before_the_object_has_stayed_on_for_the_confirmation_time(self):
+        for i in range(6):                                   # 1.5 s of a confident detection
+            self.step(i * 0.25, [CIG])
+        self.assertEqual(self.rows(), [])
+
+    def test_a_flicker_that_never_grew_is_dropped(self):
+        for i in range(12):                                  # confirmed at 2 s, then gone almost at once
+            self.step(i * 0.25, [CIG])
+        self.assertEqual(len(self.rows()), 1)
+        self.cmd._incident_gc(60.0, self.frame)
+        self.assertEqual(self.rows(), [])
+        self.assertEqual(self.cmd.stats["Monitoring dropped (too short, never rose)"], 1)
+
+    def test_a_new_track_id_at_the_same_spot_continues_the_same_event(self):
+        for i in range(30):
+            self.step(i * 0.25, [CIG])                       # track 1: a long event
+        first = self.rows()[0].pk
+        self.track = tracking.Track(2, BOX, 8.0, 5.0)        # the tracker switched ids ...
+        for i in range(30):
+            self.step(8.5 + i * 0.25, [CIG])                 # ... half a second later, same place
+        rows = self.rows()
+        self.assertEqual([r.pk for r in rows], [first])
+        self.assertGreaterEqual(self.cmd.stats["event continued under a new track id"]
+                                + self.cmd.stats["event continued after a gap"], 1)
+
+    def test_two_people_visible_at_the_same_time_are_two_events(self):
+        other = tracking.Track(2, (900, 200, 1020, 500), 0.0, 5.0)
+        for i in range(30):
+            t = i * 0.25
+            self.step(t, [CIG])
+            other.box, other.last_seen = (900, 200, 1020, 500), t
+            self.cmd._process_track(other, [(940, 230, 950, 245, 0.8, "Cigarette")], t, 2.0, 120, self.frame, False)
+        self.assertEqual(len(self.rows()), 2)
+
+    def test_a_person_still_in_view_cannot_take_over_anothers_event(self):
+        for i in range(30):
+            self.step(i * 0.25, [CIG])                       # track 1 has an event
+        first_key = ("smoke", 1)
+        self.assertIn(first_key, self.cmd._incident_book())
+        newcomer = tracking.Track(2, BOX, 8.0, 5.0)           # someone appears on the same spot ...
+        for i in range(12):
+            t = 7.5 + i * 0.25
+            self.step(t, [CIG])                              # ... while track 1 is still in view
+            newcomer.box, newcomer.last_seen = BOX, t
+            self.cmd._process_track(newcomer, [CIG], t, 2.0, 120, self.frame, False)
+        self.assertIn(first_key, self.cmd._incident_book())  # track 1 kept its event
+        self.assertEqual(self.cmd.stats["event continued under a new track id"], 0)
+
+    def test_the_timeline_keeps_every_rise_but_not_the_flicker(self):
+        self.reach_likely()
+        labels = [e["label"] for e in self.rows()[-1].timeline if e["type"] == "status"]
+        self.assertEqual(labels[0], "Monitoring")
+        self.assertEqual(labels[-1], "Likely")
+        self.assertEqual(len(labels), len(set(labels)))        # no repeats from flicker

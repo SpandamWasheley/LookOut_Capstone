@@ -50,16 +50,17 @@ DEFAULT_CONFIG = config_from_env()
 
 
 class Slot:
-    __slots__ = ("momentum", "cue_on", "last_conf", "peak")
+    __slots__ = ("momentum", "cue_on", "last_conf", "peak", "on_since")
 
     def __init__(self):
         self.momentum = 0.0
         self.cue_on = False
         self.last_conf = 0.0
         self.peak = 0.0
+        self.on_since = None        # when the cue last turned ON (the caller's clock), None while OFF
 
 
-def update_momentum(slot, confidence, cfg=DEFAULT_CONFIG):
+def update_momentum(slot, confidence, cfg=DEFAULT_CONFIG, now=None):
     """One step of the spec's algorithm. `confidence` is 0.0 when the class was
     not detected this frame. Returns the slot."""
     slot.momentum = min(slot.momentum * cfg.decay + float(confidence), cfg.max)
@@ -67,9 +68,22 @@ def update_momentum(slot, confidence, cfg=DEFAULT_CONFIG):
     slot.peak = max(slot.peak, slot.momentum)
     if not slot.cue_on and slot.momentum >= cfg.on:
         slot.cue_on = True
+        slot.on_since = now
     elif slot.cue_on and slot.momentum < cfg.off:
         slot.cue_on = False
+        slot.on_since = None
     return slot
+
+
+def confirmed(slot, now, seconds):
+    """True when the cue is ON and has stayed ON for at least `seconds` (the object confirmation
+    time: about 2 s in the spec). Momentum alone can turn ON within two frames of a confident
+    detection, which is how a vehicle that flashes past gets a Monitoring row."""
+    if slot is None or not slot.cue_on:
+        return False
+    if now is None or slot.on_since is None or seconds <= 0:
+        return True
+    return now - slot.on_since >= seconds
 
 
 class MomentumBook:
@@ -83,7 +97,7 @@ class MomentumBook:
     def config_for(self, cls):
         return self.per_class.get(cls, self.cfg)
 
-    def step(self, track_id, confidences):
+    def step(self, track_id, confidences, now=None):
         """Advance every slot of `track_id` by one processed frame.
 
         `confidences` is {class: best confidence this frame}; a class that is
@@ -96,7 +110,7 @@ class MomentumBook:
                 self.slots[(track_id, cls)] = Slot()
         for (tid, cls), slot in self.slots.items():
             if tid == track_id:
-                update_momentum(slot, confidences.get(cls, 0.0), self.config_for(cls))
+                update_momentum(slot, confidences.get(cls, 0.0), self.config_for(cls), now)
                 out[cls] = slot
         return out
 
@@ -128,6 +142,7 @@ class MomentumBook:
             return None
         cfg = self.config_for(cls)
         return {"class": cls, "momentum": round(s.momentum, 3), "cue_on": s.cue_on,
+                "on_since": None if s.on_since is None else round(s.on_since, 2),
                 "peak": round(s.peak, 3), "decay": cfg.decay, "on": cfg.on,
                 "off": cfg.off, "max": cfg.max}
 

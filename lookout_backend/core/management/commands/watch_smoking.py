@@ -84,7 +84,8 @@ MOUTH_PROXIMITY = 2.5    # allowed distance from the mouth, in face widths
 # How recently an at-the-mouth sighting must have happened for the `near_mouth`
 # cue to still count at alert time. Matched to the vote window's order of
 # magnitude: the cue describes this incident, not something seen a minute ago.
-MOUTH_CUE_MAX_AGE = 5.0
+MOUTH_CUE_MAX_AGE = 5.0      # (no longer used: the hold window is the cue_hold setting)
+MOUTH_FRESH_SECONDS = 1.0     # a mouth check older than this is not 'now'
 # Minimum IoU for a pose box to be attributed to an existing person track.
 POSE_MATCH_IOU = 0.3
 
@@ -930,9 +931,11 @@ class Command(IncidentMixin, BaseCommand):
         """
         seen = getattr(track, "last_mouth_seen", None)
         ratio = getattr(track, "last_mouth_ratio", None)
-        if seen is None or ratio is None:
-            return False
-        return (now_ts - seen) <= MOUTH_CUE_MAX_AGE and ratio <= MOUTH_PROXIMITY
+        fired = (seen is not None and ratio is not None
+                 and (now_ts - seen) <= MOUTH_FRESH_SECONDS and ratio <= MOUTH_PROXIMITY)
+        # Held for `cue_hold` seconds after it last fired: the item goes in and out of range of the
+        # mouth frame to frame, and scoring each frame alone made the status flicker.
+        return self._sticky(("smoke", track.id), "near_mouth", fired, now_ts)
 
     def _cooldown_blocks(self, box, now, cooldown):
         """True if we already alerted near roughly this spot inside the

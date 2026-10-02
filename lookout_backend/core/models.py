@@ -561,6 +561,13 @@ class SystemSettings(models.Model):
     object_confirm_seconds = models.FloatField(default=2.0)
     # Smoking: this many hand-to-mouth puffs within the window earn the repeated-puff-pattern
     # indicator (and open the puff-only path when no item is detected).
+    # How long a behaviour that comes and goes frame to frame (a hand raised to the mouth, a bottle at
+    # the lips) still counts after it was last seen. Without it the status flickers between
+    # Possible and Likely several times a second. Refreshed each time the behaviour is seen again.
+    cue_hold_seconds = models.FloatField(default=5.0)
+    # A Monitoring event that lasted less than this and never rose to Possible is dropped (a vehicle
+    # or rider flashing past). It does not count the object confirmation time.
+    monitoring_min_seconds = models.FloatField(default=3.0)
     smoking_puff_count = models.PositiveSmallIntegerField(default=3)
     smoking_puff_window_minutes = models.FloatField(default=5.0)
     # Holdup: how long someone must linger before the "loitering first" indicator counts, and

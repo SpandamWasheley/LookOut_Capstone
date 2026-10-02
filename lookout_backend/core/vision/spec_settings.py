@@ -10,10 +10,10 @@ a field belongs to, so "Reset to spec defaults" can be done per violation.
 """
 import datetime
 
-from core.vision import momentum
-
 SPEC_DEFAULTS = {
-    "object_confirm_seconds": 2.0,          # all: object seen about 2 s before Monitoring
+    "object_confirm_seconds": 2.0,          # all: object must stay detected about 2 s before Monitoring
+    "cue_hold_seconds": 5.0,                # all: a behaviour (hand at the mouth) still counts this long
+    "monitoring_min_seconds": 3.0,          # all: a Monitoring event shorter than this that never grew is dropped
     "drinking_group_duration": 600,         # drinking: stayed 10+ minutes (seconds)
     "drinking_min_group": 2,                # drinking: group of 2+
     "drinking_start": datetime.time(16, 0),  # drinking: evening band 16:00-24:00
@@ -25,7 +25,7 @@ SPEC_DEFAULTS = {
 }
 
 GROUPS = {
-    "all": ["object_confirm_seconds"],
+    "all": ["object_confirm_seconds", "cue_hold_seconds", "monitoring_min_seconds"],
     "drinking": ["drinking_group_duration", "drinking_min_group", "drinking_start", "drinking_end"],
     "smoking": ["smoking_puff_count", "smoking_puff_window_minutes"],
     "holdup": ["holdup_loiter_seconds", "holdup_near_person_heights"],
@@ -34,6 +34,8 @@ GROUPS = {
 # (min, max) the API accepts. Wide enough to experiment, narrow enough to stay meaningful.
 LIMITS = {
     "object_confirm_seconds": (0.5, 10.0),
+    "cue_hold_seconds": (0.0, 30.0),
+    "monitoring_min_seconds": (0.0, 60.0),
     "drinking_group_duration": (60, 7200),
     "drinking_min_group": (2, 20),
     "smoking_puff_count": (2, 10),
@@ -58,16 +60,3 @@ def snapshot(cfg):
     out["vlm_model"] = getattr(cfg, "vlm_model", "")
     out["vlm_model_holdup"] = getattr(cfg, "vlm_model_holdup", "")
     return out
-
-
-def momentum_config(seconds):
-    """Object confirmation time -> momentum thresholds.
-
-    With the spec defaults (ON 1.5, 2 s) the time to turn ON is roughly proportional to the
-    ON threshold at a fixed frame rate and confidence, so ON scales with the requested
-    time. OFF stays 0.4 and MAX stays at least twice ON so the cue can hold through dips.
-    """
-    base = momentum.MomentumConfig()
-    seconds = max(float(seconds or 2.0), 0.25)
-    on = round(base.on * seconds / 2.0, 3)
-    return momentum.MomentumConfig(decay=base.decay, on=on, off=base.off, max=max(base.max, on * 2.0))

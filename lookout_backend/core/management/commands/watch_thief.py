@@ -955,7 +955,7 @@ class Command(IncidentMixin, BaseCommand):
         cues for the same holder, and the time-of-day block."""
         cues = {"E14": theft.WEIGHTS["E14"]}
         seen = self._holdup_cues.get(track.id)
-        if seen is not None and now_ts - seen[0] <= theft.EVIDENCE_WINDOW:
+        if seen is not None and now_ts - seen[0] <= max(theft.EVIDENCE_WINDOW, self.cue_hold):
             for rule in seen[1]:
                 cues[rule] = theft.WEIGHTS[rule]
         mult = {}

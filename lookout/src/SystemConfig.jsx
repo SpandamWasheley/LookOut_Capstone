@@ -31,7 +31,7 @@ const STATIC_DEFAULTS = {
 
 const FIELD_KEYS = [
   ...Object.keys(STATIC_DEFAULTS),
-  "object_confirm_seconds", "drinking_group_duration", "drinking_min_group", "drinking_start", "drinking_end",
+  "object_confirm_seconds", "cue_hold_seconds", "monitoring_min_seconds", "drinking_group_duration", "drinking_min_group", "drinking_start", "drinking_end",
   "smoking_puff_count", "smoking_puff_window_minutes", "holdup_loiter_seconds", "holdup_near_person_heights",
 ];
 
@@ -432,12 +432,24 @@ export function SystemConfig() {
         }
         right={
           <div className="space-y-4">
-            <Card title="Object confirmation" onReset={() => resetKeys(["object_confirm_seconds"])}>
+            <Card title="Event confirmation" onReset={() => resetKeys(["object_confirm_seconds", "cue_hold_seconds", "monitoring_min_seconds"])}>
               <Row label="How long an object must be seen"
                 desc="How long a bottle, cigarette or knife must stay in view before the system starts watching it."
                 differs={differs("object_confirm_seconds")}>
                 <DurationBox seconds={form.object_confirm_seconds} version={version}
                   onChange={(s) => set("object_confirm_seconds", Math.round(s * 2) / 2)} />
+              </Row>
+              <Row label="How long a behaviour still counts"
+                desc="How long something like a hand raised to the mouth still counts after it was last seen. Keeps an alert steady instead of flickering."
+                differs={differs("cue_hold_seconds")}>
+                <DurationBox seconds={form.cue_hold_seconds} version={version}
+                  onChange={(s) => set("cue_hold_seconds", Math.round(s * 2) / 2)} />
+              </Row>
+              <Row label="Shortest event worth keeping"
+                desc="A Monitoring event shorter than this that never grew is dropped. Filters out vehicles and people passing through."
+                differs={differs("monitoring_min_seconds")}>
+                <DurationBox seconds={form.monitoring_min_seconds} version={version}
+                  onChange={(s) => set("monitoring_min_seconds", Math.round(s * 2) / 2)} />
               </Row>
               <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>{TIMINGS_FOOTER}</div>
             </Card>
