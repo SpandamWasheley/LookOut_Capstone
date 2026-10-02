@@ -8,7 +8,7 @@ in the application's `core` app, with the remaining two existing as
 automatically generated junction tables that implement many-to-many
 relationships. This schema supports four functions of the system: user
 authentication and role management, camera and zone administration,
-automated violation detection and alerting, face-based identity matching, and
+automated violation detection and alerting, and
 the citation workflow through which field officers formally record
 violations against identified persons.
 
@@ -43,22 +43,11 @@ reference table currently populated with exactly four rows, corresponding to
 the four violation categories the system is scoped to detect: smoking,
 drinking, parking obstruction, and theft.
 
-Facial identification is supported by tblPerson and tblFaceEmbedding.
-tblPerson is an enrollment record for an individual registered into the
-facial-recognition system, distinct from any notion of a household or
-resident record, which the system does not maintain. Each enrolled person may
-have up to three tblFaceEmbedding rows, one per captured angle, each storing
-the numeric embedding vector produced by the recognition model together with
-the source image and detector confidence. When an alert's captured frame is
-matched against this registry, the alert is linked to the matched tblPerson
-and records the match confidence achieved.
-
 The citation workflow is built on tblViolator and tblCitation. tblViolator
 represents a distinct individual who has been cited at least once; it stores
 a name normalized at save time so that repeat citations against the same
 typed name resolve to a single violator record without requiring a fuzzy
-matching pass, and it may itself be linked to a tblPerson if the violator has
-also been enrolled in the facial registry. tblCitation is the record of a
+matching pass. tblCitation is the record of a
 single citation event: it preserves the name exactly as entered at the time
 of citation, independent of whatever tblViolator record it is later
 associated with or merged into, and it is authored by an issuing tblOfficer
@@ -101,16 +90,6 @@ junction table tblAlertOfficersAssigned, since a single alert may be
 assigned to several responding officers and a single officer may be assigned
 to several alerts concurrently.
 
-tblPerson has a one-to-many relationship with tblFaceEmbedding, since a
-single enrolled person may have several embeddings captured from different
-angles, while each embedding belongs to exactly one person. tblPerson also
-has three further one-to-many relationships, each optional, reflecting its
-role as a shared identity-matching target: with tblAlert, since a single
-enrolled person may be the matched subject of many alerts; with tblViolator,
-since a single enrolled person may correspond to many violator records; and
-with tblCitation, since a single enrolled person may be the matched subject
-of many citations.
-
 tblAlert has a one-to-many relationship with tblCitation, since a single
 alert may give rise to more than one citation, while a citation is founded
 on at most one alert and may have none, as when a citation is filed without
@@ -145,11 +124,4 @@ the waste-collection-related fields, and the sms_alerts flag — have no
 corresponding detector or notification implementation anywhere in the
 codebase; they are documented as they exist in the schema, but represent
 either unfinished or abandoned scope and should be raised for a decision on
-whether to implement or remove. Second, the curfew_confidence field, despite
-its name and its place among the other curfew-related fields, is actively
-read by two of the detector commands (watch_all and watch_merged) as a
-generic face-match confidence threshold for identifying persons in
-smoking and drinking alerts; it is not used for curfew detection, which is
-out of scope for this system and is not otherwise documented anywhere in
-this set of documents, since it has no seeded violation type, no reachable
-entry point, and no alerts in the database.
+whether to implement or remove. Second, the curfew_confidence field, despite its name, was only ever read as the face-match confidence threshold by the smoking and drinking detectors; facial recognition has since been removed, so no code reads it any more and it is a leftover awaiting the same decision.

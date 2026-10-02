@@ -344,15 +344,9 @@ class Command(BaseCommand):
                 # detectors are due this frame.
                 need_persons = any(n in due for n in self.engines)
                 persons = recognition.detect_persons(frame) if need_persons else []
-                # Snapshot before any engine draws a violation box on `frame` —
-                # face recognition (smoking/drinking's citation-prefill match)
-                # must run against a clean copy, same reasoning as each
-                # standalone command's own loop.
-                clean_frame = frame.copy() if need_persons else None
-
                 for name, eng in self.engines.items():
                     if name in due:
-                        self._run_person_detector(name, eng, frame, persons, now, cfg, debug, clean_frame)
+                        self._run_person_detector(name, eng, frame, persons, now, cfg, debug)
 
                 if "parking" in due:
                     self._run_parking(frame, now, cfg, debug)
@@ -379,7 +373,7 @@ class Command(BaseCommand):
 
     # ---- per-detector drivers (reuse each command's own methods) ---------
 
-    def _run_person_detector(self, name, eng, frame, persons, now, cfg, debug, clean_frame):
+    def _run_person_detector(self, name, eng, frame, persons, now, cfg, debug):
         cmd, tracker = eng["cmd"], eng["tracker"]
         conf = getattr(cfg, f"{name}_confidence") / 100
         dwell = getattr(cfg, f"{name}_dwell")
@@ -395,15 +389,15 @@ class Command(BaseCommand):
             per_track = cmd._apply_mouth_rule(frame, per_track, now)
 
         if name == "drinking":
-            self._run_gathering(eng, tracks, per_track, now, cfg, frame, debug, clean_frame)
+            self._run_gathering(eng, tracks, per_track, now, cfg, frame, debug)
             for track, td in per_track.items():
                 cmd._process_track(track, td, now, dwell, cfg.alert_cooldown,
-                                   frame, debug, cfg.curfew_confidence, clean_frame)
+                                   frame, debug)
         elif name == "smoking":
             for track, td in per_track.items():
                 cmd._process_track(track, td, now, dwell, cfg.alert_cooldown,
-                                   frame, debug, cfg.curfew_confidence, clean_frame)
-        else:  # thief — no face_threshold/clean_frame param on this one
+                                   frame, debug)
+        else:  # thief
             for track, td in per_track.items():
                 cmd._process_track(track, td, now, dwell, cfg.alert_cooldown, frame, debug)
 
@@ -414,7 +408,7 @@ class Command(BaseCommand):
         # the standalone commands' own _run_stream loops buffer every frame.
         cmd.clip.add(frame, now)
 
-    def _run_gathering(self, eng, tracks, per_track, now, cfg, frame, debug, clean_frame):
+    def _run_gathering(self, eng, tracks, per_track, now, cfg, frame, debug):
         """Drinking's Path B (gathering) — previously never invoked here, so a
         sustained group with no single confirmed solo drinker never alerted
         when run through this command. Evaluated BEFORE Path A's per-track
@@ -437,7 +431,7 @@ class Command(BaseCommand):
                         cluster.evidence = best
             cmd._process_cluster(
                 cluster, now, min_group, group_duration, cfg.alert_cooldown,
-                frame, debug, cfg.curfew_confidence, clean_frame,
+                frame, debug,
             )
 
     def _run_parking(self, frame, now, cfg, debug):

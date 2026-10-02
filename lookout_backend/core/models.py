@@ -166,55 +166,6 @@ class Officer(models.Model):
         return f"{self.code} - {self.name}"
 
 
-class Person(models.Model):
-    """A face-registry entry: someone enrolled for facial recognition
-    (curfew/violator matching), not a resident household record."""
-
-    class Status(models.TextChoices):
-        PENDING = "pending", "Pending"
-        ENROLLED = "enrolled", "Enrolled"
-
-    person_code = models.CharField(max_length=20, unique=True, blank=True)
-    full_name = models.CharField(max_length=150)
-    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
-    enrolled_at = models.DateTimeField(null=True, blank=True)
-    notes = models.TextField(blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ["person_code"]
-
-    def save(self, *args, **kwargs):
-        if not self.person_code:
-            self.person_code = _next_code(Person, "BRG-TET", width=4, field="person_code")
-        super().save(*args, **kwargs)
-
-    def __str__(self):
-        return f"{self.person_code} - {self.full_name}"
-
-
-class FaceEmbedding(models.Model):
-    class Angle(models.TextChoices):
-        FRONT = "front", "Front"
-        RIGHT = "right", "Right"
-        LEFT = "left", "Left"
-
-    person = models.ForeignKey(Person, on_delete=models.CASCADE, related_name="embeddings")
-    angle = models.CharField(max_length=10, choices=Angle.choices)
-    image = models.ImageField(upload_to="face_enrollment/")
-    embedding = models.JSONField()
-    det_score = models.FloatField(null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        constraints = [
-            models.UniqueConstraint(fields=["person", "angle"], name="unique_person_angle"),
-        ]
-
-    def __str__(self):
-        return f"{self.person.person_code} - {self.angle}"
-
-
 class Alert(models.Model):
     class Status(models.TextChoices):
         ACTIVE = "active", "Active"
@@ -241,16 +192,6 @@ class Alert(models.Model):
     officers_assigned = models.ManyToManyField(Officer, blank=True, related_name="alerts")
     suspect = models.CharField(max_length=150, blank=True)
     notes = models.TextField(blank=True)
-    # Set by watch_smoking/watch_drinking (see core/face_registry.py) when a
-    # face in the alert frame matches an enrolled Person above
-    # SystemSettings.curfew_confidence — the citation form prefills from
-    # these. Never gates alert creation: null on no match, no enrolled
-    # faces, or a recognition failure.
-    matched_person = models.ForeignKey(
-        Person, on_delete=models.SET_NULL, null=True, blank=True, related_name="alerts"
-    )
-    match_confidence = models.FloatField(null=True, blank=True)
-
     # --- weighted-sum scoring (core/vision/scoring.py) ----------------------
     # `confidence` above is now the FINAL score for detectors that have been
     # ported to the scoring model — an estimate of "how likely is this a
@@ -336,9 +277,6 @@ class Violator(models.Model):
     # exact-match half of violator search, and how repeat citations for the
     # same typed name resolve to one record without a fuzzy pass.
     normalized_name = models.CharField(max_length=310, db_index=True, editable=False)
-    matched_person = models.ForeignKey(
-        Person, on_delete=models.SET_NULL, null=True, blank=True, related_name="violators"
-    )
     # Prior full names this record has absorbed via merge() — see
     # ViolatorViewSet.merge. Plain strings, not FKs: the loser row is gone.
     aliases = models.JSONField(default=list, blank=True)
@@ -377,8 +315,6 @@ class Citation(models.Model):
     barangay_of_violation = models.CharField(max_length=30, choices=Barangay.choices, default=Barangay.TETUAN)
     violator_barangay = models.CharField(max_length=50, choices=ZAMBOANGA_BARANGAYS)
     violations = models.ManyToManyField(ViolationType, related_name="citations")
-    matched_person = models.ForeignKey(Person, on_delete=models.SET_NULL, null=True, blank=True, related_name="citations")
-    match_confidence = models.FloatField(null=True, blank=True)
     notes = models.TextField(blank=True)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name="citations")
     created_at = models.DateTimeField(auto_now_add=True)

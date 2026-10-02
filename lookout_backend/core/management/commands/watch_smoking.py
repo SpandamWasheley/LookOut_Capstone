@@ -8,7 +8,6 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
-from core import face_registry
 from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
@@ -615,10 +614,6 @@ class Command(BaseCommand):
             ))
             return
 
-        # Snapshot before the boxes below are drawn — see the identical note
-        # in handle()'s live loop for why face matching needs this.
-        clean_frame = frame.copy()
-
         for (x1, y1, x2, y2, score, label) in smokes:
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 165, 245), 2)
             recognition.draw_label(frame, f"{label} {score * 100:.0f}%",
@@ -630,7 +625,7 @@ class Command(BaseCommand):
         _, _, _, _, best_score, best_label = best
         summary = ", ".join(sorted({s[5] for s in smokes}))
         alert = self._create_alert(
-            best_score, best_label, frame, face_frame=clean_frame,
+            best_score, best_label, frame,
             description=(
                 f"Public smoking detected on still image: "
                 f"{len(smokes)} detection(s) [{summary}]."
@@ -776,12 +771,6 @@ class Command(BaseCommand):
                     frame, tracker.assign(smokes, now_ts), now_ts,
                 )
 
-                # Snapshot before any drawing touches it — the violation box
-                # drawn below lands right over the mouth/cigarette area, which
-                # is exactly where a face would be, so face recognition must
-                # run against this clean copy, not the annotated `frame`.
-                clean_frame = frame.copy()
-
                 # Draw person boxes ALWAYS (not just in debug) so the evidence
                 # clip and snapshot show the context, not only the debug window.
                 for t in tracks:
@@ -793,7 +782,7 @@ class Command(BaseCommand):
                 for track, dets in per_track.items():
                     self._process_track(
                         track, dets, now_ts, dwell_seconds, cfg.alert_cooldown,
-                        frame, debug, cfg.curfew_confidence, clean_frame,
+                        frame, debug,
                     )
 
                 # Buffer this annotated frame for the evidence clip.
@@ -856,7 +845,7 @@ class Command(BaseCommand):
     # ---- per-track temporal confirmation ----------------------------------
 
     def _process_track(self, track, dets, now_ts, dwell_seconds, cooldown,
-                       frame, debug, face_threshold, clean_frame=None):
+                       frame, debug):
         """Votes, dwell-times and (maybe) alerts ONE track for this frame.
 
         Time-based N-of-M voting + dwell + grace, per person: each track's
@@ -1006,7 +995,7 @@ class Command(BaseCommand):
                 f"[{', '.join(sorted(score.cues))}]."
                 + (f" VLM: {verdict.reason}" if verdict.ok and verdict.reason else "")
             ),
-            box=box, face_threshold=face_threshold, face_frame=clean_frame,
+            box=box,
             now=now_ts, score_obj=score, verdict=verdict,
             object_confidence=best_score,
         )
@@ -1112,8 +1101,8 @@ class Command(BaseCommand):
             frames=self.frame_buffer.recent(), **self.vlm_cost)
         self.stats["ai context queued"] += 1
 
-    def _create_alert(self, score, label, frame, description, box=None, face_threshold=45,
-                      face_frame=None, now=None, score_obj=None, verdict=None, object_confidence=None):
+    def _create_alert(self, score, label, frame, description, box=None,
+                      now=None, score_obj=None, verdict=None, object_confidence=None):
         ts_label = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{ts_label}_smoking_{label}.jpg"
         cv2.imwrite(str(self.violations_dir / filename), frame)
@@ -1172,18 +1161,6 @@ class Command(BaseCommand):
         if self.dry_run:
             return None
 
-        # Best-effort face match against the enrolled registry for the
-        # citation form to prefill — never blocks alert creation on failure.
-        matched_person, match_confidence = None, None
-        try:
-            matched_person, match_confidence = face_registry.match_face_in_frame(
-                face_frame if face_frame is not None else frame, box, face_threshold,
-            )
-        except Exception as exc:
-            self.stdout.write(self.style.WARNING(
-                f"  Face recognition failed, continuing without a match: {exc}"
-            ))
-
         return Alert.objects.create(
             type=self.smoking_type,
             status=Alert.Status.ACTIVE,
@@ -1196,8 +1173,6 @@ class Command(BaseCommand):
             video_url=video_url,
             raw_video_url=raw_video_url,
             suspect=label,
-            matched_person=matched_person,
-            match_confidence=match_confidence,
             level=score_obj.level if score_obj is not None else "",
             # The checker's own answers, stored alongside the score vector.
             # Verdict.as_dict() already carried all of it -- the verdict, the

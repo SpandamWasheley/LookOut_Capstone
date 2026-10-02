@@ -27,9 +27,6 @@ function mapAlert(raw) {
     officersAssignedNames: raw.officers_assigned_names ?? [],
     suspect: raw.suspect,
     notes: raw.notes,
-    matchedPersonId: raw.matched_person,
-    matchedPersonName: raw.matched_person_name,
-    matchConfidence: raw.match_confidence,
     // Weighted-sum scoring (core/vision/scoring.py). `level` is the band the
     // score fell into; `confidence` above is now a violation likelihood rather
     // than a raw YOLO box score, so the two should be read together.

@@ -5,11 +5,9 @@
 #     pip install -r requirements.txt -r requirements-detection.txt
 #
 # Not installed on the cloud API host - see the note in requirements.txt.
-# First run additionally downloads model weights (yolov8n ~6MB, the insightface
-# buffalo_l pack ~280MB), so allow for that on a metered connection.
-insightface
+# First run additionally downloads the YOLOv8 weights (yolov8n and yolov8n-pose,
+# a few MB each), so allow for that on a metered connection.
 numpy
-onnxruntime
 # Replaces the headless build in requirements.txt - watch_* --debug opens a
 # cv2.imshow preview window, which headless cannot do. Both wheels install the
 # same cv2 module, so uninstall the other one first:

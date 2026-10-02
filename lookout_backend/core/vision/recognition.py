@@ -1,9 +1,8 @@
-"""Shared CV plumbing for curfew face detection/recognition.
+"""Shared CV plumbing for the detection pipeline.
 
-Pipeline: YOLOv8 (ultralytics) locates people in a frame, then insightface's
-FaceAnalysis (ArcFace/buffalo_l) locates and recognizes a face within each
-person crop, producing a 512-d embedding matched against `face_db.json`
-(built by the `enroll_faces` management command).
+YOLOv8 (ultralytics) detects people and the violation objects (see MODEL_PATH);
+YOLOv8-pose gives the keypoints the mouth anchor and the hand-to-mouth gesture
+are built from. There is no facial recognition in LookOut.
 
 No Django model access happens here — this module is pure CV plumbing so it
 stays importable/testable independent of the management commands that use it.
@@ -17,7 +16,6 @@ import subprocess
 import tempfile
 import threading
 import time
-import urllib.request
 from collections import deque
 from pathlib import Path
 
@@ -434,7 +432,6 @@ class LatestFrameReader:
         self.cap.release()
 
 VISION_DIR = Path(__file__).resolve().parent
-FACE_DB_PATH = VISION_DIR / "face_db.json"
 
 # LookOut uses a single merged model (merged_v2: Bottle, Cigarette, knife) for all
 # violations. Vapes have no class (puff-only path). Holdup detects knives only.
@@ -522,15 +519,7 @@ def _gpu_available():
 NEAR_IMGSZ = int(os.environ.get("LOOKOUT_IMGSZ", 960 if _gpu_available() else 640))
 CASCADE_IMGSZ = int(os.environ.get("LOOKOUT_CASCADE_IMGSZ", 1280))
 
-# insightface (ArcFace) cosine similarity for a genuine same-person match
-# typically falls in ~0.35-0.70 (35-70 once scaled to a percent), unlike a
-# percentage-intuition 0-100 scale. SystemSettings.curfew_confidence defaults
-# to 75, which is stricter than that normal genuine-match range. Lower it
-# (e.g. to ~40) in Django admin when testing, instead of treating 75 as a
-# "75% sure" bar.
-
 _yolo_model = None
-_face_app = None
 _merged_model = None
 _pose_model = None
 
@@ -617,30 +606,6 @@ def load_smoking_model():
     return load_merged_model()
 
 
-def load_face_app():
-    """Lazy-loads insightface's FaceAnalysis (buffalo_l pack, CPU).
-
-    Model weights (~280MB) auto-download on first use to
-    ~/.insightface/models/buffalo_l — no manual download step needed, but
-    the first run will be slow while that completes.
-
-    providers is pinned to CPU explicitly. Without this, insightface builds
-    each ONNX session with onnxruntime.get_available_providers() — which
-    lists CUDAExecutionProvider as "available" whenever onnxruntime-gpu is
-    installed, regardless of whether its CUDA DLLs actually load — so every
-    process start was attempting and failing a CUDA load per model (5 error
-    blocks in the log) before silently landing on CPU anyway via ctx_id=-1
-    below. Same effective behavior, no more misleading failure spam.
-    """
-    global _face_app
-    if _face_app is None:
-        from insightface.app import FaceAnalysis
-
-        _face_app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
-        _face_app.prepare(ctx_id=-1, det_size=(320, 320))  # ctx_id=-1 -> CPU
-    return _face_app
-
-
 def detect_persons(frame, conf=0.5, imgsz=None):
     """Returns a list of (x1, y1, x2, y2, conf) boxes for detected people.
 
@@ -660,53 +625,18 @@ def detect_persons(frame, conf=0.5, imgsz=None):
     return boxes
 
 
-def find_mouth(frame, box):
-    """Locates the mouth of the most prominent face inside a person box.
-
-    Returns (x, y, face_width) in FULL-FRAME coordinates, or None when no face
-    could be found. Reuses the same insightface FaceAnalysis the curfew pipeline
-    already loads, so this adds no new model or download.
-
-    None is common and expected — a person facing away, or standing far enough
-    down the street that their face is a handful of pixels, yields no detection.
-    Callers must read None as "unknown", never as "no face is present", or a
-    mouth-proximity rule built on this would silently disable itself at exactly
-    the CCTV distances the far-mode cascade exists to cover.
-    """
-    app = load_face_app()
-    x1, y1, x2, y2 = (int(v) for v in box[:4])
-    x1, y1 = max(x1, 0), max(y1, 0)
-    crop = frame[y1:y2, x1:x2]
-    if crop.size == 0:
-        return None
-    faces = app.get(crop)
-    if not faces:
-        return None
-
-    face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
-    fx1, fy1, fx2, fy2 = (float(v) for v in face.bbox)
-    kps = getattr(face, "kps", None)
-    if kps is not None and len(kps) >= 5:
-        # insightface's 5-point landmarks: 0/1 eyes, 2 nose, 3/4 mouth corners.
-        mx = (float(kps[3][0]) + float(kps[4][0])) / 2
-        my = (float(kps[3][1]) + float(kps[4][1])) / 2
-    else:
-        # No landmarks: approximate the mouth at three-quarters down the face box.
-        mx, my = (fx1 + fx2) / 2, fy1 + (fy2 - fy1) * 0.75
-    return (mx + x1, my + y1, fx2 - fx1)
-
-
 # --- pose-based mouth anchor ---------------------------------------------------
 #
 # Locates a person's mouth from YOLOv8-pose keypoints alone (no face detector),
-# with the same contract as find_mouth(): (x, y, face_width) in full-frame
+# returning (x, y, face_width) in full-frame
 # coordinates, or None when it can't be told. "Face width" is a PROXY built
 # from whichever of ear-to-ear / eye-to-eye / shoulder-to-shoulder keypoints are
 # confident, scaled so it matches the width the rules were tuned in
 # (MOUTH_PROXIMITY / drinking_mouth_proximity are in face-widths). The scale
 # factors come from detection_sandbox/mouth_calibration.py run on the test clips
-# (1,547 person boxes, 5 clips): medians of insightface width / pose width, and
-# of (insightface mouth - nose) in face-widths.
+# (1,547 person boxes, 5 clips, fitted against insightface's face width, since
+# removed): medians of that width / pose width, and of (mouth - nose) in
+# face-widths.
 POSE_CROP_PAD = 0.10          # extra margin around the person box before pose
 POSE_CROP_IMGSZ = 640         # pose inference size on that crop
 POSE_EAR_TO_FACE = 0.92       # face width = ear-to-ear distance x this
@@ -783,12 +713,13 @@ def pose_face_width(kpts):
 
 
 def find_mouth_pose(frame, box, with_source=False):
-    """Pose-based twin of find_mouth(): the mouth is the nose plus a small
+    """Locates the mouth from pose keypoints: the mouth is the nose plus a small
     downward offset, and the face width is the proxy from pose_face_width().
 
     Returns (x, y, face_width) in FULL-FRAME coordinates, or None when the nose
-    or every width keypoint is unconfident. None means UNKNOWN, exactly as with
-    find_mouth -- callers must keep the detection rather than reject it.
+    or every width keypoint is unconfident. None means UNKNOWN, not "no face" --
+    callers must keep the detection rather than reject it: a person facing away,
+    or far down the street, simply has no confident nose at CCTV distance.
     With with_source=True returns (x, y, face_width, source) instead.
     """
     kpts = pose_on_box(frame, box)
@@ -1316,84 +1247,3 @@ def detect_merged_far(frame, conf=0.15, tiles=(2, 2), overlap=0.2,
 def load_image(path):
     """Decodes an image file from disk into an OpenCV BGR array, or None on failure."""
     return cv2.imread(str(path))
-
-
-def compute_face_embedding(crop):
-    """Detects the best face in `crop` and returns its 512-d embedding, or None."""
-    if crop is None or crop.size == 0:
-        return None
-
-    app = load_face_app()
-    faces = app.get(crop)
-    if not faces:
-        return None
-
-    best_face = max(faces, key=lambda f: f.det_score)
-    return best_face.embedding
-
-
-def precompute_face_db(face_db):
-    """Adds a cached, L2-normalized embedding to each entry for fast repeated matching.
-
-    Without this, match_embedding() would recompute np.linalg.norm for every
-    enrolled face on every single call (every detected person, every frame) —
-    wasted work, since the enrolled embeddings never change between calls.
-    Returns a new list; does not mutate `face_db` or affect save_face_db
-    (the original plain-list "embedding" field is preserved alongside it).
-    """
-    precomputed = []
-    for entry in face_db:
-        vec = np.asarray(entry["embedding"], dtype=np.float32)
-        norm = np.linalg.norm(vec) or 1e-8
-        precomputed.append({**entry, "_normalized": vec / norm})
-    return precomputed
-
-
-def match_embedding(embedding, face_db, threshold_pct):
-    """Returns (best_matching_entry_or_None, score_pct) against a precomputed
-    face_db (see precompute_face_db — each entry needs a cached "_normalized" vector).
-    """
-    if embedding is None or not face_db:
-        return None, 0.0
-
-    query = np.asarray(embedding, dtype=np.float32)
-    query_norm = np.linalg.norm(query) or 1e-8
-    query_normalized = query / query_norm
-
-    best_entry = None
-    best_score = 0.0
-    for entry in face_db:
-        score = float(np.dot(query_normalized, entry["_normalized"]))
-        if score > best_score:
-            best_score = score
-            best_entry = entry
-
-    score_pct = best_score * 100
-    if best_entry is not None and score_pct >= threshold_pct:
-        return best_entry, score_pct
-    return None, score_pct
-
-
-def load_face_db():
-    if not FACE_DB_PATH.exists():
-        return []
-    with open(FACE_DB_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def save_face_db(entries):
-    FACE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(FACE_DB_PATH, "w", encoding="utf-8") as f:
-        json.dump(entries, f, indent=2)
-
-
-def fetch_image_as_array(url, timeout=10):
-    """Downloads an image URL and decodes it into an OpenCV BGR array, or None on failure."""
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = resp.read()
-        arr = np.frombuffer(data, dtype=np.uint8)
-        return cv2.imdecode(arr, cv2.IMREAD_COLOR)
-    except Exception:
-        return None

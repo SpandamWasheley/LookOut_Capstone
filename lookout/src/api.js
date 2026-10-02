@@ -103,16 +103,6 @@ async function apiUpload(path, formData) {
   return response.json();
 }
 
-export const getPersons = () => apiFetch("/persons/");
-export const createPerson = (payload) =>
-  apiFetch("/persons/", { method: "POST", body: JSON.stringify(payload) });
-export const deletePerson = (id) =>
-  apiFetch(`/persons/${id}/`, { method: "DELETE" });
-// front/right/left File objects under those field names in `formData` —
-// matches core/views.py PersonViewSet.enroll_face's request.FILES.get(angle).
-export const enrollFace = (id, formData) =>
-  apiUpload(`/persons/${id}/enroll-face/`, formData);
-
 export const getSettings = () => apiFetch("/settings/");
 export const saveSettings = (payload) =>
   apiFetch("/settings/", { method: "PATCH", body: JSON.stringify(payload) });

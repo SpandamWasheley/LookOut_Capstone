@@ -5,7 +5,6 @@ from core.models import (
     Alert,
     Camera,
     Officer,
-    Person,
     User,
     ViolationType,
 )
@@ -32,12 +31,6 @@ OFFICERS = [
     {"code": "OFC-02", "name": "PO3 Cabrera, Dante", "badge": "B-073", "status": "on-duty", "location": "Zone 4", "phone": "+63 927 221 4845", "shift": "7AM - 3PM", "joined_date": "2021-10-02"},
     {"code": "OFC-03", "name": "PO1 Reyes, Marco", "badge": "B-058", "status": "on-duty", "location": "Zone 3", "phone": "+63 934 882 1175", "shift": "3PM - 11PM", "joined_date": "2023-01-15"},
     {"code": "OFC-04", "name": "PO2 Santos, Joy", "badge": "B-044", "status": "off-duty", "location": "Sector 2", "phone": "+63 918 876 3308", "shift": "10PM - 6AM", "joined_date": "2024-02-20"},
-]
-
-PEOPLE = [
-    {"person_code": "BRG-TET-0001", "full_name": "Angelica Dela Cruz", "status": "pending"},
-    {"person_code": "BRG-TET-0002", "full_name": "Kyle Mendoza", "status": "pending"},
-    {"person_code": "BRG-TET-0003", "full_name": "Maria Santos", "status": "pending"},
 ]
 
 ALERTS = [
@@ -95,13 +88,6 @@ class Command(BaseCommand):
             )
             officers[o["name"]] = obj
         self.stdout.write(self.style.SUCCESS(f"Officers: {len(officers)}"))
-
-        for p in PEOPLE:
-            Person.objects.update_or_create(
-                person_code=p["person_code"],
-                defaults={"full_name": p["full_name"], "status": p["status"]},
-            )
-        self.stdout.write(self.style.SUCCESS(f"People: {len(PEOPLE)}"))
 
         for a in ALERTS:
             alert, _ = Alert.objects.update_or_create(

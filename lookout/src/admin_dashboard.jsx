@@ -5,8 +5,6 @@ import { CameraGrid } from "./CameraGrid";
 import { RecordsPage } from "./RecordsPage";
 import { Sidebar } from "./Sidebar";
 import { OfficersPage } from "./OfficersPage";
-// Registry tab hidden from the UI
-// import { ResidentDatabase } from "./ResidentDatabase";
 import { SystemConfig } from "./SystemConfig";
 import { ResidentLog } from "./ResidentLog";
 import { RunDetectionPage } from "./RunDetectionPage";
@@ -32,7 +30,7 @@ function useLiveOverviewData() {
 }
 
 const ROLE_PAGES = {
-  admin:      ["dashboard", "cameras", "alerts", "records", "residentlog", /* "residents", */ "rundetection", "officers", "config"],
+  admin:      ["dashboard", "cameras", "alerts", "records", "residentlog", "rundetection", "officers", "config"],
   dispatcher: ["dashboard", "cameras", "alerts", "records", "residentlog"],
   officer:    ["cameras", "alerts", "records"],
   both:       ["dashboard", "cameras", "alerts", "records"],
@@ -231,8 +229,6 @@ function AdminDashboard({ user, onLogout }) {
           </div>
         )}
 
-        {/* Registry tab hidden from the UI */}
-        {/* {safePage === "residents" && <div className="h-full"><ResidentDatabase /></div>} */}
         {safePage === "rundetection" && <RunDetectionPage />}
         {safePage === "officers" && <div className="h-full"><OfficersPage /></div>}
         {safePage === "config" && <div className="h-full"><SystemConfig /></div>}

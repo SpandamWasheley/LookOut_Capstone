@@ -12,7 +12,6 @@ from datetime import timedelta
 
 import cv2
 import django_filters
-import numpy as np
 import psutil
 from django.conf import settings as django_settings
 from django.contrib.auth.password_validation import validate_password
@@ -34,8 +33,6 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from core.constants import ZAMBOANGA_BARANGAYS
-from core.face_registry import rebuild_face_db
-from core.vision import recognition
 
 from .models import (
     Alert,
@@ -43,9 +40,7 @@ from .models import (
     Citation,
     DetectionJob,
     EmailVerificationCode,
-    FaceEmbedding,
     Officer,
-    Person,
     SystemSettings,
     User,
     ViolationType,
@@ -101,9 +96,7 @@ from .serializers import (
     CitationSerializer,
     DetectionJobSerializer,
     DispatcherSerializer,
-    FaceEmbeddingSerializer,
     OfficerSerializer,
-    PersonSerializer,
     SystemSettingsSerializer,
     UserSerializer,
     ViolationTypeSerializer,
@@ -446,7 +439,6 @@ def dashboard_stats(request):
         "alerts_by_type_7d": by_type,
         "weekly_trend": list(weekly_trend),
         "officers_on_duty": Officer.objects.exclude(status=Officer.Status.OFF_DUTY).count(),
-        "people_total": Person.objects.count(),
     })
 
 
@@ -647,106 +639,6 @@ class DispatcherViewSet(viewsets.ModelViewSet):
         instance.delete()
 
 
-FACE_ENROLL_ANGLES = ["front", "right", "left"]
-FACE_MIN_DIMENSION = 200
-
-
-class PersonViewSet(viewsets.ModelViewSet):
-    queryset = Person.objects.prefetch_related("embeddings").all()
-    serializer_class = PersonSerializer
-    filterset_fields = ["status"]
-    permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
-
-    def perform_destroy(self, instance):
-        for embedding in instance.embeddings.all():
-            embedding.image.delete(save=False)
-        instance.delete()
-        rebuild_face_db()
-
-    @action(detail=True, methods=["post"], url_path="enroll-face", parser_classes=[MultiPartParser, FormParser])
-    def enroll_face(self, request, pk=None):
-        """All-or-nothing 3-angle enrollment. Validates every image before
-        writing anything, so a bad 'left' shot can't leave a person half-enrolled."""
-        person = self.get_object()
-
-        decoded = {}
-        for angle in FACE_ENROLL_ANGLES:
-            upload = request.FILES.get(angle)
-            if upload is None:
-                return Response(
-                    {"detail": f"Missing image for angle '{angle}'.", "angle": angle},
-                    status=400,
-                )
-
-            data = np.frombuffer(upload.read(), dtype=np.uint8)
-            image = cv2.imdecode(data, cv2.IMREAD_COLOR)
-            if image is None:
-                return Response(
-                    {"detail": f"Could not decode image for angle '{angle}'.", "angle": angle},
-                    status=400,
-                )
-
-            height, width = image.shape[:2]
-            if width < FACE_MIN_DIMENSION or height < FACE_MIN_DIMENSION:
-                return Response(
-                    {
-                        "detail": f"Image for angle '{angle}' is too small "
-                                  f"({width}x{height}); must be at least "
-                                  f"{FACE_MIN_DIMENSION}x{FACE_MIN_DIMENSION}.",
-                        "angle": angle,
-                    },
-                    status=400,
-                )
-
-            embedding = recognition.compute_face_embedding(image)
-            if embedding is None:
-                return Response(
-                    {"detail": f"No face detected in image for angle '{angle}'.", "angle": angle},
-                    status=400,
-                )
-
-            upload.seek(0)
-            decoded[angle] = {"upload": upload, "embedding": embedding.flatten().tolist()}
-
-        with transaction.atomic():
-            for angle, result in decoded.items():
-                FaceEmbedding.objects.update_or_create(
-                    person=person,
-                    angle=angle,
-                    defaults={"image": result["upload"], "embedding": result["embedding"]},
-                )
-            person.status = Person.Status.ENROLLED
-            person.enrolled_at = timezone.now()
-            person.save(update_fields=["status", "enrolled_at"])
-
-        rebuild_face_db()
-        person = self.get_queryset().get(pk=person.pk)  # drop the stale (pre-write) embeddings prefetch cache
-        return Response(self.get_serializer(person).data, status=201)
-
-    @action(detail=True, methods=["delete"], url_path="embeddings")
-    def embeddings(self, request, pk=None):
-        person = self.get_object()
-        for embedding in person.embeddings.all():
-            embedding.image.delete(save=False)
-        person.embeddings.all().delete()
-        person.status = Person.Status.PENDING
-        person.enrolled_at = None
-        person.save(update_fields=["status", "enrolled_at"])
-        rebuild_face_db()
-        return Response(self.get_serializer(person).data)
-
-
-class FaceEmbeddingViewSet(viewsets.ReadOnlyModelViewSet):
-    """Read-only: creation/replacement only happens through
-    PersonViewSet.enroll_face, which validates quality and keeps face_db.json
-    (and the all-or-nothing 3-angle guarantee) consistent."""
-
-    queryset = FaceEmbedding.objects.all()
-    serializer_class = FaceEmbeddingSerializer
-    filterset_fields = ["person", "angle"]
-    permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
-
-
 class CitationFilter(django_filters.FilterSet):
     # lookup_expr="date__..." compares the calendar date, not the raw
     # datetime — plain "gte"/"lte" against a date would compare against
@@ -761,7 +653,7 @@ class CitationFilter(django_filters.FilterSet):
 
 
 class CitationViewSet(viewsets.ModelViewSet):
-    queryset = Citation.objects.select_related("alert", "officer", "matched_person").prefetch_related("violations").all()
+    queryset = Citation.objects.select_related("alert", "officer").prefetch_related("violations").all()
     serializer_class = CitationSerializer
     filterset_class = CitationFilter
     permission_classes = [permissions.IsAuthenticated]
@@ -802,17 +694,13 @@ class CitationViewSet(viewsets.ModelViewSet):
                 middle = serializer.validated_data.get("middle_name_entered", "")
                 last = serializer.validated_data.get("last_name_entered", "")
                 suffix = serializer.validated_data.get("suffix_entered", "")
-                violator, created = Violator.objects.get_or_create(
+                violator, _ = Violator.objects.get_or_create(
                     normalized_name=normalize_name(first, middle, last),
                     defaults={
                         "first_name": first, "middle_name": middle,
                         "last_name": last, "suffix": suffix,
                     },
                 )
-                matched_person = serializer.validated_data.get("matched_person")
-                if created and matched_person:
-                    violator.matched_person = matched_person
-                    violator.save(update_fields=["matched_person"])
 
             violator.last_seen = timezone.now()
             violator.save(update_fields=["last_seen"])

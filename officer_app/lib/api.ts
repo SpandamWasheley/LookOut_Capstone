@@ -276,8 +276,6 @@ export interface ApiCitation {
   violator_barangay: string;
   violations: number[];
   violation_labels: string[];
-  matched_person: number | null;
-  match_confidence: number | null;
   notes: string;
   created_by: number | null;
   created_at: string;

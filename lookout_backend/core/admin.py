@@ -6,9 +6,7 @@ from .models import (
     Camera,
     Citation,
     EmailVerificationCode,
-    FaceEmbedding,
     Officer,
-    Person,
     SystemSettings,
     User,
     ViolationType,
@@ -47,18 +45,6 @@ class OfficerAdmin(admin.ModelAdmin):
     list_filter = ("status",)
 
 
-class FaceEmbeddingInline(admin.TabularInline):
-    model = FaceEmbedding
-    extra = 0
-
-
-@admin.register(Person)
-class PersonAdmin(admin.ModelAdmin):
-    list_display = ("person_code", "full_name", "status", "enrolled_at")
-    list_filter = ("status",)
-    inlines = [FaceEmbeddingInline]
-
-
 @admin.register(Citation)
 class CitationAdmin(admin.ModelAdmin):
     list_display = ("id", "last_name_entered", "first_name_entered", "officer", "barangay_of_violation", "violator_barangay", "created_at")
@@ -67,7 +53,7 @@ class CitationAdmin(admin.ModelAdmin):
 
 @admin.register(Violator)
 class ViolatorAdmin(admin.ModelAdmin):
-    list_display = ("id", "last_name", "first_name", "suffix", "matched_person", "first_seen", "last_seen")
+    list_display = ("id", "last_name", "first_name", "suffix", "first_seen", "last_seen")
     search_fields = ("first_name", "last_name", "normalized_name")
 
 

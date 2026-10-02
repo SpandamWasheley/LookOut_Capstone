@@ -41,7 +41,7 @@ is safe and used by default for person tracking (see --tracker).
 
 Note: watch_all.py's own reuse of SmokingCommand/DrinkingCommand has two gaps
 this command does NOT repeat — it calls _process_track with too few
-positional arguments for smoking/drinking (missing face_threshold, which
+positional arguments for smoking/drinking (a missing argument, which
 raises TypeError on the first frame with any person in view) and never
 drives drinking's Path B (GroupTracker/_process_cluster) at all.
 """
@@ -497,11 +497,6 @@ class Command(BaseCommand):
         for (x1, y1, x2, y2, _score) in persons:
             cv2.rectangle(frame, (x1, y1), (x2, y2), (180, 180, 180), 1)
 
-        # Snapshot before any violation box is drawn — face recognition
-        # (smoking/drinking's citation-prefill match) must run against a
-        # clean frame, same reasoning as each standalone command's own loop.
-        clean_frame = frame.copy()
-
         for name in active:
             eng = self.engines[name]
             cmd, tracker = eng["cmd"], eng["tracker"]
@@ -518,13 +513,13 @@ class Command(BaseCommand):
 
             if name == "drinking":
                 self._process_drinking_frame(
-                    cmd, eng, tracks, per_track, now, dwell, cfg, frame, debug, clean_frame)
+                    cmd, eng, tracks, per_track, now, dwell, cfg, frame, debug)
             elif name == "smoking":
                 for track, tdets in per_track.items():
                     cmd._process_track(
                         track, tdets, now, dwell, cfg.alert_cooldown,
-                        frame, debug, cfg.curfew_confidence, clean_frame)
-            else:  # thief — no face_threshold/clean_frame param on this one
+                        frame, debug)
+            else:  # thief
                 for track, tdets in per_track.items():
                     cmd._process_track(track, tdets, now, dwell, cfg.alert_cooldown, frame, debug)
 
@@ -582,7 +577,7 @@ class Command(BaseCommand):
         return cmd._apply_class_floors(dets, conf)  # smoking / thief
 
     def _process_drinking_frame(self, cmd, eng, tracks, per_track, now, dwell,
-                                cfg, frame, debug, clean_frame):
+                                cfg, frame, debug):
         """Path B (gathering) evaluated BEFORE Path A, so a cluster alert
         that fires this frame lands in _alert_log in time to suppress its
         members' solo alerts later in the same frame — mirrors
@@ -602,7 +597,7 @@ class Command(BaseCommand):
                     cluster.note_evidence(best, now)
             cmd._process_cluster(
                 cluster, now, min_group, group_duration, cfg.alert_cooldown,
-                frame, debug, cfg.curfew_confidence, clean_frame,
+                frame, debug,
                 evidence_max_age=cfg.drinking_evidence_max_age,
                 cooldown_center_dist=cfg.drinking_cooldown_center_dist,
             )
@@ -610,7 +605,7 @@ class Command(BaseCommand):
         for track, dets in per_track.items():
             cmd._process_track(
                 track, dets, now, dwell, cfg.alert_cooldown,
-                frame, debug, cfg.curfew_confidence, clean_frame,
+                frame, debug,
                 held_dwell_seconds=cfg.drinking_held_dwell,
                 mouth_proximity=cfg.drinking_mouth_proximity,
                 cooldown_center_dist=cfg.drinking_cooldown_center_dist,

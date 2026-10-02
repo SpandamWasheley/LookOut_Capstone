@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState, useMemo } from "react";
+import { useRef, useEffect, useState } from "react";
 import {
   X, Shield, Play, Pause,
   SkipBack, Download, Radio, CheckCircle, AlertTriangle,
@@ -9,18 +9,6 @@ import { violationDisplay } from "./constants/violationTypes";
 import { getViolationTypes, getBarangays, createCitation, searchViolators } from "./api";
 
 const SUFFIX_OPTIONS = ["", "Jr.", "Sr.", "II", "III", "IV"];
-
-// Best-effort split of a single free-text name (from a Person's full_name or
-// a legacy Alert.suspect string) into the 4 structured fields — there's no
-// reliable way to know where a compound surname starts, so a 3+-word name
-// puts everything but the first/last word into "middle." Always editable.
-function splitFullName(fullName) {
-  const parts = (fullName ?? "").trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return { first: "", middle: "", last: "" };
-  if (parts.length === 1) return { first: parts[0], middle: "", last: "" };
-  if (parts.length === 2) return { first: parts[0], middle: "", last: parts[1] };
-  return { first: parts[0], middle: parts.slice(1, -1).join(" "), last: parts[parts.length - 1] };
-}
 
 const statusConfig = {
   active:       { label: "Active",     color: "#ef4444", bg: "rgba(239,68,68,0.1)" },
@@ -295,20 +283,10 @@ function BarangaySelect({ options, value, onChange, error }) {
 
 // ── Citation form (Confirm Resolution) ────────────────────────────────────────
 function CitationFormModal({ alert, vcfg, officers = [], currentOfficerId, onResolved, onClose }) {
-  // Set by watch_smoking/watch_drinking's recognition step (see
-  // core/face_registry.py) only when a detected face matched an enrolled
-  // Person above threshold.
-  const hasMatchedPerson = !!alert.matchedPersonId;
-  const isFaceMatch = hasMatchedPerson;
-  const matchedName = hasMatchedPerson ? alert.matchedPersonName : "";
-  const matchConfidencePct = hasMatchedPerson ? alert.matchConfidence : 0;
-  const matchedSplit = useMemo(() => splitFullName(matchedName), [matchedName]);
-
-  const [firstName, setFirstName] = useState(matchedSplit.first);
-  const [middleName, setMiddleName] = useState(matchedSplit.middle);
-  const [lastName, setLastName] = useState(matchedSplit.last);
+  const [firstName, setFirstName] = useState("");
+  const [middleName, setMiddleName] = useState("");
+  const [lastName, setLastName] = useState("");
   const [suffix, setSuffix] = useState("");
-  const [matchCleared, setMatchCleared] = useState(false);
   const [officerId, setOfficerId] = useState(currentOfficerId ? String(currentOfficerId) : "");
   const [violatorBarangay, setViolatorBarangay] = useState("");
   const [checkedTypeIds, setCheckedTypeIds] = useState(new Set());
@@ -415,8 +393,6 @@ function CitationFormModal({ alert, vcfg, officers = [], currentOfficerId, onRes
         barangay_of_violation: "TETUAN",
         violator_barangay: violatorBarangay,
         violations: [...checkedTypeIds],
-        matched_person: hasMatchedPerson && !matchCleared ? alert.matchedPersonId : null,
-        match_confidence: isFaceMatch && !matchCleared ? matchConfidencePct : null,
         notes: notes.trim(),
       });
       onResolved();
@@ -559,25 +535,6 @@ function CitationFormModal({ alert, vcfg, officers = [], currentOfficerId, onRes
             {selectedViolatorId && (
               <div className="text-[13px] mt-1.5" style={{ color: "#10b981" }}>
                 Linked to an existing violator record.
-              </div>
-            )}
-
-            {isFaceMatch && !matchCleared && (
-              <div className="flex items-center justify-between gap-2 mt-1.5">
-                <span className="text-[13px]" style={{ color: "#10b981" }}>
-                  Matched: {matchedName} (confidence {Math.round(matchConfidencePct)}%)
-                </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMatchCleared(true);
-                    setFirstName(""); setMiddleName(""); setLastName(""); setSuffix("");
-                    setSelectedViolatorId(null);
-                  }}
-                  className="text-[13px] font-medium underline flex-shrink-0"
-                  style={{ color: "var(--muted-foreground)" }}>
-                  clear
-                </button>
               </div>
             )}
           </div>

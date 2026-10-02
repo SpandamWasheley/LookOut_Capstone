@@ -8,7 +8,6 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
-from core import face_registry
 from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
@@ -585,10 +584,6 @@ class Command(BaseCommand):
             ))
             return
 
-        # Snapshot before the boxes below are drawn — see the identical note
-        # in handle()'s live loop for why face matching needs this.
-        clean_frame = frame.copy()
-
         for (x1, y1, x2, y2, score, label) in drinks:
             cv2.rectangle(frame, (x1, y1), (x2, y2), (200, 80, 160), 2)
             recognition.draw_label(frame, f"{label} {score * 100:.0f}%",
@@ -600,7 +595,7 @@ class Command(BaseCommand):
         _, _, _, _, best_score, best_label = best
         summary = ", ".join(sorted({s[5] for s in drinks}))
         alert = self._create_alert(
-            best_score, best_label, frame, face_frame=clean_frame,
+            best_score, best_label, frame,
             description=(
                 f"Public drinking indicator detected on still image: "
                 f"{len(drinks)} detection(s) [{summary}]."
@@ -754,12 +749,6 @@ class Command(BaseCommand):
                 tracks = tracker.update(persons, now_ts, ids=ids)
                 per_track = tracker.assign(drinks, now_ts)
 
-                # Snapshot before any drawing touches it — the violation box
-                # drawn below lands right over the mouth/bottle area, which is
-                # exactly where a face would be, so face recognition must run
-                # against this clean copy, not the annotated `frame`.
-                clean_frame = frame.copy()
-
                 # Draw person boxes ALWAYS (not just in debug) so the evidence
                 # clip and snapshot show the context, not only the debug window.
                 for t in tracks:
@@ -795,8 +784,7 @@ class Command(BaseCommand):
                                 cluster.note_evidence(best, now_ts)
                         self._process_cluster(
                             cluster, now_ts, min_group, group_duration,
-                            cfg.alert_cooldown, frame, debug, cfg.curfew_confidence,
-                            clean_frame,
+                            cfg.alert_cooldown, frame, debug,
                             evidence_max_age=cfg.drinking_evidence_max_age,
                             cooldown_center_dist=cfg.drinking_cooldown_center_dist,
                         )
@@ -804,7 +792,7 @@ class Command(BaseCommand):
                 for track, dets in per_track.items():
                     self._process_track(
                         track, dets, now_ts, dwell_seconds, cfg.alert_cooldown,
-                        frame, debug, cfg.curfew_confidence, clean_frame,
+                        frame, debug,
                         held_dwell_seconds=cfg.drinking_held_dwell,
                         mouth_proximity=cfg.drinking_mouth_proximity,
                         cooldown_center_dist=cfg.drinking_cooldown_center_dist,
@@ -981,7 +969,7 @@ class Command(BaseCommand):
         return scoring.in_time_band(datetime.datetime.now(), start, end)
 
     def _process_track(self, track, dets, now_ts, dwell_seconds, cooldown,
-                       frame, debug, face_threshold, clean_frame=None, *,
+                       frame, debug, *,
                        held_dwell_seconds, mouth_proximity, cooldown_center_dist):
         """Votes, dwell-times and (maybe) alerts ONE track for this frame."""
         # Public drinking is committed by a person by definition. An
@@ -1113,7 +1101,7 @@ class Command(BaseCommand):
                 f"[{', '.join(sorted(score.cues))}]."
                 + (f" VLM: {verdict.reason}" if verdict.ok and verdict.reason else "")
             ),
-            box=box, face_threshold=face_threshold, face_frame=clean_frame,
+            box=box,
             now=now_ts, score_obj=score, verdict=verdict,
             object_confidence=best_score,
         )
@@ -1137,7 +1125,7 @@ class Command(BaseCommand):
 
     # ---- Path B: gathering confirmation ------------------------------------
 
-    def _process_cluster(self, cluster, now_ts, min_group, group_duration, cooldown, frame, debug, face_threshold, clean_frame=None, *,
+    def _process_cluster(self, cluster, now_ts, min_group, group_duration, cooldown, frame, debug, *,
                          evidence_max_age, cooldown_center_dist):
         """Fires ONE alert for a sustained gathering, independent of any one
         member's own dwell — the gathering itself is the evidence, so the
@@ -1248,7 +1236,7 @@ class Command(BaseCommand):
             ),
             suspect=f"{ev_label} · Gathering ({n})",
             filename_tag=f"{ev_label.replace(' ', '_')}_gathering",
-            box=box, face_threshold=face_threshold, face_frame=clean_frame,
+            box=box,
             now=now_ts,
         )
         cluster.last_alerted_at = now_ts
@@ -1282,7 +1270,7 @@ class Command(BaseCommand):
         self.stats["ai context queued"] += 1
 
     def _create_alert(self, score, label, frame, description, suspect=None, filename_tag=None,
-                      box=None, face_threshold=45, face_frame=None, now=None,
+                      box=None, now=None,
                       score_obj=None, verdict=None, object_confidence=None):
         ts_label = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         tag = filename_tag or label.replace(" ", "_")
@@ -1342,18 +1330,6 @@ class Command(BaseCommand):
         if self.dry_run:
             return None
 
-        # Best-effort face match against the enrolled registry for the
-        # citation form to prefill — never blocks alert creation on failure.
-        matched_person, match_confidence = None, None
-        try:
-            matched_person, match_confidence = face_registry.match_face_in_frame(
-                face_frame if face_frame is not None else frame, box, face_threshold,
-            )
-        except Exception as exc:
-            self.stdout.write(self.style.WARNING(
-                f"  Face recognition failed, continuing without a match: {exc}"
-            ))
-
         return Alert.objects.create(
             type=self.drinking_type,
             status=Alert.Status.ACTIVE,
@@ -1366,8 +1342,6 @@ class Command(BaseCommand):
             video_url=video_url,
             raw_video_url=raw_video_url,
             suspect=suspect if suspect is not None else label,
-            matched_person=matched_person,
-            match_confidence=match_confidence,
             level=score_obj.level if score_obj is not None else "",
             # Retained even when it barely cleared the bar: this vector is the
             # training data calibrate_weights fits the final weights against.

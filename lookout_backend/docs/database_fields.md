@@ -114,41 +114,6 @@ vocabulary — see `database_design.md` for the one-to-one cardinality.
 
 ---
 
-## TABLE tblPerson
-*(`core_person` — a face-registry enrollment record, not a resident/household
-record.)*
-
-| Attribute Name | Data Type | Max Length | Key Type | Null |
-|---|---|---|---|---|
-| id | INTEGER | - | Primary Key | No |
-| person_code | VARCHAR | 20 | Unique | No |
-| full_name | VARCHAR | 150 | | No |
-| status | VARCHAR | 10 | | No |
-| enrolled_at | DATETIME | - | | Yes |
-| notes | TEXT | - | | No |
-| created_at | DATETIME | - | | No |
-
----
-
-## TABLE tblFaceEmbedding
-*(`core_faceembedding` — one biometric template per enrolled angle of a
-`tblPerson`.)*
-
-| Attribute Name | Data Type | Max Length | Key Type | Null |
-|---|---|---|---|---|
-| id | INTEGER | - | Primary Key | No |
-| person_id | INTEGER | - | Foreign Key | No |
-| angle | VARCHAR | 10 | | No |
-| image | VARCHAR | 100 | | No |
-| embedding | TEXT | - | | No |
-| det_score | FLOAT | - | | Yes |
-| created_at | DATETIME | - | | No |
-
-A composite unique constraint on (`person_id`, `angle`) also applies — not
-representable as a single Key Type value above.
-
----
-
 ## TABLE tblAlert
 *(`core_alert`)*
 
@@ -167,8 +132,6 @@ representable as a single Key Type value above.
 | raw_video_url | VARCHAR | 200 | | No |
 | suspect | VARCHAR | 150 | | No |
 | notes | TEXT | - | | No |
-| matched_person_id | INTEGER | - | Foreign Key | Yes |
-| match_confidence | FLOAT | - | | Yes |
 
 ---
 
@@ -196,7 +159,6 @@ class of its own.)*
 | middle_name | VARCHAR | 100 | | No |
 | suffix | VARCHAR | 5 | | No |
 | normalized_name | VARCHAR | 310 | | No |
-| matched_person_id | INTEGER | - | Foreign Key | Yes |
 | aliases | TEXT | - | | No |
 | first_seen | DATETIME | - | | No |
 | last_seen | DATETIME | - | | Yes |
@@ -221,8 +183,6 @@ it is not user-editable.
 | officer_id | INTEGER | - | Foreign Key | No |
 | barangay_of_violation | VARCHAR | 30 | | No |
 | violator_barangay | VARCHAR | 50 | | No |
-| matched_person_id | INTEGER | - | Foreign Key | Yes |
-| match_confidence | FLOAT | - | | Yes |
 | notes | TEXT | - | | No |
 | created_by_id | INTEGER | - | Foreign Key | Yes |
 | created_at | DATETIME | - | | No |
@@ -321,11 +281,4 @@ codebase and should be flagged as scope questions: the `noise_*` fields (3)
 and `waste_*` fields (5) have no `watch_noise`/`watch_waste` management
 command anywhere in the project — no detector reads them; `sms_alerts` is a
 boolean toggle with no SMS-sending code anywhere in the codebase (no provider
-integration, no send function). Separately, `curfew_confidence` — despite its
-name and its home in the curfew field group — is actively read by
-`watch_all.py` and `watch_merged.py`, where it is passed as the generic
-face-match confidence threshold when checking smoking/drinking track
-detections against the enrolled `tblPerson`/`tblFaceEmbedding` registry. It is
-not used for curfew detection (curfew itself is out of scope and undocumented
-here); the field is simply being repurposed under its original name. This is
-flagged for awareness only — no rename is being made.
+integration, no send function). Separately, `curfew_confidence` was only ever used as the face-match threshold passed to the smoking/drinking detectors; facial recognition has since been removed, so no code reads it any more and it is a leftover awaiting backend cleanup.

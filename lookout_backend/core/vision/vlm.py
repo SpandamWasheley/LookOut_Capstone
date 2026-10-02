@@ -551,8 +551,8 @@ def _build_prompt(spec, context="", frames=1):
 def blur_faces(frame_bgr, detector=None):
     """Return a copy with every detected face blurred (RA 10173, spec §6).
 
-    Uses OpenCV's Haar cascade rather than the insightface detector already in
-    recognition.py: this runs on the alert path where latency is cheap, it needs
+    Uses OpenCV's Haar cascade, a face DETECTOR used only for privacy blurring
+    (LookOut does no face recognition): this runs on the alert path where latency is cheap, it needs
     no model download, and a false POSITIVE here is harmless -- blurring a patch
     that was not a face costs nothing, while a miss would send an identifiable
     face to a third party.

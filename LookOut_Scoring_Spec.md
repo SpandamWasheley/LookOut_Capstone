@@ -481,7 +481,7 @@ The VLM cap is applied **before** the total. Capping only at the end would let t
 The scoring layer is CPU arithmetic and adds no meaningful GPU load. Live slowness comes from elsewhere:
 
 - **Clip encoding blocks the inference loop** — already a known outstanding item. Making it async is the highest-value fix and is unrelated to scoring.
-- **ArcFace** runs alongside YOLO. Disable it during detection runs while facial recognition is an experiment.
+- **Facial recognition has been removed** (the insightface/ArcFace pass no longer runs). The mouth anchor now comes from YOLOv8-pose keypoints.
 - **Two pose passes** (one per module) would be the worst regression this redesign could introduce. Share one pass.
 - Other levers: process every 2nd–3rd frame, lower input resolution, cap pose to N tracks per frame, motion-gate idle frames.
 

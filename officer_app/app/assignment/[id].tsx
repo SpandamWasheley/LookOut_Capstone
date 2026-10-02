@@ -1013,83 +1013,6 @@ const rpStyles = StyleSheet.create({
   fullscreenWrap: { flex: 1, backgroundColor: "#000" },
 });
 
-function NoiseViolationCard({
-  camera,
-  confidence,
-}: {
-  camera: string | null;
-  confidence: number;
-}) {
-  const c = useColors();
-  const loudnessPct = Math.round(confidence * 100);
-  const dBFS = Math.round(-30 + confidence * 30);
-  const accentColor = "#f59e0b";
-
-  return (
-    <View style={[nvStyles.card, { backgroundColor: c.secondary, borderColor: c.border, borderLeftColor: accentColor }]}>
-      <Text style={[nvStyles.typeLabel, { color: c.mutedForeground }]}>
-        Noise violation — no facial recognition, loudness only
-      </Text>
-
-      {/* Source + Duration */}
-      <View style={[nvStyles.topRow, { borderBottomColor: c.border }]}>
-        <View style={nvStyles.topCell}>
-          <Text style={[nvStyles.topLabel, { color: c.mutedForeground }]}>Source</Text>
-          <Text style={[nvStyles.topValue, { color: c.foreground }]}>{camera ?? "—"} · mic</Text>
-        </View>
-        <View style={[nvStyles.vDivider, { backgroundColor: c.border }]} />
-        <View style={nvStyles.topCell}>
-          <Text style={[nvStyles.topLabel, { color: c.mutedForeground }]}>Duration above threshold</Text>
-          <Text style={[nvStyles.topValue, { color: accentColor }]}>— s</Text>
-        </View>
-      </View>
-
-      {/* Loudness */}
-      <View style={nvStyles.loudnessSection}>
-        <View style={nvStyles.loudnessHeader}>
-          <Text style={[nvStyles.loudnessLabel, { color: c.mutedForeground }]}>Relative loudness</Text>
-        </View>
-
-        {/* Bar */}
-        <View style={[nvStyles.barTrack, { backgroundColor: c.muted }]}>
-          <View style={[nvStyles.barFill, { width: `${loudnessPct}%` as any, backgroundColor: accentColor }]} />
-          <View style={[nvStyles.thresholdLine, { backgroundColor: c.foreground }]} />
-        </View>
-        <View style={nvStyles.barLabels}>
-          <Text style={[nvStyles.thresholdLabel, { color: c.mutedForeground }]}>threshold</Text>
-          <Text style={[nvStyles.dBFS, { color: accentColor }]}>{dBFS} dBFS</Text>
-        </View>
-      </View>
-    </View>
-  );
-}
-
-const nvStyles = StyleSheet.create({
-  card: { borderRadius: 12, borderWidth: 1, borderLeftWidth: 3, overflow: "hidden" },
-  typeLabel: { fontSize: 10, fontFamily: "Inter_400Regular", paddingHorizontal: 14, paddingTop: 10, paddingBottom: 6 },
-  topRow: { flexDirection: "row", borderBottomWidth: 1, paddingHorizontal: 14, paddingBottom: 12 },
-  topCell: { flex: 1 },
-  topLabel: { fontSize: 10, fontFamily: "Inter_400Regular", marginBottom: 3 },
-  topValue: { fontSize: 14, fontFamily: "Inter_700Bold" },
-  vDivider: { width: 1, marginHorizontal: 12, marginVertical: 2 },
-  loudnessSection: { padding: 14 },
-  loudnessHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
-  loudnessLabel: { fontSize: 10, fontFamily: "Inter_400Regular" },
-  badge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 20 },
-  badgeText: { fontSize: 10, fontFamily: "Inter_600SemiBold" },
-  barTrack: { height: 8, borderRadius: 4, overflow: "visible", position: "relative" },
-  barFill: { position: "absolute", left: 0, top: 0, height: "100%", borderRadius: 4 },
-  thresholdLine: { position: "absolute", left: "75%", top: -4, width: 2, height: 16, borderRadius: 1 },
-  barLabels: { flexDirection: "row", justifyContent: "space-between", marginTop: 6 },
-  thresholdLabel: { fontSize: 9, fontFamily: "Inter_400Regular", marginLeft: "55%" as any },
-  dBFS: { fontSize: 10, fontFamily: "Inter_600SemiBold" },
-  actionRow: { flexDirection: "row", gap: 10, marginTop: 12 },
-  notBtn: { flex: 1, paddingVertical: 12, borderRadius: 10, borderWidth: 1, alignItems: "center", justifyContent: "center" },
-  notBtnText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
-  confirmBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 12, borderRadius: 10, backgroundColor: "#f59e0b" },
-  confirmBtnText: { color: "#fff", fontSize: 14, fontFamily: "Inter_600SemiBold" },
-});
-
 export default function AssignmentDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { getAssignment, acceptAssignment, resolveAssignment, dismissAssignment } = useAssignments();
@@ -1105,7 +1028,6 @@ export default function AssignmentDetailScreen() {
   const [showAllOfficers, setShowAllOfficers] = useState(false);
   const [citationsForAlert, setCitationsForAlert] = useState<api.ApiCitation[]>([]);
 
-  const isNoiseViolation = assignment?.violationType.code === "noise";
 
   // Sourced from the server (not local state) so a partially-filed scene —
   // two of four cited, app closed and reopened — still shows "2 filed"
@@ -1233,11 +1155,9 @@ export default function AssignmentDetailScreen() {
           />
         )}
 
-        {!isNoiseViolation && (
-          <View style={[styles.card, { backgroundColor: c.card, borderColor: c.border }]}>
-            <Text style={[styles.description, { color: c.foreground }]}>{assignment.description}</Text>
-          </View>
-        )}
+        <View style={[styles.card, { backgroundColor: c.card, borderColor: c.border }]}>
+          <Text style={[styles.description, { color: c.foreground }]}>{assignment.description}</Text>
+        </View>
 
         <View style={[styles.card, { backgroundColor: c.card, borderColor: c.border }]}>
           <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>LOCATION</Text>
@@ -1362,14 +1282,6 @@ export default function AssignmentDetailScreen() {
               ))}
             </View>
           </View>
-        )}
-
-        {/* Noise violation card */}
-        {isNoiseViolation && (
-          <NoiseViolationCard
-            camera={assignment.cameraCode}
-            confidence={assignment.confidence / 100}
-          />
         )}
 
       </AutoScrollView>

@@ -28,9 +28,7 @@ All three read/write the same backend at `http://localhost:8000/api` (or a LAN I
 pip install -r requirements.txt      # from repo root; a venv/ already exists at repo root
 python manage.py migrate
 python manage.py runserver           # serves http://localhost:8000
-python manage.py seed_demo           # loads demo users/officers/people/alerts (no cameras — single-camera system)
-python manage.py enroll_faces        # builds core/vision/face_db.json from Resident.image_url photos
-python manage.py enroll_faces --resident RES-05   # (re-)enroll a single resident
+python manage.py seed_demo           # loads demo users/officers/alerts (no cameras — single-camera system)
 python manage.py watch_all --source <rtsp-url>   # all four detectors on the one camera (also: watch_smoking / watch_drinking / watch_parking / watch_thief)
 python manage.py test                # core/tests.py (currently empty/stub)
 ```
@@ -79,7 +77,7 @@ There are no websockets anywhere in this system — the web dashboard (`admin_da
 
 ### AI detection pipeline (`core/vision/` + management commands)
 
-`core/vision/recognition.py` is deliberately pure CV plumbing with **no Django model access**, so it stays importable/testable on its own. Pipeline: YOLOv8 (`ultralytics`) detects person bounding boxes in a frame → each crop goes through insightface's `FaceAnalysis` (buffalo_l/ArcFace, CPU) to get a 512-d embedding → cosine-similarity match against `core/vision/face_db.json`.
+`core/vision/recognition.py` is deliberately pure CV plumbing with **no Django model access**, so it stays importable/testable on its own. Pipeline: YOLOv8 (`ultralytics`) detects people and the violation objects (one merged model, `MODEL_PATH`); YOLOv8-pose supplies the keypoints for the mouth anchor (`find_mouth_pose`) and the hand-to-mouth gesture. There is no face recognition.
 
 - The four in-scope detectors are `manage.py watch_smoking`, `watch_drinking`, `watch_parking` and `watch_thief` (plus `watch_all`/`watch_merged` which run several). Each re-loads `SystemSettings` every few seconds and creates an `Alert` with evidence saved under `media/violations/`. Thresholds are edited in Settings (Parking, Smoking, Holdup, Drinking panels).
 

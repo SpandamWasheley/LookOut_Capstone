@@ -1,4 +1,5 @@
-"""Calibrates the pose-based mouth anchor against insightface on the test clips.
+"""HISTORICAL: calibrated the pose-based mouth anchor against insightface on the test clips
+(insightface has since been removed; this needs the old commit to run).
 
 For every person box on sampled frames it runs BOTH finders on the same box:
   * insightface (recognition.find_mouth)   -> face width + mouth point
@@ -17,6 +18,10 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "lookout_backend.settings")
 import django; django.setup()
 import cv2, numpy as np
 from core.vision import recognition as R
+
+if not hasattr(R, "find_mouth"):
+    sys.exit("Historical script: it compared the pose anchor against insightface, which has been removed from LookOut. "
+             "The fitted factors it produced live in recognition.py (POSE_*_TO_FACE, POSE_MOUTH_DY).")
 
 BASE = "C:/Users/User/OneDrive/Desktop/Violation testing"
 CLIPS = [("Smoking", "Aug14_3 - MorningMediumBldg - Trim.mp4"),

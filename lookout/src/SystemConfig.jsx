@@ -422,7 +422,6 @@ export function SystemConfig() {
           <div className="text-xs font-medium mb-3" style={{ color: "var(--foreground)" }}>System info</div>
           {[
             ["Model",         "YOLOv8n — fine-tuned v2.4.1"],
-            ["Face backend",  "ArcFace · DeepFace 0.0.93"],
             ["RTSP streams",  "4 active"],
             ["Data residency","Local · RA 10173"],
             ["Last retrain",  "2025-05-18"],

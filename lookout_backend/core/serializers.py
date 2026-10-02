@@ -5,9 +5,7 @@ from .models import (
     Camera,
     Citation,
     DetectionJob,
-    FaceEmbedding,
     Officer,
-    Person,
     SystemSettings,
     User,
     ViolationType,
@@ -83,39 +81,6 @@ class OfficerSerializer(serializers.ModelSerializer):
         return obj.user.username if obj.user_id else ""
 
 
-class FaceEmbeddingSerializer(serializers.ModelSerializer):
-    """Full representation — used for the standalone embeddings admin endpoint.
-    Never exposes the raw `embedding` vector field."""
-
-    class Meta:
-        model = FaceEmbedding
-        fields = ["id", "person", "angle", "image", "det_score", "created_at"]
-        read_only_fields = fields
-
-
-class PersonEmbeddingSerializer(serializers.ModelSerializer):
-    """Nested-in-Person representation: angle + image URL only, per spec —
-    no det_score/timestamps, and never the raw embedding vector."""
-
-    class Meta:
-        model = FaceEmbedding
-        fields = ["id", "angle", "image"]
-
-
-class PersonSerializer(serializers.ModelSerializer):
-    embeddings = PersonEmbeddingSerializer(many=True, read_only=True)
-
-    class Meta:
-        model = Person
-        fields = [
-            "id", "person_code", "full_name", "status",
-            "enrolled_at", "notes", "created_at", "embeddings",
-        ]
-        # status/enrolled_at are only ever changed by the enroll-face /
-        # embeddings actions, never directly by the client.
-        read_only_fields = ["person_code", "status", "enrolled_at", "created_at"]
-
-
 def _format_full_name(last, first, middle, suffix):
     name = f"{last}, {first}"
     if middle:
@@ -133,7 +98,7 @@ class ViolatorSerializer(serializers.ModelSerializer):
         model = Violator
         fields = [
             "id", "first_name", "middle_name", "last_name", "suffix", "full_name",
-            "normalized_name", "matched_person", "aliases", "first_seen", "last_seen",
+            "normalized_name", "aliases", "first_seen", "last_seen",
             "citation_count",
         ]
         read_only_fields = ["normalized_name", "aliases", "first_seen", "last_seen"]
@@ -177,7 +142,7 @@ class CitationSerializer(serializers.ModelSerializer):
             "first_name_entered", "middle_name_entered", "last_name_entered", "suffix_entered",
             "officer", "officer_name", "barangay_of_violation", "violator_barangay",
             "violations", "violation_labels",
-            "matched_person", "match_confidence", "notes", "created_by", "created_at",
+            "notes", "created_by", "created_at",
             "resolve_alert", "client_uuid",
         ]
         read_only_fields = ["created_by", "created_at"]
@@ -212,7 +177,6 @@ class AlertSerializer(serializers.ModelSerializer):
         queryset=Officer.objects.all(), required=False, many=True
     )
     officers_assigned_names = serializers.SerializerMethodField()
-    matched_person_name = serializers.SerializerMethodField()
     reviewed_by_name = serializers.SerializerMethodField()
     # The watchers store a relative path (see core/media.py) — resolved to an
     # absolute URL here, against THIS request, so the host always matches
@@ -243,7 +207,6 @@ class AlertSerializer(serializers.ModelSerializer):
             "camera_address", "timestamp",
             "confidence", "description", "image_url", "video_url", "raw_video_url",
             "officers_assigned", "officers_assigned_names", "suspect", "notes",
-            "matched_person", "matched_person_name", "match_confidence",
             # Weighted-sum scoring (core/vision/scoring.py). `level` is what the
             # dashboard should badge on -- `confidence` is now a violation
             # likelihood, so a bare percentage badge reads differently than it
@@ -259,10 +222,7 @@ class AlertSerializer(serializers.ModelSerializer):
             # The reviewer's identity is stamped server-side alongside it.
             "reviewed_valid", "reviewed_by", "reviewed_by_name", "reviewed_at",
         ]
-        # Set only by the watchers' recognition step (see core/face_registry.py),
-        # never by a client PATCH.
         read_only_fields = [
-            "matched_person", "match_confidence",
             # Written by the detectors through the ORM only. A client that
             # could PATCH its own cue vector could rewrite the calibration
             # training data after the fact.
@@ -309,9 +269,6 @@ class AlertSerializer(serializers.ModelSerializer):
 
     def get_raw_video_url(self, obj):
         return self._resolve_media_url(obj.raw_video_url)
-
-    def get_matched_person_name(self, obj):
-        return obj.matched_person.full_name if obj.matched_person_id else None
 
 
 class SystemSettingsSerializer(serializers.ModelSerializer):
