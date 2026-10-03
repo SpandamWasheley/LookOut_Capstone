@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Radio, X, Check, MapPin, AlertTriangle, Search } from "lucide-react";
 import { violationDisplay } from "./constants/violationTypes";
-import { RecordingPlayer, QuietCard } from "./ViolationModal";
+import { RecordingPlayer, QuietCard, StatusCard, ObjectConfidenceCard } from "./ViolationModal";
 
 const officerStatusColor = {
   "on-duty":    "#10b981",
@@ -158,7 +158,10 @@ export function DispatchModal({ alert, officers, alerts, onAssign, onClose }) {
           {/* Left: evidence clip + reference details */}
           <div className="flex flex-col gap-3 min-w-0 overflow-y-auto">
             <RecordingPlayer alert={alert} />
-            <QuietCard label="Confidence" value={`${(alert.confidence * 100).toFixed(0)}%`} valueColor={vcfg.color} />
+            <div className="grid grid-cols-2 gap-3 items-stretch">
+              <StatusCard alert={alert} />
+              <ObjectConfidenceCard alert={alert} />
+            </div>
             <QuietCard label="What was detected" value={alert.description || "—"} />
           </div>
 
@@ -229,7 +232,7 @@ export function DispatchModal({ alert, officers, alerts, onAssign, onClose }) {
                 Confirm assignment
               </div>
               <p className="text-[14px]" style={{ color: "var(--muted-foreground)" }}>
-                Assign {selected.length} officer{selected.length !== 1 ? "s" : ""} to <span style={{ color: "var(--foreground)" }}>{alert.cameraZone}</span>?
+                Assign {selected.length} officer{selected.length !== 1 ? "s" : ""} to <span style={{ color: "var(--foreground)" }}>this violation</span>?
                 This will set the violation to <span style={{ color: "#3b82f6" }}>Assigned</span> and notify them on the app.
               </p>
               <div className="flex gap-2 justify-end">

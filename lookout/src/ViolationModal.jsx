@@ -39,7 +39,7 @@ function formatStamp(ts) {
 // Evidence clips have no audio track (frame-only capture, no microphone
 // anywhere in this pipeline), so there's no mute/volume control here — it
 // would be a dead control implying an audio path that doesn't exist.
-export function RecordingPlayer({ alert }) {
+export function RecordingPlayer({ alert, timeline = false }) {
   const videoRef = useRef(null);
   const hasRaw = !!alert.rawVideoUrl;
   const hasAnnotated = !!alert.videoUrl;
@@ -79,6 +79,7 @@ export function RecordingPlayer({ alert }) {
       <div className="rounded-xl overflow-hidden" style={{ background: "#000", border: "1px solid var(--border)" }}>
         <div className="relative w-full" style={{ aspectRatio: 16 / 9 }}>
           <img src={alert.imageUrl} alt="Evidence" className="absolute inset-0 w-full h-full object-cover" />
+          {timeline && <TimelineButton alert={alert} />}
           <div className="absolute bottom-3 left-3 right-3 text-[13px] text-center py-1.5 rounded-lg"
             style={{ background: "rgba(0,0,0,0.6)", color: "var(--muted-foreground)" }}>
             No evidence clip available for this alert — still image only.
@@ -106,7 +107,8 @@ export function RecordingPlayer({ alert }) {
           onEnded={() => setPlaying(false)}
           onClick={togglePlay}
         />
-        <div className="absolute top-0 left-0 right-0 px-3 py-2 flex items-center justify-between pointer-events-none"
+        {timeline && <TimelineButton alert={alert} />}
+        <div className="absolute top-0 left-0 right-0 pl-3 pr-12 py-2 flex items-center justify-between pointer-events-none"
           style={{ background: "linear-gradient(to bottom, rgba(0,0,0,0.72), transparent)" }}>
           <div className="flex items-center gap-2">
             <span className="text-[12px] font-medium px-1.5 py-0.5 rounded"
@@ -771,7 +773,7 @@ function InfoCard({ label, tooltip, tooltipAlign, dashed, icon, aside, children,
   );
 }
 
-function StatusCard({ alert }) {
+export function StatusCard({ alert }) {
   const [details, setDetails] = useState(false);
   const label = alert.levelLabel || "—";
   const color = levelColor(label);
@@ -805,12 +807,13 @@ function StatusCard({ alert }) {
   );
 }
 
-function ObjectConfidenceCard({ alert }) {
+export function ObjectConfidenceCard({ alert }) {
   // No object detected (puff-only smoking is hand movement alone): nothing to be confident about.
   const none = alert.objectConfidence == null || alert.cues?.puff_only;
+  const vcolor = violationDisplay(alert.type).color;
   return (
     <InfoCard label="Object confidence" tooltip={OBJECT_TOOLTIP} tooltipAlign="right">
-      <div className="text-[20px] font-semibold mt-0.5" style={{ color: "var(--foreground)" }}>
+      <div className="text-[20px] font-semibold mt-0.5" style={{ color: none ? "var(--foreground)" : vcolor }}>
         {none ? "—" : `${Math.round(alert.objectConfidence * 100)}% conf`}
       </div>
     </InfoCard>
@@ -997,7 +1000,7 @@ function ClosedBanner({ alert }) {
 }
 
 // Detected -> status changes -> assigned -> dismissed / resolved, each with its time.
-function TimelineCard({ alert }) {
+function TimelineBody({ alert }) {
   const detected = { t: alert.timestamp, label: alert.timeSource === "processed" ? "Detected (processed at)" : "Detected", kind: "detected" };
   const events = (alert.timeline ?? []).map((e) => ({
     t: e.t, kind: e.type,
@@ -1016,8 +1019,8 @@ function TimelineCard({ alert }) {
   const colorOf = (r) => (r.kind === "status" ? levelColor(r.label) : r.kind === "dismissed" || r.label.startsWith("Dismissed") ? "#e11d48"
     : r.kind === "resolved" || r.label.startsWith("Resolved") ? "#059669" : r.kind === "assigned" ? "#3b82f6" : "var(--muted-foreground)");
   return (
-    <div className="rounded-lg px-3 py-2.5 mt-4" style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-      <div className="text-[13px] mb-2" style={{ color: "var(--muted-foreground)" }}>Timeline</div>
+    <>
+      <div className="text-[13px] mb-2 font-medium" style={{ color: "var(--foreground)" }}>Timeline</div>
       <ol className="space-y-1.5">
         {rows.map((r, i) => (
           <li key={i} className="flex items-start gap-2.5">
@@ -1029,6 +1032,35 @@ function TimelineCard({ alert }) {
           </li>
         ))}
       </ol>
+    </>
+  );
+}
+
+// Clock button in the top-right corner of the video; opens the event timeline. Click outside or Esc closes it.
+function TimelineButton({ alert }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setOpen(false); } };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey, true);
+    return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey, true); };
+  }, [open]);
+  return (
+    <div ref={ref} className="absolute top-2 right-2 z-20">
+      <button onClick={() => setOpen((o) => !o)} title="Timeline" aria-label="Timeline"
+        className="w-8 h-8 rounded-full flex items-center justify-center"
+        style={{ background: open ? "rgba(245,158,11,0.9)" : "rgba(0,0,0,0.55)", color: open ? "#0c0f16" : "#fff" }}>
+        <Clock size={15} />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-10 w-[300px] max-w-[80vw] max-h-[60vh] overflow-y-auto rounded-lg px-3 py-2.5 shadow-xl"
+          style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
+          <TimelineBody alert={alert} />
+        </div>
+      )}
     </div>
   );
 }
@@ -1182,8 +1214,7 @@ export function ViolationModal({
             {closed && <ClosedBanner alert={alert} />}
             <div className="grid grid-cols-1 lg:grid-cols-[60fr_40fr] gap-5 items-start">
               <div className="min-w-0">
-                <RecordingPlayer alert={alert} />
-                <TimelineCard alert={alert} />
+                <RecordingPlayer alert={alert} timeline />
               </div>
 
               <div className="flex flex-col gap-3 min-w-0">

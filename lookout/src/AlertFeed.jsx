@@ -292,7 +292,7 @@ function AlertCard({ alert, onView, thin = false, extraPad = 0 }) {
             </div>
 
             {/* Right: the assignment state (where the "% conf" used to be). */}
-            <div className="flex flex-col items-end gap-1 flex-shrink-0">
+            <div className="flex flex-col items-center gap-1 flex-shrink-0 text-center">
               <span className="text-[13px] font-semibold px-2 py-0.5 rounded-full"
                 style={{ background: assigned ? "rgba(59,130,246,0.12)" : "rgba(239,68,68,0.10)",
                          color: assigned ? "#3b82f6" : "#ef4444" }}>
