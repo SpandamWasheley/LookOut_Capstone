@@ -595,16 +595,14 @@ function ResolveModal({
             />
 
             {!!formError && <Text style={[cfStyles.errorText, { color: c.destructive }]}>{formError}</Text>}
-          </ScrollView>
 
-          <View style={cfStyles.actionRow}>
             <Pressable
               onPress={() => handlePress("another")}
               disabled={!canSubmit}
               accessibilityRole="button"
-              accessibilityLabel="Save and add more citations"
+              accessibilityLabel="Save this violator and add another"
               style={[
-                cfStyles.secondaryBtn,
+                cfStyles.addAnotherBtn,
                 hasFiledAny
                   ? { backgroundColor: c.info, borderColor: c.info }
                   : { backgroundColor: "transparent", borderColor: c.border },
@@ -612,8 +610,11 @@ function ResolveModal({
               ]}
             >
               <Feather name="user-plus" size={15} color={hasFiledAny ? "#fff" : c.foreground} />
-              <Text style={[cfStyles.secondaryBtnText, { color: hasFiledAny ? "#fff" : c.foreground }]}>Save & add more</Text>
+              <Text style={[cfStyles.secondaryBtnText, { color: hasFiledAny ? "#fff" : c.foreground }]}>+ Save & add another violator</Text>
             </Pressable>
+          </ScrollView>
+
+          <View style={cfStyles.actionRow}>
             <Pressable
               onPress={() => handlePress("finish")}
               disabled={!canSubmit}
@@ -1509,6 +1510,7 @@ const cfStyles = StyleSheet.create({
   errorText: { fontSize: 13, fontFamily: "Inter_500Medium", marginTop: 12 },
   actionRow: { flexDirection: "row", gap: 10, marginTop: 16 },
   secondaryBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 15, borderRadius: 12, borderWidth: 1 },
+  addAnotherBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 14, borderRadius: 12, borderWidth: 1, borderStyle: "dashed", marginTop: 22, marginBottom: 8 },
   secondaryBtnText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
   primaryBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 15, borderRadius: 12 },
   primaryBtnText: { color: "#fff", fontSize: 14, fontFamily: "Inter_600SemiBold" },
