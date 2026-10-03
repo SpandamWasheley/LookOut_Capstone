@@ -9,6 +9,7 @@ import cv2
 from django.conf import settings
 from django.core.management.base import BaseCommand
 
+from core import descriptions
 from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
@@ -615,8 +616,7 @@ class Command(IncidentMixin, BaseCommand):
         alert = self._create_alert(
             best_score, best_label, frame,
             description=(
-                f"Theft/robbery indicator detected on still image: "
-                f"{len(threats)} detection(s) [{summary}]."
+                descriptions.holdup(best_label)
             ),
         )
         self.stdout.write(self.style.SUCCESS(
@@ -945,10 +945,7 @@ class Command(IncidentMixin, BaseCommand):
         return vclock.clock_now(self.clock_start, now_ts, self._source_path is not None)
 
     def _describe(self, ev, summary, who, present_for):
-        status = scoring.label_of(ev.band)
-        note = " Second person nearby." if ev.people_near else " No second person near the holder."
-        return (f"Weapon detected: {summary} on {who} on {self.camera.code} feed. "
-                f"Status {status}.{note}")
+        return descriptions.holdup(summary, bool(ev.people_near))
 
     def _knife_evidence(self, track, label, present_for, now_ts, box):
         """Evidence for one knife holder: the knife (E14), any recent Layer E

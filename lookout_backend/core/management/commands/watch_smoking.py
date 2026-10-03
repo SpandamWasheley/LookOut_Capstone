@@ -7,6 +7,7 @@ import cv2
 from django.conf import settings
 from django.core.management.base import BaseCommand
 
+from core import descriptions
 from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
@@ -633,8 +634,7 @@ class Command(IncidentMixin, BaseCommand):
         alert = self._create_alert(
             best_score, best_label, frame,
             description=(
-                f"Public smoking detected on still image: "
-                f"{len(smokes)} detection(s) [{summary}]."
+                descriptions.smoking(best_label)
             ),
         )
         self.stdout.write(self.style.SUCCESS(
@@ -903,9 +903,7 @@ class Command(IncidentMixin, BaseCommand):
         who = track.display
 
         def describe(sc):
-            text = (f"Public smoking: {summary} on {who}, {puffs} puff(s) seen, "
-                    f"status {scoring.label_of(sc.level)} on {self.camera.code} feed.")
-            return f"{text} {sc.tag}." if sc.tag else text
+            return descriptions.smoking(best_label, puffs)
 
         def create(level, with_clip):
             return self._create_alert(

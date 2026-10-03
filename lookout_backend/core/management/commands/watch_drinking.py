@@ -8,6 +8,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
+from core import descriptions
 from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
@@ -580,8 +581,7 @@ class Command(IncidentMixin, BaseCommand):
         alert = self._create_alert(
             best_score, best_label, frame,
             description=(
-                f"Public drinking indicator detected on still image: "
-                f"{len(drinks)} detection(s) [{summary}]."
+                descriptions.drinking(best_label)
             ),
         )
         self.stdout.write(self.style.SUCCESS(
@@ -1017,8 +1017,7 @@ class Command(IncidentMixin, BaseCommand):
         who = track.display
 
         def describe(sc):
-            return (f"Public drinking: {best_label} ({posture}) on {who}, status "
-                    f"{scoring.label_of(sc.level)} on {self.camera.code} feed.")
+            return descriptions.drinking(best_label, posture == "at-mouth")
 
         def create(level, with_clip):
             return self._create_alert(
@@ -1117,9 +1116,7 @@ class Command(IncidentMixin, BaseCommand):
         )
 
         def describe(sc):
-            return (f"Public drinking gathering: {n} persons, present for "
-                    f"{cluster.duration_held:.0f}s, status {scoring.label_of(sc.level)} "
-                    f"on {self.camera.code} feed.")
+            return descriptions.gathering(n, cluster.duration_held)
 
         def create(level, with_clip):
             return self._create_alert(

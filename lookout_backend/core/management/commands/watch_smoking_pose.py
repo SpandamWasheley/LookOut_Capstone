@@ -201,12 +201,8 @@ class Command(BaseCommand):
         confidence = min(0.4 + 0.1 * cycles, 0.75)
         alert = self._create_alert(
             confidence, "hand-to-mouth gesture", frame,
-            description=(
-                f"POSSIBLE public smoking (pose gesture) — person #{track.id} made "
-                f"{cycles} hand-to-mouth motions over ~{dwell_seconds}s on "
-                f"{self.camera.code}. Long-range cue, NEEDS REVIEW: could be eating/"
-                f"drinking/phone."
-            ),
+            description=(f"Repeated hand-to-mouth movement ({cycles} times over about {dwell_seconds} s). "
+                          "Needs review: it could also be eating, drinking or a phone call."),
         )
         track.last_alerted_at = now
         self._alert_log.append((tuple(box), now))

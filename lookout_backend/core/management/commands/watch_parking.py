@@ -8,6 +8,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
+from core import descriptions
 from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
@@ -349,11 +350,7 @@ class Command(BaseCommand):
                 # detected" value, only in the description text below.
                 alert = self._create_alert(
                     state.fraction, state.label or "vehicle", frame,
-                    description=(
-                        f"Road-edge obstruction on the {name} edge: vehicle "
-                        f"{state.fraction*100:.0f}% past the line, held "
-                        f"{state.held/60:.1f} min.{detour}"
-                    ),
+                    description=descriptions.road_edge(name, state.fraction, state.held / 60),
                     now=now_ts,
                 )
                 self.stdout.write(self.style.SUCCESS(
@@ -407,8 +404,7 @@ class Command(BaseCommand):
         alert = self._create_alert(
             best_score, best_label, frame,
             description=(
-                f"Illegal parking / obstruction detected on still image: "
-                f"{len(vehicles)} vehicle(s) [{summary}]."
+                descriptions.parking(best_label)
             ),
         )
         self.stdout.write(self.style.SUCCESS(
@@ -524,10 +520,7 @@ class Command(BaseCommand):
                 continue
             alert = self._create_alert(
                 score, label, frame,
-                description=(
-                    f"Illegal parking detected: {label} stationary for "
-                    f"{parked_for:.0f}s on parking-monitor feed."
-                ),
+                description=descriptions.parking(label, parked_for),
                 now=now_ts,
             )
             tr["alerted_at"] = now_ts

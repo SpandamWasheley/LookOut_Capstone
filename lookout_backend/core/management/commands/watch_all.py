@@ -27,6 +27,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
+from core import descriptions
 from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
@@ -511,7 +512,6 @@ class Command(BaseCommand):
         a = Alert.objects.create(
             type=self.parking_type, status=Alert.Status.ACTIVE, camera=self.camera,
             timestamp=timezone.now(), confidence=score,
-            description=(f"Illegal parking detected: {label} stationary for "
-                         f"{parked_for:.0f}s on {self.camera.code} feed."),
+            description=descriptions.parking(label, parked_for),
             image_url=url, suspect=label)
         self.stdout.write(self.style.SUCCESS(f"ALERT {a.code} (parking, {label})"))
