@@ -5,7 +5,7 @@ export function SystemStatusCard({ alerts = [], cameras = [] }) {
   const totalCams  = cameras.length;
   const degraded   = cameras.filter((c) => c.status === "degraded").length;
   const totalToday = alerts.length;
-  const pending    = alerts.filter((a) => a.status === "active" || a.status === "acknowledged").length;
+  const pending    = alerts.filter((a) => a.status === "active" || a.status === "dispatched").length;
 
   const latest = [...alerts].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0];
 

@@ -593,7 +593,7 @@ export function CameraGrid({ compact = false, isAdmin: isAdminRole = false }) {
   }, [menuOpen]);
 
   const getAlert = (cameraId) =>
-    alerts.find((a) => a.camera === cameraId && (a.status === "active" || a.status === "acknowledged"));
+    alerts.find((a) => a.camera === cameraId && (a.status === "active" || a.status === "dispatched"));
 
   // Merges a saved edge-zone update back into the grid's own camera list, so
   // it reflects immediately without waiting for the next 4s poll.
