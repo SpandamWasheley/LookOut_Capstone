@@ -1027,8 +1027,6 @@ export default function AssignmentDetailScreen() {
   const [resolveModalVisible, setResolveModalVisible] = useState(false);
   const [busy, setBusy] = useState(false);
   const [showAllOfficers, setShowAllOfficers] = useState(false);
-  const [statusDetails, setStatusDetails] = useState(false);
-  const [aiDetails, setAiDetails] = useState(false);
   const [tip, setTip] = useState<"status" | "object" | null>(null);
   const [citationsForAlert, setCitationsForAlert] = useState<api.ApiCitation[]>([]);
 
@@ -1204,15 +1202,9 @@ export default function AssignmentDetailScreen() {
                 <Feather name="info" size={13} color={c.mutedForeground} />
               </Pressable>
             </View>
-            <Text style={[styles.bigValue, { color: assignment.levelLabel === "Likely" ? "#dc2626" : assignment.levelLabel === "Possible" ? "#f59e0b" : c.foreground }]}>
-              {assignment.levelLabel || "—"}
-            </Text>
-            {assignment.checklist && (assignment.checklist.found.length > 0 || assignment.checklist.adjusted_by.length > 0) && (
-              <Pressable onPress={() => setStatusDetails(!statusDetails)} style={styles.detailsToggle}>
-                <Feather name={statusDetails ? "chevron-up" : "chevron-down"} size={13} color={c.mutedForeground} />
-                <Text style={[styles.detailsText, { color: c.mutedForeground }]}>Details</Text>
-              </Pressable>
-            )}
+            <View style={{ marginTop: 6, flexDirection: "row" }}>
+              <LevelPill label={assignment.levelLabel} />
+            </View>
           </View>
           <View style={[styles.card, { flex: 1, backgroundColor: c.card, borderColor: c.border }]}>
             <View style={styles.cardTitleRow}>
@@ -1221,7 +1213,7 @@ export default function AssignmentDetailScreen() {
                 <Feather name="info" size={13} color={c.mutedForeground} />
               </Pressable>
             </View>
-            <Text style={[styles.bigValue, { color: c.foreground }]}>
+            <Text style={[styles.bigValue, { color: assignment.objectConfidence != null ? assignment.violationType.color : c.foreground }]}>
               {assignment.objectConfidence != null ? `${Math.round(assignment.objectConfidence * 100)}% conf` : "—"}
             </Text>
           </View>
@@ -1237,29 +1229,6 @@ export default function AssignmentDetailScreen() {
           </View>
         )}
 
-        {statusDetails && assignment.checklist && (
-          <View style={[styles.card, { backgroundColor: c.card, borderColor: c.border }]}>
-            <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>EVIDENCE FOUND</Text>
-            {assignment.checklist.found.map((line) => (
-              <View key={line} style={styles.evidenceRow}>
-                <Feather name="check" size={14} color={assignment.violationType.color} />
-                <Text style={[styles.evidenceText, { color: c.foreground }]}>{line}</Text>
-              </View>
-            ))}
-            {assignment.checklist.adjusted_by.length > 0 && (
-              <View style={[styles.evidenceDivider, { borderTopColor: c.border }]}>
-                <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>ADJUSTED BY</Text>
-                {assignment.checklist.adjusted_by.map((line) => (
-                  <View key={line} style={styles.evidenceRow}>
-                    <Feather name="minus" size={14} color={c.mutedForeground} />
-                    <Text style={[styles.evidenceText, { color: c.mutedForeground }]}>{line}</Text>
-                  </View>
-                ))}
-              </View>
-            )}
-          </View>
-        )}
-
         {/* AI context: what a local vision model saw. Marked AI-generated, dashed border. It
             never changes the Status above. */}
         <View style={[styles.card, styles.aiCard, { backgroundColor: c.card, borderColor: c.border }]}>
@@ -1269,33 +1238,17 @@ export default function AssignmentDetailScreen() {
           </View>
           {assignment.ai?.state === "done" ? (
             <>
-              <Text style={[styles.aiBadge, { color: assignment.ai.badge.code === "ordinary" ? "#b45309" : c.foreground }]}>
-                {assignment.ai.badge.text}
-                {assignment.ai.confidence ? ` · ${assignment.ai.confidence} confidence` : ""}
-              </Text>
+              <View style={[styles.aiPill, { backgroundColor: assignment.ai.badge.code === "ordinary" ? "rgba(245,158,11,0.16)" : assignment.ai.badge.code === "supports" ? "rgba(16,185,129,0.14)" : "rgba(100,116,139,0.14)" }]}>
+                <Text style={[styles.aiPillText, { color: assignment.ai.badge.code === "ordinary" ? "#b45309" : assignment.ai.badge.code === "supports" ? "#047857" : c.mutedForeground }]}>
+                  {assignment.ai.badge.text}
+                  {assignment.ai.confidence ? ` · ${assignment.ai.confidence} confidence` : ""}
+                </Text>
+              </View>
               {assignment.ai.observations ? (
                 <Text style={[styles.aiReason, { color: c.foreground }]}>
                   &ldquo;{assignment.ai.observations}&rdquo;
                 </Text>
               ) : null}
-              {assignment.ai.checklist.length > 0 && (
-                <Pressable onPress={() => setAiDetails(!aiDetails)} style={styles.detailsToggle}>
-                  <Feather name={aiDetails ? "chevron-up" : "chevron-down"} size={13} color={c.mutedForeground} />
-                  <Text style={[styles.detailsText, { color: c.mutedForeground }]}>Details</Text>
-                </Pressable>
-              )}
-              {aiDetails && assignment.ai.checklist.map((item) => (
-                <View key={item.field} style={styles.evidenceRow}>
-                  <Feather
-                    name={item.value === true ? "check" : item.value === false ? "x" : "minus"}
-                    size={14}
-                    color={item.value === true ? "#10b981" : c.mutedForeground}
-                  />
-                  <Text style={[styles.evidenceText, { color: c.foreground }]}>
-                    {item.label}{typeof item.value === "string" ? `: ${item.value}` : ""}
-                  </Text>
-                </View>
-              ))}
             </>
           ) : (
             <Text style={[styles.aiReason, { color: c.mutedForeground }]}>
@@ -1310,9 +1263,7 @@ export default function AssignmentDetailScreen() {
             <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>STATUS WITH AI CONTEXT</Text>
             <Text style={[styles.aiNote, { color: c.mutedForeground }]}>suggestion only</Text>
           </View>
-          <Text style={[styles.aiSuggestion, { color: c.foreground }]}>
-            {assignment.ai?.state === "pending" ? "AI context pending…" : (assignment.ai?.suggestion.text ?? "AI context unavailable")}
-          </Text>
+          <SuggestedStatus assignment={assignment} muted={c.mutedForeground} />
         </View>
 
         <View style={[styles.card, { backgroundColor: c.card, borderColor: c.border }]}>
@@ -1480,6 +1431,54 @@ const rStyles = StyleSheet.create({
   confirmText: { color: "#fff", fontSize: 14, fontFamily: "Inter_600SemiBold" },
 });
 
+const PILL: Record<string, { color: string; bg: string }> = {
+  Monitoring: { color: "#64748b", bg: "rgba(100,116,139,0.16)" },
+  Possible:   { color: "#d97706", bg: "rgba(245,158,11,0.16)" },
+  Likely:     { color: "#dc2626", bg: "rgba(220,38,38,0.12)" },
+};
+
+function LevelPill({ label }: { label?: string | null }) {
+  const st = (label && PILL[label]) || { color: "#64748b", bg: "rgba(100,116,139,0.16)" };
+  return (
+    <View style={{ backgroundColor: st.bg, borderRadius: 999, paddingHorizontal: 9, paddingVertical: 3 }}>
+      <Text style={{ color: st.color, fontSize: 12, fontFamily: "Inter_600SemiBold" }}>{label || "—"}</Text>
+    </View>
+  );
+}
+
+// "Likely → Possible (suggested) — AI sees ordinary activity" as: old status struck through, arrow,
+// suggested status pill, and the reason in grey.
+function SuggestedStatus({ assignment, muted }: { assignment: Assignment; muted: string }) {
+  const ai = assignment.ai;
+  const sug = ai?.suggestion;
+  const text = ai?.state === "pending" ? "AI context pending…" : (sug?.text ?? "AI context unavailable");
+  const reason = text.includes(" — ") ? text.split(" — ").slice(1).join(" — ") : "";
+  const small = { color: muted, fontSize: 12, fontFamily: "Inter_400Regular" } as const;
+  if (sug?.changed && sug.suggested && assignment.levelLabel) {
+    return (
+      <View style={{ marginTop: 6, gap: 4 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          <Text style={[small, { textDecorationLine: "line-through" }]}>{assignment.levelLabel}</Text>
+          <Text style={small}>→</Text>
+          <LevelPill label={sug.suggested} />
+        </View>
+        <Text style={small}>(suggested){reason ? ` — ${reason}` : ""}</Text>
+      </View>
+    );
+  }
+  if (sug?.suggested && PILL[sug.suggested]) {
+    const noChange = text.startsWith("No change");
+    return (
+      <View style={{ marginTop: 6, flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+        {noChange && <Text style={small}>No change —</Text>}
+        <LevelPill label={sug.suggested} />
+        {reason ? <Text style={small}>{noChange ? reason : `— ${reason}`}</Text> : null}
+      </View>
+    );
+  }
+  return <Text style={[small, { marginTop: 6 }]}>{text}</Text>;
+}
+
 const cfStyles = StyleSheet.create({
   justFiledBanner: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 12, borderRadius: 12, marginBottom: 12 },
   justFiledBannerText: { fontSize: 13, fontFamily: "Inter_700Bold", color: "#fff", flex: 1 },
@@ -1568,7 +1567,9 @@ const styles = StyleSheet.create({
   },
   aiCard: { borderStyle: "dashed" },
   cardTitleRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  bigValue: { fontSize: 20, fontFamily: "Inter_600SemiBold", marginTop: 6 },
+  bigValue: { fontSize: 14, fontFamily: "Inter_600SemiBold", marginTop: 6, lineHeight: 22 },
+  aiPill: { alignSelf: "flex-start", borderRadius: 999, paddingHorizontal: 9, paddingVertical: 3, marginTop: 6 },
+  aiPillText: { fontSize: 12, fontFamily: "Inter_500Medium" },
   detailsToggle: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 8 },
   detailsText: { fontSize: 12, fontFamily: "Inter_500Medium" },
   closedBanner: { flexDirection: "row", gap: 10, borderRadius: 12, borderWidth: 1, padding: 14 },
@@ -1580,8 +1581,8 @@ const styles = StyleSheet.create({
   aiBadge: { fontSize: 14, fontFamily: "Inter_600SemiBold", marginTop: 6 },
   aiSuggestion: { fontSize: 15, fontFamily: "Inter_600SemiBold", marginTop: 6 },
   aiReason: {
-    fontSize: 14,
-    lineHeight: 19,
+    fontSize: 13,
+    lineHeight: 18,
     fontStyle: "italic",
   },
   infoLabel: { fontSize: 11, fontFamily: "Inter_400Regular", textTransform: "uppercase", letterSpacing: 0.5 },
