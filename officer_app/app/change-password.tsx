@@ -19,7 +19,7 @@ import { useColors } from "@/hooks/useColors";
 import * as api from "@/lib/api";
 
 export default function ChangePasswordScreen() {
-  const { completePasswordChange } = useAuth();
+  const { completePasswordChange, logout, officer } = useAuth();
   const router = useRouter();
   const c = useColors();
   const insets = useSafeAreaInsets();
@@ -131,6 +131,12 @@ export default function ChangePasswordScreen() {
             disabled={submitting}
           >
             {submitting ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitBtnText}>Update password</Text>}
+          </Pressable>
+
+          <Pressable onPress={() => logout()} style={{ alignItems: "center", paddingVertical: 14 }}>
+            <Text style={{ color: c.mutedForeground, fontSize: 13 }}>
+              {officer?.username ? `Not ${officer.username}? Sign out` : "Sign out"}
+            </Text>
           </Pressable>
         </View>
       </ScrollView>

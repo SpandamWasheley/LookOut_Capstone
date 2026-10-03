@@ -25,19 +25,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    api.getStoredUser().then((stored) => {
+    const toOfficer = (u: api.ApiUser): Officer => ({
+      username: u.username,
+      role: u.role,
+      name: u.display_name || u.username,
+      mustChangePassword: u.must_change_password,
+      officerId: u.officer_id ?? null,
+    });
+    api.setUnauthorizedHandler(() => setOfficer(null));
+    api.getStoredUser().then(async (stored) => {
       if (stored) {
-        setOfficer({
-          username: stored.username,
-          role: stored.role,
-          name: stored.display_name || stored.username,
-          mustChangePassword: stored.must_change_password,
-          officerId: stored.officer_id ?? null,
-        });
+        setOfficer(toOfficer(stored));
+        // The saved copy can be stale (an old session on this phone, or a password changed since).
+        // Ask the server who this really is; if it can't be reached, keep what is saved.
+        try {
+          const fresh = await api.apiFetch<api.ApiUser>("/auth/me/");
+          setOfficer(toOfficer(fresh));
+        } catch { /* offline: keep the saved session; a 401 already signed out */ }
       }
       setIsLoading(false);
     });
-    api.setUnauthorizedHandler(() => setOfficer(null));
     return () => api.setUnauthorizedHandler(null);
   }, []);
 
