@@ -121,15 +121,22 @@ export interface LoginResult {
 }
 
 export async function login(username: string, password: string): Promise<LoginResult["user"]> {
+  // A wrong address makes fetch hang for minutes, which looks like the app doing nothing.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12000);
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}/auth/login/`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "1" },
       body: JSON.stringify({ username, password }),
+      signal: controller.signal,
     });
   } catch {
-    throw new Error("Couldn't reach the server. Check your connection and try again.");
+    throw new Error(`Can't reach the server at ${API_BASE_URL.replace(/\/api\/?$/, "")}. `
+      + "Check that you are on the same Wi-Fi as the computer running LookOut and that the server is on.");
+  } finally {
+    clearTimeout(timer);
   }
 
   if (!response.ok) {
@@ -139,15 +146,26 @@ export async function login(username: string, password: string): Promise<LoginRe
     if (response.status >= 500) {
       throw new Error("The server ran into a problem. Please try again shortly.");
     }
-    // 400/401/403 all stay generic — surfacing more detail here would let the
-    // message reveal whether an account exists.
-    throw new Error("Invalid username or password.");
+    if (response.status === 400 || response.status === 404) {
+      // Not a login answer: a wrong address, or Django refusing the host name.
+      throw new Error(`The server did not accept the request (error ${response.status}). `
+        + "The app may be pointing at the wrong address.");
+    }
+    // 401 / 403: wrong username or password. Kept generic on purpose so the message
+    // does not reveal whether an account exists.
+    throw new Error("Wrong username or password.");
   }
 
-  const data = await response.json();
+  let data: any;
+  try {
+    data = await response.json();
+  } catch {
+    // A 200 that is not JSON: a tunnel or proxy page answered instead of LookOut.
+    throw new Error("The address answered, but not from the LookOut server. Check the server address.");
+  }
 
   if (data.user.role !== "officer" && data.user.role !== "both") {
-    throw new Error("Only officer accounts can sign in to this app.");
+    throw new Error("This account is not an officer account, so it can't sign in to this app. Use the web dashboard instead.");
   }
 
   const user = {
