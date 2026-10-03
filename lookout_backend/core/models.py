@@ -170,7 +170,7 @@ class Alert(models.Model):
     class Status(models.TextChoices):
         ACTIVE = "active", "Active"
         DISPATCHED = "dispatched", "Dispatched"
-        ACKNOWLEDGED = "acknowledged", "Acknowledged"
+        ACKNOWLEDGED = "acknowledged", "Dismissed"
         RESOLVED = "resolved", "Resolved"
 
     code = models.CharField(max_length=20, unique=True, blank=True)
