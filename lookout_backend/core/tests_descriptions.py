@@ -21,3 +21,21 @@ class DescriptionTests(SimpleTestCase):
                    d.holdup("knife", True), d.parking("truck", 130), d.road_edge("left", 0.4, 2.5)]
         for text in samples:
             self.assertNotRegex(text, r"#\d|CAM-|track|status|Status")
+
+
+class ObservationTests(SimpleTestCase):
+    REPLY = {"smoking_item_visible": True, "hand_to_mouth_activity": "smoking", "confidence": "high"}
+
+    def _obs(self, text):
+        from core.vision import ai_status
+        out = ai_status.validate_reply("smoking", dict(self.REPLY, observations=text))
+        return out["observations"] if out else None
+
+    def test_short_sentence_is_kept_whole(self):
+        self.assertEqual(self._obs("A man holds a cigarette near his mouth."), "A man holds a cigarette near his mouth.")
+
+    def test_long_sentence_ends_on_a_whole_word_with_an_ellipsis(self):
+        long = " ".join(f"word{i}" for i in range(30))
+        out = self._obs(long)
+        self.assertTrue(out.endswith("word19…"), out)
+        self.assertEqual(len(out.split()), 20)

@@ -80,7 +80,11 @@ def validate_reply(kind, reply):
             if not isinstance(out[field], bool):
                 return None
     words = str(out.get("observations", "")).split()
-    out["observations"] = " ".join(words[:OBSERVATION_WORD_LIMIT])
+    # Longer than the limit: end at the last whole word with an ellipsis; otherwise keep the full sentence.
+    if len(words) > OBSERVATION_WORD_LIMIT:
+        out["observations"] = " ".join(words[:OBSERVATION_WORD_LIMIT]).rstrip(" ,;:-") + "…"
+    else:
+        out["observations"] = " ".join(words)
     return out
 
 
