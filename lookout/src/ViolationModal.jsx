@@ -3,7 +3,7 @@ import {
   X, Shield, Play, Pause,
   SkipBack, Download, Radio, CheckCircle, AlertTriangle,
   ChevronDown, Loader2, Search, Info,
-  Clock, Check, Minus, MapPin, Sparkles, ChevronUp, RotateCcw,
+  Clock, ListChecks, Check, Minus, MapPin, Sparkles, RotateCcw,
 } from "lucide-react";
 import { violationDisplay } from "./constants/violationTypes";
 import { levelColor } from "./alertModel";
@@ -691,17 +691,6 @@ function InfoTip({ children, align = "left" }) {
   );
 }
 
-// A small "Details" toggle that expands the extra lines of a card.
-function DetailsToggle({ open, onClick }) {
-  return (
-    <button type="button" onClick={onClick}
-      className="mt-2 inline-flex items-center gap-1 text-[12px] font-medium"
-      style={{ color: "var(--muted-foreground)" }}>
-      {open ? <ChevronUp size={12} /> : <ChevronDown size={12} />} Details
-    </button>
-  );
-}
-
 // ── Quiet reference-detail card ───────────────────────────────────────────────
 // An 13px muted label above a 15px value, on a quiet surface, so these read as reference details
 // rather than competing with the video or footer actions. `tooltip` opens on click of the (i).
@@ -710,10 +699,10 @@ export function QuietCard({ label, value, mono, valueColor, tooltip, tooltipAlig
     <div className="rounded-lg px-3 py-2.5 min-w-0"
       style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
       <div className="flex items-center gap-1.5">
-        <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>{label}</div>
+        <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>{label}</div>
         {tooltip && <InfoTip align={tooltipAlign}>{tooltip}</InfoTip>}
       </div>
-      <div className={`text-[15px] font-medium mt-0.5 ${mono ? "truncate" : "break-words"}`}
+      <div className={`text-[14px] font-medium mt-0.5 ${mono ? "truncate" : "break-words"}`}
         style={{ color: valueColor || "var(--foreground)", fontFamily: mono ? "'DM Mono', monospace" : undefined }}>
         {value}
       </div>
@@ -758,51 +747,93 @@ const OBJECT_TOOLTIP = "How certain the YOLOv8 model detected the respective obj
 
 function InfoCard({ label, tooltip, tooltipAlign, dashed, icon, aside, children, className = "" }) {
   return (
-    <div className={`rounded-lg px-3 py-2.5 min-w-0 h-full ${className}`}
+    <div className={`rounded-lg px-3 py-2 min-w-0 h-full ${className}`}
       style={{ background: "var(--secondary)", border: `1px ${dashed ? "dashed" : "solid"} var(--border)` }}>
       <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-1.5 text-[13px]" style={{ color: "var(--muted-foreground)" }}>
+        <div className="flex items-center gap-1.5 text-[12px]" style={{ color: "var(--muted-foreground)" }}>
           {icon}
           {label}
           {tooltip && <InfoTip align={tooltipAlign}>{tooltip}</InfoTip>}
         </div>
-        {aside && <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>{aside}</div>}
+        {aside && <div className="flex items-center gap-1.5 text-[11px]" style={{ color: "var(--muted-foreground)" }}>{aside}</div>}
       </div>
       {children}
     </div>
   );
 }
 
-export function StatusCard({ alert }) {
-  const [details, setDetails] = useState(false);
+// Tinted pill for a status: Monitoring grey, Possible amber, Likely red.
+const PILL = {
+  Monitoring: { color: "#64748b", bg: "rgba(100,116,139,0.16)" },
+  Possible:   { color: "#d97706", bg: "rgba(245,158,11,0.16)" },
+  Likely:     { color: "#dc2626", bg: "rgba(220,38,38,0.12)" },
+};
+function LevelPill({ label }) {
+  const st = PILL[label] ?? { color: "var(--muted-foreground)", bg: "rgba(100,116,139,0.16)" };
+  return (
+    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[12px] font-semibold leading-none"
+      style={{ background: st.bg, color: st.color }}>{label || "—"}</span>
+  );
+}
+
+// Small icon in a card's top-right corner that opens a popover (testing tools only). Click outside or Esc closes it.
+function CardDetails({ title, children }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setOpen(false); } };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey, true);
+    return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey, true); };
+  }, [open]);
+  return (
+    <span ref={ref} className="relative inline-flex">
+      <button type="button" title={title} aria-label={title} aria-expanded={open}
+        onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}
+        className="inline-flex items-center justify-center rounded"
+        style={{ color: open ? "var(--foreground)" : "var(--muted-foreground)", cursor: "pointer" }}>
+        <ListChecks size={14} />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-2 z-[70] w-72 max-w-[80vw] max-h-[50vh] overflow-y-auto rounded-xl px-3 py-2.5 shadow-2xl text-left"
+          style={{ background: "var(--card)", border: "1px solid var(--foreground)", color: "var(--foreground)" }}>
+          <div className="text-[12px] font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>{title}</div>
+          {children}
+        </div>
+      )}
+    </span>
+  );
+}
+
+export function StatusCard({ alert, testingTools = false }) {
   const label = alert.levelLabel || "—";
   const color = levelColor(label);
   const found = alert.checklist?.found ?? [];
   const adjusted = alert.checklist?.adjusted_by ?? alert.checklist?.reduced_by ?? [];
   const tag = alert.checklist?.tag;
   const hasDetails = found.length > 0 || adjusted.length > 0 || !!tag;
-  return (
-    <InfoCard label="Status" tooltip={STATUS_TOOLTIP}>
-      <div className="text-[20px] font-semibold mt-0.5" style={{ color }}>{label}</div>
-      {hasDetails && <DetailsToggle open={details} onClick={() => setDetails((d) => !d)} />}
-      {details && (
-        <div className="mt-2 pt-2" style={{ borderTop: "1px solid var(--border)" }}>
-          {tag ? <div className="mb-1 text-[13px] italic" style={{ color: "var(--muted-foreground)" }}>{tag}</div> : null}
-          <div className="text-[12px] mb-1" style={{ color: "var(--muted-foreground)" }}>Evidence found</div>
-          {found.map((line) => (
-            <div key={line} className="flex items-start gap-1.5 text-[14px] leading-snug mt-0.5" style={{ color: "var(--foreground)" }}>
-              <Check size={13} className="flex-shrink-0 mt-0.5" style={{ color }} />
-              <span className="break-words">{line}</span>
-            </div>
-          ))}
-          {adjusted.map((line) => (
-            <div key={line} className="flex items-start gap-1.5 text-[13px] leading-snug mt-0.5" style={{ color: "var(--muted-foreground)" }}>
-              <Minus size={13} className="flex-shrink-0 mt-0.5" />
-              <span className="break-words">Adjusted by: {line}</span>
-            </div>
-          ))}
+  const details = testingTools && hasDetails && (
+    <CardDetails title="Evidence found">
+      {tag ? <div className="mb-1 text-[12px] italic" style={{ color: "var(--muted-foreground)" }}>{tag}</div> : null}
+      {found.map((line) => (
+        <div key={line} className="flex items-start gap-1.5 text-[13px] leading-snug mt-0.5" style={{ color: "var(--foreground)" }}>
+          <Check size={12} className="flex-shrink-0 mt-0.5" style={{ color }} />
+          <span className="break-words">{line}</span>
         </div>
-      )}
+      ))}
+      {adjusted.map((line) => (
+        <div key={line} className="flex items-start gap-1.5 text-[12px] leading-snug mt-0.5" style={{ color: "var(--muted-foreground)" }}>
+          <Minus size={12} className="flex-shrink-0 mt-0.5" />
+          <span className="break-words">Adjusted by: {line}</span>
+        </div>
+      ))}
+    </CardDetails>
+  );
+  return (
+    <InfoCard label="Status" tooltip={STATUS_TOOLTIP} aside={details || undefined}>
+      <div className="mt-1.5"><LevelPill label={label} /></div>
     </InfoCard>
   );
 }
@@ -813,7 +844,7 @@ export function ObjectConfidenceCard({ alert }) {
   const vcolor = violationDisplay(alert.type).color;
   return (
     <InfoCard label="Object confidence" tooltip={OBJECT_TOOLTIP} tooltipAlign="right">
-      <div className="text-[20px] font-semibold mt-0.5" style={{ color: none ? "var(--foreground)" : vcolor }}>
+      <div className="text-[14px] font-semibold mt-1.5 leading-[22px]" style={{ color: none ? "var(--foreground)" : vcolor }}>
         {none ? "—" : `${Math.round(alert.objectConfidence * 100)}% conf`}
       </div>
     </InfoCard>
@@ -827,60 +858,57 @@ const AI_BADGE_STYLE = {
   unavailable: { color: "var(--muted-foreground)", bg: "rgba(100,116,139,0.14)", icon: Info },
 };
 
-function AIContextCard({ ai }) {
-  const [details, setDetails] = useState(false);
+function AIContextCard({ ai, testingTools = false }) {
   const state = ai?.state ?? "unavailable";
   const badge = ai?.badge ?? { code: "unavailable", text: "AI context unavailable" };
   const style = AI_BADGE_STYLE[badge.code] ?? AI_BADGE_STYLE.unavailable;
   const BadgeIcon = style.icon;
   const frames = ai?.frames ?? [];
   const checklist = ai?.checklist ?? [];
+  const details = testingTools && state === "done" && (checklist.length > 0 || frames.length > 0) && (
+    <CardDetails title="AI details">
+      <div className="flex flex-col gap-1">
+        {checklist.map((c) => (
+          <div key={c.field} className="flex items-center gap-1.5 text-[13px]" style={{ color: "var(--foreground)" }}>
+            {c.value === true ? <Check size={12} style={{ color: "#10b981" }} />
+              : c.value === false ? <X size={12} style={{ color: "var(--muted-foreground)" }} />
+              : <Minus size={12} style={{ color: "var(--muted-foreground)" }} />}
+            <span>{c.label}{typeof c.value === "string" ? `: ${c.value}` : ""}</span>
+          </div>
+        ))}
+      </div>
+      {frames.length > 0 && (
+        <div className="mt-2">
+          <div className="text-[12px] mb-1" style={{ color: "var(--muted-foreground)" }}>Frames the AI saw ({frames.length})</div>
+          <div className="grid grid-cols-4 gap-1">
+            {frames.map((u) => (
+              <a key={u} href={u} target="_blank" rel="noreferrer">
+                <img src={u} alt="frame sent to the AI" loading="lazy" className="w-full h-12 object-cover rounded" />
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+    </CardDetails>
+  );
   return (
-    <InfoCard dashed label="AI context" icon={<Sparkles size={13} />} aside="AI-generated · may be wrong">
+    <InfoCard dashed label="AI context" icon={<Sparkles size={12} />}
+      aside={<><span>AI-generated · may be wrong</span>{details || null}</>}>
       {state === "pending" ? (
-        <div className="mt-2 flex items-center gap-2 text-[14px]" style={{ color: "var(--muted-foreground)" }}>
-          <Loader2 size={14} className="animate-spin" /> AI is checking this event…
+        <div className="mt-1.5 flex items-center gap-2 text-[13px]" style={{ color: "var(--muted-foreground)" }}>
+          <Loader2 size={13} className="animate-spin" /> AI is checking this event…
         </div>
       ) : (
         <>
-          <div className="mt-2 inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[13px] font-medium"
+          <div className="mt-1.5 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[12px] font-medium"
             style={{ background: style.bg, color: style.color }}>
-            <BadgeIcon size={12} /> {badge.text}
+            <BadgeIcon size={11} /> {badge.text}
             {state === "done" && ai.confidence ? <span style={{ opacity: 0.8 }}>· {ai.confidence} confidence</span> : null}
           </div>
           {state === "done" && ai.observations && (
-            <div className="mt-2 text-[15px] leading-snug italic break-words" style={{ color: "var(--foreground)" }}>
+            <div className="mt-1.5 text-[13px] leading-snug italic break-words" style={{ color: "var(--foreground)" }}>
               &ldquo;{ai.observations}&rdquo;
             </div>
-          )}
-          {state === "done" && (checklist.length > 0 || frames.length > 0) && (
-            <DetailsToggle open={details} onClick={() => setDetails((d) => !d)} />
-          )}
-          {state === "done" && details && (
-            <>
-              <div className="mt-2 flex flex-col gap-1">
-                {checklist.map((c) => (
-                  <div key={c.field} className="flex items-center gap-1.5 text-[14px]" style={{ color: "var(--foreground)" }}>
-                    {c.value === true ? <Check size={13} style={{ color: "#10b981" }} />
-                      : c.value === false ? <X size={13} style={{ color: "var(--muted-foreground)" }} />
-                      : <Minus size={13} style={{ color: "var(--muted-foreground)" }} />}
-                    <span>{c.label}{typeof c.value === "string" ? `: ${c.value}` : ""}</span>
-                  </div>
-                ))}
-              </div>
-              {frames.length > 0 && (
-                <div className="mt-2">
-                  <div className="text-[12px] mb-1" style={{ color: "var(--muted-foreground)" }}>Frames the AI saw ({frames.length})</div>
-                  <div className="grid grid-cols-4 gap-1">
-                    {frames.map((u) => (
-                      <a key={u} href={u} target="_blank" rel="noreferrer">
-                        <img src={u} alt="frame sent to the AI" loading="lazy" className="w-full h-14 object-cover rounded" />
-                      </a>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </>
           )}
         </>
       )}
@@ -888,14 +916,41 @@ function AIContextCard({ ai }) {
   );
 }
 
-function SuggestedStatusCard({ ai }) {
+// The server sends the sentence ("Likely → Possible (suggested) — AI sees ordinary activity"); the card shows
+// it as the old status struck through, an arrow, and the suggested status as a pill, with the reason in grey.
+function SuggestedStatusCard({ ai, official }) {
   const sug = ai?.suggestion;
+  const grey = { color: "var(--muted-foreground)" };
   const text = ai?.state === "pending" ? "AI context pending…" : (sug?.text || "AI context unavailable");
-  const color = sug?.direction === "up" ? "#dc2626" : sug?.direction === "down" ? "#b45309" : "var(--foreground)";
+  const reason = text.includes(" — ") ? text.split(" — ").slice(1).join(" — ") : "";
+  let body;
+  if (sug?.changed && sug.suggested && official) {
+    body = (
+      <>
+        <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
+          <span className="text-[12px]" style={{ ...grey, textDecoration: "line-through" }}>{official}</span>
+          <span className="text-[12px]" style={grey}>→</span>
+          <LevelPill label={sug.suggested} />
+        </div>
+        <div className="mt-1 text-[12px]" style={grey}>(suggested){reason ? ` — ${reason}` : ""}</div>
+      </>
+    );
+  } else if (sug?.suggested && PILL[sug.suggested]) {
+    const noChange = text.startsWith("No change");
+    body = (
+      <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
+        {noChange && <span className="text-[12px]" style={grey}>No change —</span>}
+        <LevelPill label={sug.suggested} />
+        {reason ? <span className="text-[12px]" style={grey}>{noChange ? reason : `— ${reason}`}</span> : null}
+      </div>
+    );
+  } else {
+    body = <div className="mt-1.5 text-[13px]" style={grey}>{text}</div>;
+  }
   return (
-    <InfoCard dashed label="Status with AI context" icon={<Sparkles size={13} />}
+    <InfoCard dashed label="Status with AI context" icon={<Sparkles size={12} />}
       tooltip={SUGGESTED_TOOLTIP} tooltipAlign="right" aside="suggestion only">
-      <div className="mt-1.5 text-[16px] font-medium leading-snug break-words" style={{ color }}>{text}</div>
+      {body}
     </InfoCard>
   );
 }
@@ -1220,11 +1275,11 @@ export function ViolationModal({
               <div className="flex flex-col gap-3 min-w-0">
                 <QuietCard label="Camera" value={alert.cameraZone || alert.cameraAddress || "—"} />
                 <div className="grid grid-cols-2 gap-3 items-stretch">
-                  <StatusCard alert={alert} />
+                  <StatusCard alert={alert} testingTools={testingTools} />
                   <ObjectConfidenceCard alert={alert} />
                 </div>
-                <AIContextCard ai={alert.aiContext} />
-                <SuggestedStatusCard ai={alert.aiContext} />
+                <AIContextCard ai={alert.aiContext} testingTools={testingTools} />
+                <SuggestedStatusCard ai={alert.aiContext} official={alert.levelLabel} />
                 {testingTools && <ScoreBreakdown alert={alert} />}
                 <div className="grid grid-cols-2 gap-3">
                   <QuietCard label="Detected object" value={alert.suspect || "—"} />
