@@ -1,0 +1,13 @@
+# Shell scripts must keep LF endings whatever the checkout platform.
+#
+# build.sh is Render's build command and runs on Linux. A CRLF checkout makes
+# the kernel read the shebang as "/usr/bin/env bash\r" and the deploy fails
+# with `env: 'bash\r': No such file or directory` -- a confusing error that
+# says nothing about line endings, on a file that looks correct in every
+# editor. core.autocrlf is a per-clone setting, so it cannot be relied on.
+*.sh text eol=lf
+
+# Same reasoning for the files a container or Render runs directly.
+Procfile text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf

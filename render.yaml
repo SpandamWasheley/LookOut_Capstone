@@ -11,11 +11,10 @@ services:
     runtime: python
     plan: free
     rootDir: lookout_backend
-    buildCommand: |
-      pip install -r requirements.txt
-      python manage.py collectstatic --noinput
-      python manage.py migrate
-      python manage.py bootstrap_admin
+    # One script rather than four inline lines, so the same sequence can be run
+    # by hand and so `set -o errexit` applies: an inline block carries on after
+    # a failed step, which once let a deploy go live with no migrations.
+    buildCommand: ./build.sh
     startCommand: gunicorn lookout_backend.wsgi:application --workers 2 --timeout 120
     healthCheckPath: /api/health/
     envVars:
@@ -45,8 +44,20 @@ services:
         sync: false
       - key: ADMIN_EMAIL
         sync: false
-      # Evidence media bucket - required so the on-site watchers and this API
-      # read and write the SAME files. Leave unset only for a local trial.
+      # This server has no GPU, no model weights and no camera, so it must
+      # refuse to launch a detector. Without it a detection job is accepted,
+      # the subprocess dies on a missing .pt file, and the page sits on
+      # "processing" for ever with the reason in a log nobody opens.
+      - key: DETECTION_ENABLED
+        value: "False"
+      # Evidence media. Cloudinary is checked first and is NOT S3-compatible,
+      # so it needs its own backend; the AWS_* block below is the alternative,
+      # not a companion. Set one or the other, never both.
+      - key: CLOUDINARY_URL
+        sync: false
+      # Evidence bucket (S3/R2/B2) - the alternative to Cloudinary above,
+      # required so the on-site watchers and this API read and write the SAME
+      # files. Leave both unset only for a local trial.
       - key: AWS_STORAGE_BUCKET_NAME
         sync: false
       - key: AWS_ACCESS_KEY_ID
