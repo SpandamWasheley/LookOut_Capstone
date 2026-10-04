@@ -247,6 +247,12 @@ interface ResolveModalProps {
   officerId: number | null;
   officerName: string;
   existingCitations: api.ApiCitation[];
+  // Non-null puts the sheet in EDIT mode: the form opens filled in with this
+  // citation and saving PATCHes it. Null is the normal "file a new one" mode.
+  // One sheet rather than two because the fields, the pickers and the
+  // validation are the same — a second form would be the same code drifting
+  // apart.
+  editing: api.ApiCitation | null;
   onClose: () => void;
   onFiled: () => void;
   onFinished: () => void;
@@ -258,6 +264,7 @@ function ResolveModal({
   officerId,
   officerName,
   existingCitations,
+  editing,
   onClose,
   onFiled,
   onFinished,
@@ -285,6 +292,35 @@ function ResolveModal({
   const [submitting, setSubmitting] = useState(false);
   const [reviewState, setReviewState] = useState<{ action: "finish" | "another"; duplicateName: string | null } | null>(null);
   const [formError, setFormError] = useState("");
+
+  // Fill the form from the citation being corrected, and empty it again on the
+  // way back to filing mode — otherwise the next "add another" would open
+  // holding the last edited person's details.
+  useEffect(() => {
+    if (!visible) return;
+    if (editing) {
+      setFirstName(editing.first_name_entered);
+      setMiddleName(editing.middle_name_entered);
+      setLastName(editing.last_name_entered);
+      setSuffix(editing.suffix_entered);
+      setViolatorBarangay(editing.violator_barangay);
+      setSelectedTypeIds(new Set(editing.violations));
+      setNotes(editing.notes);
+      setCarriedBarangay(false);
+      setTypesExpanded(false);
+    } else {
+      setFirstName("");
+      setMiddleName("");
+      setLastName("");
+      setSuffix("");
+      setViolatorBarangay(null);
+      setSelectedTypeIds(new Set());
+      setNotes("");
+      setCarriedBarangay(false);
+    }
+    setFormError("");
+    setJustFiledName(null);
+  }, [editing, visible]);
 
   const lastNameRef = useRef<TextInput>(null);
   const scrollRef = useRef<ScrollView>(null);
@@ -362,7 +398,12 @@ function ResolveModal({
 
   const findDuplicate = () => {
     const entered = normalizeName(firstName, lastName);
-    return existingCitations.find((ec) => normalizeName(ec.first_name_entered, ec.last_name_entered) === entered);
+    return existingCitations.find(
+      // The citation being corrected always matches its own name, which would
+      // warn "already cited" about the person you are editing.
+      (ec) => ec.id !== editing?.id
+        && normalizeName(ec.first_name_entered, ec.last_name_entered) === entered,
+    );
   };
 
   const doSubmit = async (action: "finish" | "another") => {
@@ -372,6 +413,26 @@ function ResolveModal({
     setSubmitting(true);
     setFormError("");
     try {
+      if (editing) {
+        // A correction, not a second filing: the alert is never resolved from
+        // here (the server refuses to touch it either way) and the sheet just
+        // closes. `violator` is left out — the server re-resolves it from the
+        // names, which is the whole reason a rename has to go through PATCH
+        // rather than being written client-side.
+        await api.updateCitation(editing.id, {
+          first_name_entered: firstName.trim(),
+          middle_name_entered: middleName.trim(),
+          last_name_entered: lastName.trim(),
+          suffix_entered: suffix,
+          violator_barangay: violatorBarangay!,
+          violations: [...selectedTypeIds],
+          notes: notes.trim(),
+        });
+        onFiled();
+        if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        onClose();
+        return;
+      }
       await api.createCitation({
         alert: assignment.dbId,
         officer: officerId,
@@ -408,7 +469,8 @@ function ResolveModal({
         requestAnimationFrame(() => lastNameRef.current?.focus());
       }
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : "Failed to save citation.");
+      setFormError(err instanceof Error ? err.message
+        : editing ? "Failed to save the correction." : "Failed to save citation.");
     } finally {
       setSubmitting(false);
       submitLockRef.current = false;
@@ -444,8 +506,14 @@ function ResolveModal({
               <Feather name="file-text" size={20} color="#10b981" />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={[rStyles.title, { color: c.foreground }]}>Confirm Resolution</Text>
-              <Text style={[rStyles.subtitle, { color: c.mutedForeground }]}>File a citation for this scene</Text>
+              <Text style={[rStyles.title, { color: c.foreground }]}>
+                {editing ? "Edit Citation" : "Confirm Resolution"}
+              </Text>
+              <Text style={[rStyles.subtitle, { color: c.mutedForeground }]}>
+                {editing
+                  ? `Correcting ${editing.violator_name}`
+                  : "File a citation for this scene"}
+              </Text>
             </View>
             <Pressable
               onPress={onClose}
@@ -464,7 +532,7 @@ function ResolveModal({
             style={{ flex: 1 }}
             contentContainerStyle={{ paddingTop: 6, paddingBottom: 20 }}
           >
-            {justFiledName && (
+            {justFiledName && !editing && (
               <Animated.View
                 style={[
                   cfStyles.justFiledBanner,
@@ -478,7 +546,7 @@ function ResolveModal({
               </Animated.View>
             )}
 
-            {hasFiledAny && (
+            {hasFiledAny && !editing && (
               <View style={[cfStyles.filedBanner, { backgroundColor: c.successLight, borderColor: c.success }]}>
                 <Feather name="check-circle" size={13} color={c.success} />
                 <Text style={[cfStyles.filedBannerText, { color: c.success }]}>
@@ -596,7 +664,7 @@ function ResolveModal({
 
             {!!formError && <Text style={[cfStyles.errorText, { color: c.destructive }]}>{formError}</Text>}
 
-            <Pressable
+            {!editing && <Pressable
               onPress={() => handlePress("another")}
               disabled={!canSubmit}
               accessibilityRole="button"
@@ -611,7 +679,7 @@ function ResolveModal({
             >
               <Feather name="user-plus" size={15} color={hasFiledAny ? "#fff" : c.foreground} />
               <Text style={[cfStyles.secondaryBtnText, { color: hasFiledAny ? "#fff" : c.foreground }]}>+ Save & add another violator</Text>
-            </Pressable>
+            </Pressable>}
           </ScrollView>
 
           <View style={cfStyles.actionRow}>
@@ -619,15 +687,19 @@ function ResolveModal({
               onPress={() => handlePress("finish")}
               disabled={!canSubmit}
               accessibilityRole="button"
-              accessibilityLabel="Save and finish, resolving this assignment"
+              accessibilityLabel={editing
+                ? "Save the correction to this citation"
+                : "Save and finish, resolving this assignment"}
               style={[cfStyles.primaryBtn, { backgroundColor: "#10b981", opacity: !canSubmit ? 0.5 : 1 }]}
             >
               {submitting ? (
                 <ActivityIndicator color="#fff" />
               ) : (
                 <>
-                  <Feather name="check-circle" size={16} color="#fff" />
-                  <Text style={cfStyles.primaryBtnText}>Save & finish</Text>
+                  <Feather name={editing ? "save" : "check-circle"} size={16} color="#fff" />
+                  <Text style={cfStyles.primaryBtnText}>
+                    {editing ? "Save changes" : "Save & finish"}
+                  </Text>
                 </>
               )}
             </Pressable>
@@ -1029,6 +1101,8 @@ export default function AssignmentDetailScreen() {
   const [showAllOfficers, setShowAllOfficers] = useState(false);
   const [tip, setTip] = useState<"status" | "object" | null>(null);
   const [citationsForAlert, setCitationsForAlert] = useState<api.ApiCitation[]>([]);
+  // The citation the sheet is correcting, or null when filing a new one.
+  const [editingCitation, setEditingCitation] = useState<api.ApiCitation | null>(null);
 
 
   // Sourced from the server (not local state) so a partially-filed scene —
@@ -1058,6 +1132,11 @@ export default function AssignmentDetailScreen() {
   }
 
   const isUnassigned = assignment.status === "active";
+  // Somebody has closed this incident — resolved, or dismissed as a false
+  // alarm. The citation is the record of it from here on, so corrections stop.
+  // Mirrors CanEditOwnOpenCitation on the server, which is what actually
+  // enforces it; this only keeps the UI from offering what would be refused.
+  const sceneClosed = assignment.status === "resolved" || assignment.status === "acknowledged";
   const isMine = officer?.officerId != null && assignment.assignedOfficerIds.includes(officer.officerId);
   const canAct = (isUnassigned || isMine) && assignment.status !== "resolved" && assignment.status !== "acknowledged";
   const isClosed = assignment.status === "resolved" || assignment.status === "acknowledged";
@@ -1230,8 +1309,11 @@ export default function AssignmentDetailScreen() {
         )}
 
         {/* AI context: what a local vision model saw. Marked AI-generated, dashed border. It
-            never changes the Status above. */}
-        <View style={[styles.card, styles.aiCard, { backgroundColor: c.card, borderColor: c.border }]}>
+            never changes the Status above.
+
+            Absent entirely for a violation with no checker (parking): the server sends
+            null rather than an "unavailable" payload, so there is no card to draw. */}
+        {assignment.ai && <View style={[styles.card, styles.aiCard, { backgroundColor: c.card, borderColor: c.border }]}>
           <View style={styles.aiHeader}>
             <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>AI CONTEXT</Text>
             <Text style={[styles.aiNote, { color: c.mutedForeground }]}>AI-generated · may be wrong</Text>
@@ -1255,16 +1337,17 @@ export default function AssignmentDetailScreen() {
               {assignment.ai?.state === "pending" ? "AI is checking this event…" : "AI context unavailable"}
             </Text>
           )}
-        </View>
+        </View>}
 
-        {/* Status with AI context: a suggestion only. The official Status does not change. */}
-        <View style={[styles.card, styles.aiCard, { backgroundColor: c.card, borderColor: c.border }]}>
+        {/* Status with AI context: a suggestion only. The official Status does not change.
+            Dropped with the card above when there is no checker for this violation. */}
+        {assignment.ai && <View style={[styles.card, styles.aiCard, { backgroundColor: c.card, borderColor: c.border }]}>
           <View style={styles.aiHeader}>
             <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>STATUS WITH AI CONTEXT</Text>
             <Text style={[styles.aiNote, { color: c.mutedForeground }]}>suggestion only</Text>
           </View>
           <SuggestedStatus assignment={assignment} muted={c.mutedForeground} />
-        </View>
+        </View>}
 
         <View style={[styles.card, { backgroundColor: c.card, borderColor: c.border }]}>
           <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>ASSIGNMENT INFO</Text>
@@ -1309,15 +1392,39 @@ export default function AssignmentDetailScreen() {
               CITATIONS FILED ({citationsForAlert.length})
             </Text>
             <View style={{ gap: 8 }}>
-              {citationsForAlert.map((cit) => (
-                <View key={cit.id} style={[officersStyles.row, { backgroundColor: c.secondary, borderColor: c.border }]}>
-                  <View style={[officersStyles.avatar, { backgroundColor: c.successLight }]}>
-                    <Feather name="file-text" size={12} color={c.success} />
-                  </View>
-                  <Text style={[officersStyles.name, { color: c.foreground }]}>{cit.violator_name}</Text>
-                </View>
-              ))}
+              {citationsForAlert.map((cit) => {
+                // Tappable only when the server would actually accept the edit
+                // (CanEditOwnOpenCitation): your own citation, on an alert
+                // nobody has closed yet. Offering the row otherwise would open
+                // a form that can only end in a 403.
+                const canEdit = cit.officer === (officer?.officerId ?? null) && !sceneClosed;
+                const Row = canEdit ? Pressable : View;
+                return (
+                  <Row
+                    key={cit.id}
+                    {...(canEdit
+                      ? {
+                          onPress: () => { setEditingCitation(cit); setResolveModalVisible(true); },
+                          accessibilityRole: "button" as const,
+                          accessibilityLabel: `Edit the citation for ${cit.violator_name}`,
+                        }
+                      : {})}
+                    style={[officersStyles.row, { backgroundColor: c.secondary, borderColor: c.border }]}
+                  >
+                    <View style={[officersStyles.avatar, { backgroundColor: c.successLight }]}>
+                      <Feather name="file-text" size={12} color={c.success} />
+                    </View>
+                    <Text style={[officersStyles.name, { color: c.foreground }]}>{cit.violator_name}</Text>
+                    {canEdit && <Feather name="edit-2" size={13} color={c.mutedForeground} />}
+                  </Row>
+                );
+              })}
             </View>
+            {!sceneClosed && (
+              <Text style={[styles.cardLabel, { color: c.mutedForeground, marginTop: 10, marginBottom: 0 }]}>
+                TAP A NAME TO CORRECT IT
+              </Text>
+            )}
           </View>
         )}
 
@@ -1370,7 +1477,7 @@ export default function AssignmentDetailScreen() {
           )}
 
           <Pressable
-            onPress={isUnassigned ? handleAccept : () => setResolveModalVisible(true)}
+            onPress={isUnassigned ? handleAccept : () => { setEditingCitation(null); setResolveModalVisible(true); }}
             disabled={busy}
             style={({ pressed }) => [
               styles.advanceBtn,
@@ -1403,7 +1510,8 @@ export default function AssignmentDetailScreen() {
         officerId={officer?.officerId ?? null}
         officerName={officer?.name ?? ""}
         existingCitations={citationsForAlert}
-        onClose={() => setResolveModalVisible(false)}
+        editing={editingCitation}
+        onClose={() => { setResolveModalVisible(false); setEditingCitation(null); }}
         onFiled={refreshCitations}
         onFinished={handleFinished}
       />

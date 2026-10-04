@@ -34,8 +34,19 @@ class ObservationTests(SimpleTestCase):
     def test_short_sentence_is_kept_whole(self):
         self.assertEqual(self._obs("A man holds a cigarette near his mouth."), "A man holds a cigarette near his mouth.")
 
-    def test_long_sentence_ends_on_a_whole_word_with_an_ellipsis(self):
+    def test_a_long_sentence_is_kept_whole(self):
+        # It used to be cut to 20 words HERE, before store_ai_result wrote the
+        # row — so the clipped version was the only copy kept. The observation
+        # is the one thing the checker produces that a person reads; shortening
+        # it is a decision for a card's CSS, not for the validator.
         long = " ".join(f"word{i}" for i in range(30))
         out = self._obs(long)
-        self.assertTrue(out.endswith("word19…"), out)
-        self.assertEqual(len(out.split()), 20)
+        self.assertEqual(len(out.split()), 30)
+        self.assertTrue(out.endswith("word29"), out)
+        self.assertNotIn("…", out)
+
+    def test_wrapped_whitespace_is_collapsed(self):
+        # The models return sentences wrapped across lines; a newline inside a
+        # quoted sentence renders as a gap in the card.
+        self.assertEqual(self._obs("A man\n  holds  a\tbottle."),
+                         "A man holds a bottle.")

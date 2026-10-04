@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { AlertTriangle, Camera, Users, Zap, ArrowUpRight, Radio } from "lucide-react";
+import { AlertTriangle, Camera, CalendarDays, Zap, ArrowUpRight, Radio } from "lucide-react";
 import { AlertFeed } from "./AlertFeed";
 import { CameraGrid } from "./CameraGrid";
 import { LiveMonitor } from "./LiveMonitor";
@@ -71,18 +71,24 @@ function AdminDashboard({ user, onLogout }) {
   const [activePage, setActivePage] = useState(allowed[0]);
   const safePage = allowed.includes(activePage) ? activePage : allowed[0];
 
-  const { alerts, officers } = useLiveOverviewData();
+  const { alerts } = useLiveOverviewData();
 
   const activeAlerts = alerts.filter((a) => a.status === "active");
   const dispatchedAlerts = alerts.filter((a) => a.status === "dispatched");
-  const officersOnDuty = officers.filter((o) => o.status !== "off-duty").length;
-  const responding = officers.filter((o) => o.status === "responding").length;
   const alertCount = activeAlerts.length;
+
+  // Alerts raised since local midnight. The comparison is on the VIEWER's day,
+  // not UTC: a dispatcher in Zamboanga reading "today" means their today, and
+  // the two diverge for the eight hours either side of midnight UTC.
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  const todays = alerts.filter((a) => new Date(a.timestamp) >= startOfToday);
+  const openToday = todays.filter((a) => a.status === "active" || a.status === "dispatched").length;
 
   const kpis = [
     { label: "Pending Review", value: alertCount, sub: "Not yet assigned", accent: "#ef4444", icon: AlertTriangle },
     { label: "Assigned", value: dispatchedAlerts.length, sub: `${activeAlerts.length} awaiting assignment`, accent: "#3b82f6", icon: Radio },
-    { label: "Officers on Duty", value: officersOnDuty, sub: `${responding} responding`, accent: "#3b82f6", icon: Users },
+    { label: "Alerts Today", value: todays.length, sub: `${openToday} still open`, accent: "#3b82f6", icon: CalendarDays },
     { label: "Total Alerts", value: alerts.length, sub: `${alerts.filter((a) => a.status === "resolved").length} resolved`, accent: "#a855f7", icon: Zap },
   ];
 

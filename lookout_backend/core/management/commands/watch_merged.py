@@ -57,6 +57,7 @@ from django.core.management.base import BaseCommand
 from core.models import Camera, SystemSettings, ViolationType
 from core.vision import clock as vclock
 from core.vision import recognition, tracking
+from core.vision import trim as trimming
 
 from core.vision import debug_view
 
@@ -83,6 +84,39 @@ class Command(BaseCommand):
         "layers, so one clip can produce alerts of all three types. Use "
         "--source for an RTSP/CCTV URL or video file."
     )
+
+    # Engines that do NOT come from the merged model. It has three classes
+    # (Bottle/Cigarette/knife) and no vehicle class, so a fourth violation has
+    # to bring its own detector and its own rule layer; that is what an extra
+    # engine is. Empty here, so this command keeps running exactly the three it
+    # always has — watch_merged_all.py sets it to ("parking",).
+    EXTRA_ENGINES = ()
+
+    # ---- extra-engine hooks (no-ops unless EXTRA_ENGINES is non-empty) ------
+    #
+    # Deliberately hooks rather than four entries in self.engines: everything
+    # in self.engines shares ONE merged-model pass and is filtered out of it by
+    # class name, and several places here are written around that (the shared
+    # conf_floor taken as the minimum of the active engines' confidences, the
+    # per-class floors, ROUTE_ENGINE). A vehicle engine satisfies none of it,
+    # so folding it in would quietly make those lines wrong — e.g. a parking
+    # confidence of 35 dragging the merged model's inference floor down for
+    # smoking and drinking too.
+
+    def _setup_extra(self, options):
+        """Build the extra engines' state. Called once, after the camera,
+        evidence dir and AI checker exist and before the capture opens. Return
+        an error message to refuse the run (same contract as
+        _check_route_coverage), or None to proceed."""
+        return None
+
+    def _extra_source(self, source, is_live):
+        """Tell the extra engines where frames are coming from, so they can cut
+        raw evidence clips the same way the merged engines do."""
+
+    def _extra_frame(self, name, frame, now, cfg, debug):
+        """One extra engine's whole per-frame pass: its own detection AND its
+        own rule layer. Called before the merged pass — see _process_frame."""
 
     def add_arguments(self, parser):
         parser.add_argument("--source", default="0",
@@ -120,6 +154,7 @@ class Command(BaseCommand):
         )
         parser.add_argument("--dry-run", action="store_true",
                             help="Detect and save evidence but write no Alert rows.")
+        trimming.add_cli_flags(parser)
         parser.add_argument("--debug", action="store_true",
                             help="Show a preview window with every engine's boxes.")
         parser.add_argument("--stats", action="store_true",
@@ -173,6 +208,7 @@ class Command(BaseCommand):
 
         self.far = not options["fast"]
         self.dry_run = options["dry_run"]
+        self.trim = trimming.Trim(options["start"], options["end"])
         self.cascade = not options["no_cascade"]
         self.clock_start = vclock.parse_clock(options.get("clock"))
         self.tracker_name = options["tracker"]
@@ -186,7 +222,7 @@ class Command(BaseCommand):
             return
 
         only = {s.strip() for s in options["only"].split(",") if s.strip()}
-        valid = {"smoking", "drinking", "thief"}
+        valid = {"smoking", "drinking", "thief"} | set(self.EXTRA_ENGINES)
         if only - valid:
             self.stdout.write(self.style.ERROR(
                 f"--only: unknown {', '.join(only - valid)}. Valid: {', '.join(valid)}."))
@@ -209,6 +245,11 @@ class Command(BaseCommand):
             self._setup_engine(name, cmd)
             self.engines[name] = {"cmd": cmd, "tracker": tracking.PersonTracker()}
         self.engines["drinking"]["group_tracker"] = tracking.GroupTracker()
+
+        refused = self._setup_extra(options)
+        if refused:
+            self.stdout.write(self.style.ERROR(refused))
+            return
 
         self._run(options["source"], options["debug"])
 
@@ -333,11 +374,18 @@ class Command(BaseCommand):
             cmd = self.engines[name]["cmd"]
             cmd._source_path = None if is_live else source
             cmd._raw_buffer = recognition.RawFrameRecorder() if is_live else None
+        self._extra_source(source, is_live)
+        # Jump straight to the chosen start rather than decoding and throwing
+        # away everything before it — on CPU that discarded prefix costs the
+        # same per frame as the part being tested.
+        if self.trim.seek(cap, is_live):
+            self.stdout.write(self.style.SUCCESS(
+                f"Trimmed to {self.trim.describe()} of the clip."))
 
         cfg = SystemSettings.load()
         cfg_at = time.time()
         mode = f"FAR {self.tiles[0]}x{self.tiles[1]}" if self.far else "near"
-        names = ", ".join(self.engines)
+        names = ", ".join(list(self.engines) + list(self.EXTRA_ENGINES))
         self.stdout.write(self.style.SUCCESS(
             f"Watching {source} [{mode}, {self.tracker_name} tracker] for: {names}. "
             "Ctrl+C to stop."
@@ -387,7 +435,8 @@ class Command(BaseCommand):
                 frames += 1
 
                 active = [n for n in self.engines if self._active(n, cfg)]
-                if not active:
+                extra = [n for n in self.EXTRA_ENGINES if self._active(n, cfg)]
+                if not active and not extra:
                     continue
 
                 # Content-time clock: video position for a file source (not
@@ -403,13 +452,22 @@ class Command(BaseCommand):
                 # gathering reading "33/25s" on a 19s clip).
                 now = wall_now if is_live else reader.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
 
+                # Reported as an ordinary end-of-clip finish: a trimmed run and
+                # a whole one must look identical to _watch_detection_job,
+                # which only sees the exit code.
+                if self.trim.past_end(now, is_live):
+                    self.stdout.write(self.style.SUCCESS(
+                        f"End of {source} ({self.trim.describe()}) — done."))
+                    break
+
                 for name in ("smoking", "drinking", "thief"):
                     cmd = self.engines[name]["cmd"]
                     if cmd._source_path is not None:
                         cmd._video_pos_sec = now
 
                 timestamp = now if not is_live else wall_now - started
-                self._process_frame(frame, now, cfg, active, debug, frames, timestamp)
+                self._process_frame(frame, now, cfg, active, debug, frames,
+                                    timestamp, extra)
 
                 if not fps_warned and frames >= 20:
                     fps = frames / max(wall_now - started, 1e-6)
@@ -441,7 +499,23 @@ class Command(BaseCommand):
 
     # ---- per-frame: one merged pass, routed to each engine ------------------
 
-    def _process_frame(self, frame, now, cfg, active, debug, frame_idx=None, timestamp=None):
+    def _process_frame(self, frame, now, cfg, active, debug, frame_idx=None,
+                       timestamp=None, extra=()):
+        """Extra engines first, then the merged pass.
+
+        The order matters for evidence: an extra engine does its own drawing
+        (the parking engine marks the road edge and the vehicle it is judging),
+        and running it first means those marks are already on the frame when
+        the merged engines buffer it into their own evidence clips. The other
+        way round, every clip but parking's would show the street with no line
+        on it.
+        """
+        for name in extra:
+            self._extra_frame(name, frame, now, cfg, debug)
+        if active:
+            self._merged_pass(frame, now, cfg, active, debug, frame_idx, timestamp)
+
+    def _merged_pass(self, frame, now, cfg, active, debug, frame_idx=None, timestamp=None):
         for _name in active:
             self.engines[_name]["cmd"].apply_spec_settings(cfg)
         # One shared person pass per frame. bytetrack is safe here — see the

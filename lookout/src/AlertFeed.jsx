@@ -506,7 +506,10 @@ export function AlertFeed({ showFilters = false, user }) {
     // alert must still match a "theft" filter selection (the checkboxes
     // below are built from VIOLATION_TYPES' canonical codes).
     if (typeFilter.size > 0 && !typeFilter.has(resolveViolationType({ code: a.type }).code)) return false;
-    if (!showFilters) return a.status === "active" && a.level !== "monitoring";
+    // Peak, not current: an event that reached Possible stays on this panel even
+    // after its cues fade and it drops back to Monitoring. Same rule the server
+    // applies to the full list (AlertViewSet.get_queryset).
+    if (!showFilters) return a.status === "active" && a.peakLevel !== "monitoring";
     if (statusFilter === "active")     return a.status === "active";
     if (statusFilter === "dispatched") return a.status === "dispatched";
     return true;

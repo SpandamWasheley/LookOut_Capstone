@@ -342,3 +342,25 @@ export interface CreateCitationPayload {
 
 export const createCitation = (payload: CreateCitationPayload) =>
   apiFetch<ApiCitation>("/citations/", { method: "POST", body: JSON.stringify(payload) });
+
+// Correcting a citation already filed. Only the fields an officer can get
+// wrong on the form: the names, the home barangay, which violations, and the
+// notes. Everything else is deliberately absent — `alert` and `officer` are
+// what the citation IS, and `violator` is resolved server-side FROM the names
+// (see CitationViewSet.perform_update), so sending it from here would pin the
+// citation to a person record that no longer matches what it says.
+//
+// The server allows this only to the officer who filed it and only while the
+// alert is still open; a 403 means one of those is no longer true.
+export interface UpdateCitationPayload {
+  first_name_entered: string;
+  middle_name_entered?: string;
+  last_name_entered: string;
+  suffix_entered?: string;
+  violator_barangay: string;
+  violations: number[];
+  notes?: string;
+}
+
+export const updateCitation = (id: number, payload: UpdateCitationPayload) =>
+  apiFetch<ApiCitation>(`/citations/${id}/`, { method: "PATCH", body: JSON.stringify(payload) });

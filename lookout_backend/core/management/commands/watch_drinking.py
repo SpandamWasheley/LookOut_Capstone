@@ -12,6 +12,7 @@ from core import descriptions
 from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
+from core.vision import trim as trimming
 from core.vision import clock as vclock
 from core.vision import ai_checker, momentum, recognition, scoring, tracking
 from ._incidents import IncidentMixin
@@ -298,6 +299,7 @@ class Command(IncidentMixin, BaseCommand):
             help="Far mode only: tiling grid as ROWSxCOLS (e.g. 2x2, 3x3).",
         )
         preproc.add_cli_flags(parser)
+        trimming.add_cli_flags(parser)
 
     def handle(self, *args, **options):
         # ViolationType/Camera aren't created by any migration, so get_or_create
@@ -328,6 +330,7 @@ class Command(IncidentMixin, BaseCommand):
         # --fast opts out to the single near pass.
         self.far = not options["fast"]
         self.dry_run = options["dry_run"]
+        self.trim = trimming.Trim(options["start"], options["end"])
         self.clock_start = vclock.parse_clock(options.get("clock"))
         self.tracker_name = options["tracker"]
         self.show_stats = options["stats"]
@@ -623,6 +626,12 @@ class Command(IncidentMixin, BaseCommand):
         # rolling buffer of RAW (unannotated) frames to cut a raw clip from
         # instead (see RawFrameRecorder's docstring).
         self._raw_buffer = recognition.RawFrameRecorder() if is_live else None
+        # Jump straight to the chosen start rather than decoding and throwing
+        # away everything before it — on CPU that discarded prefix costs the
+        # same per frame as the part being tested.
+        if self.trim.seek(cap, is_live):
+            self.stdout.write(self.style.SUCCESS(
+                f"Trimmed to {self.trim.describe()} of the clip."))
 
         cfg = SystemSettings.load()
 
@@ -725,6 +734,14 @@ class Command(IncidentMixin, BaseCommand):
                     now_ts = self._video_pos_sec
                 else:
                     now_ts = wall_now
+
+                # Reported as an ordinary end-of-clip finish: a trimmed run and
+                # a whole one must look identical to _watch_detection_job,
+                # which only sees the exit code.
+                if self.trim.past_end(now_ts, is_live):
+                    self.stdout.write(self.style.SUCCESS(
+                        f"End of {source} ({self.trim.describe()}) — done."))
+                    break
 
                 self.stats["frames"] += 1
                 conf = self.conf_override or (cfg.drinking_confidence / 100)

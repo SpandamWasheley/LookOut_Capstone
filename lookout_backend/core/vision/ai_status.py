@@ -38,7 +38,14 @@ _CHOICES = {
     "confidence": {"high", "medium", "low"},
 }
 
-OBSERVATION_WORD_LIMIT = 20
+# The observation is NOT truncated. It used to be cut to 20 words here, which
+# was wrong twice over: validate_reply is called by ai_checker.parse_reply
+# BEFORE store_ai_result writes the row, and as_dict() does not carry `raw`, so
+# the clipped sentence was the only copy — the rest was destroyed on the way
+# into the database, not merely hidden. And the one thing the checker produces
+# that a person actually reads is that sentence; "there is a blue..." answers
+# nothing. If a card needs a short form, it belongs in that card's CSS, where
+# it costs nothing and can be expanded.
 
 
 def confidence_tier(confidence):
@@ -79,12 +86,9 @@ def validate_reply(kind, reply):
         if field.endswith("_visible") or field.startswith("object_pointed") or field.startswith("victim"):
             if not isinstance(out[field], bool):
                 return None
-    words = str(out.get("observations", "")).split()
-    # Longer than the limit: end at the last whole word with an ellipsis; otherwise keep the full sentence.
-    if len(words) > OBSERVATION_WORD_LIMIT:
-        out["observations"] = " ".join(words[:OBSERVATION_WORD_LIMIT]).rstrip(" ,;:-") + "…"
-    else:
-        out["observations"] = " ".join(words)
+    # Whitespace is still collapsed: the models return sentences wrapped across
+    # lines, and a newline inside a quoted sentence renders as a gap.
+    out["observations"] = " ".join(str(out.get("observations", "")).split())
     return out
 
 

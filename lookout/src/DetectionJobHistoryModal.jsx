@@ -1,4 +1,5 @@
 import { X, History } from "lucide-react";
+import { detectionLabel } from "./constants/detectionTypes";
 
 const STATUS_COLOR = {
   running: "#f59e0b",
@@ -72,7 +73,7 @@ export function DetectionJobHistoryModal({ jobs, onClose, onCancel }) {
                       {job.sourceFilename}
                     </td>
                     <td className="px-5 py-2.5 capitalize" style={{ color: "var(--foreground)" }}>
-                      {job.violationType}
+                      {detectionLabel(job.violationType)}
                     </td>
                     <td className="px-5 py-2.5">
                       <span className="capitalize font-medium" style={{ color: STATUS_COLOR[job.status] ?? "var(--foreground)" }}>

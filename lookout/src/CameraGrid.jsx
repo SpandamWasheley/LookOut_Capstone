@@ -6,6 +6,7 @@ import { DetectionJobHistoryModal } from "./DetectionJobHistoryModal";
 import { useTestingTools } from "./useTestingTools";
 import { EdgeEditorModal } from "./EdgeEditorModal";
 import { CameraStreamModal } from "./CameraStreamModal";
+import { detectionLabel } from "./constants/detectionTypes";
 
 // Polls a live camera's snapshot proxy and returns the latest frame as an
 // object URL, or null for a non-live camera. Object URLs are revoked as they're
@@ -183,7 +184,7 @@ function DetectionJobsPanel({ jobs, onDismiss, onCancel }) {
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-[14px] font-semibold capitalize" style={{ color: "var(--foreground)" }}>
-                    {job.violationType} test
+                    {detectionLabel(job.violationType)} test
                   </span>
                   {job.status === "running" && onCancel ? (
                     <button onClick={() => onCancel(job.id)} className="flex-shrink-0"

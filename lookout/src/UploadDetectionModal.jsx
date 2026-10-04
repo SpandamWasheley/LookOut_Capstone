@@ -1,9 +1,15 @@
 import { useRef, useState } from "react";
 import { X, Upload, FileVideo, Loader2, AlertTriangle } from "lucide-react";
 import { uploadDetectionJob } from "./api";
-import { DETECTION_TYPES } from "./constants/detectionTypes";
+import { DETECTION_TYPES, TYPES_REQUIRING_EDGES } from "./constants/detectionTypes";
 
 const ALLOWED_EXTENSIONS = [".mp4", ".mkv", ".avi"];
+// This modal uploads a clip and starts the run in one step — it has no canvas to
+// draw a no-parking area on, so a detector that refuses to start without one
+// cannot be offered here. Run Detection has the drawing step; it is where those
+// belong. Parking is NOT filtered out: with nothing drawn it falls back to its
+// plain dwell rule, which is a valid run.
+const OFFERED_TYPES = DETECTION_TYPES.filter((t) => !TYPES_REQUIRING_EDGES.has(t.key));
 const MAX_BYTES = 1024 * 1024 * 1024; // 1GB
 
 function formatBytes(bytes) {
@@ -24,7 +30,7 @@ function validateFile(file) {
 
 export function UploadDetectionModal({ onClose, onJobStarted }) {
   const [file, setFile] = useState(null);
-  const [violationType, setViolationType] = useState(DETECTION_TYPES[0].key);
+  const [violationType, setViolationType] = useState(OFFERED_TYPES[0].key);
   const [dragOver, setDragOver] = useState(false);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -103,7 +109,7 @@ export function UploadDetectionModal({ onClose, onJobStarted }) {
               Detector
             </div>
             <div className="grid grid-cols-2 gap-2">
-              {DETECTION_TYPES.map((t) => {
+              {OFFERED_TYPES.map((t) => {
                 const Icon = t.icon;
                 const isActive = violationType === t.key;
                 return (

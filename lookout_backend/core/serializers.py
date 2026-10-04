@@ -152,6 +152,39 @@ class CitationSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("At least one violation must be selected.")
         return value
 
+    # Fields that say WHICH citation this is, rather than what it records.
+    # Writable on create, frozen afterwards — see validate().
+    IDENTITY_FIELDS = ("alert", "officer", "violator")
+
+    def validate(self, attrs):
+        """A correction may change what the citation SAYS, never what it IS.
+
+        `alert`, `officer` and `violator` are writable on create and must not
+        be on update. CitationViewSet's permission authorises the edit against
+        the citation as it currently stands — your own, on an open alert — so
+        letting the same request move it onto a different alert, or credit it
+        to a different officer, authorises one thing and performs another.
+
+        `violator` is the sharpest of the three: it is resolved server-side
+        FROM the entered names (see perform_create/perform_update), so an
+        explicit id on update would pin the citation to a person record that
+        does not match the name printed on it — which is precisely the
+        mismatch perform_update re-resolves to prevent.
+
+        Rejected rather than silently dropped: a client sending these is
+        either a bug worth seeing or an attempt worth refusing, and neither
+        should look like success. (resolve_alert and client_uuid ARE dropped
+        quietly in perform_update — they are create-time instructions, not
+        identity, and an older client may still send them.)
+        """
+        if self.instance is not None:
+            frozen = [f for f in self.IDENTITY_FIELDS if f in attrs]
+            if frozen:
+                raise serializers.ValidationError({
+                    f: "Cannot be changed after the citation is filed." for f in frozen
+                })
+        return attrs
+
     def get_violator_name(self, obj):
         return _format_full_name(obj.last_name_entered, obj.first_name_entered, obj.middle_name_entered, obj.suffix_entered)
 
@@ -201,6 +234,7 @@ class AlertSerializer(serializers.ModelSerializer):
     # which is what the score actually measures. Derived here rather than mapped
     # in the client so both dashboards and the officer app agree by default.
     level_label = serializers.SerializerMethodField()
+    peak_level_label = serializers.SerializerMethodField()
     # AI checker cards (display only): badge, observations, checklist and the suggested
     # status, recomputed on every read from the stored reply and the CURRENT level.
     ai_context = serializers.SerializerMethodField()
@@ -231,9 +265,25 @@ class AlertSerializer(serializers.ModelSerializer):
         return instance
 
     def get_ai_context(self, obj):
+        """The AI cards' data, or None when this kind has no checker at all.
+
+        None is not the same as "unavailable". Unavailable means a check was
+        expected and did not produce an answer — Ollama unreachable, the reply
+        unparseable, still running — and the card should say so, because the
+        reader is entitled to wonder where the AI's opinion went.
+
+        Parking has no checker and never has: its question is a measurement
+        ("how much of the vehicle is in the area, for how long"), already
+        answered exactly by geometry, with nothing for a vision model to
+        adjudicate. Rendering "AI context unavailable" on every one of its
+        alerts advertises a missing feature that was never meant to be there.
+        So the field is omitted entirely and the clients simply draw no card.
+        """
         from core.vision import ai_checker, ai_status
         cues = obj.cues or {}
         kind = ai_checker.kind_for(cues.get("kind"))
+        if kind is None:
+            return None
         ctx = ai_status.ai_context(kind, obj.ai, obj.level, puff_only=bool(cues.get("puff_only")))
         request = self.context.get("request")
         if request is not None:
@@ -243,6 +293,12 @@ class AlertSerializer(serializers.ModelSerializer):
     def get_level_label(self, obj):
         from core.vision.scoring import label_of
         return label_of(obj.level) if obj.level else ""
+
+    def get_peak_level_label(self, obj):
+        """The highest status this event reached. The UI badges `level_label`
+        (what it is NOW) and lists on this (what it earned)."""
+        from core.vision.scoring import label_of
+        return label_of(obj.peak_level) if obj.peak_level else ""
 
     class Meta:
         model = Alert
@@ -256,7 +312,7 @@ class AlertSerializer(serializers.ModelSerializer):
             # likelihood, so a bare percentage badge reads differently than it
             # used to. `cues` is the audit trail: which indicators fired and
             # what each was worth.
-            "level", "level_label", "last_seen_at",
+            "level", "level_label", "peak_level", "peak_level_label", "last_seen_at",
             "object_confidence", "cues", "ai_context", "timeline", "citation_issued", "time_source",
             # `reviewed_valid` is the only one of these a client writes: it is
             # the human label calibrate_weights fits the final weights against.
@@ -267,7 +323,8 @@ class AlertSerializer(serializers.ModelSerializer):
             # Written by the detectors through the ORM only. A client that
             # could PATCH its own cue vector could rewrite the calibration
             # training data after the fact.
-            "level", "level_label", "last_seen_at", "object_confidence", "cues", "ai_context", "timeline",
+            "level", "level_label", "peak_level", "peak_level_label", "last_seen_at",
+            "object_confidence", "cues", "ai_context", "timeline",
             # Who reviewed it is recorded FROM the authenticated request, so a
             # client cannot name somebody else as the reviewer.
             "reviewed_by", "reviewed_by_name", "reviewed_at",

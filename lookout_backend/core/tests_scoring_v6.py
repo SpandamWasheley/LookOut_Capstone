@@ -281,9 +281,12 @@ class AiSuggestion(SimpleTestCase):
         ai_status.suggest_status(s.level, "smoking", self.smoking_reply())
         self.assertEqual((s.score, s.level), before)
 
-    def test_observations_are_cut_to_20_words(self):
+    def test_observations_are_kept_whole(self):
+        # validate_reply runs BEFORE store_ai_result writes the row and the
+        # stored dict carries no raw copy, so cutting here destroyed the rest
+        # of the sentence rather than merely shortening the card.
         r = self.smoking_reply(observations=" ".join(["word"] * 40))
-        self.assertEqual(len(ai_status.validate_reply("smoking", r)["observations"].split()), 20)
+        self.assertEqual(len(ai_status.validate_reply("smoking", r)["observations"].split()), 40)
 
     def test_badges(self):
         self.assertEqual(ai_status.ai_badge("smoking", self.smoking_reply())["code"], "supports")

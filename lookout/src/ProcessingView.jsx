@@ -89,6 +89,9 @@ export function ProcessingView({ fetchState, testingTools = false, title = "Proc
   const drawn = view === "testing" ? subjects : flagged;
   const fw = data?.frame_w || 16;
   const fh = data?.frame_h || 9;
+  // The region the detector is judging against, in frame pixels. Only parking
+  // publishes one; everything else leaves it null and draws nothing.
+  const area = data?.area ?? [];
   const waiting = !data?.available;
   const stale = data?.available && data.age > 10;
 
@@ -122,6 +125,23 @@ export function ProcessingView({ fetchState, testingTools = false, title = "Proc
         <div className="lg:basis-[70%] lg:grow-0 min-w-0 flex items-center justify-center p-3" style={{ background: "#05080c" }}>
           <div className="relative w-full" style={{ aspectRatio: `${fw} / ${fh}`, maxHeight: fullscreen ? "calc(100vh - 80px)" : "70vh", maxWidth: fullscreen ? `calc((100vh - 80px) * ${fw / fh})` : undefined }}>
             {frame && <img src={frame} alt="Detector view" className="absolute inset-0 w-full h-full object-contain" />}
+            {/* The fixed region the detector judges against — parking's
+                no-parking polygon. Drawn here rather than baked into the frame
+                for the same reason the boxes are: the published image stays
+                clean, so it is still usable as evidence. Without it the one
+                detector whose entire rule is "is the vehicle inside this
+                shape" gave no way to see the shape, and a zone traced on the
+                wrong part of the street looked identical to a broken detector.
+                viewBox is the frame's own pixel space, so this lines up with
+                the boxes above without any scaling of its own. */}
+            {!waiting && area.length >= 3 && (
+              <svg className="absolute inset-0 w-full h-full pointer-events-none"
+                viewBox={`0 0 ${fw} ${fh}`} preserveAspectRatio="none" aria-hidden="true">
+                <polygon points={area.map(([x, y]) => `${x},${y}`).join(" ")}
+                  fill="rgba(255,191,0,0.12)" stroke="#ffbf00"
+                  strokeWidth={Math.max(2, fw / 400)} strokeLinejoin="round" />
+              </svg>
+            )}
             {!waiting && drawn.map((e) => e.box && (
               <div key={e.key} className="absolute pointer-events-none"
                 style={{

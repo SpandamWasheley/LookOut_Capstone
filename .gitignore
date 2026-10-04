@@ -104,3 +104,9 @@ lookout_backend/recorder.pid
 # Ultralytics output and a stray Expo folder created by running a tool on port 8000
 runs/
 8000/
+
+# generated project dump (201 KB), regenerate with collect_context.py
+lookout_context.md
+
+# local database backups
+db.sqlite3.bak-*

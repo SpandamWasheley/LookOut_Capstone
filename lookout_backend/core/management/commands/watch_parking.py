@@ -2,6 +2,7 @@ import datetime
 import json
 import os
 import time
+from pathlib import Path
 
 import cv2
 from django.conf import settings
@@ -11,9 +12,26 @@ from django.utils import timezone
 from core import descriptions
 from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
-from core.vision import preprocess as preproc
-from core.vision import obstruction as obs
-from core.vision import recognition
+from core.vision.progress import Spinner
+
+# Importing recognition pulls in ultralytics and therefore torch — about four
+# seconds of disk on this machine, and it happens before Django has even called
+# handle(), so the command would otherwise sit silent from the moment it is
+# typed. Spun here so the very first thing on screen is movement.
+#
+# tty_only: the test suite imports this module too, and the dashboard pipes a
+# detector's stdout to a log file. Neither wants two extra lines about PyTorch.
+with Spinner("Loading PyTorch", tty_only=True):
+    from core.vision import preprocess as preproc           # noqa: E402
+    from core.vision import trim as trimming                # noqa: E402
+    from core.vision import debug_view                      # noqa: E402
+    from core.vision import obstruction as obs              # noqa: E402
+    from core.vision import recognition                     # noqa: E402
+    from core.vision import scoring                         # noqa: E402
+    from core.vision.obstruction_zone import ObstructionZone  # noqa: E402
+
+# Where draw_zone writes the polygon by default.
+DEFAULT_ZONE_PATH = settings.BASE_DIR / "core" / "vision" / "zones" / "obstruction_zone.json"
 
 PARKING_CAMERA_CODE = "CAM-SMOKE-01"
 # BGR, matched to detection_sandbox/obstruction_web.py's SIDE_COLOURS and the
@@ -127,6 +145,7 @@ class Command(BaseCommand):
                  "tiles reach further but cost more inference per frame.",
         )
         preproc.add_cli_flags(parser, ablatable=False)
+        trimming.add_cli_flags(parser)
         parser.add_argument(
             "--edges",
             default=None,
@@ -154,7 +173,52 @@ class Command(BaseCommand):
         parser.add_argument(
             "--obstruction-minutes", type=float, default=None,
             help="Minutes it must be held before it counts. Omit to use the "
-                 "camera record's value (default 5).",
+                 "camera record's value (default 5). Read by the EDGE/ZONE "
+                 "rule in core/vision/obstruction.py, which this command no "
+                 "longer runs itself — see --zone. Kept because "
+                 "watch_merged_all drives that rule through this class.",
+        )
+        # ---- single-polygon zone (core/vision/obstruction_zone.py) ---------
+        parser.add_argument(
+            "--zone", default=str(DEFAULT_ZONE_PATH),
+            help="Path to the obstruction polygon JSON written by "
+                 "`python manage.py draw_zone`. This is the rule this command "
+                 "runs: a vehicle whose ground point sits inside the polygon "
+                 "accrues seconds, and alerts once it reaches --alert-score.",
+        )
+        parser.add_argument(
+            "--alert-score", type=float, default=None,
+            help="Seconds inside the zone before a vehicle alerts. Omit to use "
+                 "the camera's own value (the 'for N minutes' box in the zone "
+                 "editor, x60; default 5 minutes). Time is counted in FOOTAGE "
+                 "seconds for a file source, so a 30s clip can never reach a "
+                 "300s score.",
+        )
+        parser.add_argument(
+            "--inside-pct", type=int, default=None,
+            help="Share of the vehicle's ground footprint that must be inside "
+                 "the polygon for it to count as in the area, 5-100. Omit to "
+                 "use the camera's own value (the 'Inside the road %%' box in "
+                 "the zone editor; default 50). A share of the VEHICLE, so it "
+                 "means the same thing on a motorcycle at the kerb and a truck "
+                 "down the block.",
+        )
+        parser.add_argument(
+            "--moving-weight", type=float, default=0.0,
+            help="How fast the score grows while the vehicle is still MOVING, "
+                 "as a fraction of the stopped rate. Default 0: only stopped "
+                 "time counts, because a moving vehicle is not obstructing "
+                 "anything. Raise it to give a crawling or stop-start vehicle "
+                 "partial credit; 1.0 makes passing traffic accrue as fast as "
+                 "a parked car, which on a busy road reaches any threshold "
+                 "eventually.",
+        )
+        parser.add_argument(
+            "--tracker", default="bytetrack", choices=["bytetrack", "botsort"],
+            help="Vehicle association method (default bytetrack). The zone "
+                 "rule is keyed on track id, so this is what decides whether a "
+                 "parked car keeps one identity; ObstructionZone._adopt_or_new "
+                 "covers the churn when it does not.",
         )
 
     def handle(self, *args, **options):
@@ -183,12 +247,52 @@ class Command(BaseCommand):
         self.conf_override = options["confidence"]
         self.dwell_override = options["dwell"]
         self.dry_run = options["dry_run"]
+        self.trim = trimming.Trim(options["start"], options["end"])
         # Both modes by default (far already includes the near whole-frame pass);
         # --fast opts out to the single near pass.
         self.far = not options["fast"]
         self.preprocess = options["preprocess"]
         self.sharpen = options["sharpen"]
-        self.obstruction_mode = self._load_edges(options)
+        # _load_edges / _build_monitors / _run_obstruction are NOT called here
+        # any more — the single-polygon zone below is this command's only
+        # trigger. They stay on the class because watch_merged_all drives them
+        # directly as its fourth engine (see its _setup_extra), with its own
+        # --edges / --obstruction-pct / --obstruction-minutes flags.
+        self.tracker_name = f"{options['tracker']}.yaml"
+
+        # The zone IS the rule this command runs, so having none is a hard stop
+        # rather than a fallback. Falling back to the old dwell rule would mean
+        # every vehicle that merely stands still for 60s alerts, anywhere in
+        # frame — which reads as a broken detector, not as a missing zone.
+        #
+        # The CAMERA RECORD comes first: that is what the dashboard's Edge
+        # Zones editor writes, so an operator who traces the road in the
+        # browser gets the detector they just configured. The JSON file is the
+        # fallback for a terminal-only setup (draw_zone), and --zone forces it.
+        self.zone, where = self._load_zone(options)
+        if self.zone is None:
+            return
+        self.stdout.write(self.style.SUCCESS(
+            f"Obstruction zone from {where} "
+            f"({self.zone.enter_fraction * 100:.0f}% of the vehicle inside, "
+            f"{self.zone.alert_score:.0f}s to alert)."))
+
+        # Reading yolov8n.pt off disk is the other four seconds, and it is
+        # lazy — without this it would happen on the first frame instead, i.e.
+        # silently, after the "Watching ..." line has already claimed the
+        # detector is running. Pulled forward so the wait is where the user
+        # expects it and has something moving on screen.
+        with Spinner("Loading the vehicle model"):
+            recognition.load_yolo()
+
+        # The Run Detection page's live view. Every OTHER watcher gets this
+        # from IncidentMixin._frame_start; this command is a plain BaseCommand
+        # (it has no incidents — a vehicle either is in the zone or is not), so
+        # it was the one detector that published nothing and left the page
+        # saying "Waiting for the detector to start..." for the whole run.
+        # None unless LOOKOUT_DEBUG_DIR is set, i.e. unless launched by the page.
+        self.debug_pub = debug_view.DebugPublisher.from_env()
+        self._area_sent = False     # the zone outline, published once
         try:
             rows, cols = (int(v) for v in options["tiles"].lower().split("x"))
             self.tiles = (rows, cols)
@@ -214,7 +318,100 @@ class Command(BaseCommand):
         else:
             self._run_stream(options["source"], options["debug"])
 
-    # ---- obstruction mode --------------------------------------------------
+    # ---- the single-polygon zone -------------------------------------------
+
+    def _load_zone(self, options):
+        """(ObstructionZone, where-it-came-from), or (None, "") after printing why.
+
+        Two sources, camera record first:
+
+          CAMERA  self.camera.edges, written by the dashboard's Edge Zones
+                  editor (and staged onto the -TEST camera by an upload run).
+                  Stored in the PIXELS of the frame it was drawn on, with that
+                  frame's size alongside, so it is normalised here.
+          FILE    the JSON draw_zone writes, already normalised 0-1. Used when
+                  the camera has nothing, or whenever --zone is given
+                  explicitly — a flag the operator typed outranks a stored
+                  record.
+        """
+        explicit = options["zone"] != str(DEFAULT_ZONE_PATH)
+        # How much of the vehicle has to be in the area. --inside-pct wins;
+        # otherwise the camera's own obstruction_pct, which IS the "Inside the
+        # road %" box in the dashboard's zone editor — so that field drives the
+        # rule again instead of being stored and ignored.
+        pct = options["inside_pct"]
+        if pct is None:
+            pct = self.camera.obstruction_pct or 50
+        # ...and how long it must hold it. The editor asks for MINUTES, the
+        # zone counts SECONDS, so this is the one conversion between them.
+        # Both boxes in that editor now drive the rule; before this the
+        # minutes value was stored, staged onto the test camera by Run
+        # Detection, and then read by nobody — every run used the CLI default
+        # of 60s no matter what was typed.
+        score = options["alert_score"]
+        if score is None:
+            score = (self.camera.obstruction_minutes or 5) * 60.0
+        kwargs = {"alert_score": score,
+                  "moving_weight": options["moving_weight"],
+                  "enter_fraction": pct / 100.0}
+
+        if not explicit:
+            points = self._zone_points_from_camera()
+            if points is not None:
+                try:
+                    return ObstructionZone(points, **kwargs), f"camera {self.camera.code}"
+                except ValueError as exc:
+                    self.stdout.write(self.style.ERROR(
+                        f"The area saved on {self.camera.code} is unusable ({exc}). "
+                        "Retrace it in Live Feeds -> Edge Zones."))
+                    return None, ""
+
+        zone_path = Path(options["zone"])
+        if not zone_path.is_file():
+            self.stdout.write(self.style.ERROR(
+                f"No no-parking area for {self.camera.code}, and no zone file at "
+                f"{zone_path}.\n"
+                "Trace the road either way:\n"
+                "  * in the dashboard — Live Feeds -> Edge Zones (saved on the camera), or\n"
+                f"  * on this machine — python manage.py draw_zone --source <rtsp-url-or-clip.mp4>\n"
+                "(LEFT click adds a point, S saves, Q quits.) Then re-run this command."
+            ))
+            return None, ""
+        try:
+            return ObstructionZone.load(zone_path, **kwargs), str(zone_path)
+        except (ValueError, KeyError, json.JSONDecodeError) as exc:
+            self.stdout.write(self.style.ERROR(
+                f"{zone_path} is not a usable zone ({exc}). Redraw it with "
+                "`python manage.py draw_zone`."))
+            return None, ""
+
+    def _zone_points_from_camera(self):
+        """The camera's road polygon as normalised (0-1) points, or None.
+
+        camera.edges may still hold the old kerb lines (open paths keyed
+        left/right, no "type"). Those are not convertible — a half-plane
+        running off to infinity is not a closed shape — so they read as "no
+        zone" and the caller falls through to the file. The dashboard says the
+        same thing to the operator when it opens such a camera.
+        """
+        stored = self.camera.edges or {}
+        spec = next((s for s in stored.values()
+                     if isinstance(s, dict) and s.get("type") == obs.ZONE
+                     and len(s.get("points") or []) >= 3), None)
+        if spec is None:
+            return None
+        width = self.camera.edges_width
+        height = self.camera.edges_height
+        if not (width and height):
+            # Without the frame it was drawn on, the pixels cannot be turned
+            # into fractions and would be read as if the frame were 1x1.
+            self.stdout.write(self.style.WARNING(
+                f"{self.camera.code} has a saved area but no record of the frame size it "
+                "was drawn at, so it cannot be scaled. Retrace it in Edge Zones."))
+            return None
+        return [[x / width, y / height] for x, y in spec["points"]]
+
+    # ---- obstruction mode (watch_merged_all's fourth engine) ---------------
 
     def _load_edges(self, options):
         """Resolves the edge specs, their source resolution, and the pct/minutes
@@ -396,20 +593,19 @@ class Command(BaseCommand):
             recognition.draw_label(frame, f"{label} {score * 100:.0f}%",
                                    x1, max(y1 - 8, 0), (0, 0, 220))
 
-        # Alert on the highest-confidence vehicle; the annotated frame (all
-        # boxes) is saved as evidence.
-        best = max(vehicles, key=lambda v: v[4])
-        _, _, _, _, best_score, best_label = best
+        # No alert from a still. The rule is "inside the zone for N seconds",
+        # and one frame carries no seconds — the old behaviour here alerted on
+        # whichever vehicle scored highest, anywhere in frame, which is exactly
+        # the trigger logic the zone replaced. Reported instead, so --image
+        # stays useful for checking the polygon against a real frame.
         summary = ", ".join(sorted({v[5] for v in vehicles}))
-        alert = self._create_alert(
-            best_score, best_label, frame,
-            description=(
-                descriptions.parking(best_label)
-            ),
-        )
+        inside = [v for v in vehicles
+                  if self.zone.fraction_inside(v[:4], frame.shape) >= self.zone.enter_fraction]
+        self.zone.draw(frame)
         self.stdout.write(self.style.SUCCESS(
             f"Detected {len(vehicles)} vehicle(s): {summary}. "
-            + (f"ALERT created: {alert.code}" if alert else "ALERT suppressed (dry run)")
+            f"{len(inside)} inside the zone. No alert — the zone rule needs "
+            f"{self.zone.alert_score:.0f}s and a still has none."
         ))
 
     # ---- live stream dwell mode -------------------------------------------
@@ -557,6 +753,12 @@ class Command(BaseCommand):
         # rolling buffer of RAW (unannotated) frames to cut a raw clip from
         # instead (see RawFrameRecorder's docstring).
         self._raw_buffer = recognition.RawFrameRecorder() if is_live else None
+        # Jump straight to the chosen start rather than decoding and throwing
+        # away everything before it — on CPU that discarded prefix costs the
+        # same per frame as the part being tested.
+        if self.trim.seek(cap, is_live):
+            self.stdout.write(self.style.SUCCESS(
+                f"Trimmed to {self.trim.describe()} of the clip."))
 
         # Settings are re-polled every few seconds (like watch_curfew) so edits
         # made in the dashboard's Parking config take effect live, without a
@@ -575,8 +777,11 @@ class Command(BaseCommand):
         self.clip = recognition.ClipRecorder(seconds=30, label=self.camera.code)
 
         self.stdout.write(self.style.SUCCESS(
-            f"Watching {source} for parked vehicles (dwell {self.dwell_override or cfg.parking_dwell}s, "
-            f"reads live from Settings). Press Ctrl+C to stop."
+            f"Watching {source} [zone: {len(self.zone.points_norm)} points, "
+            f"{self.zone.alert_score:.0f}s to alert, moving weight "
+            f"{self.zone.moving_weight:g}, {self.tracker_name}]. "
+            f"Time is {'wall clock' if is_live else 'footage position'}. "
+            "Press Ctrl+C to stop."
         ))
 
         if debug:
@@ -625,23 +830,36 @@ class Command(BaseCommand):
                 else:
                     now_ts = wall_now
 
+                # Reported as an ordinary end-of-clip finish: a trimmed run and
+                # a whole one must look identical to _watch_detection_job,
+                # which only sees the exit code.
+                if self.trim.past_end(now_ts, is_live):
+                    self.stdout.write(self.style.SUCCESS(
+                        f"End of {source} ({self.trim.describe()}) — done."))
+                    break
+
+                # Clean pixels for the live view, taken before _run_zone draws
+                # the polygon and the boxes on this frame — the page draws its
+                # own labels, and baked-in ones would double up.
+                if self.debug_pub is not None:
+                    self.debug_pub.stash(frame)
+                    # Once, on the first real frame: the page cannot show which
+                    # area a vehicle is being judged against unless it is told.
+                    if not self._area_sent:
+                        h, w = frame.shape[:2]
+                        self.debug_pub.set_area(
+                            [(x * w, y * h) for x, y in self.zone.points_norm])
+                        self._area_sent = True
+
                 conf = self.conf_override or (cfg.parking_confidence / 100)
-                vehicles = self._detect(frame, conf)
+                self._run_zone(frame, now_ts, conf)
 
-                # Obstruction mode replaces the plain dwell rule rather than
-                # adding to it: "parked here for 60s" and "half over the footpath
-                # for 5 minutes" would otherwise both fire on the same vehicle
-                # and report the same event twice.
-                if self.obstruction_mode:
-                    if self.monitors is None:
-                        self._build_monitors(frame.shape)
-                    self._run_obstruction(frame, vehicles, now_ts,
-                                          cfg.alert_cooldown, debug)
-                else:
-                    self._run_dwell(frame, vehicles, now_ts, cfg, debug)
+                if self.debug_pub is not None:
+                    self.debug_pub.commit(now_ts)
 
-                # Buffer this annotated frame (boxes/edges already drawn above)
-                # for the evidence clip.
+                # Buffer this annotated frame (the zone polygon and the vehicle
+                # boxes are already drawn on it by _run_zone) for the evidence
+                # clip.
                 self.clip.add(frame, now_ts)
 
                 if debug:
@@ -655,6 +873,142 @@ class Command(BaseCommand):
             if debug:
                 cv2.destroyAllWindows()
             self.stdout.write(self.style.SUCCESS("Stopped."))
+
+    # ---- the zone rule -----------------------------------------------------
+
+    def _run_zone(self, frame, now_ts, conf):
+        """One pass of the single-polygon rule: detect, score, draw, alert.
+
+        Drawing is unconditional, not gated behind --debug: the annotated frame
+        goes straight into the evidence clip, so the operator reviewing an alert
+        sees the polygon the vehicle was judged against and the box colour that
+        says why. A clip of an unmarked street is not evidence of an
+        obstruction.
+        """
+        tracked = recognition.detect_vehicles_tracked(
+            frame, conf=conf, tracker=self.tracker_name)
+        # ObstructionZone wants (track_id, box, label, conf); labels are already
+        # the lowercase COCO names (car/motorcycle/bus/truck) it filters on, so
+        # no mapping is needed. Boxes with no id yet are passed through and
+        # dropped inside update() — nothing can be scored without an identity.
+        dets = [(tid, (x1, y1, x2, y2), label, score)
+                for (x1, y1, x2, y2, score, label, tid) in tracked]
+
+        hits = self.zone.update(dets, now_ts, frame.shape)
+        self._publish_subjects(now_ts, dets, frame.shape)
+        self.zone.draw(frame)
+
+        for hit in hits:
+            seconds = hit["score"]
+            alert = self._create_alert(
+                hit["conf"], hit["label"], frame,
+                description=f"Obstruction: {hit['label']} stopped in zone {seconds:.0f}s",
+                now=now_ts,
+            )
+            self.stdout.write(self.style.SUCCESS(
+                (f"ALERT created: {alert.code}" if alert else "ALERT suppressed (dry run)")
+                + f" [zone] #{hit['track_id']} {hit['label']} {seconds:.0f}s"
+                  f" ({hit['conf'] * 100:.0f}%)"
+            ))
+
+    def _publish_subjects(self, now_ts, dets=(), frame_shape=None):
+        """Tell the live view what each vehicle is doing this frame.
+
+        Statuses are the DISPLAY names the other detectors publish via
+        debug_view.status_for — "Likely" / "Possible" / "Monitoring" / "Below
+        Monitoring", not the internal level codes. ProcessingView prints
+        `status` verbatim and looks its colour up by that exact string, so
+        publishing "warning" here showed the word "warning" on screen with no
+        colour at all.
+
+        The status follows PROGRESS toward the threshold, not mere presence:
+
+            alerted .................... Likely      (the threshold was reached)
+            >= SCORE_WARNING of the way  Possible    (well on its way)
+            anything else ............. Monitoring   (seen; little or nothing banked)
+
+        Keyed to the score rather than to "is it in the zone" because the
+        latter put a vehicle on Possible the instant it entered, with zero
+        seconds banked — so the badge jumped past Monitoring entirely and said
+        "Possible" about a car that had just driven in. Every other detector
+        earns Possible by accumulating; this now does too, against the same
+        0.55 bar the scoring model uses, so the word means the same thing on
+        every card in the system.
+
+        `score` is the share of the way to the threshold, which is the thing an
+        operator is actually waiting on.
+        """
+        if self.debug_pub is None:
+            return
+        for state in self.zone.states.values():
+            if state.box is None or state.last_seen != now_ts:
+                continue
+            # Only what is actually being judged. `score > 0` keeps a vehicle
+            # on screen through a frame where its box slips over the line, so
+            # it does not flicker in and out of the list while its banked
+            # seconds are still being held.
+            if not state.inside and state.score <= 0:
+                continue
+            share = state.score / max(self.zone.alert_score, 1e-6)
+            if state.alerted:
+                status = scoring.label_of(scoring.VIOLATION)      # "Likely"
+            elif state.inside and share >= scoring.SCORE_WARNING:
+                status = scoring.label_of(scoring.WARNING)        # "Possible"
+            else:
+                status = scoring.label_of(scoring.MONITORING)     # "Monitoring"
+            pct = min(100, round(state.score / max(self.zone.alert_score, 1e-6) * 100))
+            # [{"name", "points"}], the shape debug_view.indicator_list produces
+            # and ProcessingView's testing view reads as `${i.name} ${i.points}`.
+            # Plain strings render as "undefined undefined".
+            indicators = [
+                {"name": "% of vehicle in zone",
+                 "points": int(round(state.fraction * 100))},
+                {"name": "seconds banked", "points": int(round(state.score))},
+                {"name": "stopped" if state.stationary else "moving",
+                 "points": int(round(state.score / max(self.zone.alert_score, 1e-6) * 100))},
+            ]
+            self.debug_pub.note(
+                key=("parking", state.track_id), violation="parking",
+                ident=state.track_id, box=state.box, status=status, score_pct=pct,
+                indicators=indicators, multipliers={}, momentum=round(state.score, 1),
+                kind="vehicle",
+            )
+
+        # Vehicles the rule is NOT judging, published as "Below Monitoring".
+        #
+        # They have no zone state — a vehicle outside the polygon accrues
+        # nothing and can never alert, which is the behaviour asked for. But
+        # dropping them from the view entirely made a zone drawn over the wrong
+        # strip of road look exactly like a detector that had gone blind: a
+        # motorcycle parked a metre outside the area was found by YOLO at 0.6
+        # confidence every single frame and simply never appeared on screen.
+        #
+        # ProcessingView already draws this status dashed and faded, and the
+        # Panel view filters it out — so an operator still sees only what is
+        # being judged, while the Testing view shows what was seen and passed
+        # over. Which is the difference between "not watched" and "not found".
+        watched = {st.track_id for st in self.zone.states.values()}
+        for tid, box, label, conf in dets:
+            if tid is None or tid in watched:
+                continue
+            # The actual share, not a flat zero. "outside the zone 0" answered
+            # the question nobody was asking: what an operator needs to know is
+            # HOW FAR outside — 48% reads as "nudge the polygon", 5% reads as
+            # "that vehicle is nowhere near it". Cheap: one point-in-polygon
+            # test per sample on a box we already have.
+            share = (self.zone.fraction_inside(box, frame_shape) * 100
+                     if frame_shape is not None else 0)
+            self.debug_pub.note(
+                key=("parking", tid), violation="parking", ident=tid, box=box,
+                status=debug_view.BELOW, score_pct=0,
+                indicators=[
+                    {"name": "% of vehicle in zone", "points": int(round(share))},
+                    # The label renders as "<name> <points>", so the bar has to
+                    # be the NUMBER to read as "needs 50" rather than "needs 50% 0".
+                    {"name": "needs", "points": int(round(self.zone.enter_fraction * 100))},
+                ],
+                multipliers={}, momentum=0.0, kind="vehicle",
+            )
 
     # ---- shared alert creation --------------------------------------------
 

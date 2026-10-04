@@ -199,6 +199,14 @@ class Alert(models.Model):
     # band that score fell into, and is what the dashboard should badge on.
     # Blank for detectors still on the old hard-gate chain.
     level = models.CharField(max_length=10, blank=True, choices=SCORE_LEVEL_CHOICES)
+    # The HIGHEST band this event ever reached, which is what decides where it is
+    # listed. `level` above moves both ways — a Possible event whose cues fade
+    # drops back to Monitoring — and listing on it alone made an event that had
+    # already earned a reviewer's attention disappear from Potential Violations
+    # mid-review. The two are shown differently on purpose: the badge reads the
+    # CURRENT status (that is the live truth), the list membership reads this.
+    # Never decreases; see IncidentMixin._incident_write.
+    peak_level = models.CharField(max_length=10, blank=True, choices=SCORE_LEVEL_CHOICES)
     # The last moment the object cue was ON for this event. A Monitoring event is
     # "active" while this is recent; it ends when the object goes away. Null on
     # alerts from before spec v6.

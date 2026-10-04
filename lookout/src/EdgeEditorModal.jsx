@@ -27,7 +27,7 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
   const [frameError, setFrameError] = useState("");
 
   // Seeds EdgeCanvas once the frame is known — see acceptFrame below.
-  const [prefill, setPrefill] = useState({ paths: { left: [], right: [] }, sides: { left: 1, right: 1 } });
+  const [prefill, setPrefill] = useState({ points: [], legacyKerbs: false });
   const [edgeSpec, setEdgeSpec] = useState({});
   const [canSave, setCanSave] = useState(false);
 
@@ -61,34 +61,27 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
     const scaleY = srcH ? nextFrame.height / srcH : 1;
     const scale = (points) => points.map(([x, y]) => ({ x: x * scaleX, y: y * scaleY }));
 
-    const nextPaths = { left: [], right: [], road: [] };
-    const nextSides = { left: 1, right: 1 };
-
     // A ZONE is found by its "type", not by its key, so a camera saved under
-    // any key name still loads. Edges are keyed left/right and carry no type,
-    // which is exactly what obstruction.build_edge treats as its default — so
-    // configs written before zones existed prefill unchanged.
+    // any key name still loads.
     const zoneSpec = Object.values(stored).find(
       (spec) => spec && spec.type === "zone" && Array.isArray(spec.points) && spec.points.length >= 3,
     );
-    if (zoneSpec) nextPaths.road = scale(zoneSpec.points);
 
-    for (const side of ["left", "right"]) {
+    // Kerb lines (open paths keyed left/right, no "type") were the other way
+    // of marking the area before the move to a single polygon. They cannot be
+    // converted — a half-plane running off to infinity is not a closed shape —
+    // so a camera still holding one opens with an EMPTY canvas and is told to
+    // retrace. Silently prefilling nothing with no explanation would read as
+    // the saved area having been lost.
+    const legacyKerbs = !zoneSpec && ["left", "right"].some((side) => {
       const spec = stored[side];
-      if (spec && spec.type !== "zone" && Array.isArray(spec.points) && spec.points.length >= 2) {
-        nextPaths[side] = scale(spec.points);
-        nextSides[side] = spec.side ?? 1;
-      }
-    }
+      return spec && spec.type !== "zone" && Array.isArray(spec.points) && spec.points.length >= 2;
+    });
 
-    // Open in whichever mode this camera was last saved in, so re-editing
-    // never silently discards the shape already in force. A camera with
-    // nothing saved yet gets the zone tool, which is the easier of the two to
-    // get right (see EdgeCanvas).
-    const mode = zoneSpec || !(nextPaths.left.length || nextPaths.right.length)
-      ? "zone"
-      : "edges";
-    setPrefill({ paths: nextPaths, sides: nextSides, mode });
+    setPrefill({
+      points: zoneSpec ? scale(zoneSpec.points) : [],
+      legacyKerbs,
+    });
   };
 
   // Try a live snapshot first; fall back to "upload a clip" if the camera
@@ -252,11 +245,17 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
 
           {frame && (
             <>
+              {prefill.legacyKerbs && (
+                <div className="text-[13px] px-3 py-2.5 rounded-xl"
+                  style={{ background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.3)", color: "#f59e0b" }}>
+                  This camera still has the old kerb lines saved. Parking now uses a single
+                  closed polygon around the road, which a kerb line cannot be converted into —
+                  trace the road below and save to replace them.
+                </div>
+              )}
               <EdgeCanvas
                 frame={frame}
-                initialPaths={prefill.paths}
-                initialSides={prefill.sides}
-                initialMode={prefill.mode}
+                initialPoints={prefill.points}
                 pct={pct}
                 onPctChange={setPct}
                 minutes={minutes}

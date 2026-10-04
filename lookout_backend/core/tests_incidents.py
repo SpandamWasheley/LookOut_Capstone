@@ -247,8 +247,12 @@ class FakeAIClient:
 
 
 class AICheckerWiringTests(SmokingIncidentTests):
-    """The AI check starts once, when the incident row is created, and its answer is stored
-    on that row without touching the official level."""
+    """The AI check starts ONCE, the moment the event first reaches Possible or
+    Likely, and its answer is stored on that row without touching the official
+    level. A Monitoring event never calls it: "an object was seen" is something
+    the object detector already settled, and Monitoring is most of what happens
+    on a street, so those calls were nearly all the load for no answer anybody
+    reads."""
 
     REPLY = ('{"observations": "A man holds a small object near his mouth", "smoking_item_visible": true,'
              ' "hand_to_mouth_activity": "smoking", "confidence": "high"}')
@@ -269,19 +273,90 @@ class AICheckerWiringTests(SmokingIncidentTests):
         self.step(t, dets, **kw)
         self.cmd._incident_gc(t, self.frame)
 
-    def test_checker_runs_once_per_incident_and_is_stored_on_the_row(self):
+    def rise_to_possible(self):
+        """Cigarette for a while (Monitoring), then one puff -> 60 -> Possible."""
         for i in range(30):
             self.frame_step(i * 0.25, [CIG])
+        self.puff(8.0)
+        for i in range(8):
+            self.frame_step(8.0 + i * 0.25, [CIG])
+
+    def test_monitoring_alone_never_calls_the_checker(self):
+        # Thirty frames of a cigarette and nothing else: a real event, a real
+        # row, and no reason to ask anybody about it.
+        for i in range(30):
+            self.frame_step(i * 0.25, [CIG])
+        self.assertEqual(self.client.calls, 0)
+        row = self.rows()[0]
+        self.assertEqual(row.level, scoring.MONITORING)
+        self.assertEqual(row.ai, {})
+
+    def test_checker_runs_once_on_reaching_possible_and_is_stored_on_the_row(self):
+        self.rise_to_possible()
         self.assertEqual(self.client.calls, 1)
         self.assertEqual(self.client.last[0], "smoking")
         self.assertEqual(self.client.last[1], "smoking item detected")
         row = self.rows()[0]
-        self.assertEqual(row.level, scoring.MONITORING)       # the AI never changes the status
+        self.assertEqual(row.level, scoring.WARNING)          # the AI never changes the status
         self.assertEqual(row.ai["state"], "done")
         self.assertEqual(row.ai["reply"]["hand_to_mouth_activity"], "smoking")
-        self.assertEqual(row.ai["trigger_level"], scoring.MONITORING)
+        # Stamped with the level that TRIGGERED it, which is now never Monitoring.
+        self.assertEqual(row.ai["trigger_level"], scoring.WARNING)
         self.assertTrue(row.ai["frame_files"])               # the frames sent are saved with the alert
         self.assertTrue(Path(self.tmp.name, "ai", f"alert{row.pk}").is_dir())
+
+    def test_rising_on_to_likely_does_not_call_it_again(self):
+        self.rise_to_possible()
+        for i in range(8):
+            self.frame_step(10.0 + i * 0.25, [CIG], near_mouth=True)   # -> Likely
+        self.assertEqual(self.rows()[0].level, scoring.VIOLATION)
+        self.assertEqual(self.client.calls, 1, "Possible -> Likely asked again")
+
+    def test_falling_back_does_not_call_it_again(self):
+        # The peak_level fix keeps a faded event in the list. It must not also
+        # re-ask: the answer already on the row is the one that stands.
+        self.rise_to_possible()
+        self.assertEqual(self.client.calls, 1)
+        # A puff counts for puff_window (5 min by default). Shortened here so
+        # the event can actually fade inside a test rather than needing 300s of
+        # frames; once it does, the score is the cigarette's 40 alone.
+        self.cmd.puff_window = 1.0
+        for i in range(12):
+            self.frame_step(10.0 + i * 0.25, [CIG])
+        self.assertEqual(self.rows()[0].level, scoring.MONITORING)
+        self.assertEqual(self.rows()[0].peak_level, scoring.WARNING)
+        self.assertEqual(self.client.calls, 1, "a faded event asked again")
+
+    def test_the_frames_sent_come_from_when_it_rose_not_from_when_it_appeared(self):
+        # The window is anchored on the trigger moment, so an event that sat at
+        # Monitoring for a while is judged on the frames where it rose — not on
+        # the ones from the start, which show only the object sitting there.
+        self.rise_to_possible()
+        sent = sorted(float(t) for t, _jpg, _boxes in
+                      self.cmd.ai_ring.window(9.75))
+        self.assertTrue(sent, "nothing was in the ring around the trigger")
+        self.assertGreater(min(sent), 5.0,
+                           "frames from the start of the event were sent")
+
+    def test_an_event_opening_straight_at_possible_is_checked_at_that_moment(self):
+        # Puff-only smoking: the row is CREATED at Possible rather than rising
+        # into it, so the trigger has to fire on the frame it is announced.
+        #
+        # Frames run continuously rather than jumping straight to the third
+        # puff: the ring is committed at the END of each frame (_incident_gc),
+        # so the triggering frame is not in it yet and the window is filled by
+        # the frames just before. That is also true of the real watcher, which
+        # is processing this person the whole time the puffs accumulate.
+        for i in range(170):
+            t = i * 0.25
+            if t in (1.0, 20.0, 40.0):
+                self.puff(t)
+            self.frame_step(t, [])                           # no cigarette anywhere
+        row = self.rows()[0]
+        self.assertEqual(row.level, scoring.WARNING)
+        self.assertTrue(row.cues["puff_only"])
+        self.assertEqual(self.client.calls, 1)
+        self.assertEqual(row.ai["trigger_level"], scoring.WARNING)
 
     def test_suggested_status_follows_the_current_official_level(self):
         from core.vision import ai_status
@@ -298,11 +373,10 @@ class AICheckerWiringTests(SmokingIncidentTests):
 
     def test_a_failed_check_leaves_the_alert_alone(self):
         self.client.text = "not json"
-        for i in range(30):
-            self.frame_step(i * 0.25, [CIG])
+        self.rise_to_possible()
         row = self.rows()[0]
         self.assertEqual(row.ai["state"], "unavailable")
-        self.assertEqual(row.level, scoring.MONITORING)
+        self.assertEqual(row.level, scoring.WARNING)
 
 
 class FootageTimeTests(SmokingIncidentTests):

@@ -36,6 +36,7 @@ def _pretty(name):
 
 class DebugPublisher:
     def __init__(self, directory, interval=FRAME_INTERVAL):
+        self._area = None      # a fixed region to draw; see set_area
         self.dir = directory
         self.interval = interval
         os.makedirs(self.dir, exist_ok=True)
@@ -52,6 +53,21 @@ class DebugPublisher:
         return cls(directory) if directory and cv2 is not None else None
 
     # ---- per frame ---------------------------------------------------------------
+
+    def set_area(self, points):
+        """A FIXED region the detector judges against — parking's no-parking
+        polygon — in the pixel coordinates of the published frame.
+
+        Published with the state so the page can draw it, rather than baked
+        into the image: the frame sent here is deliberately clean (the page
+        draws its own labels), which meant the one detector whose whole rule is
+        "is the vehicle inside this shape" published no way to see the shape.
+        Debugging it came down to inferring the polygon's position from which
+        vehicles happened to score, which is as slow as it sounds.
+
+        Set once; it does not change during a run.
+        """
+        self._area = [[int(x), int(y)] for x, y in points] if points else None
 
     def stash(self, frame):
         """Take a clean copy of this frame, but only when a publish is due (the detectors draw on
@@ -92,7 +108,7 @@ class DebugPublisher:
         self._seq += 1
         state = {
             "seq": self._seq, "wall": now, "media_ts": media_ts,
-            "frame_w": w, "frame_h": h,
+            "frame_w": w, "frame_h": h, "area": self._area,
             "subjects": sorted(self._entries.values(), key=lambda e: (e["violation"], str(e["id"]))),
         }
         self._write(os.path.join(self.dir, "frame.jpg"), buf.tobytes(), binary=True)

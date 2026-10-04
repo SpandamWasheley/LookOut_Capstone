@@ -26,8 +26,14 @@ export function mapAlert(raw) {
     suspect: raw.suspect,
     notes: raw.notes,
     // The official status: stored level + its display name (Monitoring / Possible / Likely).
+    // This is what every badge shows — the live truth, which can fall as well as rise.
     level: raw.level,
     levelLabel: raw.level_label || "",
+    // The HIGHEST status this event ever reached. Decides WHERE it is listed, never
+    // what it is badged as: an event that reached Possible and faded back to
+    // Monitoring stays in Potential Violations, still showing "Monitoring".
+    peakLevel: raw.peak_level || "",
+    peakLevelLabel: raw.peak_level_label || "",
     // What the OBJECT DETECTOR was sure of (not a violation likelihood).
     objectConfidence: raw.object_confidence,
     // The evidence the tanod reads instead of a score.

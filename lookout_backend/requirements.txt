@@ -35,3 +35,7 @@ dj-database-url==2.3.0     # DATABASE_URL -> Django DATABASES
 psycopg[binary]==3.2.13    # PostgreSQL driver; 3.2.3 has no cp314 wheel
 whitenoise==6.8.2          # serves Django's own static files without nginx
 django-storages[s3]==1.14.4  # evidence media -> S3-compatible bucket
+# Evidence storage. Cloudinary is NOT S3-compatible, so it needs its own
+# backend alongside django-storages (which stays for the S3/R2 path).
+cloudinary>=1.40
+django-cloudinary-storage>=0.3

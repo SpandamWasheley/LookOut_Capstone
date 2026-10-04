@@ -467,9 +467,14 @@ class IncidentMixin:
                 alert.cues = {**(alert.cues or {}), **extra}
                 first = timeline.make_event("status", scoring.label_of(level), self._event_time(now))
                 first["level"] = level
-                Alert.objects.filter(pk=alert.pk).update(cues=alert.cues, timeline=[first])
+                # peak_level starts where the event opened; _incident_write
+                # raises it from here and never lowers it.
+                alert.peak_level = level
+                Alert.objects.filter(pk=alert.pk).update(
+                    cues=alert.cues, timeline=[first], peak_level=level)
             if ai is not None:
-                # The AI check waits until the event has proved it is not a flicker.
+                # Armed, not fired: the check waits until the event reaches
+                # Possible or Likely. See the trigger below.
                 inc.pending_ai = (ai, key)
             inc.clip_base = getattr(self, "_last_clip_base", None)
             if score.alerting:
@@ -497,8 +502,31 @@ class IncidentMixin:
                 self._incident_clip(inc, frame, now)
                 inc.last_clip_at = now
 
-        if inc.pending_ai is not None and inc.alert is not None and (
-                level in scoring.NOTIFY_LEVELS or now - inc.started >= self.monitoring_min):
+        # The AI is called ONCE per event, at the moment it first reaches Possible
+        # or Likely — never for Monitoring.
+        #
+        # A Monitoring event is "an object was seen", which the object detector
+        # already settled; there is no ambiguity for a checker to resolve, and
+        # Monitoring is by far the commonest thing that happens on a street. The
+        # previous rule also fired after a Monitoring event had simply LASTED
+        # monitoring_min seconds, which meant most calls were spent on events
+        # that never became anything — the bulk of the load, for no answer
+        # anybody reads. (monitoring_min keeps its other job: _incident_gc still
+        # drops a Monitoring event shorter than that.)
+        #
+        # `now` is the trigger moment, and check_async windows the frame ring
+        # around it (FRAMES_BEFORE back, FRAMES_AFTER forward), so the frames
+        # Qwen sees are the ones from when the event actually rose — not from
+        # whenever it first appeared.
+        #
+        # Once only: pending_ai is cleared here and nothing sets it again, so
+        # Possible -> Likely and every drop back afterwards reuse this same
+        # answer. The suggested status is recomputed against the CURRENT level
+        # on every read (ai_status.ai_context), so it still follows the status
+        # without another call. An event opening straight at Possible — enough
+        # evidence immediately, or a puff-only smoking row, which is created at
+        # Possible — satisfies this on the same frame it is announced.
+        if inc.pending_ai is not None and inc.alert is not None and level in scoring.NOTIFY_LEVELS:
             ai_req, ai_key = inc.pending_ai
             inc.pending_ai = None
             self._ai_trigger(inc.alert, ai_req, ai_key, now, level)
@@ -520,6 +548,10 @@ class IncidentMixin:
             "confidence": score.score,
             "last_seen_at": self._event_time(now),
         }
+        # inc.peak is still the peak BEFORE this frame — _incident_update
+        # advances it only after this returns — so this is the rise test.
+        if scoring.LEVEL_ORDER[level] > scoring.LEVEL_ORDER[inc.peak]:
+            fields["peak_level"] = level
         if describe is not None:
             fields["description"] = describe(score)
         row = Alert.objects.filter(pk=alert.pk).values("cues", "timeline").first() or {}

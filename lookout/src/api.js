@@ -129,6 +129,9 @@ export const deleteDispatcher = (id) =>
 
 // params: {include_monitoring: 1} adds the quiet Monitoring watchlist to the list;
 // {level: "monitoring"} returns only that watchlist. The default list is Possible / Likely.
+// Both split on the event's PEAK status, not its current one, so an event that
+// reached Possible and then faded stays in the default list (still badged with
+// whatever it is now) instead of dropping back onto the watchlist.
 export const getAlerts = (params) =>
   apiFetch("/alerts/" + (params ? `?${new URLSearchParams(params)}` : ""));
 export const updateAlert = (id, payload) =>
@@ -204,7 +207,8 @@ export const stageDetectionFrame = (file) => {
 // EdgeEditorModal writes via updateCamera, plus the frame size it was drawn
 // against so the backend can rescale it correctly at analysis time.
 export const startStagedDetectionJob = (
-  { stagedToken, sourceFilename, violationType, recordedAt, edges, edgesWidth, edgesHeight, obstructionPct, obstructionMinutes },
+  { stagedToken, sourceFilename, violationType, recordedAt, edges, edgesWidth, edgesHeight,
+    obstructionPct, obstructionMinutes, trimStart, trimEnd },
 ) => {
   const formData = new FormData();
   formData.append("staged_token", stagedToken);
@@ -213,6 +217,10 @@ export const startStagedDetectionJob = (
   // When the clip was recorded (local time). Drives the holdup time block and the drinking
   // evening band; the detector is started with --clock. Optional.
   if (recordedAt) formData.append("recorded_at", recordedAt);
+  // Seconds into the clip to run over. 0/0 (or omitted) means the whole thing;
+  // the detector seeks rather than the server cutting a second copy of the file.
+  if (trimStart) formData.append("trim_start", trimStart);
+  if (trimEnd) formData.append("trim_end", trimEnd);
   if (edges) {
     formData.append("edges", JSON.stringify(edges));
     formData.append("edges_width", edgesWidth);

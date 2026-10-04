@@ -4,6 +4,7 @@ import {
   stageDetectionFrame, startStagedDetectionJob, startLiveDetectionJob, getCameras, getJobState, cancelDetectionJob,
 } from "./api";
 import { DETECTION_TYPES, TYPES_WITH_EDGES } from "./constants/detectionTypes";
+import { ClipTrimmer } from "./ClipTrimmer";
 import { EdgeCanvas } from "./EdgeCanvas";
 import { ProcessingView } from "./ProcessingView";
 import { useTestingTools } from "./useTestingTools";
@@ -39,9 +40,10 @@ const Err = ({ children }) => (
 //   While running  the bar collapses to "Stop / New run" and the processing view takes the page:
 //                  the picture on the left (about 70%), the events on the right (about 30%)
 //
-// Parking judges vehicles against road-edge lines. For an uploaded clip the edge is drawn on the
-// clip's first frame, below the bar, every time (it is not remembered between uploads). For a live
-// camera the edge is the one saved on the camera (Live Feeds -> Edge Zones).
+// Parking and Merged (All 4) judge vehicles against a drawn no-parking area (see
+// TYPES_WITH_EDGES). For an uploaded clip the area is drawn on the clip's first frame, below the
+// bar, every time (it is not remembered between uploads) and Start stays disabled until it is. For
+// a live camera the area is the one saved on the camera (Live Feeds -> Edge Zones).
 export function RunDetectionPage() {
   const testingTools = useTestingTools(true);
   const [violationType, setViolationType] = useState(DETECTION_TYPES[0].key);
@@ -63,6 +65,8 @@ export function RunDetectionPage() {
   const [camerasError, setCamerasError] = useState("");
   const [cameraId, setCameraId] = useState("");
 
+  // Seconds of the clip to run over; {0, 0} means all of it.
+  const [trim, setTrim] = useState({ start: 0, end: 0 });
   const [edgeSpec, setEdgeSpec] = useState({});
   const [canSaveEdges, setCanSaveEdges] = useState(false);
   const [pct, setPct] = useState(50);
@@ -119,7 +123,7 @@ export function RunDetectionPage() {
     }
   };
 
-  const usesClock = source === "file" && ["thief", "drinking", "merged"].includes(violationType);
+  const usesClock = source === "file" && ["thief", "drinking", "merged", "merged4"].includes(violationType);
   const canStart = source === "camera"
     ? !!cameraId
     : staged && (!needsEdges || canSaveEdges);
@@ -136,6 +140,8 @@ export function RunDetectionPage() {
             sourceFilename: staged.sourceFilename,
             violationType,
             recordedAt: usesClock ? recordedAt : "",
+            trimStart: trim.start,
+            trimEnd: trim.end,
             ...(needsEdges ? {
               edges: edgeSpec,
               edgesWidth: staged.frame.width,
@@ -155,7 +161,7 @@ export function RunDetectionPage() {
 
   const reset = () => {
     setFile(null); setFileError(""); setStaged(null); setStageError("");
-    setCameraId(""); setRecordedAt(""); setEdgeSpec({}); setCanSaveEdges(false);
+    setCameraId(""); setRecordedAt(""); setEdgeSpec({}); setCanSaveEdges(false); setTrim({ start: 0, end: 0 });
     setPct(50); setMinutes(5); setStartError(""); setJob(null); setStopping(false);
   };
 
@@ -170,6 +176,7 @@ export function RunDetectionPage() {
     if (next === source) return;
     setSource(next);
     setFile(null); setFileError(""); setStaged(null); setStageError(""); setCameraId("");
+    setTrim({ start: 0, end: 0 });
   };
 
   const fetchState = useCallback(async (since) => {
@@ -309,11 +316,15 @@ export function RunDetectionPage() {
 
             {(fileError || stageError || startError) && <Err>{fileError || stageError || startError}</Err>}
 
+            {source === "file" && staged && (
+              <ClipTrimmer file={file} onChange={setTrim} />
+            )}
+
             {needsEdges && source === "file" && staged && (
               <div className="rounded-xl p-4 space-y-3" style={barStyle}>
                 <div className="text-[13px] font-semibold uppercase tracking-wide"
                   style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
-                  Draw the road edge for parking
+                  Draw the no-parking area for {detectorLabel}
                 </div>
                 <EdgeCanvas frame={staged.frame} pct={pct} onPctChange={setPct} minutes={minutes}
                   onMinutesChange={setMinutes} onChange={(spec, can) => { setEdgeSpec(spec); setCanSaveEdges(can); }} />
@@ -322,7 +333,7 @@ export function RunDetectionPage() {
             {needsEdges && source === "camera" && cameraId && (
               <div className="text-[13px] px-3 py-2 rounded-xl"
                 style={{ background: "rgba(59,130,246,0.08)", border: "1px solid rgba(59,130,246,0.2)", color: "#60a5fa" }}>
-                Parking uses the road edge saved on the camera (Live Feeds → Edge Zones).
+                {detectorLabel} uses the no-parking area saved on the camera (Live Feeds → Edge Zones).
               </div>
             )}
           </>

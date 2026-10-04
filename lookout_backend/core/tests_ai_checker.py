@@ -1,7 +1,7 @@
 import json
 
 import numpy as np
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase
 
 from core.vision import ai_checker as A
 
@@ -118,3 +118,47 @@ class NoteHonestyTests(SimpleTestCase):
                          "bottle detected; 3 people close together")
         self.assertEqual(A.system_note("drinking", people=3, minutes=0.5, stationary=True),
                          "bottle detected; 3 people stationary together")
+
+
+class CardOmittedWhenThereIsNoCheckerTests(TestCase):
+    """`ai_context` is None for a violation the checker does not cover.
+
+    None is not the same as "unavailable". Unavailable means a check was
+    expected and produced no answer — the reader is entitled to wonder where
+    the AI's opinion went, so the card says so. Parking has no checker at all:
+    its question is a measurement, already answered exactly by geometry. A card
+    reading "AI context unavailable" on every parking alert advertises a
+    missing feature that was never meant to be there, so the field is omitted
+    and the clients draw nothing.
+    """
+
+    def setUp(self):
+        from django.utils import timezone
+        from core.models import Alert, Camera, ViolationType
+        self.cam = Camera.objects.create(code="CAM-SMOKE-01", name="Hikvision")
+        self.now = timezone.now()
+        self.Alert = Alert
+        self.vtype = lambda code: ViolationType.objects.get_or_create(
+            code=code, defaults={"label": code.title(), "color": "#000", "icon": "x"})[0]
+
+    def _context(self, code, cues):
+        from core.serializers import AlertSerializer
+        alert = self.Alert.objects.create(type=self.vtype(code), camera=self.cam,
+                                          confidence=0.6, timestamp=self.now, cues=cues)
+        return AlertSerializer(alert).data["ai_context"]
+
+    def test_parking_gets_no_ai_card(self):
+        # watch_parking writes no "kind" into cues, because it does no scoring.
+        self.assertIsNone(self._context("parking", {}))
+
+    def test_a_covered_violation_still_gets_the_card_even_with_no_check(self):
+        # A smoking alert whose check failed or never ran MUST keep the card:
+        # "unavailable" there is real information about a real gap.
+        ctx = self._context("smoking", {"kind": "smoking"})
+        self.assertIsNotNone(ctx)
+        self.assertEqual(ctx["state"], "unavailable")
+
+    def test_thief_is_recognised_as_holdup_and_keeps_its_card(self):
+        # kind_for maps thief/knife/weapon onto "holdup"; a mismatch here would
+        # silently strip the cards off every theft alert.
+        self.assertIsNotNone(self._context("theft", {"kind": "thief"}))

@@ -48,7 +48,7 @@ from .models import (
     Zone,
     normalize_name,
 )
-from .permissions import IsAdmin, IsAdminOrReadOnly
+from .permissions import CanEditOwnOpenCitation, IsAdmin, IsAdminOrReadOnly
 from .throttling import (
     LoginThrottle,
     OtpSendThrottle,
@@ -549,7 +549,29 @@ class CameraViewSet(viewsets.ModelViewSet):
         m = re.search(r"/Channels/(\d+)", parsed.path)
         if m:
             channel = m.group(1)
-        snap_url = f"http://{host}/ISAPI/Streaming/channels/{channel}/picture"
+
+        # The scheme follows stream_url, and the port with it.
+        #
+        # A camera on the LAN is addressed rtsp://user:pass@192.168.1.64:554/...
+        # and its ISAPI stills are plain http on port 80 — so rtsp (and
+        # anything else) means http, as it always did.
+        #
+        # But when the API runs in the cloud and the camera sits behind an
+        # ngrok tunnel, stream_url holds the tunnel instead:
+        # https://user:pass@abc.ngrok-free.app/Streaming/Channels/102. Forcing
+        # http:// there fails outright — ngrok's edge only speaks TLS — and the
+        # symptom is "Camera unreachable" with a connection error that says
+        # nothing about the scheme. Honouring an explicit http/https lets the
+        # same field describe either topology.
+        # The PORT is only carried over for an explicit http/https URL. An RTSP
+        # one names the RTSP port (554), and ISAPI is not served there — reusing
+        # it produces http://camera:554/ISAPI/... which never answers.
+        if parsed.scheme in ("http", "https"):
+            scheme = parsed.scheme
+            netloc = host if parsed.port is None else f"{host}:{parsed.port}"
+        else:
+            scheme, netloc = "http", host
+        snap_url = f"{scheme}://{netloc}/ISAPI/Streaming/channels/{channel}/picture"
 
         try:
             r = requests.get(snap_url, auth=HTTPDigestAuth(user, pw), timeout=6)
@@ -665,7 +687,7 @@ class CitationViewSet(viewsets.ModelViewSet):
     queryset = Citation.objects.select_related("alert", "officer").prefetch_related("violations").all()
     serializer_class = CitationSerializer
     filterset_class = CitationFilter
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, CanEditOwnOpenCitation]
 
     def perform_create(self, serializer):
         """Filing a citation against an alert resolves that alert in the same
@@ -722,6 +744,65 @@ class CitationViewSet(viewsets.ModelViewSet):
                     status=Alert.Status.RESOLVED, reviewed_by=self.request.user,
                     reviewed_at=timezone.now(), reviewed_valid=True)
                 timeline.add(citation.alert_id, "resolved", "Resolved · citation issued", by=who)
+
+    def perform_update(self, serializer):
+        """Correcting a filed citation. Who may, and when, is CanEditOwnOpenCitation.
+
+        The entered names are the citation's own snapshot of what was typed,
+        but `violator` is a LINK to a person record resolved from them. Saving
+        a corrected name without re-resolving that link leaves the citation
+        reading "Juan Cruz" while still counting against whoever it was first
+        matched to — the kind of wrong that looks right on screen and only
+        surfaces much later, in somebody's citation history. So the same
+        resolution perform_create runs happens again here whenever the
+        normalized name actually changes.
+
+        Deliberately NOT done here:
+
+        * The alert is never touched. resolve_alert is a create-time decision
+          about finishing a scene; an edit is not a second filing, and
+          re-resolving (or un-resolving) on a correction would let a typo fix
+          silently reopen or close an incident.
+        * The old Violator is left alone. It may be shared with other
+          citations, and a person record with no citations is still a real
+          record — pruning it here would be a side effect nobody asked for.
+        * client_uuid is left alone. It identifies the original submission for
+          retry purposes; an edit is not a new submission.
+        """
+        citation = serializer.instance
+        data = serializer.validated_data
+        # Create-time instructions, not part of the record. Dropped quietly
+        # because an older client may still send them; the identity fields
+        # (alert / officer / violator) are REFUSED instead, in
+        # CitationSerializer.validate — see there for why the two differ. The
+        # pops below are belt-and-braces for any future caller that reaches
+        # perform_update without passing through that validator.
+        for field in ("resolve_alert", "client_uuid", *CitationSerializer.IDENTITY_FIELDS):
+            data.pop(field, None)
+
+        def entered(field):
+            """The value this save will leave on the row — PATCH is partial, so
+            a field the client left out keeps what is already stored."""
+            return data.get(f"{field}_entered", getattr(citation, f"{field}_entered"))
+
+        with transaction.atomic():
+            # Always from the names. There is no "did you mean" confirmation
+            # flow on update the way there is on create, so a name is the only
+            # thing a correction can be resolved from.
+            first, middle = entered("first_name"), entered("middle_name")
+            last, suffix = entered("last_name"), entered("suffix")
+            normalized = normalize_name(first, middle, last)
+            if normalized == citation.violator.normalized_name:
+                serializer.save()
+                return
+            violator, _ = Violator.objects.get_or_create(
+                normalized_name=normalized,
+                defaults={"first_name": first, "middle_name": middle,
+                          "last_name": last, "suffix": suffix},
+            )
+            violator.last_seen = timezone.now()
+            violator.save(update_fields=["last_seen"])
+            serializer.save(violator=violator)
 
 
 class ViolatorViewSet(viewsets.ReadOnlyModelViewSet):
@@ -810,14 +891,23 @@ class AlertViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         """Monitoring events are a quiet watchlist (spec v6): they never appear in
         the normal alert list or notify anyone. Ask for them explicitly with
-        ?level=monitoring (the dashboard watchlist) or ?include_monitoring=1."""
+        ?level=monitoring (the dashboard watchlist) or ?include_monitoring=1.
+
+        Both lists split on peak_level, NOT on the current level, so the two
+        remain a clean partition and nothing can fall between them. An event
+        that reached Possible and then faded back to Monitoring stays in
+        Potential Violations and does not reappear on the watchlist: it has
+        already earned a reviewer's attention, and having it vanish from under
+        them mid-review was the behaviour this replaces. Its badge still reads
+        the CURRENT status — only where it is listed is decided by the peak.
+        """
         qs = super().get_queryset()
         if self.action == "list":
             params = self.request.query_params
             if params.get("level") == "monitoring":
-                return qs.filter(level="monitoring")
+                return qs.filter(peak_level="monitoring")
             if params.get("include_monitoring") not in ("1", "true"):
-                qs = qs.exclude(level="monitoring")
+                qs = qs.exclude(peak_level="monitoring")
         return qs
 
     # Statuses that mean somebody has looked at the footage and closed the
@@ -922,7 +1012,25 @@ DETECTION_COMMANDS = {
     # ViolationTypes; "merged" itself is only the DetectionJob's own label,
     # not a ViolationType.
     "merged": "watch_merged",
+    # The same three plus road-edge obstruction, from one feed (see
+    # watch_merged_all.py). Parking's own detector and rule layer run
+    # alongside the merged model's, so a single run can produce alerts of all
+    # four ViolationTypes. Obstruction only — it refuses to start without a
+    # marked no-parking area, which is why it is in EDGE_REQUIRED below.
+    "merged4": "watch_merged_all",
 }
+# Detectors that judge vehicles against a marked no-parking area. Two tiers,
+# because the two mean different things to a caller:
+#
+#   EDGE_CAPABLE   an area is used if one was drawn, and the run is still
+#                  valid without it. "parking" falls back to its plain dwell
+#                  rule (see watch_parking.py).
+#   EDGE_REQUIRED  the run is refused without one. watch_merged_all has no
+#                  fallback on purpose, so rejecting it here turns what would
+#                  be a FAILED job with the reason buried in a subprocess log
+#                  into an immediate, visible error on the page.
+EDGE_REQUIRED = frozenset({"merged4"})
+EDGE_CAPABLE = frozenset({"parking"}) | EDGE_REQUIRED
 DETECTION_UPLOAD_EXTENSIONS = {".mp4", ".mkv", ".avi"}
 DETECTION_MAX_UPLOAD_BYTES = 1024 * 1024 * 1024  # 1GB
 
@@ -1053,7 +1161,21 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
             "height": h,
         })
 
+    # Refused where the detectors cannot run. A job here Popens `manage.py
+    # watch_*`, which needs the GPU, the model weights and the camera — none of
+    # which exist on the hosted API. Without this the job row is created, the
+    # subprocess dies on a missing .pt file, and the page sits on "processing"
+    # for ever with the reason in a log nobody opens. 503 says it is the
+    # server's capability, not the request, that is wrong.
+    DETECTION_DISABLED = (
+        "This server does not run detectors — it has no GPU, no model weights "
+        "and no camera. Run detection on the machine beside the camera; its "
+        "alerts appear here automatically."
+    )
+
     def create(self, request, *args, **kwargs):
+        if not getattr(django_settings, "DETECTION_ENABLED", True):
+            return Response({"detail": self.DETECTION_DISABLED}, status=503)
         violation_type = request.data.get("violation_type", "")
         command = DETECTION_COMMANDS.get(violation_type)
         if command is None:
@@ -1080,6 +1202,17 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
                 return Response({"detail": "Camera not found."}, status=400)
             if not camera.stream_url:
                 return Response({"detail": "Camera has no stream_url configured."}, status=400)
+            # A live run takes the area off the camera record (Live Feeds →
+            # Edge Zones), so there is nothing to stage — but an EDGE_REQUIRED
+            # detector still cannot run without one, and the camera row is the
+            # only place to check.
+            if violation_type in EDGE_REQUIRED and not camera.edges:
+                return Response(
+                    {"detail": f"{camera.name} has no no-parking area saved. Draw one on "
+                               "Live Feeds → Edge Zones first — this detector judges "
+                               "vehicles by how much of them sits inside that area."},
+                    status=400,
+                )
             source_arg = camera.stream_url
             source_filename = f"Live — {camera.name}"
             camera_code = camera.code
@@ -1140,23 +1273,34 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
             # camera with that suffix. Do not rename or drop it.
             camera_code = f"CAM-{violation_type.upper()}-TEST"
 
-            # Parking-only: edges drawn against the staged frame are written onto
-            # the shared CAM-PARKING-TEST camera before the subprocess starts, so
-            # watch_parking's own self.camera.edges branch (which correctly
-            # rescales from edges_width/height to whatever the clip actually
-            # decodes at — see watch_parking._build_monitors) picks them up. Two
-            # parking runs started close together will race on this shared row;
-            # accepted as a known limitation of the existing single-camera test
-            # harness rather than fixed here.
+            # Edge-using detectors only: edges drawn against the staged frame
+            # are written onto the shared CAM-<TYPE>-TEST camera before the
+            # subprocess starts, so watch_parking's own self.camera.edges
+            # branch (which correctly rescales from edges_width/height to
+            # whatever the clip actually decodes at — see
+            # watch_parking._build_monitors) picks them up, whether it is
+            # running as the parking watcher or as watch_merged_all's fourth
+            # engine. Two runs of the same type started close together will
+            # race on this shared row; accepted as a known limitation of the
+            # existing single-camera test harness rather than fixed here.
             edges_raw = request.data.get("edges")
-            if violation_type == "parking" and edges_raw:
+            if violation_type in EDGE_REQUIRED and not edges_raw:
+                return Response(
+                    {"detail": "Draw the no-parking area on the clip's first frame "
+                               "before starting this run — it judges vehicles by how "
+                               "much of them sits inside that area, so without one "
+                               "there is nothing to judge them against."},
+                    status=400,
+                )
+            if violation_type in EDGE_CAPABLE and edges_raw:
                 try:
                     edges = json.loads(edges_raw) if isinstance(edges_raw, str) else edges_raw
                 except ValueError:
                     return Response({"detail": "Invalid edges JSON."}, status=400)
                 test_camera, _ = Camera.objects.get_or_create(
                     code=camera_code,
-                    defaults={"name": "Parking Monitor", "status": Camera.Status.ONLINE},
+                    defaults={"name": f"{violation_type.capitalize()} Monitor",
+                              "status": Camera.Status.ONLINE},
                 )
                 test_camera.edges = edges
                 edges_width = request.data.get("edges_width")
@@ -1194,10 +1338,31 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
             # watchers never define this flag, so passing it to them would
             # make argparse reject the whole command outright.
             cascade_args = ["--cascade"] if violation_type == "smoking" else []
+            # Trim: run over part of an uploaded clip instead of all of it.
+            # Every watcher this page can launch takes --start/--end (see
+            # core/vision/trim.py), so unlike --cascade this needs no per-type
+            # guard. Never for a live camera, which has no position to seek to.
+            if camera is None:
+                try:
+                    trim_start = float(request.data.get("trim_start") or 0)
+                    trim_end = float(request.data.get("trim_end") or 0)
+                except (TypeError, ValueError):
+                    log_file.close()
+                    return Response({"detail": "trim_start / trim_end must be seconds."},
+                                    status=400)
+                if trim_start < 0 or (trim_end and trim_end <= trim_start):
+                    log_file.close()
+                    return Response({"detail": "The trim must end after it starts."},
+                                    status=400)
+                if trim_start:
+                    cascade_args += ["--start", f"{trim_start:.3f}"]
+                if trim_end:
+                    cascade_args += ["--end", f"{trim_end:.3f}"]
             # Footage start time ("recorded at"): drives the holdup time block and the drinking
             # evening band. Only for uploaded clips, and only the commands that take --clock.
             recorded_at = (request.data.get("recorded_at") or "").strip().replace("T", " ")[:16]
-            if recorded_at and camera is None and violation_type in ("drinking", "thief", "merged"):
+            if recorded_at and camera is None and violation_type in (
+                    "drinking", "thief", "merged", "merged4"):
                 from core.vision.clock import parse_clock
                 try:
                     parse_clock(recorded_at)

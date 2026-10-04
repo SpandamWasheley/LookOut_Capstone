@@ -63,7 +63,16 @@ class LiveMonitor:
 
     def start(self, user=None):
         """-> (ok, message)"""
+        from django.conf import settings as django_settings
+
         from core.models import Camera
+
+        # Same reason as DetectionJobViewSet: this Popens watch_merged, which
+        # needs the GPU, the weights and the camera. Checked before the lock so
+        # a hosted deployment answers immediately instead of half-starting.
+        if not getattr(django_settings, "DETECTION_ENABLED", True):
+            return False, ("This server does not run detectors. Start live "
+                           "detection on the machine beside the camera.")
         with self._lock:
             if self._want:
                 return True, "Detection is already running."

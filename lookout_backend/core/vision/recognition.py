@@ -936,6 +936,40 @@ def detect_vehicles(frame, conf=0.4, imgsz=VEHICLE_IMGSZ):
     return _vehicle_boxes_from_result(results, conf)
 
 
+def detect_vehicles_tracked(frame, conf=0.4, tracker="bytetrack.yaml",
+                            imgsz=VEHICLE_IMGSZ):
+    """detect_vehicles, but with ultralytics' multi-object tracker attached.
+
+    Returns (x1, y1, x2, y2, conf, label, track_id) tuples; track_id is None
+    while the tracker has not committed to an identity yet. The vehicle
+    equivalent of detect_persons_tracked, and it carries the same caveat:
+    `persist=True` keeps tracker state between calls, so this assumes it is
+    being fed consecutive frames of ONE stream.
+
+    That caveat is why this is a SEPARATE function rather than a flag on
+    detect_vehicles. load_yolo() returns one shared model, so a process that
+    tracked people and vehicles through it would interleave two persist=True
+    conversations into a single tracker state — the corruption watch_merged's
+    docstring describes. Only watch_parking's own loop calls this; the
+    untracked detect_vehicles/detect_vehicles_far stay the entry point for
+    anything that runs alongside the person pass (watch_all, watch_merged_all).
+    """
+    model = load_yolo()
+    results = model.track(frame, verbose=False, persist=True, tracker=tracker,
+                          imgsz=imgsz)[0]
+    out = []
+    for box in results.boxes:
+        cls_id = int(box.cls[0])
+        if cls_id not in VEHICLE_CLASS_IDS:
+            continue
+        if float(box.conf[0]) < conf:
+            continue
+        x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
+        out.append((x1, y1, x2, y2, float(box.conf[0]), VEHICLE_CLASS_IDS[cls_id],
+                    int(box.id[0]) if box.id is not None else None))
+    return out
+
+
 def detect_vehicles_far(frame, conf=0.4, tiles=(2, 2), overlap=0.2,
                         imgsz=VEHICLE_IMGSZ):
     """Long-range vehicle detection for CCTV footage — SAHI-style tiling.

@@ -1278,8 +1278,18 @@ export function ViolationModal({
                   <StatusCard alert={alert} testingTools={testingTools} />
                   <ObjectConfidenceCard alert={alert} />
                 </div>
-                <AIContextCard ai={alert.aiContext} testingTools={testingTools} />
-                <SuggestedStatusCard ai={alert.aiContext} official={alert.levelLabel} />
+                {/* Null (not merely empty) means this violation has no AI checker
+                    at all — parking, whose rule is a measurement with nothing for
+                    a vision model to adjudicate. Drawing "AI context unavailable"
+                    on those alerts advertises a missing feature that was never
+                    meant to exist. A kind that DOES have a checker still gets the
+                    cards when a check failed or is pending, which is information. */}
+                {alert.aiContext && (
+                  <>
+                    <AIContextCard ai={alert.aiContext} testingTools={testingTools} />
+                    <SuggestedStatusCard ai={alert.aiContext} official={alert.levelLabel} />
+                  </>
+                )}
                 {testingTools && <ScoreBreakdown alert={alert} />}
                 <div className="grid grid-cols-2 gap-3">
                   <QuietCard label="Detected object" value={alert.suspect || "—"} />
