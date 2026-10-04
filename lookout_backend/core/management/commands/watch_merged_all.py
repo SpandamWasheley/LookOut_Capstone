@@ -6,29 +6,30 @@ an EXTRA ENGINE (see watch_merged.Command.EXTRA_ENGINES) — the merged model ha
 no vehicle class, so parking brings its own detector and its own rule layer.
 
 Nothing about the obstruction rule is reimplemented here. watch_parking's own
-Command is instantiated and its _load_edges / _build_monitors / _run_obstruction
-/ _create_alert are called directly, exactly as its own handle() would, so the
-share-of-footprint threshold, the hysteresis, the dwell timer, the
-position-keyed cooldown and the pedestrian-detour evidence are the same code
-running here as on a live parking camera. The same holds for the other three:
-their rule layers come from watch_smoking/watch_drinking/watch_thief unchanged.
+Command is instantiated and its _load_zone / _run_zone / _create_alert are
+called directly, exactly as its own handle() would, so the footprint fraction,
+its hysteresis, the stationary gate, the identity recovery and the alert
+cooldown are the same code running here as on a live parking camera. The same
+holds for the other three: their rule layers come from
+watch_smoking/watch_drinking/watch_thief unchanged.
 
-OBSTRUCTION ONLY — THE AREA MUST BE DRAWN FIRST
------------------------------------------------
-watch_parking has two rules and picks between them: with an area marked it
-judges "how much of the vehicle is in it, for how long"; with none it falls back
-to plain dwell, "parked in frame at all for 60 seconds". This command does NOT
-inherit that fallback. With nothing drawn it refuses to start.
+This used to drive the OLDER edge rule (now detection_sandbox/obstruction.py),
+meant parking behaved differently depending on which command you started — the
+live monitor ran watch_parking's zone, this ran the edge monitor, and only the
+former got the fixes that came out of testing on real footage (moving vehicles
+no longer accrue, status follows progress, the polygon is drawn on the
+processing view, a passing vehicle cannot steal a parked one's banked
+seconds). One rule now, everywhere.
 
-That is deliberate. The fallback is reasonable in watch_parking, where the
-operator chose the parking detector and knows which of its two rules they set
-up. Here parking is one of four things running at once, and a silent fallback
-would mean every jeepney that stops at a corner for a minute raises an "illegal
-parking" alert in the middle of a smoking/drinking/holdup run — which reads as
-the detector being broken, not as a missing line. Refusing is the loud version
-of the same information. Draw the area (Run Detection draws it on the clip's
-first frame; a live camera uses Live Feeds -> Edge Zones) and the obstruction
-rule is what runs.
+THE AREA MUST BE DRAWN FIRST
+----------------------------
+With nothing drawn this refuses to start rather than watching the whole frame.
+Parking is one of four things running at once here, so a silent fallback would
+mean every jeepney that stops at a corner raises an "illegal parking" alert in
+the middle of a smoking/drinking/holdup run — which reads as the detector being
+broken, not as a missing polygon. Refusing is the loud version of the same
+information. Draw the area (Run Detection draws it on the clip's first frame; a
+live camera uses Live Feeds -> Edge Zones) and the rule runs.
 """
 import time
 
@@ -43,8 +44,7 @@ class Command(MergedCommand):
         "Runs smoking, drinking and theft off one merged-model pass AND "
         "road-edge obstruction (illegal parking) on the same feed, so one clip "
         "can produce alerts of all four types. A no-parking area must be marked "
-        "first, on the --camera record or via --edges; this command runs the "
-        "obstruction rule only, never watch_parking's plain dwell fallback."
+        "first, on the --camera record or via --zone."
     )
 
     EXTRA_ENGINES = ("parking",)
@@ -52,27 +52,26 @@ class Command(MergedCommand):
     def add_arguments(self, parser):
         super().add_arguments(parser)
         parser.add_argument(
-            "--edges",
-            default=None,
-            help="Path to a JSON file marking the no-parking area, in the "
-                 "coordinates of the frame as processed (no rescaling is "
-                 "applied to a file given here). Omit to use the area stored "
-                 "on the --camera record, which IS rescaled to whatever the "
-                 "source decodes at. Same two shapes watch_parking accepts, "
-                 "mixable in one file. ZONE - a closed polygon around the road "
-                 'itself: {"road": {"type": "zone", "points": [[x,y],...]}}. '
-                 "EDGE - an open kerb line plus the side the footpath is on: "
-                 '{"left": {"points": [[x,y],[x,y]], "side": 1}}.',
+            "--zone", default=None,
+            help="Path to the obstruction polygon JSON written by "
+                 "`python manage.py draw_zone`. Omit to use the area stored on "
+                 "the --camera record, which is what the dashboard's Edge "
+                 "Zones editor writes.",
         )
         parser.add_argument(
-            "--obstruction-pct", type=int, default=None,
-            help="Share of the vehicle's footprint that must be inside the "
-                 "marked area. Omit to use the camera record's value (50).",
+            "--inside-pct", type=int, default=None,
+            help="Share of the vehicle's ground footprint that must be inside "
+                 "the polygon. Omit to use the camera's own value.",
         )
         parser.add_argument(
-            "--obstruction-minutes", type=float, default=None,
-            help="Minutes it must be held before it counts. Omit to use the "
-                 "camera record's value (5).",
+            "--alert-score", type=float, default=None,
+            help="Seconds inside the zone before a vehicle alerts. Omit to use "
+                 "the camera's own 'for N minutes' value.",
+        )
+        parser.add_argument(
+            "--moving-weight", type=float, default=0.0,
+            help="Score rate while the vehicle is still moving, as a fraction "
+                 "of the stopped rate. Default 0: only stopped time counts.",
         )
         parser.add_argument(
             "--parking-confidence", type=float, default=None,
@@ -99,6 +98,9 @@ class Command(MergedCommand):
         cmd.tiles = self.tiles
         cmd.conf_override = options["parking_confidence"]
         cmd.dwell_override = None
+        cmd.tracker_name = f"{options['tracker']}.yaml"
+        cmd.debug_pub = self.debug_pub      # one live-view publisher for all four
+        cmd._area_sent = False
         # watch_merged runs no frame enhancement for its own three engines, so
         # parking sees the same pixels they do rather than a separately
         # brightened copy of the frame they were judged on.
@@ -112,29 +114,21 @@ class Command(MergedCommand):
         cmd._source_path = None
         cmd._video_pos_sec = None
         cmd._raw_buffer = None
-        # Plain-dwell state. Never used (see the module docstring - this
-        # command refuses to run that rule), but _create_alert and the class's
-        # own methods are shared with that path, so leaving the attributes
-        # absent would turn a future wiring mistake into an AttributeError
-        # several minutes into a run instead of a wrong-but-visible alert.
-        cmd._dwell_tracks = {}
-        cmd._dwell_next_id = 0
-
-        # Resolves --edges / camera.edges and the pct+minutes thresholds, and
-        # returns whether that amounts to an area at all.
-        if not cmd._load_edges(options):
-            where = ("the --edges file" if options.get("edges")
-                     else f"camera {self.camera.code}")
-            return (
-                f"No no-parking area is marked on {where}, so there is nothing "
-                "to judge a vehicle against. This command runs the obstruction "
-                "rule only and will not fall back to watch_parking's plain "
-                "dwell rule (see this command's module docstring for why) - "
-                "draw the area first, then start the run. Run Detection draws "
-                "it on the clip's first frame; a live camera uses Live Feeds "
-                "-> Edge Zones. Use `watch_merged` for the three person-based "
-                "violations without parking."
-            )
+        # The polygon and its two thresholds, resolved exactly as watch_parking
+        # resolves them: the camera record first, then a --zone file. Returns
+        # None and prints why when there is no area to judge against, which
+        # refuses the whole run — see this command's module docstring.
+        zone, where = cmd._load_zone(options)
+        if zone is None:
+            return ("No no-parking area, so there is nothing to judge a vehicle "
+                    "against. Draw one first (Live Feeds -> Edge Zones, or "
+                    "`python manage.py draw_zone`), or use `watch_merged` for "
+                    "the three person-based violations without parking.")
+        cmd.zone = zone
+        self.stdout.write(self.style.SUCCESS(
+            f"Obstruction zone from {where} "
+            f"({zone.enter_fraction * 100:.0f}% of the vehicle inside, "
+            f"{zone.alert_score:.0f}s to alert)."))
 
         self.parking = cmd
         return None
@@ -148,27 +142,20 @@ class Command(MergedCommand):
                                     if is_live else None)
 
     def _extra_frame(self, name, frame, now, cfg, debug):
-        """One obstruction pass: detect vehicles, judge each against every
-        marked area, alert on the ones that cross the threshold and hold it."""
+        """One obstruction pass, run by watch_parking's own _run_zone."""
         cmd = self.parking
         # Frames reach this hook before anything has drawn on them (see
-        # watch_merged._process_frame), which is what the raw buffer wants -
-        # clean pixels, not the annotated ones.
+        # watch_merged._process_frame), which is what the raw buffer and the
+        # live view both want - clean pixels, not the annotated ones.
         if cmd._raw_buffer is not None:
             cmd._raw_buffer.add(frame, time.time())
         if cmd._source_path is not None:
             cmd._video_pos_sec = now
+        if cmd.debug_pub is not None and not cmd._area_sent:
+            h, w = frame.shape[:2]
+            cmd.debug_pub.set_area([(x * w, y * h) for x, y in cmd.zone.points_norm])
+            cmd._area_sent = True
 
         conf = cmd.conf_override or (cfg.parking_confidence / 100)
-        vehicles = cmd._detect(frame, conf)
-
-        # Built on the first real frame, not at setup: the area was drawn
-        # against some other resolution (a staged still, a different stream
-        # profile) and _build_monitors rescales it to what this source
-        # actually decodes at. Judging raw pixel coordinates across a
-        # resolution change would silently use the wrong line.
-        if cmd.monitors is None:
-            cmd._build_monitors(frame.shape)
-
-        cmd._run_obstruction(frame, vehicles, now, cfg.alert_cooldown, debug)
+        cmd._run_zone(frame, now, conf)
         cmd.clip.add(frame, now)

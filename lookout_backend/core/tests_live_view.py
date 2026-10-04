@@ -68,9 +68,17 @@ class MonitorTests(TestCase):
         self.assertIn("Draw the road edge for parking", st["notice"])
 
     def test_road_edge_detection(self):
+        # The shapes EdgeCanvas actually saves: {"points": [...], "side": n} for
+        # a kerb line, and {"type": "zone", "points": [...]} for a polygon. This
+        # used to assert on a BARE list of points, a shape nothing writes --
+        # _load_edges would raise AttributeError calling .get on it -- which the
+        # old truthiness test happened to accept. See core/tests_has_road_edge.py
+        # for the full matrix.
         cam = Camera(code="C", name="c", edges={})
         self.assertFalse(has_road_edge(cam))
-        cam.edges = {"left": [[0, 0], [10, 10]], "right": []}
+        cam.edges = {"left": {"points": [[0, 0], [10, 10]], "side": 1}, "right": {}}
+        self.assertTrue(has_road_edge(cam))
+        cam.edges = {"road": {"type": "zone", "points": [[0, 0], [10, 0], [10, 10]]}}
         self.assertTrue(has_road_edge(cam))
 
     def test_monitor_endpoints_are_admin_only(self):

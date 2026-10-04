@@ -40,9 +40,29 @@ def job_dir(job_id):
 
 
 def has_road_edge(camera):
-    """True when the camera has a saved road edge (at least one line with points)."""
+    """True when the camera has a usable no-parking area saved.
+
+    Both shapes count. A ZONE is a closed polygon keyed by "type": "zone" and
+    needs at least three points; a legacy EDGE is an open kerb line keyed
+    left/right and needs two.
+
+    This used to test the left/right keys ALONE. That was correct while the
+    editor drew kerb lines, and silently wrong the moment it became zone-only:
+    a camera with a perfectly good polygon answered False, so the live monitor
+    launched watch_merged and quietly left parking out — no error, no log line,
+    just three violations where four were configured.
+    """
     edges = camera.edges or {}
-    return isinstance(edges, dict) and any(edges.get(side) for side in ("left", "right"))
+    if not isinstance(edges, dict):
+        return False
+    for spec in edges.values():
+        if not isinstance(spec, dict):
+            continue
+        points = spec.get("points") or []
+        minimum = 3 if spec.get("type") == "zone" else 2
+        if len(points) >= minimum:
+            return True
+    return False
 
 
 class LiveMonitor:
