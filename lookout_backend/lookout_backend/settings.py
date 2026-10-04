@@ -52,6 +52,33 @@ DEBUG = config('DEBUG', default=False, cast=bool)
 # machine's IP, e.g. ALLOWED_HOSTS=192.168.1.10
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='', cast=Csv())
 
+# In DEBUG only, add this machine's own LAN addresses.
+#
+# The officer app runs on a phone, so it reaches Django by LAN IP rather than
+# by localhost -- and Django answers a host it does not recognise with a bare
+# 400 before any view runs. Pinning the IP by hand works until the laptop joins
+# a different network, which during testing is constantly; the symptom is every
+# request failing at once with nothing in the server log to explain it.
+#
+# Detected rather than configured, and gated on DEBUG so production still fails
+# closed on an explicit list.
+if DEBUG:
+    import socket as _socket
+
+    _hosts = {'localhost', '127.0.0.1', '10.0.2.2'}   # 10.0.2.2 = Android emulator
+    try:
+        _probe = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        _probe.connect(('8.8.8.8', 80))       # no packets sent; just picks a route
+        _hosts.add(_probe.getsockname()[0])
+        _probe.close()
+    except OSError:
+        pass                                   # offline: localhost is enough
+    try:
+        _hosts.update(_socket.gethostbyname_ex(_socket.gethostname())[2])
+    except OSError:
+        pass
+    ALLOWED_HOSTS = sorted(set(ALLOWED_HOSTS) | _hosts)
+
 # ngrok terminates HTTPS at its edge and forwards plain HTTP to this dev
 # server, setting X-Forwarded-Proto: https on the way — without this, Django
 # has no way to know the original request was secure, so
@@ -113,6 +140,11 @@ INSTALLED_APPS = [
     'rest_framework',
     'django_filters',
     'corsheaders',
+    # Evidence storage on Cloudinary. Harmless when CLOUDINARY_URL is unset:
+    # the apps only register configuration, and STORAGES below decides whether
+    # anything is actually routed to them.
+    'cloudinary',
+    'cloudinary_storage',
     'core',
 ]
 
@@ -329,8 +361,67 @@ MEDIA_ROOT = BASE_DIR / 'media'
 # Works with AWS S3, Cloudflare R2, Backblaze B2, Supabase Storage - anything
 # S3-compatible. Set AWS_STORAGE_BUCKET_NAME to switch it on; leave it unset and
 # Django keeps using the local folder, which is correct for development.
+# CLOUDINARY, checked first. Set CLOUDINARY_URL and nothing else is needed:
+#
+#     CLOUDINARY_URL=cloudinary://<api_key>:<api_secret>@<cloud_name>
+#
+# The cloudinary package reads that variable itself, so the key and secret are
+# never written into this file or into any setting name that gets dumped.
+#
+# RAW, not Media, storage is the default on purpose. Cloudinary splits uploads
+# into three resource types — image, video and raw — and a backend built for
+# one mangles the others. Evidence here is BOTH .jpg stills and .mp4 clips in
+# the same folder, and MediaCloudinaryStorage would try to upload the clips as
+# images. RawMediaCloudinaryStorage stores any file byte-for-byte and serves it
+# back unchanged, which is what evidence needs: no transformation, no
+# re-encoding, no surprises in a court-facing record. Override with
+# CLOUDINARY_STORAGE_BACKEND if you specifically want image transformations.
+# --- can this process run detectors? ----------------------------------------
+# False on the hosted API, True on the PC beside the cameras.
+#
+# The detectors are launched as real subprocesses (`manage.py watch_*`) by
+# DetectionJobViewSet and by the live monitor. That works only where the GPU,
+# the model weights and the camera all are. On Render none of the three exist:
+# the job starts, the subprocess dies on a missing .pt file, and the dashboard
+# shows a run that is "processing" for ever with the reason buried in a
+# subprocess log nobody opens.
+#
+# Explicit rather than inferred, because DATABASE_URL cannot tell them apart —
+# the edge PC sets it too, pointing at the hosted Postgres.
+DETECTION_ENABLED = config('DETECTION_ENABLED', default=True, cast=bool)
+
+# Biggest evidence file published to object storage, in MB. Raw clips run to
+# ~45 MB each and a free Cloudinary plan is 25 GB, so a few hundred alerts
+# would exhaust it and uploads would then fail at the moment somebody needs
+# them. 0 publishes everything. See core/media.py.
+EVIDENCE_MAX_UPLOAD_MB = config('EVIDENCE_MAX_UPLOAD_MB', default=25, cast=int)
+
+CLOUDINARY_URL = config('CLOUDINARY_URL', default='')
 AWS_STORAGE_BUCKET_NAME = config('AWS_STORAGE_BUCKET_NAME', default='')
-if AWS_STORAGE_BUCKET_NAME:
+
+if CLOUDINARY_URL:
+    # The cloudinary SDK configures itself from os.environ['CLOUDINARY_URL'],
+    # which python-decouple does NOT populate — it reads .env straight off disk
+    # and hands the value back without exporting it. Without this line the
+    # storage backend switches over correctly and then every upload fails
+    # unauthenticated, because the SDK never saw a cloud name. On Render the
+    # variable is a real environment variable already, so setdefault leaves it
+    # alone and nothing here can override the platform's own value.
+    os.environ.setdefault('CLOUDINARY_URL', CLOUDINARY_URL)
+    STORAGES['default'] = {'BACKEND': config(
+        'CLOUDINARY_STORAGE_BACKEND',
+        default='cloudinary_storage.storage.RawMediaCloudinaryStorage',
+    )}
+    if AWS_STORAGE_BUCKET_NAME:
+        # Both configured is a misconfiguration, not a preference: evidence
+        # written to one and read from the other is a dead link. Say so rather
+        # than silently picking a winner.
+        import warnings
+        warnings.warn(
+            "Both CLOUDINARY_URL and AWS_STORAGE_BUCKET_NAME are set. "
+            "Cloudinary wins; unset one of them.", RuntimeWarning,
+        )
+elif AWS_STORAGE_BUCKET_NAME:
     AWS_ACCESS_KEY_ID = config('AWS_ACCESS_KEY_ID', default='')
     AWS_SECRET_ACCESS_KEY = config('AWS_SECRET_ACCESS_KEY', default='')
     AWS_S3_REGION_NAME = config('AWS_S3_REGION_NAME', default='auto')
@@ -360,7 +451,3 @@ EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
 EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
 DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default=EMAIL_HOST_USER)
 
-
-# SMS (Semaphore — Philippine SMS gateway)
-SEMAPHORE_API_KEY    = config('SEMAPHORE_API_KEY', default='')
-SEMAPHORE_SENDER_NAME = config('SEMAPHORE_SENDER_NAME', default='LookOut')

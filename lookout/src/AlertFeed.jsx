@@ -2,36 +2,13 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Bell, Clock, AlertTriangle, Radio, CheckCircle, X, Camera as CameraIcon, Moon, Sun, Sunset, ChevronRight, Search } from "lucide-react";
 import { resolveViolationType, violationDisplay } from "./constants/violationTypes";
 import { ViolationModal } from "./ViolationModal";
+import { mapAlert, levelColor } from "./alertModel";
 import { DispatchModal } from "./DispatchModal";
 import { TypeFilterDropdown } from "./TypeFilterDropdown";
-import { getAlerts, getOfficers, getCameras, getHouseholds, getResidents, updateAlert } from "./api";
-
-function mapAlert(raw) {
-  return {
-    id: raw.code,
-    dbId: raw.id,
-    type: raw.type,
-    status: raw.status,
-    camera: raw.camera,
-    cameraZone: raw.camera_zone,
-    timestamp: raw.timestamp,
-    confidence: raw.confidence,
-    description: raw.description,
-    imageUrl: raw.image_url,
-    videoUrl: raw.video_url,
-    rawVideoUrl: raw.raw_video_url,
-    officersAssignedIds: raw.officers_assigned ?? [],
-    officersAssignedNames: raw.officers_assigned_names ?? [],
-    suspect: raw.suspect,
-    notes: raw.notes,
-    matchedPersonId: raw.matched_person,
-    matchedPersonName: raw.matched_person_name,
-    matchConfidence: raw.match_confidence,
-  };
-}
+import { getAlerts, getOfficers, getCameras, updateAlert } from "./api";
 
 function mapOfficer(raw) {
-  return { id: raw.id, name: raw.name, status: raw.status, location: raw.location, badge: raw.badge };
+  return { id: raw.id, name: raw.name, status: raw.status, location: raw.location, badge: raw.badge, address: raw.address ?? "" };
 }
 
 function formatTime(ts) {
@@ -87,7 +64,7 @@ function alertSearchScore(alert, typeLabel, query) {
 }
 
 const statusConfig = {
-  active:       { label: "Active",     color: "#ef4444", bg: "rgba(239,68,68,0.1)"   },
+  active:       { label: "Unassigned", color: "#ef4444", bg: "rgba(239,68,68,0.1)"   },
   acknowledged: { label: "Dismissed",  color: "#64748b", bg: "rgba(100,116,139,0.1)" },
   dispatched:   { label: "Assigned",   color: "#3b82f6", bg: "rgba(59,130,246,0.1)"  },
   resolved:     { label: "Resolved",   color: "#10b981", bg: "rgba(16,185,129,0.1)"  },
@@ -127,7 +104,7 @@ function DismissModal({ alert, onConfirm, onClose }) {
             </div>
             <div>
               <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Dismiss Alert</div>
-              <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>{alert.id} · {vcfg.label}</div>
+              <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>{alert.id} · {vcfg.label}</div>
             </div>
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg"
@@ -166,7 +143,7 @@ function DismissModal({ alert, onConfirm, onClose }) {
                   >
                     {reason === r && <span className="w-2 h-2 rounded-full" style={{ background: "#f59e0b" }} />}
                   </span>
-                  <span className="text-[12px]"
+                  <span className="text-[14px]"
                     style={{ color: reason === r ? "var(--foreground)" : "var(--muted-foreground)" }}>
                     {r}
                   </span>
@@ -221,8 +198,8 @@ const THIN_CARD_H = 56;
 function AlertCard({ alert, onView, thin = false, extraPad = 0 }) {
   const vcfg = violationDisplay(alert.type);
   const VIcon = vcfg.icon;
-  const scfg = statusConfig[alert.status] ?? statusConfig.acknowledged;
   const officerCount = alert.officersAssignedNames.length;
+  const assigned = alert.status === "dispatched";
 
   return (
     <div
@@ -259,12 +236,17 @@ function AlertCard({ alert, onView, thin = false, extraPad = 0 }) {
                   the list stays the same height regardless of title length
                   (e.g. "Parking Obstruction in Area" vs "Smoking"). */}
               <div className="flex items-center gap-2">
-                <span className="text-[13px] font-semibold truncate" style={{ color: "var(--foreground)" }}>
+                <span className="text-[15px] font-semibold truncate" style={{ color: "var(--foreground)" }}>
                   {vcfg.label}
                 </span>
+                {alert.levelLabel && (
+                  <span className="text-[12px] font-semibold flex-shrink-0" style={{ color: levelColor(alert.levelLabel) }}>
+                    {alert.levelLabel}
+                  </span>
+                )}
               </div>
               {/* Row 2: alert ID + reported time + optional officers */}
-              <div className="flex items-center gap-2 text-[10px] overflow-hidden" style={{ color: "var(--muted-foreground)" }}>
+              <div className="flex items-center gap-2 text-[12px] overflow-hidden" style={{ color: "var(--muted-foreground)" }}>
                 <span className="font-medium flex-shrink-0" style={{ fontFamily: "'DM Mono', monospace", color: "var(--foreground)" }}>
                   {alert.id}
                 </span>
@@ -289,16 +271,19 @@ function AlertCard({ alert, onView, thin = false, extraPad = 0 }) {
             <div className="flex-1 min-w-0">
               {/* Row 1: title + status */}
               <div className="flex items-center gap-2 flex-wrap mb-0.5">
-                <span className="text-[13px] font-semibold" style={{ color: "var(--foreground)" }}>
+                <span className="text-[15px] font-semibold" style={{ color: "var(--foreground)" }}>
                   {vcfg.label}
                 </span>
-                <span className="text-[11px] font-medium px-2 py-0.5 rounded-full"
-                  style={{ background: scfg.bg, color: scfg.color }}>
-                  {scfg.label}
-                </span>
+                {alert.levelLabel && (
+                  <span className="text-[13px] font-semibold px-2 py-0.5 rounded-full"
+                    style={{ background: "var(--secondary)", color: levelColor(alert.levelLabel),
+                             border: `1px solid ${levelColor(alert.levelLabel)}55` }}>
+                    {alert.levelLabel}
+                  </span>
+                )}
               </div>
               {/* Row 2: alert ID + time */}
-              <div className="flex items-center gap-3 text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+              <div className="flex items-center gap-3 text-[13px]" style={{ color: "var(--muted-foreground)" }}>
                 <span className="font-medium" style={{ fontFamily: "'DM Mono', monospace", color: "var(--foreground)" }}>
                   {alert.id}
                 </span>
@@ -306,13 +291,15 @@ function AlertCard({ alert, onView, thin = false, extraPad = 0 }) {
               </div>
             </div>
 
-            {/* Right: confidence + officer count */}
-            <div className="flex flex-col items-end gap-1 flex-shrink-0">
-              <span className="text-[11px] font-medium" style={{ color: vcfg.color }}>
-                {(alert.confidence * 100).toFixed(0)}% conf
+            {/* Right: the assignment state (where the "% conf" used to be). */}
+            <div className="flex flex-col items-center gap-1 flex-shrink-0 text-center">
+              <span className="text-[13px] font-semibold px-2 py-0.5 rounded-full"
+                style={{ background: assigned ? "rgba(59,130,246,0.12)" : "rgba(239,68,68,0.10)",
+                         color: assigned ? "#3b82f6" : "#ef4444" }}>
+                {assigned ? "Assigned" : "Unassigned"}
               </span>
               {officerCount > 0 && (
-                <span className="flex items-center gap-1 text-[11px] font-medium" style={{ color: "#3b82f6" }}>
+                <span className="flex items-center gap-1 text-[13px] font-medium" style={{ color: "#3b82f6" }}>
                   <Radio size={9} />
                   {`${officerCount} officer${officerCount !== 1 ? "s" : ""}`}
                 </span>
@@ -345,18 +332,18 @@ function ShiftInfo() {
   const ShiftIcon = shift.Icon;
   return (
     <div className="px-4 py-4">
-      <div className="text-[10px] font-semibold uppercase mb-3"
+      <div className="text-[12px] font-semibold uppercase mb-3"
         style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace", letterSpacing: "0.1em" }}>
         Shift Info
       </div>
       <div className="space-y-2.5">
-        <div className="flex items-center justify-between text-[12px]">
+        <div className="flex items-center justify-between text-[14px]">
           <span className="flex items-center gap-2" style={{ color: "var(--muted-foreground)" }}>
             <ShiftIcon size={12} /> Current shift
           </span>
           <span className="font-semibold" style={{ color: shift.color }}>{shift.name}</span>
         </div>
-        <div className="flex items-center justify-between text-[12px]">
+        <div className="flex items-center justify-between text-[14px]">
           <span className="flex items-center gap-2" style={{ color: "var(--muted-foreground)" }}>
             <Clock size={12} /> Hours
           </span>
@@ -390,7 +377,7 @@ function RightPanel({ alerts, cameras }) {
     : "--:--";
 
   const sectionLabel = (text) => (
-    <div className="text-[10px] font-semibold uppercase mb-3"
+    <div className="text-[12px] font-semibold uppercase mb-3"
       style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace", letterSpacing: "0.1em" }}>
       {text}
     </div>
@@ -402,7 +389,7 @@ function RightPanel({ alerts, cameras }) {
       <div className="px-4 pt-4 pb-4 flex-shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
         {sectionLabel("System Status")}
         <div className="space-y-3">
-          <div className="flex items-center justify-between text-[12px]">
+          <div className="flex items-center justify-between text-[14px]">
             <span className="flex items-center gap-2" style={{ color: "var(--muted-foreground)" }}>
               <CameraIcon size={12} /> Cameras online
             </span>
@@ -410,7 +397,7 @@ function RightPanel({ alerts, cameras }) {
               {onlineCount} / {cameras.length || "—"}
             </span>
           </div>
-          <div className="flex items-center justify-between text-[12px]">
+          <div className="flex items-center justify-between text-[14px]">
             <span className="flex items-center gap-2" style={{ color: "var(--muted-foreground)" }}>
               <Clock size={12} /> Last detection
             </span>
@@ -426,17 +413,17 @@ function RightPanel({ alerts, cameras }) {
         {sectionLabel("Today's Violations")}
         <div className="grid grid-cols-2 gap-2">
           {[
-            { label: "Total",           value: allTimeTotal,    color: "#a855f7" },
-            { label: "Total today",     value: todayTotal,      color: "#f59e0b" },
+            { label: "All time",        value: allTimeTotal,    color: "#a855f7" },
+            { label: "Today",           value: todayTotal,      color: "#f59e0b" },
             { label: "Assigned",        value: dispatchedCount, color: "#3b82f6" },
-            { label: "Active",          value: activeCount,     color: "#ef4444" },
-            { label: "Resolve today",   value: todayResolved,   color: "#10b981" },
+            { label: "Unassigned",      value: activeCount,     color: "#ef4444" },
+            { label: "Resolved today",  value: todayResolved,   color: "#10b981" },
             { label: "Dismissed today", value: todayDismissed,  color: "#64748b" },
           ].map((s) => (
             <div key={s.label} className="rounded-lg p-2.5"
               style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
               <div className="text-xl font-bold leading-none" style={{ color: s.color }}>{s.value}</div>
-              <div className="text-[10px] mt-1" style={{ color: "var(--muted-foreground)" }}>{s.label}</div>
+              <div className="text-[12px] mt-1" style={{ color: "var(--muted-foreground)" }}>{s.label}</div>
             </div>
           ))}
         </div>
@@ -448,7 +435,7 @@ function RightPanel({ alerts, cameras }) {
         {recentAlerts.length === 0 ? (
           <div className="flex flex-col items-center justify-center flex-1 gap-1.5">
             <Bell size={22} style={{ color: "var(--muted-foreground)", opacity: 0.4 }} />
-            <span className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>No active violations</span>
+            <span className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>No incidents awaiting review</span>
           </div>
         ) : (
           <div className="scrollbar-visible flex flex-col gap-2 overflow-y-auto flex-1 min-h-0">
@@ -459,15 +446,15 @@ function RightPanel({ alerts, cameras }) {
                 <div key={a.id} className="rounded-lg p-2.5 flex-shrink-0"
                   style={{ background: "var(--secondary)", borderLeft: `3px solid ${vcfg.color}`, border: "1px solid var(--border)" }}>
                   <div className="flex items-center justify-between mb-1">
-                    <span className="text-[12px] font-semibold truncate pr-1" style={{ color: "var(--foreground)" }}>{vcfg.label}</span>
-                    <span className="text-[10px] font-medium px-1.5 py-0.5 rounded flex-shrink-0"
-                      style={{ background: scfg.bg, color: scfg.color }}>
-                      {scfg.label}
+                    <span className="text-[14px] font-semibold truncate pr-1" style={{ color: "var(--foreground)" }}>{vcfg.label}</span>
+                    <span className="text-[12px] font-semibold px-1.5 py-0.5 rounded flex-shrink-0"
+                      style={{ background: scfg.bg, color: a.levelLabel ? levelColor(a.levelLabel) : scfg.color }}>
+                      {a.levelLabel || scfg.label}
                     </span>
                   </div>
-                  <div className="flex items-center gap-2 text-[10px]" style={{ color: "var(--muted-foreground)" }}>
+                  <div className="flex items-center gap-2 text-[12px]" style={{ color: "var(--muted-foreground)" }}>
                     <span className="flex items-center gap-1"><Clock size={9} /> {formatTime(a.timestamp)}</span>
-                    <span className="ml-auto font-medium" style={{ color: vcfg.color }}>{(a.confidence * 100).toFixed(0)}%</span>
+                    <span className="ml-auto font-medium" style={{ color: a.status === "dispatched" ? "#3b82f6" : "#ef4444" }}>{a.status === "dispatched" ? "Assigned" : "Unassigned"}</span>
                   </div>
                 </div>
               );
@@ -487,12 +474,14 @@ export function AlertFeed({ showFilters = false, user }) {
   const [alerts, setAlerts] = useState([]);
   const [officers, setOfficers] = useState([]);
   const [cameras, setCameras] = useState([]);
-  const [households, setHouseholds] = useState([]);
-  const [residents, setResidents] = useState([]);
   const [selectedAlert, setSelectedAlert] = useState(null);
   const [dispatchingAlert, setDispatchingAlert] = useState(null);
   const [dismissTarget, setDismissTarget] = useState(null);
   const [statusFilter, setStatusFilter] = useState("all");
+  // Monitoring = an object was seen but the evidence is still thin: a quiet watchlist, hidden
+  // here by default (Possible / Likely only). The toggle adds those events to the list.
+  const [showMonitoring, setShowMonitoring] = useState(false);
+  const showMonitoringRef = useRef(false);
   const [typeFilter, setTypeFilter] = useState(new Set());
   const [search, setSearch] = useState("");
   const [sortOrder, setSortOrder] = useState("newest"); // "newest" | "oldest"
@@ -517,7 +506,10 @@ export function AlertFeed({ showFilters = false, user }) {
     // alert must still match a "theft" filter selection (the checkboxes
     // below are built from VIOLATION_TYPES' canonical codes).
     if (typeFilter.size > 0 && !typeFilter.has(resolveViolationType({ code: a.type }).code)) return false;
-    if (!showFilters) return a.status === "active";
+    // Peak, not current: an event that reached Possible stays on this panel even
+    // after its cues fade and it drops back to Monitoring. Same rule the server
+    // applies to the full list (AlertViewSet.get_queryset).
+    if (!showFilters) return a.status === "active" && a.peakLevel !== "monitoring";
     if (statusFilter === "active")     return a.status === "active";
     if (statusFilter === "dispatched") return a.status === "dispatched";
     return true;
@@ -633,19 +625,12 @@ export function AlertFeed({ showFilters = false, user }) {
   };
 
   const refresh = async () => {
-    // households/residents are Phase-1-retired endpoints (404 now) — only
-    // SetCandidateModal/ContactGuardianModal's suspect-tagging still reads
-    // them, so degrade those to empty rather than letting a 404 here take
-    // down the alert list itself via Promise.all's fail-fast behavior.
-    const [alertsRes, officersRes, camerasRes, householdsRes, residentsRes] = await Promise.all([
-      getAlerts(), getOfficers(), getCameras(),
-      getHouseholds().catch(() => []), getResidents().catch(() => []),
+    const [alertsRes, officersRes, camerasRes] = await Promise.all([
+      getAlerts(showMonitoringRef.current ? { include_monitoring: 1 } : undefined), getOfficers(), getCameras(),
     ]);
     setAlerts((alertsRes.results ?? alertsRes).map(mapAlert));
     setOfficers((officersRes.results ?? officersRes).map(mapOfficer));
     setCameras(camerasRes.results ?? camerasRes);
-    setHouseholds(householdsRes.results ?? householdsRes);
-    setResidents(residentsRes.results ?? residentsRes);
   };
 
   useEffect(() => {
@@ -653,6 +638,24 @@ export function AlertFeed({ showFilters = false, user }) {
     const id = setInterval(() => refresh().catch(() => {}), 4000);
     return () => clearInterval(id);
   }, []);
+
+  const toggleMonitoring = () => {
+    showMonitoringRef.current = !showMonitoringRef.current;
+    setShowMonitoring(showMonitoringRef.current);
+    refresh().catch(() => {});
+  };
+
+  // Reopening a closed alert (admin): back to Unassigned, with no officers.
+  const handleReopen = async (alert) => {
+    setActionError("");
+    try {
+      await updateAlert(alert.dbId, { status: "active", officers_assigned: [] });
+      await refresh();
+      setSelectedAlert(null);
+    } catch (err) {
+      setActionError(err.message || "Could not reopen the alert.");
+    }
+  };
 
   // Keep the open modal's alert in sync with the latest fetch — otherwise
   // saves (candidate, dispatch, etc.) only show up after closing/reopening.
@@ -698,17 +701,6 @@ export function AlertFeed({ showFilters = false, user }) {
     }
   };
 
-  const handleUpdateSuspect = async (alertId, names) => {
-    const a = alerts.find((x) => x.id === alertId);
-    if (!a) return;
-    try {
-      await updateAlert(a.dbId, { suspect: names ?? "" });
-      await refresh();
-    } catch (err) {
-      setActionError(err.message || "Failed to update candidate.");
-    }
-  };
-
   // Resolution itself now happens server-side inside the citation POST (see
   // CitationFormModal / core/views.py CitationViewSet.perform_create) — this
   // just refreshes the list and closes up once that's already succeeded.
@@ -719,7 +711,7 @@ export function AlertFeed({ showFilters = false, user }) {
   };
 
   const errorBanner = actionError && (
-    <div className="mb-3 px-3 py-2 rounded-lg text-[12px] flex items-center justify-between gap-2"
+    <div className="mb-3 px-3 py-2 rounded-lg text-[14px] flex items-center justify-between gap-2"
       style={{ background: "rgba(239,68,68,0.12)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.3)" }}>
       <span>{actionError}</span>
       <button onClick={() => setActionError("")} className="font-semibold cursor-pointer flex-shrink-0">✕</button>
@@ -732,15 +724,13 @@ export function AlertFeed({ showFilters = false, user }) {
         <ViolationModal
           alert={selectedAlert}
           assignedOfficerNames={assignedOfficerNames(selectedAlert.id)}
-          households={households}
-          residents={residents}
           officers={officers}
           currentOfficerId={user?.role === "officer" || user?.role === "both" ? user?.officerId : null}
-          verifierName={user?.name}
+          userRole={user?.role}
           onClose={() => setSelectedAlert(null)}
+          onReopen={() => handleReopen(selectedAlert)}
           onDismiss={() => setDismissTarget(selectedAlert)}
           onResolved={handleCitationResolved}
-          onUpdateSuspect={(names) => handleUpdateSuspect(selectedAlert.id, names)}
           onDispatch={() => { setDispatchingAlert(selectedAlert); setSelectedAlert(null); }}
         />
       )}
@@ -777,8 +767,7 @@ export function AlertFeed({ showFilters = false, user }) {
         {visible.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12 gap-2">
             <CheckCircle size={28} style={{ color: "#10b981" }} />
-            <div className="text-sm font-medium" style={{ color: "var(--foreground)" }}>No active violations</div>
-            <div className="text-xs" style={{ color: "var(--muted-foreground)" }}>All zones clear</div>
+            <div className="text-sm font-medium" style={{ color: "var(--foreground)" }}>No incidents awaiting review</div>
           </div>
         ) : (
           <div ref={compactListRef} className="flex-1 min-h-0 overflow-hidden flex flex-col"
@@ -789,7 +778,7 @@ export function AlertFeed({ showFilters = false, user }) {
             {compactHidden > 0 && (
               <button
                 onClick={() => setShowAllRecent(true)}
-                className="h-[34px] flex-shrink-0 flex items-center justify-center gap-1 text-[11px] font-semibold rounded-lg transition-colors"
+                className="h-[34px] flex-shrink-0 flex items-center justify-center gap-1 text-[13px] font-semibold rounded-lg transition-colors"
                 style={{ color: "var(--primary)", background: "transparent" }}
                 onMouseEnter={(e) => (e.currentTarget.style.background = "var(--secondary)")}
                 onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
@@ -815,7 +804,7 @@ export function AlertFeed({ showFilters = false, user }) {
                   <span className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>
                     Recent Violations
                   </span>
-                  <span className="text-[11px] font-medium px-2 py-0.5 rounded-full"
+                  <span className="text-[13px] font-medium px-2 py-0.5 rounded-full"
                     style={{ background: "rgba(239,68,68,0.12)", color: "#ef4444" }}>
                     {visible.length}
                   </span>
@@ -871,13 +860,13 @@ export function AlertFeed({ showFilters = false, user }) {
                 Potential Violations
               </h1>
               {activeCount > 0 && (
-                <span className="flex items-center gap-1.5 text-[12px] font-medium px-2.5 py-1 rounded-full"
+                <span className="flex items-center gap-1.5 text-[14px] font-medium px-2.5 py-1 rounded-full"
                   style={{ background: "rgba(239,68,68,0.15)", color: "#ef4444" }}>
-                  <Bell size={11} /> {activeCount} active
+                  <Bell size={11} /> {activeCount} unassigned
                 </span>
               )}
             </div>
-            <span className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>
+            <span className="text-[14px]" style={{ color: "var(--muted-foreground)" }}>
               AI-detected · evidence captured · human review required
             </span>
           </div>
@@ -889,9 +878,10 @@ export function AlertFeed({ showFilters = false, user }) {
 
         {/* Left column: filter bar + alert list */}
         <div className="flex-1 min-w-0 flex flex-col overflow-hidden px-6">
-          {/* Filter row */}
-          <div className="flex items-center justify-between flex-wrap gap-x-4 gap-y-2 py-3 flex-shrink-0">
-            <div className="flex items-center gap-1.5 flex-shrink-0">
+          {/* One toolbar row: filter chips on the left; search, sort and the record count
+              right-aligned. Wraps onto a second line only when the screen is too narrow. */}
+          <div className="flex items-center flex-wrap gap-x-3 gap-y-2 py-3 flex-shrink-0">
+            <div className="flex items-center flex-wrap gap-1.5 min-w-0">
               {(["all", "active", "dispatched"]).map((s) => {
                 const isActive = statusFilter === s;
                 const scfg = statusConfig[s];
@@ -899,40 +889,50 @@ export function AlertFeed({ showFilters = false, user }) {
                   <button
                     key={s}
                     onClick={() => setStatusFilter(s)}
-                    className="px-3 py-1 text-xs font-medium rounded-full transition-all capitalize"
+                    className="px-3 py-1 text-xs font-medium rounded-full transition-all capitalize whitespace-nowrap"
                     style={{
                       background: isActive ? (s === "all" ? "var(--primary)" : scfg.bg) : "var(--secondary)",
                       color: isActive ? (s === "all" ? "var(--primary-foreground)" : scfg.color) : "var(--muted-foreground)",
                       border: `1px solid ${isActive ? (s === "all" ? "var(--primary)" : scfg.color + "40") : "var(--border)"}`,
                     }}
                   >
-                    {s === "all" ? "All active" : scfg?.label ?? s}
+                    {s === "all" ? "All" : scfg?.label ?? s}
                   </button>
                 );
               })}
 
-              {/* Type filter — shared with the Violator Log's, so the two
-                  can't drift into different rules/looks again. Checkbox
-                  values are canonical codes, matched in `filtered` above via
-                  resolveViolationType so a "thief"-coded alert still counts
+              <button
+                onClick={toggleMonitoring}
+                className="px-3 py-1 text-xs font-medium rounded-full transition-all whitespace-nowrap"
+                title="Monitoring events: an object was seen, the evidence is still thin. A quiet watchlist with no notification."
+                style={{
+                  background: showMonitoring ? "rgba(100,116,139,0.18)" : "var(--secondary)",
+                  color: showMonitoring ? "#64748b" : "var(--muted-foreground)",
+                  border: `1px solid ${showMonitoring ? "#64748b66" : "var(--border)"}`,
+                }}>
+                {showMonitoring ? "✓ " : ""}Include Monitoring
+              </button>
+
+              {/* Type filter — shared with the Violator Log's, so the two can't drift into
+                  different rules/looks again. Checkbox values are canonical codes, matched in
+                  `filtered` above via resolveViolationType so a "thief"-coded alert still counts
                   under "Theft". */}
-              <div className="ml-1">
-                <TypeFilterDropdown
-                  selected={typeFilter}
-                  onToggle={toggleType}
-                  onClear={() => setTypeFilter(new Set())}
-                />
-              </div>
+              <TypeFilterDropdown
+                selected={typeFilter}
+                onToggle={toggleType}
+                onClear={() => setTypeFilter(new Set())}
+              />
             </div>
 
-            <div className="flex items-center gap-2 min-w-0">
-              <div className="relative w-56 min-w-0">
+            <div className="flex items-center flex-wrap gap-2 ml-auto min-w-0">
+              <div className="relative w-44 min-w-[8rem]">
                 <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2"
                   style={{ color: "var(--muted-foreground)" }} />
                 <input
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Search by Alert ID, type, zone…"
+                  placeholder="Search…"
+                  title="Search by Alert ID, type, zone or description"
                   className="w-full pl-8 pr-3 py-1.5 rounded-lg text-xs outline-none"
                   style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
                 />
@@ -946,7 +946,7 @@ export function AlertFeed({ showFilters = false, user }) {
                     <button
                       key={o.key}
                       onClick={() => setSortOrder(o.key)}
-                      className="px-2.5 py-1 text-[11px] font-medium rounded-full transition-all whitespace-nowrap"
+                      className="px-2.5 py-1 text-[13px] font-medium rounded-full transition-all whitespace-nowrap"
                       style={{
                         background: isActive ? "var(--card)" : "transparent",
                         color: isActive ? "var(--foreground)" : "var(--muted-foreground)",
@@ -959,7 +959,7 @@ export function AlertFeed({ showFilters = false, user }) {
                 })}
               </div>
 
-              <span className="text-[12px] whitespace-nowrap flex-shrink-0" style={{ color: "var(--muted-foreground)" }}>
+              <span className="text-[14px] whitespace-nowrap flex-shrink-0" style={{ color: "var(--muted-foreground)" }}>
                 {visible.length} record{visible.length !== 1 ? "s" : ""}
               </span>
             </div>
@@ -973,13 +973,13 @@ export function AlertFeed({ showFilters = false, user }) {
                 <CheckCircle size={28} style={{ color: "#10b981" }} />
                 <div className="text-sm font-medium" style={{ color: "var(--foreground)" }}>
                   {ongoing.length === 0
-                    ? "No active violations"
+                    ? "No incidents awaiting review"
                     : search.trim()
                       ? "No violations match your search"
                       : "No violations match this filter"}
                 </div>
                 <div className="text-xs" style={{ color: "var(--muted-foreground)" }}>
-                  {search.trim() ? `Try a different Alert ID or keyword than "${search.trim()}"` : "All zones clear"}
+                  {search.trim() ? `Try a different Alert ID or keyword than "${search.trim()}"` : "Nothing is waiting for review"}
                 </div>
               </div>
             ) : (

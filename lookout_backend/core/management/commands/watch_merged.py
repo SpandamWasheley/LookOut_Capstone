@@ -41,7 +41,7 @@ is safe and used by default for person tracking (see --tracker).
 
 Note: watch_all.py's own reuse of SmokingCommand/DrinkingCommand has two gaps
 this command does NOT repeat — it calls _process_track with too few
-positional arguments for smoking/drinking (missing face_threshold, which
+positional arguments for smoking/drinking (a missing argument, which
 raises TypeError on the first frame with any person in view) and never
 drives drinking's Path B (GroupTracker/_process_cluster) at all.
 """
@@ -55,13 +55,19 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 
 from core.models import Camera, SystemSettings, ViolationType
+from core.vision import clock as vclock
 from core.vision import recognition, tracking
+from core.vision import trim as trimming
+
+from core.vision import debug_view
+
+from ._incidents import ai_setup
 
 from .watch_smoking import Command as SmokingCommand
 from .watch_thief import Command as ThiefCommand
 from .watch_drinking import Command as DrinkingCommand
 
-MERGED_CAMERA_CODE = "CAM-MERGED-TEST"
+MERGED_CAMERA_CODE = "CAM-SMOKE-01"
 SETTINGS_REFRESH_SECONDS = 5
 
 # Merged model class name -> which rule engine owns it. Matched
@@ -78,6 +84,39 @@ class Command(BaseCommand):
         "layers, so one clip can produce alerts of all three types. Use "
         "--source for an RTSP/CCTV URL or video file."
     )
+
+    # Engines that do NOT come from the merged model. It has three classes
+    # (Bottle/Cigarette/knife) and no vehicle class, so a fourth violation has
+    # to bring its own detector and its own rule layer; that is what an extra
+    # engine is. Empty here, so this command keeps running exactly the three it
+    # always has — watch_merged_all.py sets it to ("parking",).
+    EXTRA_ENGINES = ()
+
+    # ---- extra-engine hooks (no-ops unless EXTRA_ENGINES is non-empty) ------
+    #
+    # Deliberately hooks rather than four entries in self.engines: everything
+    # in self.engines shares ONE merged-model pass and is filtered out of it by
+    # class name, and several places here are written around that (the shared
+    # conf_floor taken as the minimum of the active engines' confidences, the
+    # per-class floors, ROUTE_ENGINE). A vehicle engine satisfies none of it,
+    # so folding it in would quietly make those lines wrong — e.g. a parking
+    # confidence of 35 dragging the merged model's inference floor down for
+    # smoking and drinking too.
+
+    def _setup_extra(self, options):
+        """Build the extra engines' state. Called once, after the camera,
+        evidence dir and AI checker exist and before the capture opens. Return
+        an error message to refuse the run (same contract as
+        _check_route_coverage), or None to proceed."""
+        return None
+
+    def _extra_source(self, source, is_live):
+        """Tell the extra engines where frames are coming from, so they can cut
+        raw evidence clips the same way the merged engines do."""
+
+    def _extra_frame(self, name, frame, now, cfg, debug):
+        """One extra engine's whole per-frame pass: its own detection AND its
+        own rule layer. Called before the merged pass — see _process_frame."""
 
     def add_arguments(self, parser):
         parser.add_argument("--source", default="0",
@@ -100,8 +139,22 @@ class Command(BaseCommand):
                                  "distant objects.")
         parser.add_argument("--tiles", default="2x2",
                             help="Far-mode tiling grid ROWSxCOLS (default 2x2).")
+        parser.add_argument(
+            "--clock", default="",
+            help="Footage start time for an uploaded / test clip, e.g. "
+                 "\"2026-08-18 19:30\". Drives the holdup time block and the "
+                 "drinking evening band (position in the video is added to it). "
+                 "Ignored for live streams; without it the wall clock is used.",
+        )
+        parser.add_argument(
+            "--no-cascade", action="store_true",
+            help="Skip the extra native-resolution person-crop pass for Cigarette "
+                 "(it is on by default: about 0.04 s/frame, finds cigarettes the "
+                 "downscaled passes miss).",
+        )
         parser.add_argument("--dry-run", action="store_true",
                             help="Detect and save evidence but write no Alert rows.")
+        trimming.add_cli_flags(parser)
         parser.add_argument("--debug", action="store_true",
                             help="Show a preview window with every engine's boxes.")
         parser.add_argument("--stats", action="store_true",
@@ -144,13 +197,20 @@ class Command(BaseCommand):
 
         self.camera, _ = Camera.objects.get_or_create(
             code=options["camera"],
-            defaults={"name": "Merged-Model Monitor", "status": Camera.Status.ONLINE},
+            defaults={"name": "Hikvision DS-2CD1047G2", "status": Camera.Status.ONLINE},
         )
         self.violations_dir = settings.MEDIA_ROOT / "violations"
         os.makedirs(self.violations_dir, exist_ok=True)
 
+        # One AI checker (client + full-res frame ring) shared by all three engines.
+        self.ai_state = ai_setup(self.stdout)
+        self.debug_pub = debug_view.DebugPublisher.from_env()    # None unless LOOKOUT_DEBUG_DIR is set
+
         self.far = not options["fast"]
         self.dry_run = options["dry_run"]
+        self.trim = trimming.Trim(options["start"], options["end"])
+        self.cascade = not options["no_cascade"]
+        self.clock_start = vclock.parse_clock(options.get("clock"))
         self.tracker_name = options["tracker"]
         self.show_stats = options["stats"]
         try:
@@ -162,7 +222,7 @@ class Command(BaseCommand):
             return
 
         only = {s.strip() for s in options["only"].split(",") if s.strip()}
-        valid = {"smoking", "drinking", "thief"}
+        valid = {"smoking", "drinking", "thief"} | set(self.EXTRA_ENGINES)
         if only - valid:
             self.stdout.write(self.style.ERROR(
                 f"--only: unknown {', '.join(only - valid)}. Valid: {', '.join(valid)}."))
@@ -186,6 +246,11 @@ class Command(BaseCommand):
             self.engines[name] = {"cmd": cmd, "tracker": tracking.PersonTracker()}
         self.engines["drinking"]["group_tracker"] = tracking.GroupTracker()
 
+        refused = self._setup_extra(options)
+        if refused:
+            self.stdout.write(self.style.ERROR(refused))
+            return
+
         self._run(options["source"], options["debug"])
 
     # ---- sub-command wiring -------------------------------------------------
@@ -199,6 +264,7 @@ class Command(BaseCommand):
         cmd.camera = self.camera
         cmd.violations_dir = self.violations_dir
         cmd.dry_run = self.dry_run
+        cmd.clock_start = self.clock_start     # drinking evening band, holdup time block
         cmd.far = self.far
         cmd.tiles = self.tiles
         cmd.conf_override = None
@@ -206,6 +272,10 @@ class Command(BaseCommand):
         cmd.tracker_name = "greedy"  # never consulted — we own person detection here
         cmd.show_stats = False
         cmd.ablate = set()
+        # ONE ring and one client shared by all three engines (same camera, same frames).
+        cmd.__dict__.update(self.ai_state)
+        cmd.debug_pub = self.debug_pub        # one live-view publisher for all three engines
+        cmd._debug_checked = True
         cmd.stats = Counter()
         cmd._alert_log = []
         cmd.stdout = self.stdout
@@ -227,9 +297,9 @@ class Command(BaseCommand):
         # anything run through it — don't repeat that here.
         cmd.clip = recognition.ClipRecorder(seconds=30, label=self.camera.code)
         if name == "smoking":
-            cmd.face_check = True
+            cmd.mouth_check = True
         elif name == "drinking":
-            cmd.face_check = True
+            cmd.mouth_check = True
             cmd.include_generic = False  # skipped for v1 — see watch_merged's design notes
             cmd.zones = []
             cmd.min_group_override = None
@@ -304,11 +374,18 @@ class Command(BaseCommand):
             cmd = self.engines[name]["cmd"]
             cmd._source_path = None if is_live else source
             cmd._raw_buffer = recognition.RawFrameRecorder() if is_live else None
+        self._extra_source(source, is_live)
+        # Jump straight to the chosen start rather than decoding and throwing
+        # away everything before it — on CPU that discarded prefix costs the
+        # same per frame as the part being tested.
+        if self.trim.seek(cap, is_live):
+            self.stdout.write(self.style.SUCCESS(
+                f"Trimmed to {self.trim.describe()} of the clip."))
 
         cfg = SystemSettings.load()
         cfg_at = time.time()
         mode = f"FAR {self.tiles[0]}x{self.tiles[1]}" if self.far else "near"
-        names = ", ".join(self.engines)
+        names = ", ".join(list(self.engines) + list(self.EXTRA_ENGINES))
         self.stdout.write(self.style.SUCCESS(
             f"Watching {source} [{mode}, {self.tracker_name} tracker] for: {names}. "
             "Ctrl+C to stop."
@@ -346,6 +423,10 @@ class Command(BaseCommand):
                     cmd = self.engines[name]["cmd"]
                     if cmd._raw_buffer is not None:
                         cmd._raw_buffer.add(frame, time.time())
+                if self.ai_state["ai_ring"] is not None:
+                    self.ai_state["ai_ring"].stash(frame)     # clean pixels for the AI checker's crops
+                if self.debug_pub is not None:
+                    self.debug_pub.stash(frame)               # and for the live processing view
 
                 wall_now = time.time()
                 if wall_now - cfg_at >= SETTINGS_REFRESH_SECONDS:
@@ -354,7 +435,8 @@ class Command(BaseCommand):
                 frames += 1
 
                 active = [n for n in self.engines if self._active(n, cfg)]
-                if not active:
+                extra = [n for n in self.EXTRA_ENGINES if self._active(n, cfg)]
+                if not active and not extra:
                     continue
 
                 # Content-time clock: video position for a file source (not
@@ -370,13 +452,22 @@ class Command(BaseCommand):
                 # gathering reading "33/25s" on a 19s clip).
                 now = wall_now if is_live else reader.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
 
+                # Reported as an ordinary end-of-clip finish: a trimmed run and
+                # a whole one must look identical to _watch_detection_job,
+                # which only sees the exit code.
+                if self.trim.past_end(now, is_live):
+                    self.stdout.write(self.style.SUCCESS(
+                        f"End of {source} ({self.trim.describe()}) — done."))
+                    break
+
                 for name in ("smoking", "drinking", "thief"):
                     cmd = self.engines[name]["cmd"]
                     if cmd._source_path is not None:
                         cmd._video_pos_sec = now
 
                 timestamp = now if not is_live else wall_now - started
-                self._process_frame(frame, now, cfg, active, debug, frames, timestamp)
+                self._process_frame(frame, now, cfg, active, debug, frames,
+                                    timestamp, extra)
 
                 if not fps_warned and frames >= 20:
                     fps = frames / max(wall_now - started, 1e-6)
@@ -408,7 +499,25 @@ class Command(BaseCommand):
 
     # ---- per-frame: one merged pass, routed to each engine ------------------
 
-    def _process_frame(self, frame, now, cfg, active, debug, frame_idx=None, timestamp=None):
+    def _process_frame(self, frame, now, cfg, active, debug, frame_idx=None,
+                       timestamp=None, extra=()):
+        """Extra engines first, then the merged pass.
+
+        The order matters for evidence: an extra engine does its own drawing
+        (the parking engine marks the road edge and the vehicle it is judging),
+        and running it first means those marks are already on the frame when
+        the merged engines buffer it into their own evidence clips. The other
+        way round, every clip but parking's would show the street with no line
+        on it.
+        """
+        for name in extra:
+            self._extra_frame(name, frame, now, cfg, debug)
+        if active:
+            self._merged_pass(frame, now, cfg, active, debug, frame_idx, timestamp)
+
+    def _merged_pass(self, frame, now, cfg, active, debug, frame_idx=None, timestamp=None):
+        for _name in active:
+            self.engines[_name]["cmd"].apply_spec_settings(cfg)
         # One shared person pass per frame. bytetrack is safe here — see the
         # module docstring for why this differs from watch_all's hardcoded
         # greedy matcher.
@@ -438,6 +547,17 @@ class Command(BaseCommand):
         else:
             dets = recognition.detect_merged(frame, conf=conf_floor)
 
+        # Cigarette recall: a native-resolution pass over each person's crop. A
+        # cigarette is ~24 px on the full frame; the whole-frame and tile passes
+        # shrink it, the crop pass does not.
+        if self.cascade and "smoking" in active and persons:
+            casc = recognition.detect_smoking_cascade(
+                frame, persons, conf=cfg.smoking_confidence / 100,
+                crop_imgsz=recognition.NEAR_IMGSZ)
+            if casc:
+                dets = recognition._nms(list(dets) + casc)
+                self.stats_cascade = getattr(self, "stats_cascade", 0) + len(casc)
+
         if self.calibration_writer is not None:
             self._log_calibration_rows(dets, persons, ids, frame_idx, timestamp)
 
@@ -464,11 +584,6 @@ class Command(BaseCommand):
         for (x1, y1, x2, y2, _score) in persons:
             cv2.rectangle(frame, (x1, y1), (x2, y2), (180, 180, 180), 1)
 
-        # Snapshot before any violation box is drawn — face recognition
-        # (smoking/drinking's citation-prefill match) must run against a
-        # clean frame, same reasoning as each standalone command's own loop.
-        clean_frame = frame.copy()
-
         for name in active:
             eng = self.engines[name]
             cmd, tracker = eng["cmd"], eng["tracker"]
@@ -479,24 +594,29 @@ class Command(BaseCommand):
             tracks = tracker.update(persons, now, ids=ids)
             per_track = tracker.assign(filtered, now)
             if name == "smoking":
-                per_track = cmd._apply_face_rule(frame, per_track, now)
+                cmd._feed_pose(frame, tracks, now)          # pose hand-to-mouth counter
+                per_track = cmd._hires_check(frame, per_track, now)
+                per_track = cmd._apply_mouth_cue(frame, per_track, now)
             elif name == "thief":
+                cmd._frame_tracks = tracks
                 per_track = cmd._apply_weapon_region_rule(per_track, frame)
 
             if name == "drinking":
                 self._process_drinking_frame(
-                    cmd, eng, tracks, per_track, now, dwell, cfg, frame, debug, clean_frame)
+                    cmd, eng, tracks, per_track, now, dwell, cfg, frame, debug)
             elif name == "smoking":
                 for track, tdets in per_track.items():
                     cmd._process_track(
                         track, tdets, now, dwell, cfg.alert_cooldown,
-                        frame, debug, cfg.curfew_confidence, clean_frame)
-            else:  # thief — no face_threshold/clean_frame param on this one
+                        frame, debug)
+            else:  # thief
                 for track, tdets in per_track.items():
                     cmd._process_track(track, tdets, now, dwell, cfg.alert_cooldown, frame, debug)
 
         for name in active:
-            self.engines[name]["cmd"].clip.add(frame, now)
+            cmd = self.engines[name]["cmd"]
+            cmd.clip.add(frame, now)
+            cmd._incident_gc(now, frame)        # close incidents whose object is gone
 
     def _log_calibration_rows(self, dets, persons, ids, frame_idx, timestamp):
         """Writes one CSV row per raw detection, before routing, per-engine
@@ -544,7 +664,7 @@ class Command(BaseCommand):
         return cmd._apply_class_floors(dets, conf)  # smoking / thief
 
     def _process_drinking_frame(self, cmd, eng, tracks, per_track, now, dwell,
-                                cfg, frame, debug, clean_frame):
+                                cfg, frame, debug):
         """Path B (gathering) evaluated BEFORE Path A, so a cluster alert
         that fires this frame lands in _alert_log in time to suppress its
         members' solo alerts later in the same frame — mirrors
@@ -553,18 +673,20 @@ class Command(BaseCommand):
         min_group = cfg.drinking_min_group
         group_duration = cfg.drinking_group_duration
         clusters = group_tracker.update(tracks, now, min_group)
-        detected_ids = {t.id for t, dets in per_track.items() if dets and not t.is_scene}
+        cmd.note_clusters(clusters, min_group, group_duration)
         for cluster in clusters:
-            if cluster.member_ids & detected_ids:
-                member_dets = [d for t, dets in per_track.items()
-                              for d in dets
-                              if t.id in cluster.member_ids and not t.is_scene]
-                if member_dets:
-                    best = max(member_dets, key=lambda d: d[4])
-                    cluster.note_evidence(best, now)
+            member_dets = [d for t, dets in per_track.items()
+                           for d in dets
+                           if t.id in cluster.member_ids and not t.is_scene]
+            # a bottle on the table the group sits around is a scene detection
+            member_dets += cmd._scene_dets_near(cluster, per_track)
+            best = max(member_dets, key=lambda d: d[4]) if member_dets else None
+            cluster.frame_conf = best[4] if best else 0.0
+            if best:
+                cluster.note_evidence(best, now)
             cmd._process_cluster(
                 cluster, now, min_group, group_duration, cfg.alert_cooldown,
-                frame, debug, cfg.curfew_confidence, clean_frame,
+                frame, debug,
                 evidence_max_age=cfg.drinking_evidence_max_age,
                 cooldown_center_dist=cfg.drinking_cooldown_center_dist,
             )
@@ -572,7 +694,7 @@ class Command(BaseCommand):
         for track, dets in per_track.items():
             cmd._process_track(
                 track, dets, now, dwell, cfg.alert_cooldown,
-                frame, debug, cfg.curfew_confidence, clean_frame,
+                frame, debug,
                 held_dwell_seconds=cfg.drinking_held_dwell,
                 mouth_proximity=cfg.drinking_mouth_proximity,
                 cooldown_center_dist=cfg.drinking_cooldown_center_dist,

@@ -1,32 +1,16 @@
-import { useRef, useEffect, useState, useMemo } from "react";
+import { useRef, useEffect, useState } from "react";
 import {
-  X, User, Shield, Play, Pause,
+  X, Shield, Play, Pause,
   SkipBack, Download, Radio, CheckCircle, AlertTriangle,
-  MessageSquare, Phone, ChevronDown, ChevronRight, Home, Loader2, Search, Send, Info,
+  ChevronDown, Loader2, Search, Info,
+  Clock, ListChecks, Check, Minus, MapPin, Sparkles, RotateCcw,
 } from "lucide-react";
 import { violationDisplay } from "./constants/violationTypes";
-import { sendSms, getViolationTypes, getBarangays, createCitation, searchViolators } from "./api";
+import { levelColor } from "./alertModel";
+import { useTestingTools } from "./useTestingTools";
+import { getViolationTypes, getBarangays, createCitation, searchViolators } from "./api";
 
 const SUFFIX_OPTIONS = ["", "Jr.", "Sr.", "II", "III", "IV"];
-
-// Best-effort split of a single free-text name (from a Person's full_name or
-// a legacy Alert.suspect string) into the 4 structured fields — there's no
-// reliable way to know where a compound surname starts, so a 3+-word name
-// puts everything but the first/last word into "middle." Always editable.
-function splitFullName(fullName) {
-  const parts = (fullName ?? "").trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return { first: "", middle: "", last: "" };
-  if (parts.length === 1) return { first: parts[0], middle: "", last: "" };
-  if (parts.length === 2) return { first: parts[0], middle: "", last: parts[1] };
-  return { first: parts[0], middle: parts.slice(1, -1).join(" "), last: parts[parts.length - 1] };
-}
-
-const statusConfig = {
-  active:       { label: "Active",     color: "#ef4444", bg: "rgba(239,68,68,0.1)" },
-  acknowledged: { label: "Dismissed",  color: "#64748b", bg: "rgba(100,116,139,0.1)" },
-  dispatched:   { label: "Assigned",   color: "#3b82f6", bg: "rgba(59,130,246,0.1)" },
-  resolved:     { label: "Resolved",   color: "#10b981", bg: "rgba(16,185,129,0.1)" },
-};
 
 function formatFull(ts) {
   return new Date(ts).toLocaleString("en-PH", {
@@ -35,18 +19,27 @@ function formatFull(ts) {
   });
 }
 
-function formatShort(ts) {
-  return new Date(ts).toLocaleString("en-PH", {
-    month: "short", day: "numeric", year: "numeric",
-    hour: "2-digit", minute: "2-digit", hour12: true,
+// Header stamp: when the violation happened, written the way someone would
+// say it out loud. A middot separates the date from the time -- the
+// comma-comma form ("Tue, Sep 15, 2026, 12:23 PM") runs the two together and
+// the eye has to find the boundary itself.
+function formatStamp(ts) {
+  const d = new Date(ts);
+  const date = d.toLocaleDateString("en-PH", {
+    weekday: "short", month: "short", day: "numeric", year: "numeric",
   });
+  const time = d.toLocaleTimeString("en-PH", {
+    hour: "numeric", minute: "2-digit", hour12: true,
+  });
+  return { date, time };
 }
+
 
 // ── Recording player ──────────────────────────────────────────────────────────
 // Evidence clips have no audio track (frame-only capture, no microphone
 // anywhere in this pipeline), so there's no mute/volume control here — it
 // would be a dead control implying an audio path that doesn't exist.
-export function RecordingPlayer({ alert }) {
+export function RecordingPlayer({ alert, timeline = false }) {
   const videoRef = useRef(null);
   const hasRaw = !!alert.rawVideoUrl;
   const hasAnnotated = !!alert.videoUrl;
@@ -86,7 +79,8 @@ export function RecordingPlayer({ alert }) {
       <div className="rounded-xl overflow-hidden" style={{ background: "#000", border: "1px solid var(--border)" }}>
         <div className="relative w-full" style={{ aspectRatio: 16 / 9 }}>
           <img src={alert.imageUrl} alt="Evidence" className="absolute inset-0 w-full h-full object-cover" />
-          <div className="absolute bottom-3 left-3 right-3 text-[11px] text-center py-1.5 rounded-lg"
+          {timeline && <TimelineButton alert={alert} />}
+          <div className="absolute bottom-3 left-3 right-3 text-[13px] text-center py-1.5 rounded-lg"
             style={{ background: "rgba(0,0,0,0.6)", color: "var(--muted-foreground)" }}>
             No evidence clip available for this alert — still image only.
           </div>
@@ -113,18 +107,19 @@ export function RecordingPlayer({ alert }) {
           onEnded={() => setPlaying(false)}
           onClick={togglePlay}
         />
-        <div className="absolute top-0 left-0 right-0 px-3 py-2 flex items-center justify-between pointer-events-none"
+        {timeline && <TimelineButton alert={alert} />}
+        <div className="absolute top-0 left-0 right-0 pl-3 pr-12 py-2 flex items-center justify-between pointer-events-none"
           style={{ background: "linear-gradient(to bottom, rgba(0,0,0,0.72), transparent)" }}>
           <div className="flex items-center gap-2">
-            <span className="text-[10px] font-medium px-1.5 py-0.5 rounded"
+            <span className="text-[12px] font-medium px-1.5 py-0.5 rounded"
               style={{ background: "rgba(239,68,68,0.85)", color: "#fff", fontFamily: "'DM Mono', monospace" }}>
               ● {useRaw && hasRaw ? "RAW" : "ANNOTATED"}
             </span>
-            <span className="text-[10px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+            <span className="text-[12px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
               {alert.camera}
             </span>
           </div>
-          <span className="text-[10px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+          <span className="text-[12px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
             {formatFull(alert.timestamp)}
           </span>
         </div>
@@ -144,7 +139,7 @@ export function RecordingPlayer({ alert }) {
           <div className="flex items-center gap-1.5 mb-3">
             <button
               onClick={() => setUseRaw(true)}
-              className="flex-1 text-[11px] font-medium py-1.5 rounded-lg transition-all"
+              className="flex-1 text-[13px] font-medium py-1.5 rounded-lg transition-all"
               style={{
                 background: useRaw ? "var(--primary)" : "var(--secondary)",
                 color: useRaw ? "#0c0f16" : "var(--muted-foreground)",
@@ -153,7 +148,7 @@ export function RecordingPlayer({ alert }) {
             </button>
             <button
               onClick={() => setUseRaw(false)}
-              className="flex-1 text-[11px] font-medium py-1.5 rounded-lg transition-all"
+              className="flex-1 text-[13px] font-medium py-1.5 rounded-lg transition-all"
               style={{
                 background: !useRaw ? "var(--primary)" : "var(--secondary)",
                 color: !useRaw ? "#0c0f16" : "var(--muted-foreground)",
@@ -196,7 +191,7 @@ export function RecordingPlayer({ alert }) {
                 ? <Pause size={13} color="#0c0f16" fill="#0c0f16" />
                 : <Play  size={13} color="#0c0f16" fill="#0c0f16" style={{ marginLeft: 1 }} />}
             </button>
-            <span className="text-[11px] tabular-nums"
+            <span className="text-[13px] tabular-nums"
               style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
               {fmtSec(elapsed)} / {fmtSec(duration)}
             </span>
@@ -204,7 +199,7 @@ export function RecordingPlayer({ alert }) {
           <a
             href={src}
             download
-            className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-md"
+            className="flex items-center gap-1 text-[13px] px-2 py-1 rounded-md"
             style={{ color: "var(--muted-foreground)" }}
             onMouseEnter={(e) => { e.currentTarget.style.color = "var(--foreground)"; e.currentTarget.style.background = "var(--border)"; }}
             onMouseLeave={(e) => { e.currentTarget.style.color = "var(--muted-foreground)"; e.currentTarget.style.background = "transparent"; }}
@@ -215,96 +210,6 @@ export function RecordingPlayer({ alert }) {
       </div>
     </div>
   );
-}
-
-// ── Phone row inside ContactGuardianModal ─────────────────────────────────────
-function PhoneRow({ label, sublabel, phone, isSelected, onToggle, accent }) {
-  return (
-    <div className="flex items-center gap-2.5 px-3 py-2 rounded-lg"
-      style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
-      <div className="flex-1 min-w-0">
-        <div className="text-[12px] font-medium truncate" style={{ color: "var(--foreground)" }}>{label}</div>
-        {sublabel && (
-          <div className="text-[10px] capitalize" style={{ color: "var(--muted-foreground)" }}>{sublabel}</div>
-        )}
-      </div>
-      {phone ? (
-        <button
-          onClick={onToggle}
-          className="flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1 rounded-lg transition-all flex-shrink-0"
-          style={{
-            background: isSelected ? "rgba(16,185,129,0.15)" : accent ? "rgba(245,158,11,0.1)" : "var(--secondary)",
-            color: isSelected ? "#10b981" : accent ? "#f59e0b" : "var(--muted-foreground)",
-            border: `1px solid ${isSelected ? "rgba(16,185,129,0.3)" : "var(--border)"}`,
-            fontFamily: "'DM Mono', monospace",
-          }}>
-          <Phone size={10} style={{ flexShrink: 0 }} />
-          {phone}
-        </button>
-      ) : (
-        <span className="text-[11px] italic flex-shrink-0" style={{ color: "var(--muted-foreground)" }}>
-          No number
-        </span>
-      )}
-    </div>
-  );
-}
-
-// ── Resolve checklist helpers ─────────────────────────────────────────────────
-function calcAge(birthdate) {
-  if (!birthdate) return null;
-  const dob = new Date(birthdate), today = new Date();
-  let a = today.getFullYear() - dob.getFullYear();
-  const m = today.getMonth() - dob.getMonth();
-  if (m < 0 || (m === 0 && today.getDate() < dob.getDate())) a--;
-  return a;
-}
-
-function suspectMatches(suspect, fullName) {
-  if (!suspect || !fullName) return false;
-  const nameParts = fullName.toLowerCase().split(/[\s,]+/).filter((p) => p.length > 2);
-  if (nameParts.length === 0) return false;
-  // Suspect can be several "; "-joined names — match against each one
-  // individually and require ALL of a candidate's name parts to be present,
-  // otherwise a shared surname (e.g. everyone in the same household) makes
-  // every relative look like a match instead of just the tagged person(s).
-  return suspect.split(";").some((entry) => {
-    const e = entry.trim().toLowerCase();
-    return e.length > 0 && nameParts.every((p) => e.includes(p));
-  });
-}
-
-function buildCandidates(rawHouseholds, rawResidents) {
-  const seen = new Set();
-  const people = [];
-  for (const hh of (rawHouseholds ?? [])) {
-    const familyName = hh.family_name ?? "";
-    for (const m of (hh.members ?? [])) {
-      const bid = m.barangay_id ?? m.code;
-      if (!bid || seen.has(bid)) continue;
-      seen.add(bid);
-      const age = calcAge(m.birthdate);
-      people.push({
-        id: m.code,
-        name: `${m.last_name ?? ""}, ${m.first_name ?? ""}`.trim().replace(/^,\s*/, ""),
-        fullName: `${m.first_name ?? ""} ${m.last_name ?? ""}`.trim(),
-        age, isMinor: age != null && age < 18,
-        household: `${familyName} household`,
-        barangayId: bid, status: m.status ?? "pending", imageUrl: m.image_url ?? "",
-      });
-    }
-  }
-  for (const r of (rawResidents ?? [])) {
-    const bid = r.barangay_id ?? r.code;
-    if (!bid || seen.has(bid)) continue;
-    seen.add(bid);
-    people.push({
-      id: r.code, name: r.name ?? "", fullName: r.name ?? "",
-      age: r.age, isMinor: r.age != null && r.age < 18,
-      household: null, barangayId: bid, status: r.status ?? "pending", imageUrl: r.image_url ?? "",
-    });
-  }
-  return people;
 }
 
 // ── Searchable barangay select ────────────────────────────────────────────────
@@ -347,20 +252,20 @@ function BarangaySelect({ options, value, onChange, error }) {
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Search barangay…"
-                className="w-full pl-7 pr-2 py-1.5 rounded-lg text-[12px] outline-none"
+                className="w-full pl-7 pr-2 py-1.5 rounded-lg text-[14px] outline-none"
                 style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
               />
             </div>
           </div>
           <div className="max-h-48 overflow-y-auto py-1">
             {filtered.length === 0 ? (
-              <div className="px-3 py-3 text-[12px] text-center" style={{ color: "var(--muted-foreground)" }}>No matches</div>
+              <div className="px-3 py-3 text-[14px] text-center" style={{ color: "var(--muted-foreground)" }}>No matches</div>
             ) : filtered.map((o) => (
               <button
                 key={o.value}
                 type="button"
                 onClick={() => { onChange(o.value); setOpen(false); setSearch(""); }}
-                className="w-full text-left px-3 py-1.5 text-[12px] transition-colors"
+                className="w-full text-left px-3 py-1.5 text-[14px] transition-colors"
                 style={{ color: o.value === value ? "var(--primary)" : "var(--foreground)", background: o.value === value ? "rgba(11,84,113,0.08)" : "transparent" }}
               >
                 {o.label}
@@ -375,24 +280,10 @@ function BarangaySelect({ options, value, onChange, error }) {
 
 // ── Citation form (Confirm Resolution) ────────────────────────────────────────
 function CitationFormModal({ alert, vcfg, officers = [], currentOfficerId, onResolved, onClose }) {
-  // Set by watch_smoking/watch_drinking's recognition step (see
-  // core/face_registry.py) only when a detected face matched an enrolled
-  // Person above threshold. watch_curfew predates that wiring and still only
-  // carries a plain suspect-name string + a 0-1 match score on `confidence`
-  // (score_pct / 100) — kept as a fallback so curfew alerts don't lose the
-  // hint they already had.
-  const hasMatchedPerson = !!alert.matchedPersonId;
-  const isCurfewMatch = !hasMatchedPerson && alert.type === "curfew" && !!alert.suspect;
-  const isFaceMatch = hasMatchedPerson || isCurfewMatch;
-  const matchedName = hasMatchedPerson ? alert.matchedPersonName : isCurfewMatch ? alert.suspect.split(";")[0].trim() : "";
-  const matchConfidencePct = hasMatchedPerson ? alert.matchConfidence : isCurfewMatch ? (alert.confidence ?? 0) * 100 : 0;
-  const matchedSplit = useMemo(() => splitFullName(matchedName), [matchedName]);
-
-  const [firstName, setFirstName] = useState(matchedSplit.first);
-  const [middleName, setMiddleName] = useState(matchedSplit.middle);
-  const [lastName, setLastName] = useState(matchedSplit.last);
+  const [firstName, setFirstName] = useState("");
+  const [middleName, setMiddleName] = useState("");
+  const [lastName, setLastName] = useState("");
   const [suffix, setSuffix] = useState("");
-  const [matchCleared, setMatchCleared] = useState(false);
   const [officerId, setOfficerId] = useState(currentOfficerId ? String(currentOfficerId) : "");
   const [violatorBarangay, setViolatorBarangay] = useState("");
   const [checkedTypeIds, setCheckedTypeIds] = useState(new Set());
@@ -499,8 +390,6 @@ function CitationFormModal({ alert, vcfg, officers = [], currentOfficerId, onRes
         barangay_of_violation: "TETUAN",
         violator_barangay: violatorBarangay,
         violations: [...checkedTypeIds],
-        matched_person: hasMatchedPerson && !matchCleared ? alert.matchedPersonId : null,
-        match_confidence: isFaceMatch && !matchCleared ? matchConfidencePct : null,
         notes: notes.trim(),
       });
       onResolved();
@@ -536,8 +425,8 @@ function CitationFormModal({ alert, vcfg, officers = [], currentOfficerId, onRes
               <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Confirm Resolution</div>
               <div className="flex items-center gap-1.5 mt-0.5">
                 <VIcon size={10} style={{ color: vcfg.color }} />
-                <span className="text-[11px] font-medium" style={{ color: vcfg.color }}>{vcfg.label}</span>
-                <span className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>· {alert.id}</span>
+                <span className="text-[13px] font-medium" style={{ color: vcfg.color }}>{vcfg.label}</span>
+                <span className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>· {alert.id}</span>
               </div>
             </div>
           </div>
@@ -552,13 +441,13 @@ function CitationFormModal({ alert, vcfg, officers = [], currentOfficerId, onRes
         {/* Form body */}
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4" style={{ minHeight: 0 }}>
           {loadError && (
-            <div className="flex items-center gap-2 text-[11px] px-3 py-2 rounded-lg"
+            <div className="flex items-center gap-2 text-[13px] px-3 py-2 rounded-lg"
               style={{ background: "rgba(239,68,68,0.08)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.2)" }}>
               <AlertTriangle size={12} /> {loadError}
             </div>
           )}
           {formError && (
-            <div className="flex items-center gap-2 text-[11px] px-3 py-2 rounded-lg"
+            <div className="flex items-center gap-2 text-[13px] px-3 py-2 rounded-lg"
               style={{ background: "rgba(239,68,68,0.08)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.2)" }}>
               <AlertTriangle size={12} /> {formError}
             </div>
@@ -579,7 +468,7 @@ function CitationFormModal({ alert, vcfg, officers = [], currentOfficerId, onRes
                   style={{ background: "var(--secondary)", border: `1px solid ${fieldError("first_name_entered") ? "#ef4444" : "var(--border)"}`, color: "var(--foreground)" }}
                 />
                 {fieldError("first_name_entered") && (
-                  <div className="text-[11px] mt-1" style={{ color: "#ef4444" }}>{fieldError("first_name_entered")}</div>
+                  <div className="text-[13px] mt-1" style={{ color: "#ef4444" }}>{fieldError("first_name_entered")}</div>
                 )}
               </div>
               <div>
@@ -600,7 +489,7 @@ function CitationFormModal({ alert, vcfg, officers = [], currentOfficerId, onRes
                   style={{ background: "var(--secondary)", border: `1px solid ${fieldError("last_name_entered") ? "#ef4444" : "var(--border)"}`, color: "var(--foreground)" }}
                 />
                 {fieldError("last_name_entered") && (
-                  <div className="text-[11px] mt-1" style={{ color: "#ef4444" }}>{fieldError("last_name_entered")}</div>
+                  <div className="text-[13px] mt-1" style={{ color: "#ef4444" }}>{fieldError("last_name_entered")}</div>
                 )}
               </div>
               <div className="relative">
@@ -618,19 +507,19 @@ function CitationFormModal({ alert, vcfg, officers = [], currentOfficerId, onRes
 
             {/* "Did you mean" suggestions from /api/violators/search */}
             {searchingViolators && (
-              <div className="flex items-center gap-1.5 mt-1.5 text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+              <div className="flex items-center gap-1.5 mt-1.5 text-[13px]" style={{ color: "var(--muted-foreground)" }}>
                 <Loader2 size={11} className="animate-spin" /> Checking existing violators…
               </div>
             )}
             {!searchingViolators && !selectedViolatorId && suggestions.length > 0 && (
               <div className="mt-1.5 rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
-                <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide"
+                <div className="px-2.5 py-1 text-[12px] font-semibold uppercase tracking-wide"
                   style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}>
                   Did you mean?
                 </div>
                 {suggestions.map((s) => (
                   <button key={s.id} type="button" onClick={() => pickSuggestion(s)}
-                    className="w-full flex items-center justify-between px-2.5 py-1.5 text-[12px] text-left transition-colors"
+                    className="w-full flex items-center justify-between px-2.5 py-1.5 text-[14px] text-left transition-colors"
                     style={{ color: "var(--foreground)", background: "var(--card)" }}>
                     <span>{s.full_name}</span>
                     <span style={{ color: "var(--muted-foreground)" }}>
@@ -641,27 +530,8 @@ function CitationFormModal({ alert, vcfg, officers = [], currentOfficerId, onRes
               </div>
             )}
             {selectedViolatorId && (
-              <div className="text-[11px] mt-1.5" style={{ color: "#10b981" }}>
+              <div className="text-[13px] mt-1.5" style={{ color: "#10b981" }}>
                 Linked to an existing violator record.
-              </div>
-            )}
-
-            {isFaceMatch && !matchCleared && (
-              <div className="flex items-center justify-between gap-2 mt-1.5">
-                <span className="text-[11px]" style={{ color: "#10b981" }}>
-                  Matched: {matchedName} (confidence {Math.round(matchConfidencePct)}%)
-                </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMatchCleared(true);
-                    setFirstName(""); setMiddleName(""); setLastName(""); setSuffix("");
-                    setSelectedViolatorId(null);
-                  }}
-                  className="text-[11px] font-medium underline flex-shrink-0"
-                  style={{ color: "var(--muted-foreground)" }}>
-                  clear
-                </button>
               </div>
             )}
           </div>
@@ -684,7 +554,7 @@ function CitationFormModal({ alert, vcfg, officers = [], currentOfficerId, onRes
               <ChevronDown size={13} className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: "var(--muted-foreground)" }} />
             </div>
             {fieldError("officer") && (
-              <div className="text-[11px] mt-1" style={{ color: "#ef4444" }}>{fieldError("officer")}</div>
+              <div className="text-[13px] mt-1" style={{ color: "#ef4444" }}>{fieldError("officer")}</div>
             )}
           </div>
 
@@ -708,7 +578,7 @@ function CitationFormModal({ alert, vcfg, officers = [], currentOfficerId, onRes
             </label>
             <BarangaySelect options={barangayOptions} value={violatorBarangay} onChange={setViolatorBarangay} error={fieldError("violator_barangay")} />
             {fieldError("violator_barangay") && (
-              <div className="text-[11px] mt-1" style={{ color: "#ef4444" }}>{fieldError("violator_barangay")}</div>
+              <div className="text-[13px] mt-1" style={{ color: "#ef4444" }}>{fieldError("violator_barangay")}</div>
             )}
           </div>
 
@@ -718,7 +588,7 @@ function CitationFormModal({ alert, vcfg, officers = [], currentOfficerId, onRes
               Violation(s) <span style={{ color: "#ef4444" }}>*</span>
             </label>
             {loadingOptions ? (
-              <div className="flex items-center gap-2 py-2 text-[12px]" style={{ color: "var(--muted-foreground)" }}>
+              <div className="flex items-center gap-2 py-2 text-[14px]" style={{ color: "var(--muted-foreground)" }}>
                 <Loader2 size={13} className="animate-spin" /> Loading violation types…
               </div>
             ) : (
@@ -733,14 +603,14 @@ function CitationFormModal({ alert, vcfg, officers = [], currentOfficerId, onRes
                         style={{ background: checked ? "#10b981" : "transparent", border: `1.5px solid ${checked ? "#10b981" : "var(--muted-foreground)"}` }}>
                         {checked && <CheckCircle size={10} color="#fff" strokeWidth={3} />}
                       </div>
-                      <span className="text-[12px] font-medium" style={{ color: "var(--foreground)" }}>{t.label}</span>
+                      <span className="text-[14px] font-medium" style={{ color: "var(--foreground)" }}>{t.label}</span>
                     </button>
                   );
                 })}
               </div>
             )}
             {fieldError("violations") && (
-              <div className="text-[11px] mt-1" style={{ color: "#ef4444" }}>{fieldError("violations")}</div>
+              <div className="text-[13px] mt-1" style={{ color: "#ef4444" }}>{fieldError("violations")}</div>
             )}
           </div>
 
@@ -785,591 +655,54 @@ function CitationFormModal({ alert, vcfg, officers = [], currentOfficerId, onRes
   );
 }
 
-// ── Contact Guardian Modal ────────────────────────────────────────────────────
-function ContactGuardianModal({ alert, violationType, households: rawHouseholds, onClose }) {
-  const [mapped, setMapped] = useState([]);
-  const [search, setSearch] = useState("");
-  const [expanded, setExpanded] = useState(new Set());
-  const [selected, setSelected] = useState(new Set());
-  const [message, setMessage] = useState("");
-  const [sending, setSending] = useState(false);
-  const [sent, setSent] = useState(false);
-  const [potentialHhId, setPotentialHhId] = useState(null);
-
-  const mapHH = (raw) => ({
-    id: raw.code,
-    familyName: raw.family_name,
-    address: raw.address || "",
-    contact: raw.contact || "",
-    members: (raw.members || []).map((m) => ({
-      id: m.code,
-      firstName: m.first_name,
-      lastName: m.last_name,
-      relation: m.relation || "",
-      phone: m.phone || "",
-    })),
-  });
-
-  const getHHPhones = (hh) => {
-    const phones = [];
-    if (hh.contact) phones.push(hh.contact);
-    hh.members.forEach((m) => { if (m.phone) phones.push(m.phone); });
-    return phones;
-  };
-
-  // Map raw API households from the parent (AlertFeed already fetched them)
+// ── Click-only info tooltip ─────────────────────────────────────────────────────
+// Opens ONLY when the (i) itself is clicked (never on hover). Solid background; closes on a click
+// outside, on Escape, or on a second click of the (i).
+function InfoTip({ children, align = "left" }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
   useEffect(() => {
-    const hhs = (rawHouseholds ?? []).map(mapHH);
-    setMapped(hhs);
-    if (!alert.suspect) return;
-    const sq = alert.suspect.toLowerCase().replace(/[,\.]/g, "").trim();
-    for (const hh of hhs) {
-      const match = hh.members.some((m) => {
-        const full = `${m.firstName} ${m.lastName}`.toLowerCase();
-        const rev  = `${m.lastName} ${m.firstName}`.toLowerCase();
-        return full.includes(sq) || sq.includes(m.firstName.toLowerCase()) || sq.includes(m.lastName.toLowerCase()) || rev.includes(sq);
-      });
-      if (match) {
-        setPotentialHhId(hh.id);
-        setExpanded(new Set([hh.id]));
-        break;
-      }
-    }
-  }, [rawHouseholds]);
-
-  useEffect(() => {
-    const ts = formatShort(alert.timestamp);
-    const subject = alert.suspect ? alert.suspect : "an individual";
-    setMessage(
-      `Good day! This is an alert from Barangay Tetuan LookOut System.\n\n${subject} was flagged for a ${violationType} violation on ${ts}.\n\nPlease contact the Barangay Hall immediately for more information.\n\n- LookOut Security System`
-    );
-  }, []);
-
-  const toggleExpand = (id) =>
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
-
-  const togglePhone = (phone) => {
-    if (!phone) return;
-    setSelected((prev) => {
-      const next = new Set(prev);
-      next.has(phone) ? next.delete(phone) : next.add(phone);
-      return next;
-    });
-  };
-
-  const toggleAllInHH = (hh) => {
-    const phones = getHHPhones(hh);
-    if (phones.length === 0) return;
-    const allSel = phones.every((p) => selected.has(p));
-    setSelected((prev) => {
-      const next = new Set(prev);
-      allSel ? phones.forEach((p) => next.delete(p)) : phones.forEach((p) => next.add(p));
-      return next;
-    });
-  };
-
-  const handleSend = async () => {
-    if (selected.size === 0 || !message.trim()) return;
-    setSending(true);
-    try {
-      await sendSms({ recipients: [...selected], message: message.trim() });
-      setSent(true);
-    } catch (err) {
-      window.alert(`Failed to send: ${err.message}`);
-    } finally {
-      setSending(false);
-    }
-  };
-
-  const filtered = mapped.filter((hh) => {
-    if (!search) return true;
-    const q = search.toLowerCase();
-    return (
-      hh.familyName.toLowerCase().includes(q) ||
-      hh.address.toLowerCase().includes(q) ||
-      hh.members.some((m) => `${m.firstName} ${m.lastName}`.toLowerCase().includes(q))
-    );
-  });
-
-  const sorted = potentialHhId
-    ? [...filtered.filter((h) => h.id === potentialHhId), ...filtered.filter((h) => h.id !== potentialHhId)]
-    : filtered;
-
-  const canSend = selected.size > 0 && message.trim().length > 0;
-
-  if (sent) {
-    return (
-      <div className="fixed inset-0 z-[70] flex items-center justify-center p-4"
-        style={{ background: "rgba(0,0,0,0.7)", backdropFilter: "blur(6px)" }}
-        onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-        <div className="w-full max-w-sm rounded-2xl p-8 flex flex-col items-center gap-5 text-center shadow-2xl"
-          style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
-          <div className="w-16 h-16 rounded-full flex items-center justify-center"
-            style={{ background: "rgba(16,185,129,0.12)", border: "2px solid rgba(16,185,129,0.3)" }}>
-            <CheckCircle size={32} style={{ color: "#10b981" }} />
-          </div>
-          <div>
-            <div className="text-sm font-semibold mb-1" style={{ color: "var(--foreground)" }}>SMS Sent</div>
-            <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>
-              Message dispatched to {selected.size} recipient{selected.size !== 1 ? "s" : ""}.
-            </div>
-          </div>
-          <button onClick={onClose} className="w-full py-2.5 rounded-xl text-sm font-medium"
-            style={{ background: "#10b981", color: "#fff" }}>
-            Done
-          </button>
-        </div>
-      </div>
-    );
-  }
-
+    if (!open) return undefined;
+    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setOpen(false); } };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey, true);
+    };
+  }, [open]);
   return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center p-4"
-      style={{ background: "rgba(0,0,0,0.72)", backdropFilter: "blur(6px)" }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="w-full max-w-lg rounded-2xl overflow-hidden shadow-2xl flex flex-col"
-        style={{ background: "var(--card)", border: "1px solid var(--border)", maxHeight: "90vh" }}>
-
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 flex-shrink-0"
-          style={{ borderBottom: "1px solid var(--border)" }}>
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center"
-              style={{ background: "rgba(16,185,129,0.12)" }}>
-              <MessageSquare size={14} style={{ color: "#10b981" }} />
-            </div>
-            <div>
-              <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Contact Guardian</div>
-              <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
-                {alert.id} · {alert.suspect ?? "Unknown subject"}
-              </div>
-            </div>
-          </div>
-          <button onClick={onClose} className="p-1.5 rounded-lg"
-            style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}>
-            <X size={14} />
-          </button>
-        </div>
-
-        {/* Search */}
-        <div className="px-5 pt-4 pb-3 flex-shrink-0">
-          <div className="relative">
-            <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2"
-              style={{ color: "var(--muted-foreground)" }} />
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search households or member names…"
-              className="w-full pl-9 pr-3 py-2.5 rounded-xl text-sm outline-none"
-              style={{
-                background: "var(--secondary)",
-                border: "1px solid var(--border)",
-                color: "var(--foreground)",
-              }}
-            />
-          </div>
-        </div>
-
-        {/* Household list */}
-        <div className="flex-1 overflow-y-auto px-5 pb-3 space-y-2" style={{ minHeight: 0 }}>
-          {sorted.length === 0 ? (
-            <div className="py-10 text-center text-sm" style={{ color: "var(--muted-foreground)" }}>
-              {mapped.length === 0 ? "Loading households…" : "No households found"}
-            </div>
-          ) : (
-            sorted.map((hh) => {
-              const isPotential = hh.id === potentialHhId;
-              const isOpen = expanded.has(hh.id);
-              const phones = getHHPhones(hh);
-              const selCount = phones.filter((p) => selected.has(p)).length;
-              const allSel = phones.length > 0 && selCount === phones.length;
-
-              return (
-                <div key={hh.id} className="rounded-xl overflow-hidden transition-all"
-                  style={{
-                    border: `1px solid ${isPotential ? "rgba(245,158,11,0.4)" : "var(--border)"}`,
-                    background: isPotential ? "rgba(245,158,11,0.04)" : "var(--secondary)",
-                    boxShadow: isPotential ? "0 0 0 1px rgba(245,158,11,0.08)" : "none",
-                  }}>
-                  {/* Household header */}
-                  <div className="flex items-center gap-2 px-3.5 py-3">
-                    <button
-                      onClick={() => toggleExpand(hh.id)}
-                      className="flex items-center gap-2 flex-1 min-w-0 text-left">
-                      {isOpen
-                        ? <ChevronDown size={13} style={{ color: "var(--muted-foreground)", flexShrink: 0 }} />
-                        : <ChevronRight size={13} style={{ color: "var(--muted-foreground)", flexShrink: 0 }} />
-                      }
-                      <Home size={13} style={{ color: isPotential ? "#f59e0b" : "var(--muted-foreground)", flexShrink: 0 }} />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-[13px] font-semibold" style={{ color: "var(--foreground)" }}>
-                            {hh.familyName} household
-                          </span>
-                          {isPotential && (
-                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full"
-                              style={{ background: "rgba(245,158,11,0.15)", color: "#f59e0b" }}>
-                              Potential guardian
-                            </span>
-                          )}
-                          {selCount > 0 && (
-                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full"
-                              style={{ background: "rgba(16,185,129,0.12)", color: "#10b981" }}>
-                              {selCount} selected
-                            </span>
-                          )}
-                        </div>
-                        {hh.address && (
-                          <div className="text-[10px] mt-0.5 truncate" style={{ color: "var(--muted-foreground)" }}>
-                            {hh.address}, Brgy. Tetuan
-                          </div>
-                        )}
-                      </div>
-                    </button>
-
-                    {phones.length > 0 && (
-                      <button
-                        onClick={() => { if (!isOpen) toggleExpand(hh.id); toggleAllInHH(hh); }}
-                        className="flex-shrink-0 text-[10px] font-semibold px-2.5 py-1 rounded-lg transition-all"
-                        style={{
-                          background: allSel ? "rgba(16,185,129,0.15)" : "rgba(245,158,11,0.1)",
-                          color: allSel ? "#10b981" : "var(--primary)",
-                          border: `1px solid ${allSel ? "rgba(16,185,129,0.3)" : "rgba(245,158,11,0.2)"}`,
-                        }}>
-                        {allSel ? "✓ All" : `Select all (${phones.length})`}
-                      </button>
-                    )}
-                  </div>
-
-                  {/* Expanded content */}
-                  {isOpen && (
-                    <div className="px-3.5 pb-3 space-y-1.5" style={{ borderTop: "1px solid var(--border)" }}>
-                      <div className="pt-2 space-y-1.5">
-                        {hh.contact && (
-                          <PhoneRow
-                            label="Main contact"
-                            sublabel={hh.id}
-                            phone={hh.contact}
-                            isSelected={selected.has(hh.contact)}
-                            onToggle={() => togglePhone(hh.contact)}
-                            accent
-                          />
-                        )}
-                        {hh.members.map((m) => (
-                          <PhoneRow
-                            key={m.id}
-                            label={`${m.firstName} ${m.lastName}`}
-                            sublabel={m.relation}
-                            phone={m.phone}
-                            isSelected={m.phone ? selected.has(m.phone) : false}
-                            onToggle={() => togglePhone(m.phone)}
-                          />
-                        ))}
-                        {hh.members.length === 0 && !hh.contact && (
-                          <div className="text-[11px] py-2 text-center" style={{ color: "var(--muted-foreground)" }}>
-                            No contact numbers on file
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })
-          )}
-        </div>
-
-        {/* Compose area */}
-        <div className="flex-shrink-0 px-5 pt-4 pb-5 space-y-3"
-          style={{ borderTop: "1px solid var(--border)" }}>
-          {/* Selected recipient chips */}
-          {selected.size > 0 && (
-            <div className="flex flex-wrap gap-1.5 items-center">
-              <span className="text-[11px] font-semibold" style={{ color: "var(--muted-foreground)" }}>To:</span>
-              {[...selected].map((p) => (
-                <span key={p}
-                  className="flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full"
-                  style={{ background: "rgba(16,185,129,0.12)", color: "#10b981", border: "1px solid rgba(16,185,129,0.25)" }}>
-                  <Phone size={9} /> {p}
-                  <button onClick={() => togglePhone(p)} className="ml-0.5 opacity-60 hover:opacity-100">×</button>
-                </span>
-              ))}
-              <button onClick={() => setSelected(new Set())}
-                className="text-[10px] ml-1 underline"
-                style={{ color: "var(--muted-foreground)" }}>
-                Clear all
-              </button>
-            </div>
-          )}
-          {selected.size === 0 && (
-            <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
-              Click a phone number above to add recipients.
-            </div>
-          )}
-
-          <textarea
-            rows={4}
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            placeholder="Type your message here…"
-            className="w-full px-3 py-2.5 rounded-xl text-[12px] resize-none outline-none"
-            style={{
-              background: "var(--secondary)",
-              border: "1px solid var(--border)",
-              color: "var(--foreground)",
-              lineHeight: 1.6,
-            }}
-          />
-
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
-              {message.length} chars · {selected.size} recipient{selected.size !== 1 ? "s" : ""}
-            </span>
-            <button
-              disabled={!canSend || sending}
-              onClick={handleSend}
-              className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium transition-all"
-              style={{
-                background: canSend ? "#10b981" : "rgba(16,185,129,0.15)",
-                color: canSend ? "#fff" : "rgba(16,185,129,0.4)",
-                cursor: (canSend && !sending) ? "pointer" : "not-allowed",
-              }}>
-              {sending ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />}
-              {sending ? "Sending…" : "Send SMS"}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── Set Candidate Modal ───────────────────────────────────────────────────────
-function SetCandidateModal({ alert, households: rawHH, residents: rawRes, onSave, onClose }) {
-  const [search, setSearch] = useState("");
-  const [checkedIds, setCheckedIds] = useState(new Set());
-  const [saving, setSaving] = useState(false);
-  const [confirming, setConfirming] = useState(false);
-  const candidates = useMemo(() => buildCandidates(rawHH, rawRes), [rawHH, rawRes]);
-  const initializedRef = useRef(false);
-
-  useEffect(() => {
-    // Background polling refreshes households/residents every few seconds,
-    // producing a new `candidates` array each time — only seed the checked
-    // set once, otherwise it stomps on the user's in-progress selection.
-    if (initializedRef.current || candidates.length === 0) return;
-    initializedRef.current = true;
-    if (!alert.suspect) return;
-    const existing = alert.suspect.split(";").map((s) => s.trim().toLowerCase());
-    setCheckedIds(new Set(
-      candidates.filter((c) => existing.some((e) => e && c.fullName.toLowerCase().includes(e))).map((c) => c.id)
-    ));
-  }, [candidates, alert.suspect]);
-
-  const filtered = candidates.filter((c) => {
-    if (!search) return true;
-    const q = search.toLowerCase();
-    return c.name.toLowerCase().includes(q) || c.barangayId.toLowerCase().includes(q) || (c.household ?? "").toLowerCase().includes(q);
-  });
-
-  const sorted = [...filtered].sort((a, b) => {
-    const ac = checkedIds.has(a.id) ? 0 : 1, bc = checkedIds.has(b.id) ? 0 : 1;
-    if (ac !== bc) return ac - bc;
-    return a.name.localeCompare(b.name);
-  });
-
-  const toggle = (id) => setCheckedIds((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
-
-  const handleSave = async () => {
-    setSaving(true);
-    const names = candidates.filter((c) => checkedIds.has(c.id)).map((c) => c.fullName).join("; ");
-    await onSave(names || null);
-  };
-
-  return (
-    <div className="fixed inset-0 z-[75] flex items-center justify-center p-4"
-      style={{ background: "rgba(0,0,0,0.72)", backdropFilter: "blur(6px)" }}>
-      <div className="w-full max-w-md rounded-2xl overflow-hidden shadow-2xl flex flex-col"
-        style={{ background: "var(--card)", border: "1px solid var(--border)", maxHeight: "90vh" }}>
-
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 flex-shrink-0"
-          style={{ borderBottom: "1px solid var(--border)" }}>
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: "rgba(59,130,246,0.12)" }}>
-              <User size={14} style={{ color: "#3b82f6" }} />
-            </div>
-            <div>
-              <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Select Match</div>
-              <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>Select one or more residents involved</div>
-            </div>
-          </div>
-          {!saving && (
-            <button onClick={onClose} className="p-1.5 rounded-lg"
-              style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}>
-              <X size={14} />
-            </button>
-          )}
-        </div>
-
-        {/* Search */}
-        <div className="px-5 py-3 flex-shrink-0">
-          <div className="relative">
-            <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "var(--muted-foreground)" }} />
-            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search residents…"
-              className="w-full pl-9 pr-3 py-2.5 rounded-xl text-sm outline-none"
-              style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
-          </div>
-        </div>
-
-        {/* Count */}
-        <div className="px-5 pb-1 flex items-center justify-between flex-shrink-0">
-          <span className="text-[10px] font-semibold uppercase tracking-wide"
-            style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
-            Residents · {sorted.length}
-          </span>
-          {checkedIds.size > 0 && (
-            <span className="text-[10px] font-semibold" style={{ color: "#3b82f6" }}>{checkedIds.size} selected</span>
-          )}
-        </div>
-
-        {/* List */}
-        <div className="flex-1 overflow-y-auto px-5 pb-3 pt-1 space-y-1.5" style={{ minHeight: 0 }}>
-          {sorted.length === 0 ? (
-            <div className="py-10 text-center text-sm" style={{ color: "var(--muted-foreground)" }}>
-              {candidates.length === 0 ? "Loading residents…" : "No matches found"}
-            </div>
-          ) : sorted.map((c) => {
-            const isChecked = checkedIds.has(c.id);
-            const isPossible = suspectMatches(alert.suspect, c.fullName);
-            return (
-              <button key={c.id} onClick={() => toggle(c.id)}
-                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-all"
-                style={{
-                  background: isChecked ? "rgba(59,130,246,0.07)" : "var(--secondary)",
-                  border: `1px solid ${isChecked ? "rgba(59,130,246,0.3)" : "var(--border)"}`,
-                }}>
-                <div className="flex-shrink-0 w-4 h-4 rounded flex items-center justify-center transition-all"
-                  style={{ background: isChecked ? "#3b82f6" : "transparent", border: `1.5px solid ${isChecked ? "#3b82f6" : "var(--muted-foreground)"}` }}>
-                  {isChecked && <CheckCircle size={10} color="#fff" strokeWidth={3} />}
-                </div>
-                <div className="w-8 h-8 rounded-lg flex-shrink-0 flex items-center justify-center text-xs font-bold overflow-hidden"
-                  style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}>
-                  {c.imageUrl
-                    ? <img src={c.imageUrl} alt={c.name} className="w-full h-full object-cover" onError={(e) => { e.currentTarget.style.display = "none"; }} />
-                    : (c.name[0] ?? "?")}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="text-[12px] font-medium" style={{ color: "var(--foreground)" }}>{c.name}</span>
-                    {c.isMinor && <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: "rgba(224,151,42,0.15)", color: "#e0972a" }}>Minor</span>}
-                    {isPossible && <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: "rgba(59,130,246,0.15)", color: "#3b82f6" }}>AI match</span>}
-                  </div>
-                  <div className="flex items-center gap-1.5 mt-0.5 text-[10px]" style={{ color: "var(--muted-foreground)" }}>
-                    <span style={{ fontFamily: "'DM Mono', monospace" }}>{c.barangayId}</span>
-                    {c.age != null && <><span>·</span><span>Age {c.age}</span></>}
-                    {c.household && <><span>·</span><span className="truncate">{c.household}</span></>}
-                  </div>
-                </div>
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Footer */}
-        <div className="px-5 py-4 flex items-center justify-between gap-3 flex-shrink-0"
-          style={{ borderTop: "1px solid var(--border)" }}>
-          <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
-            {checkedIds.size === 0 ? "Select at least one resident to continue" : `${checkedIds.size} candidate${checkedIds.size !== 1 ? "s" : ""} will be set`}
-          </div>
-          <div className="flex items-center gap-2 flex-shrink-0">
-            {!saving && (
-              <button onClick={onClose} className="px-4 py-2 rounded-xl text-sm font-medium"
-                style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}>
-                Cancel
-              </button>
-            )}
-            <button disabled={saving || checkedIds.size === 0} onClick={() => setConfirming(true)}
-              className="flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-medium"
-              style={{
-                background: "rgba(59,130,246,0.2)", color: "#3b82f6", border: "1px solid rgba(59,130,246,0.35)",
-                cursor: (saving || checkedIds.size === 0) ? "not-allowed" : "pointer", opacity: (saving || checkedIds.size === 0) ? 0.5 : 1,
-              }}>
-              {saving ? <Loader2 size={13} className="animate-spin" /> : <CheckCircle size={13} />}
-              {saving ? "Saving…" : "Save"}
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {confirming && (
-        <div
-          className="fixed inset-0 z-[85] flex items-center justify-center p-4"
-          style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)" }}
-          onClick={() => setConfirming(false)}
-        >
-          <div
-            className="w-full max-w-xs rounded-2xl overflow-hidden shadow-2xl"
-            style={{ background: "var(--card)", border: "1px solid var(--border)" }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="px-5 pt-5 pb-4 flex flex-col items-center text-center gap-3">
-              <div className="w-10 h-10 rounded-full flex items-center justify-center"
-                style={{ background: "rgba(59,130,246,0.12)" }}>
-                <User size={18} style={{ color: "#3b82f6" }} />
-              </div>
-              <div>
-                <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Set this candidate match?</div>
-                <div className="text-[12px] mt-1" style={{ color: "var(--muted-foreground)" }}>
-                  {checkedIds.size} resident{checkedIds.size !== 1 ? "s" : ""} will be linked to this violation.
-                </div>
-              </div>
-            </div>
-            <div className="flex items-center gap-2 px-5 pb-5">
-              <button onClick={() => setConfirming(false)}
-                className="flex-1 px-4 py-2 rounded-xl text-sm font-medium"
-                style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}>
-                Cancel
-              </button>
-              <button onClick={() => { setConfirming(false); handleSave(); }}
-                className="flex-1 flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium"
-                style={{ background: "#3b82f6", color: "#fff" }}>
-                <CheckCircle size={13} /> Confirm
-              </button>
-            </div>
-          </div>
+    <span ref={ref} className="relative inline-flex align-middle">
+      <button type="button" aria-label="More information" aria-expanded={open}
+        onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}
+        className="inline-flex items-center justify-center rounded-full"
+        style={{ color: open ? "var(--foreground)" : "var(--muted-foreground)", cursor: "pointer" }}>
+        <Info size={13} />
+      </button>
+      {open && (
+        <div role="tooltip"
+          className={`absolute top-full mt-2 z-[70] w-72 max-w-[80vw] rounded-xl px-3.5 py-3 text-[13px] leading-relaxed shadow-2xl ${align === "right" ? "right-0" : "left-0"}`}
+          style={{ background: "var(--card)", border: "1px solid var(--foreground)", color: "var(--foreground)", opacity: 1 }}>
+          {children}
         </div>
       )}
-    </div>
+    </span>
   );
 }
 
 // ── Quiet reference-detail card ───────────────────────────────────────────────
-// Used for the redesigned modal's right-column metadata (Camera, Confidence,
-// What was detected, Detected object, Assigned officers) — an 11px muted
-// label above a 13px value, on a quiet surface so these read as reference
-// details rather than competing with the video or footer actions.
-export function QuietCard({ label, value, mono, valueColor, tooltip }) {
+// An 13px muted label above a 15px value, on a quiet surface, so these read as reference details
+// rather than competing with the video or footer actions. `tooltip` opens on click of the (i).
+export function QuietCard({ label, value, mono, valueColor, tooltip, tooltipAlign = "left" }) {
   return (
     <div className="rounded-lg px-3 py-2.5 min-w-0"
       style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-      <div className="flex items-center gap-1">
-        <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>{label}</div>
-        {tooltip && (
-          <div className="relative group flex items-center">
-            <Info size={10} style={{ color: "var(--muted-foreground)", cursor: "pointer" }} />
-            <div className="absolute bottom-full left-0 mb-2 w-52 rounded-xl px-3 py-2.5 text-[11px] leading-relaxed pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity z-50 shadow-xl"
-              style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--muted-foreground)" }}>
-              {tooltip}
-            </div>
-          </div>
-        )}
+      <div className="flex items-center gap-1.5">
+        <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>{label}</div>
+        {tooltip && <InfoTip align={tooltipAlign}>{tooltip}</InfoTip>}
       </div>
-      <div className={`text-[13px] font-medium mt-0.5 ${mono ? "truncate" : "break-words"}`}
+      <div className={`text-[14px] font-medium mt-0.5 ${mono ? "truncate" : "break-words"}`}
         style={{ color: valueColor || "var(--foreground)", fontFamily: mono ? "'DM Mono', monospace" : undefined }}>
         {value}
       </div>
@@ -1377,45 +710,445 @@ export function QuietCard({ label, value, mono, valueColor, tooltip }) {
   );
 }
 
+// ── Alert detail cards (scoring spec v6.2) ─────────────────────────────────────
+//   Status                 solid border  - the official status only; the evidence is behind Details
+//   Object confidence      solid border  - how sure the YOLOv8 model was about the object
+//   AI context             dashed border - badge + what the AI saw (AI-generated, may be wrong)
+//   Status with AI context dashed border - a SUGGESTION; the official status never changes
+// The status is never shown as a number: a score reads like a percentage, which it is not.
+
+const STATUS_TOOLTIP = (
+  <>
+    <div className="font-semibold mb-1">Status</div>
+    Shows how strongly the detected evidence points to a violation. It&rsquo;s based only on
+    what the system detected (objects, movement, duration, and time), not on the AI.
+    <div className="mt-1.5">
+      <b>Monitoring:</b> An object linked to a violation was detected. Watch the scene.<br />
+      <b>Possible:</b> Some signs of a violation, but not enough to be sure. Review the alert before acting.<br />
+      <b>Likely:</b> Strong evidence of a violation. Review and respond.
+    </div>
+  </>
+);
+
+const SUGGESTED_TOOLTIP = (
+  <>
+    <div className="font-semibold mb-1">Status with AI context</div>
+    What the status would be if the AI&rsquo;s view of the scene were taken into account.
+    This is only a suggestion. The official status does not change.
+    <div className="mt-1.5">
+      If the AI is confident the scene is a violation, it may suggest one step higher.
+      If it is confident the scene is ordinary activity (such as vending, selling, or
+      eating), it may suggest one step lower. Review the clip to decide.
+    </div>
+  </>
+);
+
+const OBJECT_TOOLTIP = "How certain the YOLOv8 model detected the respective object of the violation.";
+
+function InfoCard({ label, tooltip, tooltipAlign, dashed, icon, aside, children, className = "" }) {
+  return (
+    <div className={`rounded-lg px-3 py-2 min-w-0 h-full ${className}`}
+      style={{ background: "var(--secondary)", border: `1px ${dashed ? "dashed" : "solid"} var(--border)` }}>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 text-[12px]" style={{ color: "var(--muted-foreground)" }}>
+          {icon}
+          {label}
+          {tooltip && <InfoTip align={tooltipAlign}>{tooltip}</InfoTip>}
+        </div>
+        {aside && <div className="flex items-center gap-1.5 text-[11px]" style={{ color: "var(--muted-foreground)" }}>{aside}</div>}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+// Tinted pill for a status: Monitoring grey, Possible amber, Likely red.
+const PILL = {
+  Monitoring: { color: "#64748b", bg: "rgba(100,116,139,0.16)" },
+  Possible:   { color: "#d97706", bg: "rgba(245,158,11,0.16)" },
+  Likely:     { color: "#dc2626", bg: "rgba(220,38,38,0.12)" },
+};
+function LevelPill({ label }) {
+  const st = PILL[label] ?? { color: "var(--muted-foreground)", bg: "rgba(100,116,139,0.16)" };
+  return (
+    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[12px] font-semibold leading-none"
+      style={{ background: st.bg, color: st.color }}>{label || "—"}</span>
+  );
+}
+
+// Small icon in a card's top-right corner that opens a popover (testing tools only). Click outside or Esc closes it.
+function CardDetails({ title, children }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setOpen(false); } };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey, true);
+    return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey, true); };
+  }, [open]);
+  return (
+    <span ref={ref} className="relative inline-flex">
+      <button type="button" title={title} aria-label={title} aria-expanded={open}
+        onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}
+        className="inline-flex items-center justify-center rounded"
+        style={{ color: open ? "var(--foreground)" : "var(--muted-foreground)", cursor: "pointer" }}>
+        <ListChecks size={14} />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-2 z-[70] w-72 max-w-[80vw] max-h-[50vh] overflow-y-auto rounded-xl px-3 py-2.5 shadow-2xl text-left"
+          style={{ background: "var(--card)", border: "1px solid var(--foreground)", color: "var(--foreground)" }}>
+          <div className="text-[12px] font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>{title}</div>
+          {children}
+        </div>
+      )}
+    </span>
+  );
+}
+
+export function StatusCard({ alert, testingTools = false }) {
+  const label = alert.levelLabel || "—";
+  const color = levelColor(label);
+  const found = alert.checklist?.found ?? [];
+  const adjusted = alert.checklist?.adjusted_by ?? alert.checklist?.reduced_by ?? [];
+  const tag = alert.checklist?.tag;
+  const hasDetails = found.length > 0 || adjusted.length > 0 || !!tag;
+  const details = testingTools && hasDetails && (
+    <CardDetails title="Evidence found">
+      {tag ? <div className="mb-1 text-[12px] italic" style={{ color: "var(--muted-foreground)" }}>{tag}</div> : null}
+      {found.map((line) => (
+        <div key={line} className="flex items-start gap-1.5 text-[13px] leading-snug mt-0.5" style={{ color: "var(--foreground)" }}>
+          <Check size={12} className="flex-shrink-0 mt-0.5" style={{ color }} />
+          <span className="break-words">{line}</span>
+        </div>
+      ))}
+      {adjusted.map((line) => (
+        <div key={line} className="flex items-start gap-1.5 text-[12px] leading-snug mt-0.5" style={{ color: "var(--muted-foreground)" }}>
+          <Minus size={12} className="flex-shrink-0 mt-0.5" />
+          <span className="break-words">Adjusted by: {line}</span>
+        </div>
+      ))}
+    </CardDetails>
+  );
+  return (
+    <InfoCard label="Status" tooltip={STATUS_TOOLTIP} aside={details || undefined}>
+      <div className="mt-1.5"><LevelPill label={label} /></div>
+    </InfoCard>
+  );
+}
+
+export function ObjectConfidenceCard({ alert }) {
+  // No object detected (puff-only smoking is hand movement alone): nothing to be confident about.
+  const none = alert.objectConfidence == null || alert.cues?.puff_only;
+  const vcolor = violationDisplay(alert.type).color;
+  return (
+    <InfoCard label="Object confidence" tooltip={OBJECT_TOOLTIP} tooltipAlign="right">
+      <div className="text-[14px] font-semibold mt-1.5 leading-[22px]" style={{ color: none ? "var(--foreground)" : vcolor }}>
+        {none ? "—" : `${Math.round(alert.objectConfidence * 100)}% conf`}
+      </div>
+    </InfoCard>
+  );
+}
+
+const AI_BADGE_STYLE = {
+  supports:    { color: "#047857", bg: "rgba(16,185,129,0.14)", icon: Check },
+  ordinary:    { color: "#b45309", bg: "rgba(245,158,11,0.16)", icon: AlertTriangle },
+  unclear:     { color: "var(--muted-foreground)", bg: "rgba(100,116,139,0.14)", icon: Info },
+  unavailable: { color: "var(--muted-foreground)", bg: "rgba(100,116,139,0.14)", icon: Info },
+};
+
+function AIContextCard({ ai, testingTools = false }) {
+  const state = ai?.state ?? "unavailable";
+  const badge = ai?.badge ?? { code: "unavailable", text: "AI context unavailable" };
+  const style = AI_BADGE_STYLE[badge.code] ?? AI_BADGE_STYLE.unavailable;
+  const BadgeIcon = style.icon;
+  const frames = ai?.frames ?? [];
+  const checklist = ai?.checklist ?? [];
+  const details = testingTools && state === "done" && (checklist.length > 0 || frames.length > 0) && (
+    <CardDetails title="AI details">
+      <div className="flex flex-col gap-1">
+        {checklist.map((c) => (
+          <div key={c.field} className="flex items-center gap-1.5 text-[13px]" style={{ color: "var(--foreground)" }}>
+            {c.value === true ? <Check size={12} style={{ color: "#10b981" }} />
+              : c.value === false ? <X size={12} style={{ color: "var(--muted-foreground)" }} />
+              : <Minus size={12} style={{ color: "var(--muted-foreground)" }} />}
+            <span>{c.label}{typeof c.value === "string" ? `: ${c.value}` : ""}</span>
+          </div>
+        ))}
+      </div>
+      {frames.length > 0 && (
+        <div className="mt-2">
+          <div className="text-[12px] mb-1" style={{ color: "var(--muted-foreground)" }}>Frames the AI saw ({frames.length})</div>
+          <div className="grid grid-cols-4 gap-1">
+            {frames.map((u) => (
+              <a key={u} href={u} target="_blank" rel="noreferrer">
+                <img src={u} alt="frame sent to the AI" loading="lazy" className="w-full h-12 object-cover rounded" />
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+    </CardDetails>
+  );
+  return (
+    <InfoCard dashed label="AI context" icon={<Sparkles size={12} />}
+      aside={<><span>AI-generated · may be wrong</span>{details || null}</>}>
+      {state === "pending" ? (
+        <div className="mt-1.5 flex items-center gap-2 text-[13px]" style={{ color: "var(--muted-foreground)" }}>
+          <Loader2 size={13} className="animate-spin" /> AI is checking this event…
+        </div>
+      ) : (
+        <>
+          <div className="mt-1.5 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[12px] font-medium"
+            style={{ background: style.bg, color: style.color }}>
+            <BadgeIcon size={11} /> {badge.text}
+            {state === "done" && ai.confidence ? <span style={{ opacity: 0.8 }}>· {ai.confidence} confidence</span> : null}
+          </div>
+          {state === "done" && ai.observations && (
+            <div className="mt-1.5 text-[13px] leading-snug italic break-words" style={{ color: "var(--foreground)" }}>
+              &ldquo;{ai.observations}&rdquo;
+            </div>
+          )}
+        </>
+      )}
+    </InfoCard>
+  );
+}
+
+// The server sends the sentence ("Likely → Possible (suggested) — AI sees ordinary activity"); the card shows
+// it as the old status struck through, an arrow, and the suggested status as a pill, with the reason in grey.
+function SuggestedStatusCard({ ai, official }) {
+  const sug = ai?.suggestion;
+  const grey = { color: "var(--muted-foreground)" };
+  const text = ai?.state === "pending" ? "AI context pending…" : (sug?.text || "AI context unavailable");
+  const reason = text.includes(" — ") ? text.split(" — ").slice(1).join(" — ") : "";
+  let body;
+  if (sug?.changed && sug.suggested && official) {
+    body = (
+      <>
+        <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
+          <span className="text-[12px]" style={{ ...grey, textDecoration: "line-through" }}>{official}</span>
+          <span className="text-[12px]" style={grey}>→</span>
+          <LevelPill label={sug.suggested} />
+        </div>
+        <div className="mt-1 text-[12px]" style={grey}>(suggested){reason ? ` — ${reason}` : ""}</div>
+      </>
+    );
+  } else if (sug?.suggested && PILL[sug.suggested]) {
+    const noChange = text.startsWith("No change");
+    body = (
+      <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
+        {noChange && <span className="text-[12px]" style={grey}>No change —</span>}
+        <LevelPill label={sug.suggested} />
+        {reason ? <span className="text-[12px]" style={grey}>{noChange ? reason : `— ${reason}`}</span> : null}
+      </div>
+    );
+  } else {
+    body = <div className="mt-1.5 text-[13px]" style={grey}>{text}</div>;
+  }
+  return (
+    <InfoCard dashed label="Status with AI context" icon={<Sparkles size={12} />}
+      tooltip={SUGGESTED_TOOLTIP} tooltipAlign="right" aside="suggestion only">
+      {body}
+    </InfoCard>
+  );
+}
+
+// TESTING VIEW: how the status was reached, indicator by indicator. Shown only while "Show testing
+// tools" is on (Settings -> System). Plain numbers on purpose: this is for checking the system,
+// not for the tanod.
+function ScoreBreakdown({ alert }) {
+  const c = alert.cues || {};
+  const indicators = Object.entries(c.cues || {}).sort((a, b) => b[1] - a[1]);
+  const multipliers = Object.entries(c.multipliers || {});
+  const pts = (v) => Math.round(Number(v) * 100);
+  const settings = c.settings ? Object.entries(c.settings) : [];
+  const mono = { fontFamily: "'DM Mono', monospace" };
+  return (
+    <InfoCard dashed label="Testing view · score breakdown" aside="testing tools on">
+      <table className="w-full mt-2 text-[13px]" style={{ color: "var(--foreground)", ...mono }}>
+        <tbody>
+          {indicators.map(([name, w]) => (
+            <tr key={name}>
+              <td className="py-0.5">{name.replace(/_/g, " ")}</td>
+              <td className="py-0.5 text-right">+{pts(w)}</td>
+            </tr>
+          ))}
+          {indicators.length === 0 && <tr><td className="py-0.5" colSpan={2}>no indicators fired</td></tr>}
+          <tr style={{ borderTop: "1px solid var(--border)" }}>
+            <td className="py-0.5">sum of indicators</td>
+            <td className="py-0.5 text-right">{c.raw_score != null ? pts(c.raw_score) : "—"}</td>
+          </tr>
+          {multipliers.map(([name, v]) => (
+            <tr key={name}>
+              <td className="py-0.5">time multiplier ({name})</td>
+              <td className="py-0.5 text-right">×{v}</td>
+            </tr>
+          ))}
+          <tr style={{ borderTop: "1px solid var(--border)", fontWeight: 600 }}>
+            <td className="py-0.5">total (capped at 100)</td>
+            <td className="py-0.5 text-right">{c.score != null ? pts(c.score) : "—"}</td>
+          </tr>
+          <tr>
+            <td className="py-0.5">status</td>
+            <td className="py-0.5 text-right">{c.label || alert.levelLabel || "—"}{c.tag ? ` · ${c.tag}` : ""}</td>
+          </tr>
+          <tr>
+            <td className="py-0.5">momentum</td>
+            <td className="py-0.5 text-right">
+              {c.momentum ? `${c.momentum.momentum} (peak ${c.momentum.peak}; on ${c.momentum.on}, off ${c.momentum.off}, decay ${c.momentum.decay})` : "—"}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      {settings.length > 0 && (
+        <details className="mt-2 text-[12px]" style={{ color: "var(--muted-foreground)", ...mono }}>
+          <summary className="cursor-pointer">Settings logged with this alert</summary>
+          <div className="mt-1 space-y-0.5">
+            {settings.map(([k, v]) => <div key={k}>{k}: {String(v)}</div>)}
+          </div>
+        </details>
+      )}
+    </InfoCard>
+  );
+}
+
+
+// ── Closed alerts ────────────────────────────────────────────────────────────────
+
+function whenText(ts) {
+  if (!ts) return "";
+  const { date, time } = formatStamp(ts);
+  return `${date}, ${time}`;
+}
+
+// Directly under the header: who closed the alert, when, and why.
+function ClosedBanner({ alert }) {
+  const dismissed = alert.status === "acknowledged";
+  const tone = dismissed
+    ? { bg: "rgba(244,63,94,0.08)", border: "rgba(244,63,94,0.25)", icon: "#e11d48", Icon: X, title: "Dismissed" }
+    : { bg: "rgba(16,185,129,0.08)", border: "rgba(16,185,129,0.28)", icon: "#059669", Icon: Check, title: "Resolved" };
+  const Icon = tone.Icon;
+  const by = alert.reviewedBy ? `by ${alert.reviewedBy}` : "";
+  const when = whenText(alert.reviewedAt);
+  return (
+    <div className="flex items-start gap-3 w-full rounded-lg px-4 py-3 mb-5"
+      style={{ background: tone.bg, border: `1px solid ${tone.border}` }}>
+      <span className="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5"
+        style={{ background: tone.icon + "22", color: tone.icon }}>
+        <Icon size={13} />
+      </span>
+      <div className="min-w-0">
+        <div className="text-[16px] font-semibold" style={{ color: "var(--foreground)" }}>{tone.title}</div>
+        {(by || when) && (
+          <div className="text-[13px] mt-0.5" style={{ color: "var(--muted-foreground)" }}>
+            {[by, when].filter(Boolean).join(" · ")}
+          </div>
+        )}
+        <div className="text-[14px] mt-1.5 leading-relaxed break-words" style={{ color: "var(--foreground)" }}>
+          {dismissed ? (alert.notes || "No reason provided.") : (alert.citationIssued ? "Citation issued" : "No citation")}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Detected -> status changes -> assigned -> dismissed / resolved, each with its time.
+function TimelineBody({ alert }) {
+  const detected = { t: alert.timestamp, label: alert.timeSource === "processed" ? "Detected (processed at)" : "Detected", kind: "detected" };
+  const events = (alert.timeline ?? []).map((e) => ({
+    t: e.t, kind: e.type,
+    label: e.type === "status" ? e.label
+      : e.type === "dismissed" ? `Dismissed${e.by ? ` by ${e.by}` : ""}`
+      : e.type === "resolved" ? `Resolved${e.by ? ` by ${e.by}` : ""}`
+      : e.type === "reopened" ? `Reopened${e.by ? ` by ${e.by}` : ""}`
+      : e.label,
+  }));
+  // Alerts closed before timelines were kept still show how they ended.
+  const closedKnown = events.some((e) => e.kind === "dismissed" || e.kind === "resolved");
+  if (!closedKnown && alert.reviewedAt && (alert.status === "acknowledged" || alert.status === "resolved")) {
+    events.push({ t: alert.reviewedAt, kind: "closed", label: `${alert.status === "resolved" ? "Resolved" : "Dismissed"}${alert.reviewedBy ? ` by ${alert.reviewedBy}` : ""}` });
+  }
+  const rows = [detected, ...events].sort((a, b) => new Date(a.t) - new Date(b.t));
+  const colorOf = (r) => (r.kind === "status" ? levelColor(r.label) : r.kind === "dismissed" || r.label.startsWith("Dismissed") ? "#e11d48"
+    : r.kind === "resolved" || r.label.startsWith("Resolved") ? "#059669" : r.kind === "assigned" ? "#3b82f6" : "var(--muted-foreground)");
+  return (
+    <>
+      <div className="text-[13px] mb-2 font-medium" style={{ color: "var(--foreground)" }}>Timeline</div>
+      <ol className="space-y-1.5">
+        {rows.map((r, i) => (
+          <li key={i} className="flex items-start gap-2.5">
+            <span className="w-2 h-2 rounded-full flex-shrink-0 mt-[7px]" style={{ background: colorOf(r) }} />
+            <span className="text-[14px] flex-1 break-words" style={{ color: "var(--foreground)" }}>{r.label}</span>
+            <span className="text-[13px] flex-shrink-0" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+              {new Date(r.t).toLocaleTimeString("en-PH", { hour: "numeric", minute: "2-digit", second: "2-digit", hour12: true })}
+            </span>
+          </li>
+        ))}
+      </ol>
+    </>
+  );
+}
+
+// Clock button in the top-right corner of the video; opens the event timeline. Click outside or Esc closes it.
+function TimelineButton({ alert }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setOpen(false); } };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey, true);
+    return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey, true); };
+  }, [open]);
+  return (
+    <div ref={ref} className="absolute top-2 right-2 z-20">
+      <button onClick={() => setOpen((o) => !o)} title="Timeline" aria-label="Timeline"
+        className="w-8 h-8 rounded-full flex items-center justify-center"
+        style={{ background: open ? "rgba(245,158,11,0.9)" : "rgba(0,0,0,0.55)", color: open ? "#0c0f16" : "#fff" }}>
+        <Clock size={15} />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-10 w-[300px] max-w-[80vw] max-h-[60vh] overflow-y-auto rounded-lg px-3 py-2.5 shadow-xl"
+          style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
+          <TimelineBody alert={alert} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main modal ─────────────────────────────────────────────────────────────────
 export function ViolationModal({
-  alert, assignedOfficerNames, households, residents, officers = [], currentOfficerId,
-  onDismiss, onDispatch, onResolved, onClose, onUpdateSuspect, verifierName,
+  alert, assignedOfficerNames, officers = [], currentOfficerId,
+  onDismiss, onDispatch, onResolved, onClose, onReopen,
+  userRole,
 }) {
-  // Icon + color identity from violationTypes.js (same source the rest of
-  // the app's chips use). It's deliberately scoped to smoking/drinking/
-  // parking/theft, so curfew/waste/noise fall through to
-  // violationDisplay's own humanized fallback (e.g. "Curfew") — never the
-  // raw db code, and never (as watch_thief.py's now-fixed code split used
-  // to cause) something as opaque as "thief".
+  // Resolving closes a violation and is what a citation is filed against, so it belongs to whoever
+  // attended the scene. An explicit allowlist: a missing prop must hide a privileged action.
+  const canResolve = ["admin", "officer", "both"].includes(userRole);
+  const canReopen = userRole === "admin" && !!onReopen;
   const vcfg = violationDisplay(alert.type);
-  const scfg = statusConfig[alert.status] ?? statusConfig.acknowledged;
   const VIcon = vcfg.icon;
-  const [showContact, setShowContact] = useState(false);
+  // Testing view (score breakdown): admin only, and only while "Show testing tools" is on.
+  const testingTools = useTestingTools(userRole === "admin");
   const [showResolveChecklist, setShowResolveChecklist] = useState(false);
   const [showAllOfficers, setShowAllOfficers] = useState(false);
-  const [showSetCandidate, setShowSetCandidate] = useState(false);
-  const [candidateConfirmed, setCandidateConfirmed] = useState(false);
-  const [confirmedAt, setConfirmedAt] = useState(null);
-  const [pendingAction, setPendingAction] = useState(null); // null | "noiseUndo" | "candidateConfirm" | "candidateUndo"
+  const closed = alert.status === "acknowledged" || alert.status === "resolved";
 
-  const isCandidateViolation = alert.type === "curfew" || alert.type === "waste";
-  const isNoiseViolation = alert.type === "noise";
-  const candidates = useMemo(() => buildCandidates(households, residents), [households, residents]);
-
-  // Assigned officers card — built once so it can be dropped in either
-  // paired with "Detected object" (smoking/drinking/thief/parking) or full
-  // width alone (curfew/waste/noise, which have their own detail card).
+  // Assigned officers card — paired with "Detected object".
   const officersCard = (
     <div className="rounded-lg px-3 py-2.5 min-w-0"
       style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-      <div className="text-[11px] mb-1" style={{ color: "var(--muted-foreground)" }}>
+      <div className="text-[13px] mb-1" style={{ color: "var(--muted-foreground)" }}>
         Assigned officers {assignedOfficerNames.length > 0 && `(${assignedOfficerNames.length})`}
       </div>
       {assignedOfficerNames.length === 0 ? (
-        <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>None assigned</div>
+        <div className="text-[15px]" style={{ color: "var(--muted-foreground)" }}>None assigned</div>
       ) : (
-        <div className="flex items-center gap-1.5 text-[13px]">
+        <div className="flex items-center gap-1.5 text-[15px]">
           <Shield size={10} style={{ color: "#10b981", flexShrink: 0 }} />
           <span className="truncate" style={{ color: "var(--foreground)" }}>
             {assignedOfficerNames[0].split(" ")[0]}
@@ -1423,7 +1156,7 @@ export function ViolationModal({
           {assignedOfficerNames.length > 1 && (
             <button
               onClick={() => setShowAllOfficers(true)}
-              className="text-[11px] font-medium flex-shrink-0"
+              className="text-[13px] font-medium flex-shrink-0"
               style={{ color: "#3b82f6" }}>
               …more
             </button>
@@ -1461,11 +1194,11 @@ export function ViolationModal({
               {assignedOfficerNames.map((name) => (
                 <div key={name} className="flex items-center gap-2.5 px-3 py-2 rounded-lg"
                   style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-                  <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0"
+                  <div className="w-6 h-6 rounded-full flex items-center justify-center text-[12px] font-bold flex-shrink-0"
                     style={{ background: "rgba(16,185,129,0.15)", color: "#10b981" }}>
                     {name[0]}
                   </div>
-                  <span className="text-[12px] font-medium" style={{ color: "var(--foreground)" }}>{name}</span>
+                  <span className="text-[14px] font-medium" style={{ color: "var(--foreground)" }}>{name}</span>
                 </div>
               ))}
             </div>
@@ -1475,6 +1208,8 @@ export function ViolationModal({
     </div>
   );
 
+  const stamp = formatStamp(alert.timestamp);
+
   return (
     <>
       <div
@@ -1483,371 +1218,123 @@ export function ViolationModal({
         onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
       >
         <div
-          className="w-full max-w-6xl rounded-2xl overflow-hidden shadow-2xl flex flex-col"
-          style={{ background: "var(--card)", border: "1px solid var(--border)", maxHeight: "90vh" }}
+          className="w-[90vw] max-w-[1440px] rounded-2xl overflow-hidden shadow-2xl flex flex-col"
+          style={{ background: "var(--card)", border: "1px solid var(--border)", maxHeight: "92vh" }}
         >
-          {/* Header — camera name, timestamp and alert ID collapse into one
-              muted metadata line instead of three separate chips. */}
-          <div className="flex items-center justify-between px-6 py-4 flex-shrink-0"
+          {/* Header — what, which camera, and when. No review tag: the verdict is recorded
+              silently from Dismiss / Assign. */}
+          <div className="flex items-center justify-between gap-4 px-6 py-4 flex-shrink-0"
             style={{ borderBottom: "1px solid var(--border)" }}>
-            <div className="flex items-center gap-3">
-              <VIcon size={22} style={{ color: vcfg.color }} />
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="text-[15px] font-semibold" style={{ color: "var(--foreground)" }}>{vcfg.label}</span>
-                  <span className="text-[11px] font-medium px-2 py-0.5 rounded-full"
-                    style={{ background: scfg.bg, color: scfg.color }}>
-                    {scfg.label}
+            <div className="flex items-center gap-3 min-w-0">
+              <VIcon size={22} style={{ color: vcfg.color, flexShrink: 0 }} />
+              <div className="min-w-0">
+                <span className="text-[17px] font-semibold" style={{ color: "var(--foreground)" }}>{vcfg.label}</span>
+                <div className="mt-1 text-[13px] truncate" style={{ color: "var(--muted-foreground)" }}>
+                  <span style={{ fontFamily: "'DM Mono', monospace" }}>{alert.id}</span>
+                  {" · "}{alert.cameraZone || alert.camera}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3 flex-shrink-0">
+              <div className="text-right min-w-0">
+                <div className="flex items-center justify-end gap-2">
+                  <Clock size={17} style={{ color: "var(--muted-foreground)", flexShrink: 0 }} />
+                  {alert.timeSource === "processed" && (
+                    <span className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>processed at</span>
+                  )}
+                  <span className="text-[20px] leading-tight" style={{ color: "var(--foreground)" }}>
+                    <span style={{ fontWeight: 500 }}>{stamp.date}</span>
+                    <span style={{ color: "var(--muted-foreground)", margin: "0 7px" }}>·</span>
+                    <span style={{ fontWeight: 700 }}>{stamp.time}</span>
                   </span>
                 </div>
-                <div className="mt-0.5 text-[11px]" style={{ color: "var(--muted-foreground)" }}>
-                  <span style={{ fontFamily: "'DM Mono', monospace" }}>{alert.id}</span>
-                  {" · "}{alert.cameraZone}{" · "}{formatFull(alert.timestamp)}
-                </div>
+                {alert.cameraAddress ? (
+                  <div className="mt-1 flex items-center justify-end gap-1.5">
+                    <MapPin size={14} style={{ color: "var(--muted-foreground)", flexShrink: 0 }} />
+                    <span className="text-[14px] break-words" style={{ color: "var(--muted-foreground)" }}>{alert.cameraAddress}</span>
+                  </div>
+                ) : null}
               </div>
+              <button onClick={onClose} className="p-2 rounded-lg flex-shrink-0 self-start"
+                style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}>
+                <X size={15} />
+              </button>
             </div>
-            <button onClick={onClose} className="p-2 rounded-lg flex-shrink-0"
-              style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}>
-              <X size={15} />
-            </button>
           </div>
 
-          {/* Body — video left (60%), stacked reference cards right (40%);
-              this one region scrolls if content overflows a shorter screen. */}
+          {/* Body: ONE scrolling area. Evidence ~60% on the left, cards ~40% on the right; on a
+              narrow screen the video is on top and the cards stack below it. */}
           <div className="overflow-y-auto flex-1 p-6">
-            <div className="grid grid-cols-[3fr_2fr] gap-5" style={{ alignItems: "start" }}>
-              {/* Left: video, scales with the column */}
+            {closed && <ClosedBanner alert={alert} />}
+            <div className="grid grid-cols-1 lg:grid-cols-[60fr_40fr] gap-5 items-start">
               <div className="min-w-0">
-                <RecordingPlayer alert={alert} />
+                <RecordingPlayer alert={alert} timeline />
               </div>
 
-              {/* Right: stacked reference-detail cards */}
               <div className="flex flex-col gap-3 min-w-0">
-                {isNoiseViolation ? (
-                    /* Noise violation card */
-                    (() => {
-                      const loudnessPct = Math.round((alert.confidence ?? 0) * 100);
-                      const dBFS = Math.round(-30 + (alert.confidence ?? 0) * 30);
-                      const accentColor = "#f59e0b";
-                      return (
-                        <div className="rounded-lg overflow-hidden flex-1 flex flex-col"
-                          style={{ border: "1px solid var(--border)", borderLeft: `3px solid ${accentColor}`, background: "var(--secondary)" }}>
-                          {/* Label */}
-                          <div className="px-3 pt-2.5 pb-1 text-[10px]" style={{ color: "var(--muted-foreground)" }}>
-                            Noise violation — no facial recognition, loudness only
-                          </div>
-                          {/* Source + Duration */}
-                          <div className="flex px-3 pb-2.5" style={{ borderBottom: "1px solid var(--border)" }}>
-                            <div className="flex-1">
-                              <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Source</div>
-                              <div className="text-[12px] font-bold mt-0.5" style={{ color: "var(--foreground)", fontFamily: "'DM Mono', monospace" }}>
-                                {alert.camera} · mic
-                              </div>
-                            </div>
-                            <div style={{ width: 1, background: "var(--border)", margin: "0 12px" }} />
-                            <div className="flex-1">
-                              <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Duration above threshold</div>
-                              <div className="text-[12px] font-bold mt-0.5" style={{ color: accentColor }}>— s</div>
-                            </div>
-                          </div>
-                          {/* Loudness section */}
-                          <div className="px-3 py-2.5 flex-1 flex flex-col justify-center">
-                            <div className="flex items-center justify-between mb-2">
-                              <div className="flex items-center gap-1">
-                                <span className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Relative loudness</span>
-                                <div className="relative group flex items-center">
-                                  <Info size={10} style={{ color: "var(--muted-foreground)", cursor: "pointer" }} />
-                                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 rounded-xl px-3 py-2 text-[11px] leading-relaxed pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity z-50 shadow-xl"
-                                    style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--muted-foreground)" }}>
-                                    How loud the detected sound is relative to the noise threshold. Values above 0 dBFS indicate clipping.
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                            {/* Bar */}
-                            <div className="relative h-2 rounded-full" style={{ background: "var(--muted)" }}>
-                              <div className="absolute left-0 top-0 h-full rounded-full transition-all"
-                                style={{ width: `${loudnessPct}%`, background: accentColor }} />
-                              <div className="absolute top-1/2 -translate-y-1/2 w-[2px] h-4 rounded-full"
-                                style={{ left: "75%", background: "var(--foreground)" }} />
-                            </div>
-                            <div className="flex items-center justify-between mt-1 relative">
-                              <span className="absolute text-[9px] -translate-x-1/2 whitespace-nowrap" style={{ left: "75%", color: "var(--muted-foreground)" }}>threshold</span>
-                              <span className="ml-auto text-[10px] font-semibold" style={{ color: accentColor }}>{dBFS} dBFS</span>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })()
-                  ) : isCandidateViolation ? (
-                    /* 3-state candidate match card for curfew / waste */
-                    (() => {
-                      const candidateName = alert.suspect ? alert.suspect.split(";")[0].trim() : null;
-                      const initials = candidateName
-                        ? candidateName.split(" ").slice(0, 2).map((w) => w[0]).join("").toUpperCase()
-                        : "";
-                      const accentColor = candidateConfirmed ? "#10b981" : candidateName ? "#f59e0b" : "var(--border)";
-                      const formatConfirmedAt = (iso) => new Date(iso).toLocaleString("en-PH", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: true });
-                      const matchedCandidate = candidateName
-                        ? candidates.find((c) => c.fullName.trim() === candidateName)
-                          ?? candidates.find((c) => suspectMatches(alert.suspect, c.fullName))
-                        : null;
-
-                      return (
-                        <div className="flex flex-col gap-3 flex-1">
-                          {/* Camera + Confidence row */}
-                          <div className="rounded-lg flex items-stretch flex-shrink-0"
-                            style={{ border: "1px solid var(--border)", background: "var(--secondary)" }}>
-                            <div className="flex-1 px-3 py-2.5">
-                              <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Camera</div>
-                              <div className="text-[12px] font-bold mt-1" style={{ color: "var(--foreground)", fontFamily: "'DM Mono', monospace" }}>{alert.camera}</div>
-                            </div>
-                            <div style={{ width: 1, background: "var(--border)" }} />
-                            <div className="flex-1 px-3 py-2.5">
-                              <div className="flex items-center gap-1">
-                                <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Confidence</div>
-                                <div className="relative group flex items-center">
-                                  <Info size={10} style={{ color: "var(--muted-foreground)", cursor: "pointer" }} />
-                                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-52 rounded-xl px-3 py-2.5 text-[11px] leading-relaxed pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity z-50 shadow-xl"
-                                    style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--muted-foreground)" }}>
-                                    <div className="font-semibold mb-1" style={{ color: "var(--foreground)" }}>AI Confidence Score</div>
-                                    How certain the YOLOv8 model is that a violation was detected. A higher score means the AI is more confident in its detection.
-                                    <div className="absolute top-full left-1/2 -translate-x-1/2 w-0 h-0"
-                                      style={{ borderLeft: "5px solid transparent", borderRight: "5px solid transparent", borderTop: "5px solid var(--border)" }} />
-                                  </div>
-                                </div>
-                              </div>
-                              <div className="text-[12px] font-bold mt-1" style={{ color: vcfg.color, fontFamily: "'DM Mono', monospace" }}>
-                                {alert.confidence ? `${(alert.confidence * 100).toFixed(0)}%` : "—"}
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Candidate section */}
-                          <div className="rounded-lg overflow-hidden px-3 py-2.5 flex-1 flex flex-col justify-center"
-                            style={{ border: "1px solid var(--border)", borderLeft: `3px solid ${accentColor}`, background: "var(--secondary)" }}>
-                            {!candidateName ? (
-                              /* State 1 — no candidate */
-                              <div className="flex items-center justify-between">
-                                <div>
-                                  <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>Candidate match</div>
-                                  <div className="text-[12px] font-semibold mt-0.5" style={{ color: "var(--foreground)" }}>No match found</div>
-                                </div>
-                                <button onClick={() => setShowSetCandidate(true)}
-                                  className="flex items-center gap-1 text-[11px] font-semibold px-3 py-1.5 rounded-lg"
-                                  style={{ background: "var(--muted)", border: "1px solid var(--border)", color: "var(--foreground)" }}>
-                                  <User size={10} /> Select
-                                </button>
-                              </div>
-                            ) : candidateConfirmed ? (
-                              /* State 3 — confirmed */
-                              <div className="flex flex-col gap-2 flex-1">
-                                <div className="flex items-center gap-2 flex-shrink-0">
-                                  <div className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold flex-shrink-0"
-                                    style={{ background: "rgba(16,185,129,0.18)", color: "#10b981" }}>{initials}</div>
-                                  <div className="flex-1 min-w-0">
-                                    <div className="text-[12px] font-semibold truncate" style={{ color: "var(--foreground)" }}>{candidateName}</div>
-                                    <div className="text-[10px] truncate" style={{ color: "var(--muted-foreground)" }}>
-                                      {matchedCandidate ? `Resident ID · ${matchedCandidate.barangayId}` : "Confirmed match"}
-                                    </div>
-                                  </div>
-                                  <span className="flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0"
-                                    style={{ background: "rgba(16,185,129,0.15)", color: "#10b981" }}>
-                                    <CheckCircle size={9} /> Confirmed
-                                  </span>
-                                </div>
-                                <div className="flex items-center gap-2 px-2.5 py-2 rounded-lg flex-1"
-                                  style={{ background: "rgba(16,185,129,0.08)", border: "1px solid rgba(16,185,129,0.2)" }}>
-                                  <div className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0"
-                                    style={{ background: "#10b981" }}>
-                                    <CheckCircle size={11} color="#fff" strokeWidth={3} />
-                                  </div>
-                                  <div className="flex-1 min-w-0">
-                                    <div className="text-[11px] font-semibold" style={{ color: "var(--foreground)" }}>Match confirmed</div>
-                                    <div className="text-[10px] truncate" style={{ color: "var(--muted-foreground)" }}>
-                                      by {verifierName || "officer"}{confirmedAt ? ` · ${formatConfirmedAt(confirmedAt)}` : ""}
-                                    </div>
-                                  </div>
-                                  <button
-                                    onClick={() => setPendingAction("candidateUndo")}
-                                    className="text-[10px] font-semibold px-2.5 py-1 rounded-lg flex-shrink-0"
-                                    style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--foreground)" }}>
-                                    Undo
-                                  </button>
-                                </div>
-                              </div>
-                            ) : (
-                              /* State 2 — pending verification */
-                              <div className="flex flex-col gap-2">
-                                <div className="flex items-center gap-2">
-                                  <div className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold flex-shrink-0"
-                                    style={{ background: "rgba(245,158,11,0.18)", color: "#f59e0b" }}>{initials}</div>
-                                  <div className="flex-1 min-w-0">
-                                    <div className="text-[12px] font-semibold truncate" style={{ color: "var(--foreground)" }}>{candidateName}</div>
-                                    <div className="text-[10px] truncate" style={{ color: "var(--muted-foreground)" }}>
-                                      {matchedCandidate ? `Resident ID · ${matchedCandidate.barangayId}` : "Potential match"}
-                                    </div>
-                                  </div>
-                                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full flex-shrink-0"
-                                    style={{ background: "rgba(245,158,11,0.15)", color: "#f59e0b" }}>Pending verification</span>
-                                </div>
-                                <div className="flex gap-2">
-                                  <button
-                                    onClick={() => { setCandidateConfirmed(false); setConfirmedAt(null); setShowSetCandidate(true); }}
-                                    className="flex-1 text-[11px] font-semibold py-1.5 rounded-lg"
-                                    style={{ background: "var(--muted)", border: "1px solid var(--border)", color: "var(--foreground)" }}>
-                                    Not a match
-                                  </button>
-                                  <button
-                                    onClick={() => setPendingAction("candidateConfirm")}
-                                    className="flex-1 flex items-center justify-center gap-1 text-[11px] font-semibold py-1.5 rounded-lg"
-                                    style={{ background: "#f59e0b", color: "#fff" }}>
-                                    <CheckCircle size={10} /> Confirm
-                                  </button>
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })()
-                  ) : (
-                    /* Camera · Confidence — stacked one-per-row: monospace
-                       camera codes (e.g. CAM-DRINKING-TEST) truncate a value
-                       badly at half the column width two-up, so this pair
-                       gets the full row each rather than risk it. */
-                    <>
-                      <QuietCard label="Camera" value={alert.camera} mono />
-                      <QuietCard
-                        label="Confidence"
-                        value={`${(alert.confidence * 100).toFixed(0)}%`}
-                        valueColor={vcfg.color}
-                        tooltip={
-                          <>
-                            <div className="font-semibold mb-1" style={{ color: "var(--foreground)" }}>AI Confidence Score</div>
-                            How certain the YOLOv8 model is that a violation was detected. A higher score means the AI is more confident in its detection.
-                          </>
-                        }
-                      />
-                    </>
-                  )}
-
-                {/* What was detected — the alert's own description, full width */}
-                <QuietCard label="What was detected" value={alert.description || "—"} />
-
-                {/* Detected object (the model's class label — NOT a resident
-                    match; see the module notes above SetCandidateModal) paired
-                    with Assigned officers. Curfew/waste/noise have no "detected
-                    object" concept — their own card above already covers it —
-                    so officers stands alone, full width, for those. */}
-                {isCandidateViolation || isNoiseViolation ? (
-                  officersCard
-                ) : (
-                  <div className="grid grid-cols-2 gap-3">
-                    <QuietCard label="Detected object" value={alert.suspect || "—"} />
-                    {officersCard}
-                  </div>
+                <QuietCard label="Camera" value={alert.cameraZone || alert.cameraAddress || "—"} />
+                <div className="grid grid-cols-2 gap-3 items-stretch">
+                  <StatusCard alert={alert} testingTools={testingTools} />
+                  <ObjectConfidenceCard alert={alert} />
+                </div>
+                {/* Null (not merely empty) means this violation has no AI checker
+                    at all — parking, whose rule is a measurement with nothing for
+                    a vision model to adjudicate. Drawing "AI context unavailable"
+                    on those alerts advertises a missing feature that was never
+                    meant to exist. A kind that DOES have a checker still gets the
+                    cards when a check failed or is pending, which is information. */}
+                {alert.aiContext && (
+                  <>
+                    <AIContextCard ai={alert.aiContext} testingTools={testingTools} />
+                    <SuggestedStatusCard ai={alert.aiContext} official={alert.levelLabel} />
+                  </>
                 )}
-              </div>
-            </div>
-
-            {/* Dismissal reason — full-width block below the cards */}
-            {alert.status === "acknowledged" && (
-              <div className="flex items-start gap-2.5 w-full rounded-lg px-4 py-3"
-                style={{ border: "1px solid rgba(239,68,68,0.25)", background: "rgba(239,68,68,0.06)" }}>
-                <X size={15} style={{ color: "#ef4444", flexShrink: 0, marginTop: 1 }} />
-                <div className="flex-1 min-w-0">
-                  <div className="text-[10px] font-semibold uppercase tracking-wider mb-1" style={{ color: "#ef4444" }}>
-                    Dismissal reason
-                  </div>
-                  <p className="text-[12px] leading-relaxed" style={{ color: "var(--foreground)" }}>
-                    {alert.notes || "No reason provided."}
-                  </p>
+                {testingTools && <ScoreBreakdown alert={alert} />}
+                <div className="grid grid-cols-2 gap-3">
+                  <QuietCard label="Detected object" value={alert.suspect || "—"} />
+                  {officersCard}
                 </div>
               </div>
-            )}
+            </div>
           </div>
 
-          {/* Footer actions */}
-          {(alert.status === "active" || alert.status === "dispatched") && (
-            <div className="flex items-center gap-2 px-6 py-4 flex-shrink-0"
-              style={{ borderTop: "1px solid var(--border)" }}>
-              {/* Contact Guardian — curfew involves minors, so a guardian to notify always exists */}
-              {alert.type === "curfew" && (
-                <button
-                  onClick={() => setShowContact(true)}
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium transition-all"
-                  style={{ background: "rgba(16,185,129,0.1)", color: "#10b981", border: "1px solid rgba(16,185,129,0.25)" }}>
-                  <MessageSquare size={13} /> Contact guardian
-                </button>
-              )}
-
-              {/* Add Violator — noise has no facial recognition, so the suspect must be tagged manually */}
-              {alert.type === "noise" && (
-                <button
-                  onClick={() => alert.suspect ? setPendingAction("noiseUndo") : setShowSetCandidate(true)}
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium transition-all"
-                  style={alert.suspect
-                    ? { background: "rgba(16,185,129,0.1)", color: "#10b981", border: "1px solid rgba(16,185,129,0.25)" }
-                    : { background: "rgba(245,158,11,0.1)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.25)" }}>
-                  {alert.suspect ? <><CheckCircle size={13} /> Undo</> : <><User size={13} /> Select violator</>}
-                </button>
-              )}
-
+          {/* Footer. Open alerts: Dismiss and Assign officers (plus Mark resolved once assigned).
+              Closed alerts: only a small Reopen, for admins. */}
+          {!closed && (
+            <div className="flex items-center gap-2 px-6 py-4 flex-shrink-0" style={{ borderTop: "1px solid var(--border)" }}>
               <div className="flex-1" />
-
-              {alert.status === "active" && (
-                <>
-                  <button
-                    onClick={onDismiss}
-                    className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all"
-                    style={{ background: "rgba(239,68,68,0.15)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.4)" }}>
-                    <X size={14} /> Dismiss
-                  </button>
-                  <button
-                    onClick={onDispatch}
-                    className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all"
-                    style={{ background: "rgba(245,158,11,0.22)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.5)" }}>
-                    <Radio size={14} />
-                    {assignedOfficerNames.length > 0 ? "Reassign officers" : "Assign officers"}
-                  </button>
-                </>
+              <button onClick={onDismiss}
+                className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all"
+                style={{ background: "rgba(239,68,68,0.15)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.4)" }}>
+                <X size={14} /> Dismiss
+              </button>
+              <button onClick={onDispatch}
+                className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all"
+                style={{ background: "rgba(245,158,11,0.22)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.5)" }}>
+                <Radio size={14} /> Assign officers
+              </button>
+              {alert.status === "dispatched" && canResolve && (
+                <button onClick={() => setShowResolveChecklist(true)}
+                  className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all"
+                  style={{ background: "rgba(16,185,129,0.22)", color: "#10b981", border: "1px solid rgba(16,185,129,0.45)" }}>
+                  <CheckCircle size={14} /> Mark resolved
+                </button>
               )}
-              {alert.status === "dispatched" && (
-                <>
-                  <button
-                    onClick={onDismiss}
-                    className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all"
-                    style={{ background: "rgba(239,68,68,0.15)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.4)" }}>
-                    <X size={14} /> Dismiss
-                  </button>
-                  <button
-                    onClick={onDispatch}
-                    className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all"
-                    style={{ background: "rgba(59,130,246,0.22)", color: "#3b82f6", border: "1px solid rgba(59,130,246,0.45)" }}>
-                    <Radio size={14} /> Reassign officers
-                  </button>
-                  <button
-                    onClick={() => setShowResolveChecklist(true)}
-                    className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all"
-                    style={{ background: "rgba(16,185,129,0.22)", color: "#10b981", border: "1px solid rgba(16,185,129,0.45)" }}>
-                    <CheckCircle size={14} /> Mark resolved
-                  </button>
-                </>
-              )}
+            </div>
+          )}
+          {closed && canReopen && (
+            <div className="flex items-center px-6 py-3 flex-shrink-0" style={{ borderTop: "1px solid var(--border)" }}>
+              <div className="flex-1" />
+              <button onClick={onReopen}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium"
+                style={{ background: "var(--secondary)", color: "var(--foreground)", border: "1px solid var(--border)" }}>
+                <RotateCcw size={12} /> Reopen
+              </button>
             </div>
           )}
         </div>
       </div>
-
-      {showContact && (
-        <ContactGuardianModal
-          alert={alert}
-          violationType={vcfg.label}
-          households={households}
-          onClose={() => setShowContact(false)}
-        />
-      )}
 
       {showResolveChecklist && (
         <CitationFormModal
@@ -1862,82 +1349,6 @@ export function ViolationModal({
           onClose={() => setShowResolveChecklist(false)}
         />
       )}
-
-      {showSetCandidate && (
-        <SetCandidateModal
-          alert={alert}
-          households={households}
-          residents={residents}
-          onSave={async (names) => {
-            if (onUpdateSuspect) await onUpdateSuspect(names);
-            setShowSetCandidate(false);
-          }}
-          onClose={() => setShowSetCandidate(false)}
-        />
-      )}
-
-      {pendingAction && (() => {
-        const configs = {
-          noiseUndo: {
-            iconColor: "#10b981", iconBg: "rgba(16,185,129,0.12)",
-            title: "Remove this violator?",
-            message: "This clears the tagged violator for this noise complaint.",
-            confirmLabel: "Yes, undo", confirmColor: "#10b981",
-            run: () => { if (onUpdateSuspect) onUpdateSuspect(null); },
-          },
-          candidateConfirm: {
-            iconColor: "#f59e0b", iconBg: "rgba(245,158,11,0.12)",
-            title: "Confirm this match?",
-            message: "This marks the candidate as a verified match for this violation.",
-            confirmLabel: "Yes, confirm", confirmColor: "#f59e0b",
-            run: () => { setCandidateConfirmed(true); setConfirmedAt(new Date().toISOString()); },
-          },
-          candidateUndo: {
-            iconColor: "#10b981", iconBg: "rgba(16,185,129,0.12)",
-            title: "Undo this confirmation?",
-            message: "This reverts the match back to pending verification.",
-            confirmLabel: "Yes, undo", confirmColor: "#10b981",
-            run: () => { setCandidateConfirmed(false); setConfirmedAt(null); },
-          },
-        };
-        const cfg = configs[pendingAction];
-        return (
-          <div
-            className="fixed inset-0 z-[90] flex items-center justify-center p-4"
-            style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)" }}
-            onClick={() => setPendingAction(null)}
-          >
-            <div
-              className="w-full max-w-xs rounded-2xl overflow-hidden shadow-2xl"
-              style={{ background: "var(--card)", border: "1px solid var(--border)" }}
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="px-5 pt-5 pb-4 flex flex-col items-center text-center gap-3">
-                <div className="w-10 h-10 rounded-full flex items-center justify-center"
-                  style={{ background: cfg.iconBg }}>
-                  <CheckCircle size={18} style={{ color: cfg.iconColor }} />
-                </div>
-                <div>
-                  <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>{cfg.title}</div>
-                  <div className="text-[12px] mt-1" style={{ color: "var(--muted-foreground)" }}>{cfg.message}</div>
-                </div>
-              </div>
-              <div className="flex items-center gap-2 px-5 pb-5">
-                <button onClick={() => setPendingAction(null)}
-                  className="flex-1 px-4 py-2 rounded-xl text-sm font-medium"
-                  style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}>
-                  Cancel
-                </button>
-                <button onClick={() => { cfg.run(); setPendingAction(null); }}
-                  className="flex-1 flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium"
-                  style={{ background: cfg.confirmColor, color: "#fff" }}>
-                  <CheckCircle size={13} /> {cfg.confirmLabel}
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
     </>
   );
 }

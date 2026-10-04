@@ -1,6 +1,4 @@
 ultralytics
-insightface
-onnxruntime
 opencv-python
 numpy
 flask

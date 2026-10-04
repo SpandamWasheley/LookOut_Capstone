@@ -83,7 +83,7 @@ PUFF_WINDOW_SECONDS = 20.0  # count completed puffs within this rolling window
 # counting.
 HAND_RAISED_RATIO = 0.7    # wrist within this many shoulder-widths of the nose = at face
 HAND_LOWERED_RATIO = 1.3   # beyond this = hand down
-GESTURE_WINDOW_SECONDS = 20.0
+GESTURE_WINDOW_SECONDS = 300.0   # spec v6: 3+ puffs within 5 minutes
 
 # Dwell only accrues while a detection is this recent. The vote ratio alone has
 # inertia — it stays true for over a second after the last detection, because
@@ -234,7 +234,9 @@ class Track:
         # person box (fractions of its width/height) so it can be re-projected
         # onto the box as they move, instead of re-running a ~400ms face pass
         # every frame. Format: (rel_x, rel_y, rel_w, timestamp).
-        self.face_anchor = None
+        self.mouth_anchor = None
+        self.mouth_miss_until = 0.0   # no pose retry before this time after an unknown anchor
+        self.hires_until = 0.0        # smoking: high-res cigarette check runs until this time
         # None = never alerted. Not 0.0: that only reads as "long ago" because
         # the watchers happen to pass epoch timestamps, so any caller using a
         # relative clock would silently be inside the cooldown from frame one.

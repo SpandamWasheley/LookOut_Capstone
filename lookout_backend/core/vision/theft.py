@@ -32,7 +32,7 @@ flagged rather than silently resolved:
   1. E14's weight (0.45) sits below the E29 alert band (0.55), so a weapon on
      its own reaches Observe, not Candidate — while E14's own rationale says
      weapon presence is "sufficient alone to reach the alert band". The
-     constants are implemented exactly as written; WEAPON_ALONE_ALERTS lets the
+     constants are implemented exactly as written; the (removed) WEAPON_ALONE_ALERTS let the
      operator opt into the rationale's reading instead.
   2. E14's rule text requires the weapon to be near a track satisfying E11,
      but the E.A pseudocode scores the weapon with no such condition. Both are
@@ -43,6 +43,7 @@ flagged rather than silently resolved:
 import math
 from collections import deque
 
+from . import scoring
 from .recognition import _iou
 from .tracking import SceneBaseline, norm_distance
 
@@ -68,8 +69,8 @@ PUSH_SECONDS = 5.0            # E18 sustained push
 OBJ_STATIC_SECONDS = 30       # E21 unattended property
 CROWD_SOFT = 6                # E23 density guard
 CROWD_HARD = 10
-SCORE_OBSERVE = 0.35          # E29 decision bands
-SCORE_ALERT = 0.55
+SCORE_ALERT = scoring.SCORE_WARNING    # Possible; shared with every detector
+SCORE_VIOLATION = scoring.SCORE_VIOLATION
 
 # --- constants stated inside individual rules rather than in the E.8 table ---
 
@@ -110,42 +111,88 @@ ANCHOR_MATCH_IOU = 0.3
 # enough per frame for this to mis-associate it, and IoU is always tried first.
 ANCHOR_MATCH_REACH = 2.0
 
-# When True, a weapon on its own is promoted to the Candidate band regardless of
-# arithmetic — E14's stated rationale ("sufficient alone"). Left False so the
-# written constants govern by default; watch_thief exposes it as a flag.
-WEAPON_ALONE_ALERTS = False
+# Spec v6 section 7: a knife alone ALWAYS starts as Monitoring and, with nobody
+# near the knife holder, never goes above it. (The old "weapon alone alerts"
+# promotion was removed: a lone weapon is a watchlist entry, not an alert.)
+#
+# A second person counts as NEAR the knife holder within this many of the
+# HOLDER's heights (spec decision: about 1.5-2, configurable in Settings).
+NEAR_PERSON_HEIGHTS = 1.75
 
 # --- E28 recommended initial weights ----------------------------------------
 # Reasoned defaults pending field calibration. The ablation harness supports
 # per-cue removal so each weight can be revised against measured precision.
+# Spec §4.3: snatch (E6-E9), property theft (E21-E22) and carnapping (E15-E19)
+# are DISABLED BY DEFAULT and gated behind --enable-legacy-theft. They are not
+# deleted: they work, they are cited, and they are a fair basis for future work.
+# But the spec scopes this system to HOLDUP, and a detector that also fires on
+# four other patterns cannot report a clean precision figure for the one it
+# claims to detect.
+LEGACY_CUES = frozenset({
+    "E6", "E7", "E8", "E9",              # snatch
+    "E15", "E16", "E17", "E18", "E19",   # carnapping
+    "E21", "E22",                        # unattended property
+})
+
+# What §4.3 prices for holdup, and nothing else.
+HOLDUP_CUES = frozenset({"E10", "E12", "E14", "E20"})
+
+
 WEIGHTS = {
-    "E14": 0.45,   # weapon presence   — escalation is intentional
-    "E9": 0.35,    # custody transfer  — highest specificity of any non-weapon cue
-    "E22": 0.35,   # custody at anchor — same cue, unattended-property variant
-    "E18": 0.35,   # push-away         — near-unique motion signature
-    "E12": 0.25,   # confrontation freeze
-    "E19": 0.25,   # identity mismatch — conditional on a re-ID embedding
-    "E7": 0.20,    # separation burst
-    "E10": 0.20,   # loiter            — context, never sufficient alone
-    "E16": 0.20,   # interaction dwell — primary carnapping cue
-    "E17": 0.15,   # tamper posture    — coarse aspect-ratio proxy
-    "E8": 0.10,    # heading divergence — corroborating only
+    # Spec 4.3. Only the cues the spec prices for HOLDUP carry weight by
+    # default; the legacy patterns above are gated behind --enable-legacy-theft
+    # and contribute nothing unless asked for.
+    "E14": 0.45,   # knife / weapon present  -- GATE. Fernandez-Testa (2024)
+    "E12": 0.20,   # confrontation freeze    -- Ruiz-Santaquiteria (2021)
+    "E10": 0.10,   # loitering               -- citation pending (spec 12.2)
+
+    # --- legacy theft patterns (spec 4.3: "disable by default") -------------
+    # Retained at their original values so --enable-legacy-theft reproduces the
+    # previous behaviour exactly, and so the ablation harness can still report
+    # before/after. Excluded from scoring unless that flag is set.
+    "E9": 0.35,    # custody transfer   (snatch)
+    "E22": 0.35,   # custody at anchor  (unattended property)
+    "E18": 0.35,   # push-away          (carnapping)
+    "E19": 0.25,   # identity mismatch  (carnapping)
+    "E7": 0.20,    # separation burst   (snatch)
+    "E16": 0.20,   # interaction dwell  (carnapping)
+    "E17": 0.15,   # tamper posture     (carnapping)
+    "E8": 0.10,    # heading divergence (snatch)
 }
+
 MULTIPLIERS = {
-    "E13": 1.5,    # group convergence
-    "E20": 1.3,    # nocturnal
+    # E13 (group convergence, x1.5) is GONE. Spec §4.3: "has no citation and
+    # fires on ordinary crowds. Drop it unless a source is found." None was, so
+    # it is dropped rather than left in place unjustified -- a multiplier that
+    # inflates every scene with a crowd in it is the opposite of what a
+    # barangay plaza needs.
+    # E30-E33 are the VLM's, applied once at alert time by watch_thief rather
+    # than per frame -- E30-E32 as cues, E33 as the denial multiplier.
+    # E20 is no longer a constant. The flat nocturnal x1.3 it used to hold was
+    # not supported by either Philippine dataset examined -- both put the peak
+    # in the afternoon -- so it is now looked up per three-hour block from
+    # Robielos & Duran (2020). See scoring.MANILA_HOUR_BLOCKS.
 }
 
-DISCARD, OBSERVE, CANDIDATE = "discard", "observe", "candidate"
+# E20's retired value, kept only so the ablation harness can reproduce the
+# pre-Manila behaviour with --ablate e20-manila for the before/after table.
+LEGACY_NOCTURNAL_MULTIPLIER = 1.3
+
+# Statuses are the shared ones (scoring.py): Monitoring / Possible / Likely.
+DISCARD, MONITORING = scoring.NONE, scoring.MONITORING
+WARNING = scoring.WARNING
+VIOLATION = scoring.VIOLATION
+STORED_BANDS = scoring.STORED_LEVELS
 
 
-def band_of(score):
-    """E29 — map a score to one of three outcomes."""
-    if score > SCORE_ALERT:
-        return CANDIDATE
-    if score >= SCORE_OBSERVE:
-        return OBSERVE
-    return DISCARD
+def band_of(score, object_on=True):
+    """E29 -- map a score to a status (Monitoring needs the object cue ON)."""
+    return scoring.level_of(score, object_on)
+
+
+def alerts_at(band):
+    """True when `band` notifies (Possible and Likely only)."""
+    return scoring.alerts_at(band)
 
 
 def _person_norm_distance(person_box, other_box):
@@ -183,15 +230,21 @@ def _seat_region(box):
 
 
 class Evidence:
-    """One scored incident (E28) with its band (E29) and full cue vector.
+    """One scored incident (E28) with its status (E29) and full cue vector.
 
-    The cue vector is kept intact even for Observe-band events: that is the
-    mechanism by which the threshold gets calibrated against real footage after
-    the field shoot, instead of against reasoned defaults.
+    The cue vector is kept intact even when nothing is shown: that is how the
+    thresholds get checked against real footage after the field shoot.
+
+    Status rules (spec v6 section 7): the weapon cue (E14) is the gate. With it
+    the status is Monitoring below 55, Possible from 55, Likely from 75 --
+    but only when a second person is NEAR the knife holder (`people_near`);
+    otherwise it stays Monitoring. Without a weapon nothing is shown, except
+    the disabled-by-default legacy patterns, which keep plain 55 / 75 bands.
     """
 
     def __init__(self, kind, box, cues, multipliers, abstained, tracks, detail,
-                 weapon_alone_alerts=WEAPON_ALONE_ALERTS):
+                 weapon_alone_alerts=None, people_near=None, previous_level=None):
+        # `weapon_alone_alerts` is accepted and ignored (removed in spec v6).
         self.kind = kind
         self.box = tuple(int(v) for v in box)
         self.cues = dict(cues)
@@ -199,16 +252,69 @@ class Evidence:
         self.abstained = set(abstained)
         self.tracks = list(tracks)
         self.detail = detail
-        self.score = sum(self.cues.values())
+        self.raw_score = sum(self.cues.values())
+        total = self.raw_score
         for factor in self.multipliers.values():
-            self.score *= factor
-        self.band = band_of(self.score)
-        if weapon_alone_alerts and "E14" in self.cues and self.band != CANDIDATE:
-            self.band = CANDIDATE
+            total *= factor
+        self.score = min(1.0, max(0.0, scoring._r(total)))
+        # Two tracks in the evidence means the pair pattern (E12): they are, by
+        # construction, close together. A lone weapon needs the engine to say so.
+        self.people_near = (len(self.tracks) >= 2) if people_near is None else bool(people_near)
+        self.object_on = "E14" in self.cues
+        self.holdup_capped = False
+        if self.object_on:
+            level = scoring.level_with_hysteresis(self.score, previous_level, True)
+            if (not self.people_near
+                    and scoring.LEVEL_ORDER[level] > scoring.LEVEL_ORDER[scoring.MONITORING]):
+                level = scoring.MONITORING
+                self.holdup_capped = True
+        elif any(c in LEGACY_CUES for c in self.cues):
+            level = (scoring.VIOLATION if scoring._r(self.score) >= scoring.SCORE_VIOLATION
+                     else scoring.WARNING if scoring._r(self.score) >= scoring.SCORE_WARNING
+                     else scoring.NONE)
+        else:
+            level = scoring.NONE
+        self.band = level
+
+    @property
+    def level(self):
+        return self.band
+
+    @property
+    def alerting(self):
+        """True when this notifies (Possible and Likely)."""
+        return scoring.alerts_at(self.band)
+
+    @property
+    def stored(self):
+        return scoring.stored_at(self.band)
+
+    def as_dict(self):
+        """Serialisable cue vector, same shape as scoring.Score.as_dict()."""
+        return {
+            "kind": "holdup",
+            "cues": dict(self.cues),
+            "multipliers": dict(self.multipliers),
+            "raw_score": round(self.raw_score, 4),
+            "score": round(self.score, 4),
+            "object_on": self.object_on,
+            "people_near": self.people_near,
+            "holdup_capped": self.holdup_capped,
+            "level": self.band,
+            "label": scoring.label_of(self.band),
+            "tag": "",
+            "checklist": self.checklist(),
+        }
 
     @property
     def rules(self):
         return sorted(self.cues) + sorted(self.multipliers)
+
+    def checklist(self):
+        found = [scoring.Score.CUE_LABELS.get(n, n) for n in sorted(self.cues)]
+        notes = [scoring.Score.MULTIPLIER_LABELS.get(n, n) for n, f in sorted(self.multipliers.items())
+                 if f != 1.0]
+        return {"found": found, "adjusted_by": notes, "tag": ""}
 
     def summary(self):
         cues = ", ".join(f"{r}={w:.2f}" for r, w in sorted(self.cues.items()))
@@ -743,13 +849,15 @@ class TheftEngine:
     """
 
     def __init__(self, ablate=(), baseline=None, stats=None,
-                 weapon_alone_alerts=WEAPON_ALONE_ALERTS):
+                 weapon_alone_alerts=None, near_person_heights=NEAR_PERSON_HEIGHTS,
+                 loiter_seconds=LOITER_SECONDS):
         self.ablate = {r.lower() for r in ablate}
         self.baseline = baseline or SceneBaseline()
         self.anchors = AnchorStore()
         self.pairs = {}
         self.stats = stats if stats is not None else {}
-        self.weapon_alone_alerts = weapon_alone_alerts
+        self.near_person_heights = near_person_heights
+        self.loiter_seconds = loiter_seconds
         self._converge_log = deque()   # (t, target_id, other_id) for E13
         self._weapon_emitted = {}      # track id -> last E14 emission
 
@@ -793,7 +901,7 @@ class TheftEngine:
     # ---- per-frame entry point ----
 
     def update(self, tracks, carriables, vehicles, threats, now,
-               is_night=False):
+               is_night=False, now_dt=None):
         """Runs Layer E for one frame and returns a list of Evidence.
 
         `tracks`    live person tracks from tracking.PersonTracker
@@ -818,6 +926,11 @@ class TheftEngine:
         self.anchors.update(vehicles, carriables, usable, now)
 
         evidence = []
+        # E20 is read once per frame, not per evidence item: every incident in
+        # a frame shares one wall clock, and the lookup is pure arithmetic.
+        self._time_multiplier = scoring.manila_time_multiplier(now_dt)
+        self._time_label = scoring.manila_block_label(now_dt)
+
         evidence += self._pair_evidence(usable, now, reach, threats, is_night)
         evidence += self._carnapping_evidence(usable, now, is_night)
         evidence += self._property_evidence(usable, now, is_night)
@@ -904,12 +1017,13 @@ class TheftEngine:
         for t in (ta, tb):
             eff = t.path_efficiency(now)
             if (eff is not None and eff < EFF_LOITER
-                    and t.age(now) >= LOITER_SECONDS):
+                    and t.age(now) >= self.loiter_seconds):
                 loiterer = t
                 break
         if loiterer is not None:
             self._add_cue(cues, abstained, "E10", [loiterer], now, "loiter")
 
+        self.last_weapon_conf = None
         armed = self._weapon_on(ta, threats) or self._weapon_on(tb, threats)
         if armed is not None:
             self._add_cue(cues, abstained, "E14", [ta, tb], now, "weapon")
@@ -975,7 +1089,14 @@ class TheftEngine:
     # ---- E14 standalone ----
 
     def _weapon_on(self, track, threats):
-        """The weapon label on or within WEAPON_REACH of this track, if any."""
+        """The weapon label on or within WEAPON_REACH of this track, if any.
+
+        Also records the detector's own confidence in that box on
+        `self.last_weapon_conf`. Returning it would mean changing what every
+        caller unpacks for a value only one of them wants; the attribute keeps
+        the common path unchanged and is read immediately after the call, in
+        the same frame, by the one site that builds an Evidence.
+        """
         if self._off("e14"):
             return None
         for det in threats:
@@ -983,6 +1104,7 @@ class TheftEngine:
             if label not in ("gun", "knife"):
                 continue
             if _person_norm_distance(track.box, det[:4]) <= WEAPON_REACH:
+                self.last_weapon_conf = det[4]
                 return label
         return None
 
@@ -1007,15 +1129,30 @@ class TheftEngine:
             if not cues:
                 continue
             self._weapon_emitted[t.id] = now
-            out.append(self._evidence(
+            # Spec v6 section 7: a second person must be NEAR the knife holder
+            # (within near_person_heights of the HOLDER's height) to go above
+            # Monitoring.
+            others = [(o, _person_norm_distance(t.box, o.box)) for o in tracks if o is not t]
+            nearest = min(others, key=lambda x: x[1], default=None)
+            near = nearest is not None and nearest[1] <= self.near_person_heights
+            ev = self._evidence(
                 "weapon", t.box, cues, mult, abstained, [t.id],
                 f"weapon visible: {label} on person #{t.id}",
-            ))
+                people_near=near,
+            )
+            # Where the other person is, so the AI checker's crop can take in both people.
+            ev.partner_box = tuple(nearest[0].box) if near else None
+            out.append(ev)
         return out
 
-    def _evidence(self, *args):
-        """Builds Evidence with this engine's band policy applied."""
-        return Evidence(*args, weapon_alone_alerts=self.weapon_alone_alerts)
+    def _evidence(self, *args, **kw):
+        """Builds Evidence."""
+        ev = Evidence(*args, **kw)
+        # What the object detector was sure of, as distinct from the Layer E
+        # score. None when the pattern involved no weapon at all -- the card
+        # shows a dash rather than inventing a number.
+        ev.weapon_conf = getattr(self, "last_weapon_conf", None)
+        return ev
 
     # ---- E13 / E20 multipliers ----
 
@@ -1025,11 +1162,21 @@ class TheftEngine:
                 others = {o for ts, target, o in self._converge_log
                           if target == tid and now - ts <= CONVERGE_WINDOW}
                 if len(others) >= CONVERGE_MIN:
-                    mult["E13"] = MULTIPLIERS["E13"]
+                    pass   # E13 dropped -- see MULTIPLIERS
                     self._bump("multiplier:E13 group convergence")
                     break
-        if is_night and not self._off("e20"):
-            mult["E20"] = MULTIPLIERS["E20"]
+        # E20 — time-of-day weighting from Robielos & Duran (2020). Applied on
+        # EVERY frame, not just at night: the Manila blocks scale the score DOWN
+        # in the quiet morning hours (x0.56 at 06:00-09:00) as well as up at the
+        # 15:00-18:00 peak, which the old nocturnal-only rule could not do.
+        #
+        # --ablate e20 restores a flat x1.0 (no time weighting at all); it does
+        # not fall back to the retired nocturnal constant.
+        if not self._off("e20"):
+            factor = getattr(self, "_time_multiplier", 1.0)
+            if factor != 1.0:
+                mult["E20"] = factor
+
 
     def _prune(self, now):
         while self._converge_log and now - self._converge_log[0][0] > CONVERGE_WINDOW:

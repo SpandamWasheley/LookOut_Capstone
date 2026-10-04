@@ -42,6 +42,9 @@ export async function login(username, password) {
 
   accessToken = data.access;
 
+  // Layout used to be remembered in localStorage; drop the stale value.
+  try { localStorage.removeItem("lookout.cameraLayout"); } catch { /* storage unavailable */ }
+
   return user;
 }
 
@@ -100,34 +103,9 @@ async function apiUpload(path, formData) {
   return response.json();
 }
 
-export const getHouseholds = () => apiFetch("/households/");
-export const createHousehold = (payload) =>
-  apiFetch("/households/", { method: "POST", body: JSON.stringify(payload) });
-export const updateHousehold = (id, payload) =>
-  apiFetch(`/households/${id}/`, { method: "PATCH", body: JSON.stringify(payload) });
-
-export const createHouseholdMember = (payload) =>
-  apiFetch("/household-members/", { method: "POST", body: JSON.stringify(payload) });
-export const updateHouseholdMember = (id, payload) =>
-  apiFetch(`/household-members/${id}/`, { method: "PATCH", body: JSON.stringify(payload) });
-export const deleteHouseholdMember = (id) =>
-  apiFetch(`/household-members/${id}/`, { method: "DELETE" });
-
-export const getResidents = () => apiFetch("/residents/");
-export const createResident = (payload) =>
-  apiFetch("/residents/", { method: "POST", body: JSON.stringify(payload) });
-
-export const getPersons = () => apiFetch("/persons/");
-export const createPerson = (payload) =>
-  apiFetch("/persons/", { method: "POST", body: JSON.stringify(payload) });
-export const deletePerson = (id) =>
-  apiFetch(`/persons/${id}/`, { method: "DELETE" });
-// front/right/left File objects under those field names in `formData` —
-// matches core/views.py PersonViewSet.enroll_face's request.FILES.get(angle).
-export const enrollFace = (id, formData) =>
-  apiUpload(`/persons/${id}/enroll-face/`, formData);
-
 export const getSettings = () => apiFetch("/settings/");
+export const resetSpecDefaults = (violation) =>
+  apiFetch("/settings/reset/", { method: "POST", body: JSON.stringify({ violation }) });
 export const saveSettings = (payload) =>
   apiFetch("/settings/", { method: "PATCH", body: JSON.stringify(payload) });
 
@@ -149,9 +127,16 @@ export const updateDispatcher = (id, payload) =>
 export const deleteDispatcher = (id) =>
   apiFetch(`/dispatchers/${id}/`, { method: "DELETE" });
 
-export const getAlerts = () => apiFetch("/alerts/");
+// params: {include_monitoring: 1} adds the quiet Monitoring watchlist to the list;
+// {level: "monitoring"} returns only that watchlist. The default list is Possible / Likely.
+// Both split on the event's PEAK status, not its current one, so an event that
+// reached Possible and then faded stays in the default list (still badged with
+// whatever it is now) instead of dropping back onto the watchlist.
+export const getAlerts = (params) =>
+  apiFetch("/alerts/" + (params ? `?${new URLSearchParams(params)}` : ""));
 export const updateAlert = (id, payload) =>
   apiFetch(`/alerts/${id}/`, { method: "PATCH", body: JSON.stringify(payload) });
+
 
 export const getViolationTypes = () => apiFetch("/violation-types/");
 export const getBarangays = () => apiFetch("/barangays/");
@@ -171,11 +156,6 @@ export const searchViolators = (q) => apiFetch(`/violators/search/?q=${encodeURI
 export const mergeViolators = (winnerId, loserId) =>
   apiFetch(`/violators/${winnerId}/merge/`, { method: "POST", body: JSON.stringify({ loser_id: loserId }) });
 
-// Continuous CCTV recording, tied to dashboard login/logout: start when the
-// operator signs in, stop when they sign out. Fire-and-forget from the UI.
-export const startRecording = () => apiFetch("/recording/start/", { method: "POST" });
-export const stopRecording = () => apiFetch("/recording/stop/", { method: "POST" });
-export const getRecordingStatus = () => apiFetch("/recording/status/");
 
 export const getCameras = () => apiFetch("/cameras/");
 export const updateCamera = (id, payload) =>
@@ -194,6 +174,17 @@ export const uploadCameraEdgeFrame = (id, file) => {
 // instead of the terminal. Launches a subprocess server-side; this call
 // returns as soon as the job row is created, not when detection finishes.
 export const getDetectionJobs = () => apiFetch("/detection-jobs/");
+
+// Live processing view (what the detector is tracking, plus its latest clean frame). `since` is
+// the sequence number the page already has, so an unchanged frame is not sent again.
+const sinceQuery = (since) => (since != null ? `?since=${since}` : "");
+export const getJobState = (id, since) => apiFetch(`/detection-jobs/${id}/state/${sinceQuery(since)}`);
+
+// Live monitoring of the camera (admin only): start / stop / status / processing view.
+export const getMonitor = () => apiFetch("/monitor/");
+export const startMonitor = () => apiFetch("/monitor/start/", { method: "POST", body: "{}" });
+export const stopMonitor = () => apiFetch("/monitor/stop/", { method: "POST", body: "{}" });
+export const getMonitorState = (since) => apiFetch(`/monitor/state/${sinceQuery(since)}`);
 export const uploadDetectionJob = (file, violationType) => {
   const formData = new FormData();
   formData.append("file", file);
@@ -216,12 +207,20 @@ export const stageDetectionFrame = (file) => {
 // EdgeEditorModal writes via updateCamera, plus the frame size it was drawn
 // against so the backend can rescale it correctly at analysis time.
 export const startStagedDetectionJob = (
-  { stagedToken, sourceFilename, violationType, edges, edgesWidth, edgesHeight, obstructionPct, obstructionMinutes },
+  { stagedToken, sourceFilename, violationType, recordedAt, edges, edgesWidth, edgesHeight,
+    obstructionPct, obstructionMinutes, trimStart, trimEnd },
 ) => {
   const formData = new FormData();
   formData.append("staged_token", stagedToken);
   formData.append("source_filename", sourceFilename);
   formData.append("violation_type", violationType);
+  // When the clip was recorded (local time). Drives the holdup time block and the drinking
+  // evening band; the detector is started with --clock. Optional.
+  if (recordedAt) formData.append("recorded_at", recordedAt);
+  // Seconds into the clip to run over. 0/0 (or omitted) means the whole thing;
+  // the detector seeks rather than the server cutting a second copy of the file.
+  if (trimStart) formData.append("trim_start", trimStart);
+  if (trimEnd) formData.append("trim_end", trimEnd);
   if (edges) {
     formData.append("edges", JSON.stringify(edges));
     formData.append("edges_width", edgesWidth);
@@ -275,5 +274,3 @@ export const resetForgotPassword = (email, code, newPassword) =>
     method: "POST",
     body: JSON.stringify({ email, code, new_password: newPassword }),
   });
-export const sendSms = (payload) =>
-  apiFetch("/sms/send/", { method: "POST", body: JSON.stringify(payload) });

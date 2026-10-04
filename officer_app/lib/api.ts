@@ -121,15 +121,22 @@ export interface LoginResult {
 }
 
 export async function login(username: string, password: string): Promise<LoginResult["user"]> {
+  // A wrong address makes fetch hang for minutes, which looks like the app doing nothing.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12000);
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}/auth/login/`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "1" },
       body: JSON.stringify({ username, password }),
+      signal: controller.signal,
     });
   } catch {
-    throw new Error("Couldn't reach the server. Check your connection and try again.");
+    throw new Error(`Can't reach the server at ${API_BASE_URL.replace(/\/api\/?$/, "")}. `
+      + "Check that you are on the same Wi-Fi as the computer running LookOut and that the server is on.");
+  } finally {
+    clearTimeout(timer);
   }
 
   if (!response.ok) {
@@ -139,15 +146,26 @@ export async function login(username: string, password: string): Promise<LoginRe
     if (response.status >= 500) {
       throw new Error("The server ran into a problem. Please try again shortly.");
     }
-    // 400/401/403 all stay generic — surfacing more detail here would let the
-    // message reveal whether an account exists.
-    throw new Error("Invalid username or password.");
+    if (response.status === 400 || response.status === 404) {
+      // Not a login answer: a wrong address, or Django refusing the host name.
+      throw new Error(`The server did not accept the request (error ${response.status}). `
+        + "The app may be pointing at the wrong address.");
+    }
+    // 401 / 403: wrong username or password. Kept generic on purpose so the message
+    // does not reveal whether an account exists.
+    throw new Error("Wrong username or password.");
   }
 
-  const data = await response.json();
+  let data: any;
+  try {
+    data = await response.json();
+  } catch {
+    // A 200 that is not JSON: a tunnel or proxy page answered instead of LookOut.
+    throw new Error("The address answered, but not from the LookOut server. Check the server address.");
+  }
 
   if (data.user.role !== "officer" && data.user.role !== "both") {
-    throw new Error("Only officer accounts can sign in to this app.");
+    throw new Error("This account is not an officer account, so it can't sign in to this app. Use the web dashboard instead.");
   }
 
   const user = {
@@ -199,6 +217,15 @@ export const getOfficers = () => apiFetch<{ results: ApiOfficer[] } | ApiOfficer
 export const updateOfficer = (id: number, payload: Partial<ApiOfficer>) =>
   apiFetch<ApiOfficer>(`/officers/${id}/`, { method: "PATCH", body: JSON.stringify(payload) });
 
+export interface ApiAiContext {
+  state: "pending" | "done" | "unavailable";
+  badge: { code: "supports" | "ordinary" | "unclear" | "unavailable"; text: string };
+  suggestion: { text: string; suggested: string | null; changed: boolean; direction: "up" | "down" | "none" };
+  observations: string;
+  checklist: { field: string; label: string; value: boolean | string }[];
+  confidence: string | null;
+}
+
 export interface ApiAlert {
   id: number;
   code: string;
@@ -216,6 +243,35 @@ export interface ApiAlert {
   officers_assigned_names: string[];
   suspect: string;
   notes: string;
+
+  // --- scoring (core/vision/scoring.py) --------------------------------------
+  // `confidence` above is the VIOLATION SCORE, not the detector's certainty --
+  // the two were conflated until the scoring layer separated them. What the
+  // officer is shown is `level_label`; the number stays for the record.
+  level: "" | "none" | "monitoring" | "warning" | "violation";
+  level_label: string;
+  // What the object detector itself was sure of. Null on alerts filed before
+  // the two were separated, so every read of it is guarded.
+  object_confidence: number | null;
+  // The full cue vector. `checklist` inside it is the plain-language evidence
+  // the alert card shows -- built server-side so this app and the web
+  // dashboard cannot drift apart on wording.
+  cues: {
+    checklist?: { found: string[]; adjusted_by?: string[]; tag?: string };
+    [key: string]: unknown;
+  } | null;
+  // Who closed the alert (dismissed / resolved) and when, and whether a citation was filed.
+  reviewed_by_name: string;
+  reviewed_at: string | null;
+  citation_issued: boolean;
+  // true when the alert was worth attending, false for a false alarm. Recorded silently from
+  // Assign / Dismiss for evaluating the system; there is no UI for it.
+  reviewed_valid: boolean | null;
+
+  // --- AI checker (core/vision/ai_checker.py) --------------------------------
+  // Display only: computed by the server on every read from the stored AI reply and the
+  // alert's CURRENT status. It never changes the official status.
+  ai_context: ApiAiContext | null;
 }
 
 export const getAlerts = () => apiFetch<{ results: ApiAlert[] } | ApiAlert[]>("/alerts/");
@@ -253,8 +309,6 @@ export interface ApiCitation {
   violator_barangay: string;
   violations: number[];
   violation_labels: string[];
-  matched_person: number | null;
-  match_confidence: number | null;
   notes: string;
   created_by: number | null;
   created_at: string;
@@ -288,3 +342,25 @@ export interface CreateCitationPayload {
 
 export const createCitation = (payload: CreateCitationPayload) =>
   apiFetch<ApiCitation>("/citations/", { method: "POST", body: JSON.stringify(payload) });
+
+// Correcting a citation already filed. Only the fields an officer can get
+// wrong on the form: the names, the home barangay, which violations, and the
+// notes. Everything else is deliberately absent — `alert` and `officer` are
+// what the citation IS, and `violator` is resolved server-side FROM the names
+// (see CitationViewSet.perform_update), so sending it from here would pin the
+// citation to a person record that no longer matches what it says.
+//
+// The server allows this only to the officer who filed it and only while the
+// alert is still open; a 403 means one of those is no longer true.
+export interface UpdateCitationPayload {
+  first_name_entered: string;
+  middle_name_entered?: string;
+  last_name_entered: string;
+  suffix_entered?: string;
+  violator_barangay: string;
+  violations: number[];
+  notes?: string;
+}
+
+export const updateCitation = (id: number, payload: UpdateCitationPayload) =>
+  apiFetch<ApiCitation>(`/citations/${id}/`, { method: "PATCH", body: JSON.stringify(payload) });

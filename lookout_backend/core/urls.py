@@ -9,8 +9,6 @@ router.register("zones", views.ZoneViewSet)
 router.register("violation-types", views.ViolationTypeViewSet)
 router.register("cameras", views.CameraViewSet)
 router.register("officers", views.OfficerViewSet)
-router.register("persons", views.PersonViewSet)
-router.register("face-embeddings", views.FaceEmbeddingViewSet)
 router.register("citations", views.CitationViewSet)
 router.register("violators", views.ViolatorViewSet, basename="violator")
 router.register("alerts", views.AlertViewSet)
@@ -29,13 +27,14 @@ urlpatterns = [
     path("auth/forgot-password/reset/", views.forgot_password_reset, name="forgot_password_reset"),
     path("dashboard/stats/", views.dashboard_stats, name="dashboard_stats"),
     path("barangays/", views.barangays, name="barangays"),
-    path("recording/start/", views.recording_start, name="recording_start"),
-    path("recording/stop/", views.recording_stop, name="recording_stop"),
-    path("recording/status/", views.recording_status, name="recording_status"),
     path("settings/", views.SystemSettingsView.as_view(), name="system_settings"),
+    path("settings/reset/", views.reset_spec_defaults, name="reset_spec_defaults"),
+    path("monitor/", views.monitor_status, name="monitor_status"),
+    path("monitor/start/", views.monitor_start, name="monitor_start"),
+    path("monitor/stop/", views.monitor_stop, name="monitor_stop"),
+    path("monitor/state/", views.monitor_state, name="monitor_state"),
     path("officers/send-code/", views.send_officer_code, name="send_officer_code"),
     path("officers/verify-code/", views.verify_officer_code, name="verify_officer_code"),
     path("personnel/register/", views.register_personnel, name="register_personnel"),
-    path("sms/send/", views.send_sms, name="send_sms"),
     path("", include(router.urls)),
 ]

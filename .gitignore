@@ -55,8 +55,6 @@ lookout_backend/yolov8n-pose.pt
 
 # Continuous CCTV recordings and recorder runtime state
 cctv records/
-lookout_backend/recorder.pid
-lookout_backend/recorder.stop
 cctv records/recorder.log
 
 # Local test artifacts
@@ -69,3 +67,46 @@ lookout_backend/_*.jpg
 
 # Django collectstatic output (regenerated on every deploy)
 staticfiles/
+
+# --- local database ---------------------------------------------------------
+# Untracked deliberately. It was committed up to 092fa72 "for full portability",
+# but it carries SystemSettings.vlm_api_key -- a live Gemini credential -- so
+# every commit was publishing it. Each developer now keeps their own:
+#   python manage.py migrate && python manage.py seed_demo
+*.sqlite3
+*.sqlite3-journal
+
+# Word lock files (created while a .docx is open, meaningless to anyone else)
+~$*.docx
+# Local backup of src/ taken before the font-size pass
+.font-bump-backup-src/
+
+# Local model copies. core/vision/merged_v2.pt is the one the detectors load and
+# is tracked; these two are duplicates of it.
+#   merged_v2_best.pt       the same weights as pulled from models/merged-v2
+#   *_v1_backup.pt          a rollback copy, recoverable from history
+# args.yaml and results.csv ARE kept: they are small and they are the only
+# record of how the deployed weights were trained.
+/merged_v2_best.pt
+*_v1_backup.pt
+
+# Recorder process id file
+lookout_backend/recorder.pid
+
+# Local database / file backups (keep out of git)
+*.sqlite3.*
+*.sqlite3-*
+*.bak
+*.bak-*
+*.backup
+*.pt.bak*
+
+# Ultralytics output and a stray Expo folder created by running a tool on port 8000
+runs/
+8000/
+
+# generated project dump (201 KB), regenerate with collect_context.py
+lookout_context.md
+
+# local database backups
+db.sqlite3.bak-*

@@ -12,10 +12,11 @@ Geometry convention: people are 60x100 boxes, so one "person height" is 100px
 and a d_norm of 0.8 (REACH_NORM) is 80px between centres.
 """
 
+import datetime
 import math
 import unittest
 
-from core.vision import theft, tracking
+from core.vision import scoring, theft, tracking
 
 PERSON_W, PERSON_H = 60, 100
 FRAME_SHAPE = (720, 1280, 3)
@@ -45,13 +46,17 @@ class Scene:
     """
 
     def __init__(self, baseline=1.0, ablate=(), night=False,
-                 frame_shape=FRAME_SHAPE):
+                 frame_shape=FRAME_SHAPE, now_dt=None):
         self.t = 1000.0
         self.tracker = tracking.PersonTracker()
         self.engine = theft.TheftEngine(ablate=ablate)
         self.engine.baseline.value = baseline
         self.engine.baseline.window = 1e9      # freeze the EMA for determinism
         self.night = night
+        # Wall clock the E20 block multiplier is read from. Pinned per scene so
+        # a test's score doesn't depend on when the suite happens to run — the
+        # old flat nocturnal rule had no such dependency, the block table does.
+        self.now_dt = now_dt
         self.frame_shape = frame_shape
         self.evidence = []
 
@@ -60,7 +65,8 @@ class Scene:
         tracks = self.tracker.update(list(persons), self.t,
                                      frame_shape=self.frame_shape)
         found = self.engine.update(tracks, list(carriables), list(vehicles),
-                                   list(threats), self.t, is_night=self.night)
+                                   list(threats), self.t, is_night=self.night,
+                                   now_dt=self.now_dt)
         self.evidence.extend(found)
         return found
 
@@ -219,7 +225,7 @@ class SnatchTests(unittest.TestCase):
         self.assertIn("E8", ev.cues, "heading divergence (E8) did not fire")
         # 0.20 + 0.10 + 0.35 = 0.65, over the 0.55 alert band.
         self.assertAlmostEqual(ev.score, 0.65, places=6)
-        self.assertEqual(ev.band, theft.CANDIDATE)
+        self.assertEqual(ev.band, theft.WARNING)
 
     def test_snatch_without_custody_transfer_is_discarded(self):
         # Burst + divergence alone is 0.30 — under the Observe floor. A hurried
@@ -227,7 +233,7 @@ class SnatchTests(unittest.TestCase):
         s = self._run_snatch(with_bag=False)
         ev = s.best("snatch")
         if ev is not None:
-            self.assertLess(ev.score, theft.SCORE_OBSERVE)
+            self.assertLess(ev.score, theft.SCORE_ALERT)
             self.assertEqual(ev.band, theft.DISCARD)
 
     def test_greeting_is_suppressed(self):
@@ -240,8 +246,8 @@ class SnatchTests(unittest.TestCase):
 class HoldupTests(unittest.TestCase):
     """E10-E14 — loiter, rapid close, confrontation freeze, weapon escalation."""
 
-    def _run_holdup(self, armed=False, night=False):
-        s = Scene(night=night)
+    def _run_holdup(self, armed=False, night=False, now_dt=None):
+        s = Scene(night=night, now_dt=now_dt)
         lx = 600.0
 
         # E10 — 25s of milling, so path efficiency falls under 0.3 and the track
@@ -270,27 +276,58 @@ class HoldupTests(unittest.TestCase):
         self.assertIsNotNone(ev, "no holdup evidence emitted")
         self.assertIn("E12", ev.cues, "confrontation freeze (E12) did not fire")
         self.assertIn("E10", ev.cues, "loiter (E10) did not fire")
-        # 0.25 + 0.20 = 0.45: a near miss, kept for calibration, not dispatched.
-        self.assertAlmostEqual(ev.score, 0.45, places=6)
-        self.assertEqual(ev.band, theft.OBSERVE)
+        # Spec 4.3 reprices these to 0.20 + 0.10 = 0.30, which now falls below
+        # the Monitoring floor entirely. Behaviour without a weapon is a group
+        # of people standing close together, and the spec's whole argument is
+        # that this must not reach a screen.
+        self.assertAlmostEqual(ev.score, 0.30, places=6)
+        self.assertEqual(ev.band, theft.DISCARD)
+        self.assertFalse(theft.alerts_at(ev.band))
 
-    def test_armed_holdup_reaches_candidate(self):
+    def test_armed_holdup_reaches_the_alert_band(self):
         s = self._run_holdup(armed=True)
         ev = s.best("holdup")
         self.assertIsNotNone(ev)
         self.assertIn("E14", ev.cues, "weapon escalation (E14) did not fire")
-        self.assertAlmostEqual(ev.score, 0.90, places=6)
-        self.assertEqual(ev.band, theft.CANDIDATE)
+        # 0.45 + 0.20 + 0.10 = 0.75 under the spec's weights, landing exactly
+        # on the Confirmed floor. Two of the spec's five holdup cues have no
+        # detector yet (see theft.MISSING_HOLDUP_CUES), so this is the current
+        # ceiling for an unaided geometric case -- the VLM's 0.45 is what
+        # carries it clear of the boundary in practice.
+        self.assertAlmostEqual(ev.score, 0.75, places=6)
+        self.assertTrue(theft.alerts_at(ev.band))
+        self.assertEqual(ev.band, theft.VIOLATION)
 
-    def test_nocturnal_amplifier_lifts_the_freeze_over_the_band(self):
-        # 0.45 x 1.3 = 0.585 — E20 is exactly what turns this near miss into a
-        # candidate, which is the behaviour the regional crime statistics argue for.
-        s = self._run_holdup(night=True)
+    def test_time_of_day_multiplier_lifts_the_freeze_over_the_band(self):
+        """E20, now driven by the Manila block table rather than a flat 1.3.
+
+        Robielos & Duran (2020) put the peak at 15:00-18:00 (x1.36), not at
+        night. 0.30 x 1.36 = 0.408: the multiplier lifts a sub-threshold freeze
+        back into Monitoring at the hour the Philippine data supports, without
+        ever being able to create an alert on its own.
+
+        Note this contradicts spec 4.3's claim that the supporting cues stay
+        "below the Monitoring band even after the largest time multiplier" --
+        0.30 x 1.36 clears 0.35. The gate is what actually holds it back, not
+        the arithmetic. Worth correcting in the document.
+        """
+        s = self._run_holdup(now_dt=datetime.datetime(2026, 5, 1, 16, 0))
         ev = s.best("holdup")
         self.assertIsNotNone(ev)
         self.assertIn("E20", ev.multipliers)
-        self.assertAlmostEqual(ev.score, 0.585, places=6)
-        self.assertEqual(ev.band, theft.CANDIDATE)
+        self.assertAlmostEqual(ev.score, 0.30 * 1.36, places=6)
+        self.assertEqual(ev.band, theft.DISCARD)      # no knife: not shown
+        self.assertFalse(theft.alerts_at(ev.band))
+
+    def test_quiet_morning_block_scales_the_same_freeze_down(self):
+        """The flat nocturnal rule could only ever scale UP. The block table
+        also scales DOWN: 06:00-09:00 is the quietest block (x0.56), so the
+        identical pattern stays well inside Observe."""
+        s = self._run_holdup(now_dt=datetime.datetime(2026, 5, 1, 7, 0))
+        ev = s.best("holdup")
+        self.assertIsNotNone(ev)
+        self.assertAlmostEqual(ev.score, 0.30 * 0.56, places=6)
+        self.assertFalse(theft.alerts_at(ev.band))
 
 
 class CarnappingTests(unittest.TestCase):
@@ -352,7 +389,7 @@ class CarnappingTests(unittest.TestCase):
         self.assertIn("E18", ev.cues, "push-away (E18) did not fire")
         # 0.20 + 0.15 + 0.35 = 0.70
         self.assertAlmostEqual(ev.score, 0.70, places=6)
-        self.assertEqual(ev.band, theft.CANDIDATE)
+        self.assertEqual(ev.band, theft.WARNING)
 
     def test_e19_abstains_without_a_reid_embedding(self):
         s = Scene()
@@ -411,7 +448,7 @@ class PropertyTests(unittest.TestCase):
         self.assertIsNotNone(ev, "no property evidence emitted")
         self.assertIn("E22", ev.cues)
         self.assertAlmostEqual(ev.score, 0.35, places=6)
-        self.assertEqual(ev.band, theft.OBSERVE)
+        self.assertEqual(ev.band, theft.DISCARD)      # legacy pattern, under 55
 
     def test_owner_reclaiming_their_own_bag_is_not_theft(self):
         s = Scene()
@@ -485,29 +522,199 @@ class ScoringTests(unittest.TestCase):
     """E28-E29 — the weighted sum and the three-band decision."""
 
     def test_band_boundaries(self):
-        self.assertEqual(theft.band_of(0.34), theft.DISCARD)
-        self.assertEqual(theft.band_of(theft.SCORE_OBSERVE), theft.OBSERVE)
-        self.assertEqual(theft.band_of(0.55), theft.OBSERVE)
-        self.assertEqual(theft.band_of(0.56), theft.CANDIDATE)
+        # Spec v6: Monitoring is "object cue ON", not a score band. Without the
+        # object nothing is shown; with it the floor is Monitoring.
+        self.assertEqual(theft.band_of(0.34, object_on=False), theft.DISCARD)
+        self.assertEqual(theft.band_of(0.34), theft.MONITORING)
+        self.assertEqual(theft.band_of(0.54), theft.MONITORING)
+        # The alert band is entered at >= 0.55, matching the scoring document.
+        self.assertEqual(theft.band_of(0.55), theft.WARNING)
+        self.assertEqual(theft.band_of(0.56), theft.WARNING)
+        self.assertEqual(theft.band_of(0.74), theft.WARNING)
+        self.assertEqual(theft.band_of(0.75), theft.VIOLATION)
 
     def test_multipliers_apply_after_the_sum(self):
         ev = theft.Evidence("holdup", (0, 0, 10, 10),
                             {"E12": 0.25, "E10": 0.20},
-                            {"E13": 1.5, "E20": 1.3}, set(), [1, 2], "test")
-        self.assertAlmostEqual(ev.score, 0.45 * 1.5 * 1.3, places=6)
+                            {"E13": 1.5, "E20": 1.09}, set(), [1, 2], "test")
+        self.assertAlmostEqual(ev.score, 0.45 * 1.5 * 1.09, places=6)
 
-    def test_weapon_alone_sits_below_the_alert_band_as_written(self):
-        # Documented conflict: E14's rationale calls a weapon "sufficient alone
-        # to reach the alert band", but 0.45 < 0.55. As written it is Observe.
+    def test_score_is_capped_at_one(self):
+        """The score is reported as a likelihood, so evidence beyond certainty
+        is still certainty. This also removes watch_thief's separate clamp."""
+        ev = theft.Evidence("holdup", (0, 0, 10, 10),
+                            {"E14": 0.45, "E9": 0.35, "E12": 0.25, "E18": 0.35},
+                            {"E13": 1.5}, set(), [1, 2], "test")
+        self.assertEqual(ev.score, 1.0)
+        self.assertEqual(ev.band, theft.VIOLATION)
+
+    def test_weapon_alone_is_monitoring(self):
+        # Spec v6 section 7: a knife alone always starts Monitoring and, with
+        # nobody near the holder, never goes above it.
         ev = theft.Evidence("weapon", (0, 0, 10, 10), {"E14": 0.45}, {},
                             set(), [1], "test")
-        self.assertEqual(ev.band, theft.OBSERVE)
+        self.assertEqual(ev.band, theft.MONITORING)
+        self.assertFalse(theft.alerts_at(ev.band))
 
-    def test_weapon_alone_alerts_when_the_operator_opts_in(self):
-        ev = theft.Evidence("weapon", (0, 0, 10, 10), {"E14": 0.45}, {},
-                            set(), [1], "test", weapon_alone_alerts=True)
-        self.assertEqual(ev.band, theft.CANDIDATE)
 
+class ManilaTimeTests(unittest.TestCase):
+    """The Robielos & Duran (2020) three-hour block multipliers."""
+
+    def test_peak_and_trough_match_the_published_table(self):
+        at = datetime.datetime(2026, 5, 1, 16, 30)
+        self.assertAlmostEqual(scoring.manila_time_multiplier(at), 1.36)
+        at = datetime.datetime(2026, 5, 1, 7, 30)
+        self.assertAlmostEqual(scoring.manila_time_multiplier(at), 0.56)
+
+    def test_every_hour_of_the_day_is_covered(self):
+        for hour in range(24):
+            at = datetime.datetime(2026, 5, 1, hour, 0)
+            self.assertNotEqual(scoring.manila_time_multiplier(at), 1.0,
+                                f"hour {hour} fell through the block table")
+
+    def test_probabilities_sum_to_one(self):
+        total = sum(p for _, _, p, _ in scoring.MANILA_HOUR_BLOCKS)
+        self.assertAlmostEqual(total, 1.0, places=2)
+
+    def test_multipliers_are_probability_over_uniform(self):
+        """Each multiplier is the block's incident probability divided by the
+        12.5% uniform expectation. The published table is rounded to two
+        decimals, so compare within that rounding, not to full precision."""
+        for _s, _e, prob, mult in scoring.MANILA_HOUR_BLOCKS:
+            self.assertAlmostEqual(prob / scoring.UNIFORM_BLOCK_PROBABILITY,
+                                   mult, delta=0.01)
+
+    def test_unparseable_time_fails_open(self):
+        """A clock problem must never suppress a holdup score."""
+        self.assertEqual(scoring.manila_time_multiplier(None), 1.0)
+        self.assertEqual(scoring.manila_time_multiplier("not a time"), 1.0)
+
+
+class WeightedScoringTests(unittest.TestCase):
+    """The shared engine in core/vision/scoring.py."""
+
+    def test_a_gathering_without_a_bottle_is_scored_but_never_shown(self):
+        """The visibility gate (spec §2b), which REVERSES the earlier design.
+
+        This test previously asserted that a missed bottle must not silence the
+        alert -- the original point of moving off hard gates. Live testing
+        overruled it: an ordinary stationary group scores well on gathering,
+        duration, stationary and time band alone, so every camera produced a
+        steady stream of people standing around, and a feed nobody trusts is
+        worse than one that misses a case.
+
+        The compromise kept BOTH properties. The score is still computed in
+        full, so a no-bottle gathering remains a labelled sample for
+        calibrate_weights -- what the gate withholds is visibility, not
+        scoring.
+        """
+        # Spec 4.1 folds "group stationary" into the gathering cue, so there is
+        # no separate cue for it any more.
+        base = {"gathering", "gathering_duration", "time_band"}
+        without = scoring.Score("drinking", scoring.DRINKING_WEIGHTS, base)
+        with_bottle = scoring.Score("drinking", scoring.DRINKING_WEIGHTS,
+                                    base | {"bottle"})
+
+        # Scored and retained -- but the gate is shut.
+        self.assertGreater(without.raw_score, 0.0)
+        self.assertFalse(without.gate_open)
+        # Spec 4.1 makes this belt-and-braces: after the rebalance the
+        # supporting cues cannot reach Possible even if every one fires, so a
+        # behaviour-only track is held back by the weights AND by the gate.
+        # Either alone would be enough; both is deliberate.
+        self.assertLess(without.raw_score, scoring.SCORE_WARNING)
+        self.assertFalse(without.visible, "a gathering with no bottle was shown")
+        self.assertEqual(without.level, scoring.NONE)
+        # The cue vector survives for calibration.
+        self.assertEqual(set(without.cues), base)
+
+        # The object opens the door, and the same supporting cues now decide
+        # how seriously to react. Bottle 0.40 + group 0.10 + duration 0.15 +
+        # evening 0.05 = 0.70: Possible, and the VLM is called. Reaching
+        # Confirmed needs either an at-mouth posture or the VLM's agreement --
+        # a group with bottles is not by itself proof of consumption.
+        self.assertTrue(with_bottle.gate_open)
+        self.assertAlmostEqual(with_bottle.score, 0.70)
+        self.assertEqual(with_bottle.level, scoring.WARNING)
+        self.assertEqual(scoring.label_of(with_bottle.level), "Possible")
+
+    def test_a_dependent_cue_adds_to_its_parent(self):
+        """Spec 4.1's anti-double-count rule, which REPLACED pair suppression.
+
+        The earlier model treated bottle/at_mouth as a redundant pair and kept
+        only the heavier. The spec instead makes at_mouth CONDITIONAL: it scores
+        only when the bottle cue is on, and then ADDS to it. Both protect
+        against counting one observation twice; the spec's version keeps a
+        raised bottle strictly stronger than a held one, which is the property
+        that actually matters.
+        """
+        held = scoring.Score("drinking", scoring.DRINKING_WEIGHTS, {"bottle"})
+        raised = scoring.Score("drinking", scoring.DRINKING_WEIGHTS,
+                               {"bottle", "at_mouth"})
+        self.assertAlmostEqual(held.score, 0.40)
+        self.assertAlmostEqual(raised.score, 0.55)
+        self.assertGreater(raised.score, held.score)
+
+    def test_a_dependent_cue_cannot_fire_alone(self):
+        """An at-mouth posture with no object detected is a hand near a face --
+        and a hand near a face is also eating, phoning, drinking, scratching."""
+        orphan = scoring.Score("drinking", scoring.DRINKING_WEIGHTS,
+                               {"at_mouth", "gathering"})
+        self.assertIn("at_mouth", orphan.suppressed)
+        self.assertNotIn("at_mouth", orphan.cues)
+
+    def test_the_same_rule_holds_for_smoking(self):
+        """Spec 4.2: "item near mouth scores only if the object cue is ON"."""
+        seen = scoring.Score("smoking", scoring.SMOKING_WEIGHTS, {"cigarette"})
+        at_lips = scoring.Score("smoking", scoring.SMOKING_WEIGHTS,
+                                {"cigarette", "near_mouth"})
+        orphan = scoring.Score("smoking", scoring.SMOKING_WEIGHTS,
+                               {"near_mouth"})
+        self.assertAlmostEqual(seen.score, 0.40)
+        self.assertAlmostEqual(at_lips.score, 0.55)
+        self.assertNotIn("near_mouth", orphan.cues)
+
+    def test_score_is_capped_and_cue_vector_is_retained(self):
+        """Spec 4.1: every system indicator firing totals 0.85, not 1.0.
+
+        The headroom is deliberate. Reaching 1.00 requires the VLM to agree as
+        well, which is what makes a Confirmed alert mean "two independent
+        stages concur" rather than "the geometry maxed out".
+        """
+        system = scoring.Score("drinking", scoring.DRINKING_WEIGHTS,
+                               {"bottle", "at_mouth", "gathering",
+                                "gathering_duration", "time_band"})
+        self.assertAlmostEqual(system.score, 0.85)
+        self.assertEqual(system.level, scoring.VIOLATION)
+
+        # Even a maxed-out score keeps its full vector: this is the training
+        # data calibrate_weights fits against.
+        self.assertIn("gathering", system.cues)
+        self.assertEqual(system.as_dict()["level"], scoring.VIOLATION)
+
+    def test_the_object_alone_is_monitoring_and_does_not_notify(self):
+        score = scoring.Score("drinking", scoring.DRINKING_WEIGHTS,
+                              {"bottle", "time_band"})
+        self.assertEqual(score.level, scoring.MONITORING)
+        self.assertTrue(score.stored)
+        self.assertFalse(score.alerting)
+
+    def test_unknown_cue_is_surfaced_not_silently_ignored(self):
+        score = scoring.Score("smoking", scoring.SMOKING_WEIGHTS,
+                              {"cigarette", "typo_cue"})
+        self.assertIn("typo_cue", score.unknown)
+
+    def test_hysteresis_resists_flapping_out_of_a_band(self):
+        self.assertEqual(
+            scoring.level_with_hysteresis(0.52, scoring.WARNING), scoring.WARNING)
+        self.assertEqual(
+            scoring.level_with_hysteresis(0.49, scoring.WARNING), scoring.MONITORING)
+        # Rising is always immediate.
+        self.assertEqual(
+            scoring.level_with_hysteresis(0.80, scoring.MONITORING), scoring.VIOLATION)
+
+
+class ScoringTestsContinued(unittest.TestCase):
     def test_abstained_cues_are_excluded_without_penalty(self):
         ev = theft.Evidence("carnapping", (0, 0, 10, 10), {"E18": 0.35}, {},
                             {"E19"}, [1], "test")

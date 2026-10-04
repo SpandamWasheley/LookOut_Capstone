@@ -5,6 +5,7 @@ from django.contrib.auth.models import AbstractUser
 from django.db import models
 
 from core.constants import ZAMBOANGA_BARANGAYS
+from core.vision.scoring import LEVEL_CHOICES as SCORE_LEVEL_CHOICES
 
 _PUNCTUATION_RE = re.compile(r"[^\w\s]")
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -89,6 +90,15 @@ class Camera(models.Model):
     code = models.CharField(max_length=20, unique=True, blank=True)
     name = models.CharField(max_length=150)
     zone = models.ForeignKey(Zone, on_delete=models.SET_NULL, null=True, related_name="cameras")
+    # Free-text street address, set per camera from the Live Feeds page.
+    #
+    # Separate from `zone`, which is a barangay subdivision and too coarse to
+    # dispatch against -- "Zone 3" does not tell a tanod which street to walk
+    # to. An alert inherits this, so where the camera IS becomes where the
+    # violation HAPPENED, which is the only location the system can honestly
+    # claim: it knows which camera saw the event, not where in the frame the
+    # person stood.
+    address = models.CharField(max_length=255, blank=True)
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.ONLINE)
     fps = models.PositiveSmallIntegerField(default=0)
     last_motion_at = models.DateTimeField(null=True, blank=True)
@@ -156,60 +166,11 @@ class Officer(models.Model):
         return f"{self.code} - {self.name}"
 
 
-class Person(models.Model):
-    """A face-registry entry: someone enrolled for facial recognition
-    (curfew/violator matching), not a resident household record."""
-
-    class Status(models.TextChoices):
-        PENDING = "pending", "Pending"
-        ENROLLED = "enrolled", "Enrolled"
-
-    person_code = models.CharField(max_length=20, unique=True, blank=True)
-    full_name = models.CharField(max_length=150)
-    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
-    enrolled_at = models.DateTimeField(null=True, blank=True)
-    notes = models.TextField(blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ["person_code"]
-
-    def save(self, *args, **kwargs):
-        if not self.person_code:
-            self.person_code = _next_code(Person, "BRG-TET", width=4, field="person_code")
-        super().save(*args, **kwargs)
-
-    def __str__(self):
-        return f"{self.person_code} - {self.full_name}"
-
-
-class FaceEmbedding(models.Model):
-    class Angle(models.TextChoices):
-        FRONT = "front", "Front"
-        RIGHT = "right", "Right"
-        LEFT = "left", "Left"
-
-    person = models.ForeignKey(Person, on_delete=models.CASCADE, related_name="embeddings")
-    angle = models.CharField(max_length=10, choices=Angle.choices)
-    image = models.ImageField(upload_to="face_enrollment/")
-    embedding = models.JSONField()
-    det_score = models.FloatField(null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        constraints = [
-            models.UniqueConstraint(fields=["person", "angle"], name="unique_person_angle"),
-        ]
-
-    def __str__(self):
-        return f"{self.person.person_code} - {self.angle}"
-
-
 class Alert(models.Model):
     class Status(models.TextChoices):
         ACTIVE = "active", "Active"
         DISPATCHED = "dispatched", "Dispatched"
-        ACKNOWLEDGED = "acknowledged", "Acknowledged"
+        ACKNOWLEDGED = "acknowledged", "Dismissed"
         RESOLVED = "resolved", "Resolved"
 
     code = models.CharField(max_length=20, unique=True, blank=True)
@@ -231,18 +192,78 @@ class Alert(models.Model):
     officers_assigned = models.ManyToManyField(Officer, blank=True, related_name="alerts")
     suspect = models.CharField(max_length=150, blank=True)
     notes = models.TextField(blank=True)
-    # Set by watch_smoking/watch_drinking (see core/face_registry.py) when a
-    # face in the alert frame matches an enrolled Person above
-    # SystemSettings.curfew_confidence — the citation form prefills from
-    # these. Never gates alert creation: null on no match, no enrolled
-    # faces, or a recognition failure.
-    matched_person = models.ForeignKey(
-        Person, on_delete=models.SET_NULL, null=True, blank=True, related_name="alerts"
+    # --- weighted-sum scoring (core/vision/scoring.py) ----------------------
+    # `confidence` above is now the FINAL score for detectors that have been
+    # ported to the scoring model — an estimate of "how likely is this a
+    # violation", not "how sure is YOLO that this is a bottle". `level` is the
+    # band that score fell into, and is what the dashboard should badge on.
+    # Blank for detectors still on the old hard-gate chain.
+    level = models.CharField(max_length=10, blank=True, choices=SCORE_LEVEL_CHOICES)
+    # The HIGHEST band this event ever reached, which is what decides where it is
+    # listed. `level` above moves both ways — a Possible event whose cues fade
+    # drops back to Monitoring — and listing on it alone made an event that had
+    # already earned a reviewer's attention disappear from Potential Violations
+    # mid-review. The two are shown differently on purpose: the badge reads the
+    # CURRENT status (that is the live truth), the list membership reads this.
+    # Never decreases; see IncidentMixin._incident_write.
+    peak_level = models.CharField(max_length=10, blank=True, choices=SCORE_LEVEL_CHOICES)
+    # The last moment the object cue was ON for this event. A Monitoring event is
+    # "active" while this is recent; it ends when the object goes away. Null on
+    # alerts from before spec v6.
+    last_seen_at = models.DateTimeField(null=True, blank=True)
+    # The full cue vector: which indicators fired, their weights, the
+    # multipliers, and anything suppressed as redundant or abstained. Kept even
+    # for alerts that barely cleared the bar, because this is the training data
+    # calibrate_weights fits the final weights against — discarding it would
+    # discard every labelled example.
+    cues = models.JSONField(default=dict, blank=True)
+    # Set by an officer/admin reviewing the alert: was this a real violation?
+    # Null until reviewed. This is the LABEL for calibration — without it the
+    # cue vectors above have no target to fit.
+    reviewed_valid = models.BooleanField(null=True, blank=True)
+    # WHO reviewed the footage and closed the alert, and when — the officer or
+    # dispatcher who dismissed it or marked it resolved. A record saying a
+    # violation was dismissed, without saying who dismissed it, is not an
+    # audit trail: that is a decision not to act on a reported violation, and
+    # somebody has to own it.
+    #
+    # Stamped server-side from the requesting user on the status transition
+    # (see AlertViewSet.perform_update) and never accepted from the client, or
+    # a reviewer could attribute their own call to someone else. Cleared again
+    # if the alert is reopened.
+    reviewed_by = models.ForeignKey(
+        "User", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="reviewed_alerts",
     )
-    match_confidence = models.FloatField(null=True, blank=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+
+    # What the OBJECT DETECTOR was sure of: the YOLO confidence of the box
+    # that anchored this alert, 0-1. Kept separate from `confidence` above,
+    # which is the violation likelihood across every indicator.
+    #
+    # They answer different questions and were being conflated on the violation
+    # card. "How sure is the model that this is a bottle?" is not "how likely is
+    # it that this is a drinking violation?" -- a crisp bottle detection on a
+    # man walking home is high on the first and low on the second, and that gap
+    # is the whole point of the scoring layer.
+    object_confidence = models.FloatField(null=True, blank=True)
+
+    # --- AI checker (core/vision/ai_checker.py), spec v6 section 8 ------------
+    # {"state": "pending" | "done" | "unavailable", "reply": {...the validated JSON...},
+    #  "model", "seconds", "frame_files": [urls of the frames sent], "system_note",
+    #  "trigger_level", "error"}. Empty when the checker was off. The suggested status and
+    # the badge are NOT stored: they are recomputed from this and the CURRENT official
+    # status every time the alert is read (core/vision/ai_status.ai_context).
+    ai = models.JSONField(default=dict, blank=True)
+
+    # Status changes, assignment, dismissal, resolution, reopening: see core/timeline.py.
+    timeline = models.JSONField(default=list, blank=True)
 
     class Meta:
-        ordering = ["-timestamp"]
+        # Newest CREATED first, not newest "timestamp": an uploaded clip's alerts carry the time the
+        # footage was recorded (which may be weeks ago), and must still appear on the first page
+        # of the list the dashboard and the officer app load.
+        ordering = ["-id"]
 
     def save(self, *args, **kwargs):
         if not self.code:
@@ -270,9 +291,6 @@ class Violator(models.Model):
     # exact-match half of violator search, and how repeat citations for the
     # same typed name resolve to one record without a fuzzy pass.
     normalized_name = models.CharField(max_length=310, db_index=True, editable=False)
-    matched_person = models.ForeignKey(
-        Person, on_delete=models.SET_NULL, null=True, blank=True, related_name="violators"
-    )
     # Prior full names this record has absorbed via merge() — see
     # ViolatorViewSet.merge. Plain strings, not FKs: the loser row is gone.
     aliases = models.JSONField(default=list, blank=True)
@@ -311,8 +329,6 @@ class Citation(models.Model):
     barangay_of_violation = models.CharField(max_length=30, choices=Barangay.choices, default=Barangay.TETUAN)
     violator_barangay = models.CharField(max_length=50, choices=ZAMBOANGA_BARANGAYS)
     violations = models.ManyToManyField(ViolationType, related_name="citations")
-    matched_person = models.ForeignKey(Person, on_delete=models.SET_NULL, null=True, blank=True, related_name="citations")
-    match_confidence = models.FloatField(null=True, blank=True)
     notes = models.TextField(blank=True)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name="citations")
     created_at = models.DateTimeField(auto_now_add=True)
@@ -360,6 +376,9 @@ class DetectionJob(models.Model):
     # Tail of the subprocess's combined stdout/stderr log — only set on failure.
     error = models.TextField(blank=True)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name="detection_jobs")
+    # When the uploaded footage was recorded (local time, as typed). Passed to the detector as
+    # --clock so the holdup time block and the drinking evening band use the footage's clock.
+    recorded_at = models.CharField(max_length=20, blank=True)
 
     class Meta:
         ordering = ["-started_at"]
@@ -369,28 +388,6 @@ class DetectionJob(models.Model):
 
 
 class SystemSettings(models.Model):
-    curfew_start = models.TimeField(default=time(22, 0))
-    curfew_end = models.TimeField(default=time(6, 0))
-    curfew_age = models.PositiveSmallIntegerField(default=18)
-    # Compared directly against the face-recognition match score (insightface/
-    # ArcFace cosine similarity * 100). A genuine match typically scores
-    # 35-70, not 90+, so this default is calibrated to that scale rather than
-    # a generic "75% confident" percentage.
-    curfew_confidence = models.PositiveSmallIntegerField(default=45)
-    curfew_dwell = models.PositiveSmallIntegerField(default=5)
-    guardian_check = models.BooleanField(default=True)
-    unknown_alert = models.BooleanField(default=True)
-
-    noise_enabled = models.BooleanField(default=True)
-    noise_threshold_db = models.PositiveSmallIntegerField(default=65)
-    noise_duration = models.PositiveSmallIntegerField(default=10)
-
-    waste_enabled = models.BooleanField(default=True)
-    waste_confidence = models.PositiveSmallIntegerField(default=70)
-    waste_dwell = models.PositiveSmallIntegerField(default=8)
-    waste_collection_start = models.TimeField(default=time(6, 0))
-    waste_collection_end = models.TimeField(default=time(9, 0))
-
     parking_enabled = models.BooleanField(default=True)
     # YOLO detection confidence as a 0-100 percent (watch_parking divides by 100).
     parking_confidence = models.PositiveSmallIntegerField(default=35)
@@ -434,9 +431,16 @@ class SystemSettings(models.Model):
     # Public-drinking ordinances are usually scoped by hour, the way curfew is.
     # Off by default so enabling the detector doesn't silently stop alerting
     # during the day; turn it on and set the window to match the local ordinance.
+    # Kept as a hard gate for operators who need one, but it is OFF by default
+    # and the scoring model no longer depends on it: the time band is now a
+    # SCORED CUE worth scoring.DRINKING_WEIGHTS["time_band"], so drinking
+    # outside the window loses points instead of being silently dropped.
     drinking_hours_enabled = models.BooleanField(default=False)
-    drinking_start = models.TimeField(default=time(22, 0))
-    drinking_end = models.TimeField(default=time(5, 0))
+    # 16:00-24:00, the high band from Omamalin (2022) and the Thai/W. Australia
+    # ED series — tagay is an afternoon-into-evening activity. The previous
+    # 22:00-05:00 was copied from the curfew window and matched no source.
+    drinking_start = models.TimeField(default=time(16, 0))
+    drinking_end = models.TimeField(default=time(0, 0))
 
     # Gathering ("inuman") detection: a second, independent path to an alert
     # alongside the per-person one above. Near the camera an individual's
@@ -444,11 +448,15 @@ class SystemSettings(models.Model):
     # gathering still is — so this scales the evidence standard with what the
     # camera can actually establish, instead of one fixed per-person rule.
     drinking_min_group = models.PositiveSmallIntegerField(default=2)
-    # Default of 25s is deliberately short for testing against sub-minute
-    # clips — a real deployment should set this much higher, ~600-900s
-    # (10-15 minutes), so a few people briefly standing near each other isn't
-    # mistaken for a drinking session.
-    drinking_group_duration = models.PositiveSmallIntegerField(default=25)
+    # 600s (10 minutes), the low end of the 10-15 minute range implied by
+    # Omamalin's (2022) 3-5 hour tagay sessions. Raised from a 25s testing
+    # value: at 25s a few people briefly standing near each other registered as
+    # a drinking session.
+    #
+    # NOTE FOR CALIBRATION: sub-minute test clips can no longer complete a
+    # gathering. Use real long-form footage, or lower this in Settings for the
+    # duration of a clip-based test run.
+    drinking_group_duration = models.PositiveSmallIntegerField(default=600)
 
     # A bottle merely HELD (not raised to the mouth, or no face resolvable to
     # check) still counts as evidence, but only after this much longer than
@@ -478,11 +486,123 @@ class SystemSettings(models.Model):
     # can churn.
     drinking_cooldown_center_dist = models.FloatField(default=1.5)
 
+    # --- VLM verification ---------------------------------------------------
+    # Second-stage vision-language check on the evidence crop at alert time
+    # (core/vision/ai_checker.py).
+    #
+    # ON by default, because the safe behaviour is already the DEFAULT one: with
+    # no credentials configured, build_verifier hands back an inert verifier and
+    # every detector runs exactly as it did before. So "enabled" here means "use
+    # it if it is usable", not "require it" — a fresh install with no API key
+    # behaves identically to having this switched off, and a deployment that
+    # adds a key gets verification on the next run with no settings visit.
+    #
+    # Set it to False to keep the VLM off even when a key IS present — for a
+    # metered connection, a privacy constraint, or an ablation run.
+    #
+    # It raises PRECISION, not recall — it only ever sees crops the detectors
+    # already produced, so it cannot find a violation YOLO missed. What it buys
+    # is the context geometry can't see (is this inuman or a family lunch? a
+    # holdup or a fish vendor?) and a readable reason on the alert card.
+    vlm_enabled = models.BooleanField(default=True)
+    # Where the local Ollama server listens. v3 §8 runs the checker on this
+    # machine, so there is no API key and no outbound request -- what used to
+    # be "is the credential valid" is now "is the server up and is the model
+    # pulled", which build_verifier checks once at startup.
+    vlm_endpoint = models.CharField(max_length=200,
+                                    default="http://localhost:11434")
+    # Held as a setting because model ids turn over far faster than this code
+    # will. If a run reports the model as not found, change it here.
+    vlm_model = models.CharField(max_length=60, default="qwen3-vl:2b-instruct")
+    # Seconds before a call is abandoned and treated as unavailable. The alert
+    # is published either way; this only bounds how long it waits.
+    # A local 4B model on CPU is slower than a cloud call, and the alert path
+    # can afford to wait -- the frame loop has already moved on.
+    vlm_timeout = models.PositiveSmallIntegerField(default=120)
+
+    # --- per-call cost (the only knobs that matter on CPU-only hardware) -----
+    # A vision call's wall clock is dominated by PREFILL: every image becomes
+    # hundreds of visual tokens that must all be processed before the first
+    # word is generated. With a GPU this is seconds and the defaults are right.
+    # Without one -- a 15W laptop chip, no CUDA -- the same call can take
+    # minutes, and these two fields are how it is brought back into range.
+    #
+    # They trade accuracy for speed honestly, and the trade should be reported:
+    # fewer images means the motion questions (hand_to_mouth_activity compares
+    # frames) have less to compare, and a smaller edge means small objects are
+    # harder to see. Measure with detection_sandbox/ai_checker_bench.py rather
+    # than guessing which setting your hardware needs.
+    #
+    # Frames sent per call: vlm_frames crops (spec: 8-12). Each costs ~1,100 tokens.
+    vlm_frames = models.PositiveSmallIntegerField(default=8)
+    # Longest edge of each image in pixels. Visual tokens grow with AREA, so
+    # 1024 -> 512 is roughly a 4x cut in prefill work.
+    vlm_max_edge = models.PositiveSmallIntegerField(default=640)
+    # Run the checker WITHOUT making the alert wait for it (spec 6: "Async:
+    # never block the video loop").
+    #
+    # Inline, the checker's latency is the frame loop's latency -- fine at a few
+    # seconds on a GPU, unusable at minutes on CPU, which is why the only option
+    # on slow hardware was to switch it off entirely.
+    #
+    # Asynchronous, the alert publishes immediately on the system indicators and
+    # the context is attached whenever the answer arrives. Slow stops being a
+    # reason not to run the checker; it just means the context lands later.
+    #
+    # The cost is that a late answer cannot be scored: the alert has already
+    # been filed and possibly dispatched against, and silently moving its number
+    # minutes afterwards would mean two people looking at the same event saw
+    # different scores with nothing on screen to explain it. The context is
+    # additive, and the card marks an ordinary-activity reading plainly.
+    #
+    # Default ON, because an alert that arrives now with context later beats an
+    # alert that arrives minutes late, and beats no checker at all.
+    vlm_async = models.BooleanField(default=True)
+
+    # --- indicator timings / conditions (scoring spec v6; core/vision/spec_settings.py) -----
+    # Only timings and conditions are adjustable. The points per indicator and the 55 / 75
+    # cutoffs are fixed by the spec and are NOT settings. "Reset to spec defaults" restores
+    # these per violation. The active values are logged with every alert (cues["settings"]).
+    #
+    # How long an object must be seen before the event starts as Monitoring (about 2 s in the
+    # spec). Mapped onto the momentum object cue's ON threshold.
+    object_confirm_seconds = models.FloatField(default=2.0)
+    # Smoking: this many hand-to-mouth puffs within the window earn the repeated-puff-pattern
+    # indicator (and open the puff-only path when no item is detected).
+    # How long a behaviour that comes and goes frame to frame (a hand raised to the mouth, a bottle at
+    # the lips) still counts after it was last seen. Without it the status flickers between
+    # Possible and Likely several times a second. Refreshed each time the behaviour is seen again.
+    cue_hold_seconds = models.FloatField(default=5.0)
+    # A Monitoring event that lasted less than this and never rose to Possible is dropped (a vehicle
+    # or rider flashing past). It does not count the object confirmation time.
+    monitoring_min_seconds = models.FloatField(default=3.0)
+    smoking_puff_count = models.PositiveSmallIntegerField(default=3)
+    smoking_puff_window_minutes = models.FloatField(default=5.0)
+    # Holdup: how long someone must linger before the "loitering first" indicator counts, and
+    # how close the second person must be to the knife holder (in holder heights).
+    holdup_loiter_seconds = models.PositiveSmallIntegerField(default=20)
+    holdup_near_person_heights = models.FloatField(default=1.75)
+    # AI checker model for holdup checks. The 2B model misread the real holdup clip; the 4B
+    # got it right but is slower and does not fit in GPU memory beside the 2B, so Ollama
+    # swaps models (the AI card for a holdup appears later; detection is not blocked).
+    # Blank = use vlm_model.
+    vlm_model_holdup = models.CharField(max_length=60, default="qwen3-vl:4b-instruct", blank=True)
+
+    # Testing tools (admin only): Run Detection in the sidebar, and Upload Video / History on
+    # Live Feeds. OFF by default so normal operation never shows them.
+    show_testing_tools = models.BooleanField(default=False)
+    # Start live detection on the camera by itself when LookOut (the web server) starts.
+    auto_start_detection = models.BooleanField(default=False)
+
     alert_cooldown = models.PositiveSmallIntegerField(default=120)
+    # How long alert evidence (images and clips) is kept before
+    # `manage.py purge_old_evidence` may delete it. Supports RA 10173 storage
+    # limitation: footage of identifiable people is not kept longer than needed.
     evidence_retention_days = models.PositiveSmallIntegerField(default=30)
-    auto_dispatch = models.BooleanField(default=False)
-    email_alerts = models.BooleanField(default=True)
-    sms_alerts = models.BooleanField(default=True)
+    # Master switch for the scheduled purge (`purge_old_evidence --auto`). OFF by
+    # default and never turned on by code: an operator enables it deliberately,
+    # because the purge deletes files.
+    evidence_auto_purge = models.BooleanField(default=False)
 
     updated_at = models.DateTimeField(auto_now=True)
 

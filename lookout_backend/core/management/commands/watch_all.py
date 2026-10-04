@@ -27,11 +27,15 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
+from core import descriptions
 from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
 from core.vision import recognition, tracking
 
+from core.vision import debug_view
+
+from ._incidents import ai_setup
 from .watch_smoking import Command as SmokingCommand
 from .watch_thief import Command as ThiefCommand
 from .watch_drinking import Command as DrinkingCommand
@@ -56,8 +60,17 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument("--source", default="0",
                             help="Webcam index or RTSP/stream URL / video file.")
-        parser.add_argument("--camera", default="CAM-ALL",
-                            help="Camera code all alerts attach to (default CAM-ALL).")
+        parser.add_argument(
+            "--pose", action="store_true",
+            help="Also run YOLOv8-pose and score the hand-to-mouth GESTURE for "
+                 "smoking. This indicator reaches far past the range where a "
+                 "cigarette is still detectable, but it is a FIFTH model on top "
+                 "of the four this command already runs — expect a noticeably "
+                 "lower frame rate. The temporal rules are time-based, so they "
+                 "stay correct at the reduced rate.",
+        )
+        parser.add_argument("--camera", default="CAM-SMOKE-01",
+                            help="Camera code all alerts attach to (default CAM-SMOKE-01).")
         parser.add_argument("--far", action="store_true",
                             help="Deprecated / no-op: tiling is now ON by default for "
                                  "every detector (near+far combined). Kept so existing "
@@ -67,6 +80,19 @@ class Command(BaseCommand):
                                  "pass, no tiling. Faster but misses small objects.")
         parser.add_argument("--tiles", default="2x2",
                             help="Far-mode tiling grid ROWSxCOLS (default 2x2).")
+        parser.add_argument(
+            "--clock", default="",
+            help="Footage start time for an uploaded / test clip, e.g. "
+                 "\"2026-08-18 19:30\". Drives the holdup time block and the "
+                 "drinking evening band (position in the video is added to it). "
+                 "Ignored for live streams; without it the wall clock is used.",
+        )
+        parser.add_argument(
+            "--no-cascade", action="store_true",
+            help="Skip the extra native-resolution person-crop pass for Cigarette "
+                 "(it is on by default: about 0.04 s/frame, finds cigarettes the "
+                 "downscaled passes miss).",
+        )
         parser.add_argument("--dry-run", action="store_true",
                             help="Detect and save evidence but write no Alert rows.")
         parser.add_argument("--debug", action="store_true",
@@ -87,7 +113,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         self.camera, _ = Camera.objects.get_or_create(
             code=options["camera"],
-            defaults={"name": "All-Violation Monitor", "status": Camera.Status.ONLINE},
+            defaults={"name": "Hikvision DS-2CD1047G2", "status": Camera.Status.ONLINE},
         )
         self.violations_dir = settings.MEDIA_ROOT / "violations"
         os.makedirs(self.violations_dir, exist_ok=True)
@@ -96,9 +122,23 @@ class Command(BaseCommand):
         # --fast opts out to the single near pass.
         self.far = not options["fast"]
         self.dry_run = options["dry_run"]
+        self.cascade = not options["no_cascade"]
+        from core.vision import clock as vclock
+        self.clock_start = vclock.parse_clock(options.get("clock"))
         self.schedule = options["schedule"]
         self.preprocess = options["preprocess"]
         self.sharpen = options["sharpen"]
+        # One AI checker (client + full-res frame ring) shared by every detector this runner drives.
+        self.ai_state = ai_setup(self.stdout)
+        self.debug_pub = debug_view.DebugPublisher.from_env()
+
+        self.pose = options["pose"]
+        if self.pose:
+            self.stdout.write(self.style.WARNING(
+                "Pose gesture cue: ON — a fifth model on top of four. "
+                "Expect a noticeably lower frame rate."
+            ))
+
         try:
             rows, cols = (int(v) for v in options["tiles"].lower().split("x"))
             self.tiles = (rows, cols)
@@ -157,6 +197,8 @@ class Command(BaseCommand):
         cmd.camera = self.camera
         cmd.violations_dir = self.violations_dir
         cmd.dry_run = self.dry_run
+        cmd.cascade_extra = self.cascade       # extra native-res Cigarette pass
+        cmd.clock_start = self.clock_start     # drinking evening band, holdup time block
         cmd.far = self.far
         cmd.tiles = self.tiles
         cmd.conf_override = None
@@ -178,6 +220,14 @@ class Command(BaseCommand):
             cmd.layer_e = False
             cmd.layer_e_only = False
         cmd.ablate = set()
+        cmd.__dict__.update(self.ai_state)      # one AI client + frame ring for every detector
+        cmd.debug_pub = self.debug_pub
+        cmd._debug_checked = True
+        # The pose gesture cue -- the reason this flag exists. watch_smoking_pose
+        # is a standalone command this runner never invokes, so before this the
+        # "Strong" hand-to-mouth indicator scored nothing in any real deployment.
+        if hasattr(cmd, "pose"):
+            cmd.pose = self.pose
         cmd.stats = Counter()
         cmd._alert_log = []
         cmd.stdout = self.stdout
@@ -188,8 +238,8 @@ class Command(BaseCommand):
         # its evidence video.
         cmd.clip = recognition.ClipRecorder(seconds=30, label=self.camera.code)
         # detector-specific extras
-        if hasattr(cmd, "face_check"):
-            cmd.face_check = True
+        if hasattr(cmd, "mouth_check"):
+            cmd.mouth_check = True
         if hasattr(cmd, "include_generic"):
             cmd.include_generic = False
             cmd.zones = []
@@ -292,17 +342,15 @@ class Command(BaseCommand):
 
                 # Shared person pass — computed once, fed to whichever person-based
                 # detectors are due this frame.
+                if self.ai_state["ai_ring"] is not None:
+                    self.ai_state["ai_ring"].stash(frame)     # clean pixels for the AI checker's crops
+                if self.debug_pub is not None:
+                    self.debug_pub.stash(frame)
                 need_persons = any(n in due for n in self.engines)
                 persons = recognition.detect_persons(frame) if need_persons else []
-                # Snapshot before any engine draws a violation box on `frame` —
-                # face recognition (smoking/drinking's citation-prefill match)
-                # must run against a clean copy, same reasoning as each
-                # standalone command's own loop.
-                clean_frame = frame.copy() if need_persons else None
-
                 for name, eng in self.engines.items():
                     if name in due:
-                        self._run_person_detector(name, eng, frame, persons, now, cfg, debug, clean_frame)
+                        self._run_person_detector(name, eng, frame, persons, now, cfg, debug)
 
                 if "parking" in due:
                     self._run_parking(frame, now, cfg, debug)
@@ -329,7 +377,8 @@ class Command(BaseCommand):
 
     # ---- per-detector drivers (reuse each command's own methods) ---------
 
-    def _run_person_detector(self, name, eng, frame, persons, now, cfg, debug, clean_frame):
+    def _run_person_detector(self, name, eng, frame, persons, now, cfg, debug):
+        eng["cmd"].apply_spec_settings(cfg)
         cmd, tracker = eng["cmd"], eng["tracker"]
         conf = getattr(cfg, f"{name}_confidence") / 100
         dwell = getattr(cfg, f"{name}_dwell")
@@ -342,18 +391,25 @@ class Command(BaseCommand):
         tracks = tracker.update(persons, now)
         per_track = tracker.assign(dets, now)
         if name == "smoking":
-            per_track = cmd._apply_face_rule(frame, per_track, now)
+            cmd._feed_pose(frame, tracks, now)              # pose hand-to-mouth counter
+            per_track = cmd._hires_check(frame, per_track, now)
+            per_track = cmd._apply_mouth_cue(frame, per_track, now)
+        elif name == "thief":
+            cmd._frame_tracks = tracks
 
         if name == "drinking":
-            self._run_gathering(eng, tracks, per_track, now, cfg, frame, debug, clean_frame)
+            self._run_gathering(eng, tracks, per_track, now, cfg, frame, debug)
             for track, td in per_track.items():
-                cmd._process_track(track, td, now, dwell, cfg.alert_cooldown,
-                                   frame, debug, cfg.curfew_confidence, clean_frame)
+                cmd._process_track(
+                    track, td, now, dwell, cfg.alert_cooldown, frame, debug,
+                    held_dwell_seconds=cfg.drinking_held_dwell,
+                    mouth_proximity=cfg.drinking_mouth_proximity,
+                    cooldown_center_dist=cfg.drinking_cooldown_center_dist)
         elif name == "smoking":
             for track, td in per_track.items():
                 cmd._process_track(track, td, now, dwell, cfg.alert_cooldown,
-                                   frame, debug, cfg.curfew_confidence, clean_frame)
-        else:  # thief — no face_threshold/clean_frame param on this one
+                                   frame, debug)
+        else:  # thief
             for track, td in per_track.items():
                 cmd._process_track(track, td, now, dwell, cfg.alert_cooldown, frame, debug)
 
@@ -363,8 +419,9 @@ class Command(BaseCommand):
         # clip is a near-blank few-hundred-ms stub, not the ~30s of context
         # the standalone commands' own _run_stream loops buffer every frame.
         cmd.clip.add(frame, now)
+        cmd._incident_gc(now, frame)        # close incidents whose object is gone
 
-    def _run_gathering(self, eng, tracks, per_track, now, cfg, frame, debug, clean_frame):
+    def _run_gathering(self, eng, tracks, per_track, now, cfg, frame, debug):
         """Drinking's Path B (gathering) — previously never invoked here, so a
         sustained group with no single confirmed solo drinker never alerted
         when run through this command. Evaluated BEFORE Path A's per-track
@@ -375,19 +432,22 @@ class Command(BaseCommand):
         min_group = cfg.drinking_min_group
         group_duration = cfg.drinking_group_duration
         clusters = group_tracker.update(tracks, now, min_group)
-        detected_ids = {t.id for t, dets in per_track.items() if dets and not t.is_scene}
+        cmd.note_clusters(clusters, min_group, group_duration)
         for cluster in clusters:
-            if cluster.member_ids & detected_ids:
-                member_dets = [d for t, dets in per_track.items()
-                              for d in dets
-                              if t.id in cluster.member_ids and not t.is_scene]
-                if member_dets:
-                    best = max(member_dets, key=lambda d: d[4])
-                    if cluster.evidence is None or best[4] > cluster.evidence[4]:
-                        cluster.evidence = best
+            member_dets = [d for t, dets in per_track.items()
+                           for d in dets
+                           if t.id in cluster.member_ids and not t.is_scene]
+            # a bottle on the table the group sits around is a scene detection
+            member_dets += cmd._scene_dets_near(cluster, per_track)
+            best = max(member_dets, key=lambda d: d[4]) if member_dets else None
+            cluster.frame_conf = best[4] if best else 0.0
+            if best:
+                cluster.note_evidence(best, now)
             cmd._process_cluster(
                 cluster, now, min_group, group_duration, cfg.alert_cooldown,
-                frame, debug, cfg.curfew_confidence, clean_frame,
+                frame, debug,
+                evidence_max_age=cfg.drinking_evidence_max_age,
+                cooldown_center_dist=cfg.drinking_cooldown_center_dist,
             )
 
     def _run_parking(self, frame, now, cfg, debug):
@@ -452,7 +512,6 @@ class Command(BaseCommand):
         a = Alert.objects.create(
             type=self.parking_type, status=Alert.Status.ACTIVE, camera=self.camera,
             timestamp=timezone.now(), confidence=score,
-            description=(f"Illegal parking detected: {label} stationary for "
-                         f"{parked_for:.0f}s on {self.camera.code} feed."),
+            description=descriptions.parking(label, parked_for),
             image_url=url, suspect=label)
         self.stdout.write(self.style.SUCCESS(f"ALERT {a.code} (parking, {label})"))

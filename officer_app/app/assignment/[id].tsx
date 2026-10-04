@@ -247,6 +247,12 @@ interface ResolveModalProps {
   officerId: number | null;
   officerName: string;
   existingCitations: api.ApiCitation[];
+  // Non-null puts the sheet in EDIT mode: the form opens filled in with this
+  // citation and saving PATCHes it. Null is the normal "file a new one" mode.
+  // One sheet rather than two because the fields, the pickers and the
+  // validation are the same — a second form would be the same code drifting
+  // apart.
+  editing: api.ApiCitation | null;
   onClose: () => void;
   onFiled: () => void;
   onFinished: () => void;
@@ -258,6 +264,7 @@ function ResolveModal({
   officerId,
   officerName,
   existingCitations,
+  editing,
   onClose,
   onFiled,
   onFinished,
@@ -285,6 +292,35 @@ function ResolveModal({
   const [submitting, setSubmitting] = useState(false);
   const [reviewState, setReviewState] = useState<{ action: "finish" | "another"; duplicateName: string | null } | null>(null);
   const [formError, setFormError] = useState("");
+
+  // Fill the form from the citation being corrected, and empty it again on the
+  // way back to filing mode — otherwise the next "add another" would open
+  // holding the last edited person's details.
+  useEffect(() => {
+    if (!visible) return;
+    if (editing) {
+      setFirstName(editing.first_name_entered);
+      setMiddleName(editing.middle_name_entered);
+      setLastName(editing.last_name_entered);
+      setSuffix(editing.suffix_entered);
+      setViolatorBarangay(editing.violator_barangay);
+      setSelectedTypeIds(new Set(editing.violations));
+      setNotes(editing.notes);
+      setCarriedBarangay(false);
+      setTypesExpanded(false);
+    } else {
+      setFirstName("");
+      setMiddleName("");
+      setLastName("");
+      setSuffix("");
+      setViolatorBarangay(null);
+      setSelectedTypeIds(new Set());
+      setNotes("");
+      setCarriedBarangay(false);
+    }
+    setFormError("");
+    setJustFiledName(null);
+  }, [editing, visible]);
 
   const lastNameRef = useRef<TextInput>(null);
   const scrollRef = useRef<ScrollView>(null);
@@ -362,7 +398,12 @@ function ResolveModal({
 
   const findDuplicate = () => {
     const entered = normalizeName(firstName, lastName);
-    return existingCitations.find((ec) => normalizeName(ec.first_name_entered, ec.last_name_entered) === entered);
+    return existingCitations.find(
+      // The citation being corrected always matches its own name, which would
+      // warn "already cited" about the person you are editing.
+      (ec) => ec.id !== editing?.id
+        && normalizeName(ec.first_name_entered, ec.last_name_entered) === entered,
+    );
   };
 
   const doSubmit = async (action: "finish" | "another") => {
@@ -372,6 +413,26 @@ function ResolveModal({
     setSubmitting(true);
     setFormError("");
     try {
+      if (editing) {
+        // A correction, not a second filing: the alert is never resolved from
+        // here (the server refuses to touch it either way) and the sheet just
+        // closes. `violator` is left out — the server re-resolves it from the
+        // names, which is the whole reason a rename has to go through PATCH
+        // rather than being written client-side.
+        await api.updateCitation(editing.id, {
+          first_name_entered: firstName.trim(),
+          middle_name_entered: middleName.trim(),
+          last_name_entered: lastName.trim(),
+          suffix_entered: suffix,
+          violator_barangay: violatorBarangay!,
+          violations: [...selectedTypeIds],
+          notes: notes.trim(),
+        });
+        onFiled();
+        if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        onClose();
+        return;
+      }
       await api.createCitation({
         alert: assignment.dbId,
         officer: officerId,
@@ -408,7 +469,8 @@ function ResolveModal({
         requestAnimationFrame(() => lastNameRef.current?.focus());
       }
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : "Failed to save citation.");
+      setFormError(err instanceof Error ? err.message
+        : editing ? "Failed to save the correction." : "Failed to save citation.");
     } finally {
       setSubmitting(false);
       submitLockRef.current = false;
@@ -444,8 +506,14 @@ function ResolveModal({
               <Feather name="file-text" size={20} color="#10b981" />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={[rStyles.title, { color: c.foreground }]}>Confirm Resolution</Text>
-              <Text style={[rStyles.subtitle, { color: c.mutedForeground }]}>File a citation for this scene</Text>
+              <Text style={[rStyles.title, { color: c.foreground }]}>
+                {editing ? "Edit Citation" : "Confirm Resolution"}
+              </Text>
+              <Text style={[rStyles.subtitle, { color: c.mutedForeground }]}>
+                {editing
+                  ? `Correcting ${editing.violator_name}`
+                  : "File a citation for this scene"}
+              </Text>
             </View>
             <Pressable
               onPress={onClose}
@@ -464,7 +532,7 @@ function ResolveModal({
             style={{ flex: 1 }}
             contentContainerStyle={{ paddingTop: 6, paddingBottom: 20 }}
           >
-            {justFiledName && (
+            {justFiledName && !editing && (
               <Animated.View
                 style={[
                   cfStyles.justFiledBanner,
@@ -478,7 +546,7 @@ function ResolveModal({
               </Animated.View>
             )}
 
-            {hasFiledAny && (
+            {hasFiledAny && !editing && (
               <View style={[cfStyles.filedBanner, { backgroundColor: c.successLight, borderColor: c.success }]}>
                 <Feather name="check-circle" size={13} color={c.success} />
                 <Text style={[cfStyles.filedBannerText, { color: c.success }]}>
@@ -595,16 +663,14 @@ function ResolveModal({
             />
 
             {!!formError && <Text style={[cfStyles.errorText, { color: c.destructive }]}>{formError}</Text>}
-          </ScrollView>
 
-          <View style={cfStyles.actionRow}>
-            <Pressable
+            {!editing && <Pressable
               onPress={() => handlePress("another")}
               disabled={!canSubmit}
               accessibilityRole="button"
-              accessibilityLabel="Save and add more citations"
+              accessibilityLabel="Save this violator and add another"
               style={[
-                cfStyles.secondaryBtn,
+                cfStyles.addAnotherBtn,
                 hasFiledAny
                   ? { backgroundColor: c.info, borderColor: c.info }
                   : { backgroundColor: "transparent", borderColor: c.border },
@@ -612,21 +678,28 @@ function ResolveModal({
               ]}
             >
               <Feather name="user-plus" size={15} color={hasFiledAny ? "#fff" : c.foreground} />
-              <Text style={[cfStyles.secondaryBtnText, { color: hasFiledAny ? "#fff" : c.foreground }]}>Save & add more</Text>
-            </Pressable>
+              <Text style={[cfStyles.secondaryBtnText, { color: hasFiledAny ? "#fff" : c.foreground }]}>+ Save & add another violator</Text>
+            </Pressable>}
+          </ScrollView>
+
+          <View style={cfStyles.actionRow}>
             <Pressable
               onPress={() => handlePress("finish")}
               disabled={!canSubmit}
               accessibilityRole="button"
-              accessibilityLabel="Save and finish, resolving this assignment"
+              accessibilityLabel={editing
+                ? "Save the correction to this citation"
+                : "Save and finish, resolving this assignment"}
               style={[cfStyles.primaryBtn, { backgroundColor: "#10b981", opacity: !canSubmit ? 0.5 : 1 }]}
             >
               {submitting ? (
                 <ActivityIndicator color="#fff" />
               ) : (
                 <>
-                  <Feather name="check-circle" size={16} color="#fff" />
-                  <Text style={cfStyles.primaryBtnText}>Save & finish</Text>
+                  <Feather name={editing ? "save" : "check-circle"} size={16} color="#fff" />
+                  <Text style={cfStyles.primaryBtnText}>
+                    {editing ? "Save changes" : "Save & finish"}
+                  </Text>
                 </>
               )}
             </Pressable>
@@ -1013,83 +1086,6 @@ const rpStyles = StyleSheet.create({
   fullscreenWrap: { flex: 1, backgroundColor: "#000" },
 });
 
-function NoiseViolationCard({
-  camera,
-  confidence,
-}: {
-  camera: string | null;
-  confidence: number;
-}) {
-  const c = useColors();
-  const loudnessPct = Math.round(confidence * 100);
-  const dBFS = Math.round(-30 + confidence * 30);
-  const accentColor = "#f59e0b";
-
-  return (
-    <View style={[nvStyles.card, { backgroundColor: c.secondary, borderColor: c.border, borderLeftColor: accentColor }]}>
-      <Text style={[nvStyles.typeLabel, { color: c.mutedForeground }]}>
-        Noise violation — no facial recognition, loudness only
-      </Text>
-
-      {/* Source + Duration */}
-      <View style={[nvStyles.topRow, { borderBottomColor: c.border }]}>
-        <View style={nvStyles.topCell}>
-          <Text style={[nvStyles.topLabel, { color: c.mutedForeground }]}>Source</Text>
-          <Text style={[nvStyles.topValue, { color: c.foreground }]}>{camera ?? "—"} · mic</Text>
-        </View>
-        <View style={[nvStyles.vDivider, { backgroundColor: c.border }]} />
-        <View style={nvStyles.topCell}>
-          <Text style={[nvStyles.topLabel, { color: c.mutedForeground }]}>Duration above threshold</Text>
-          <Text style={[nvStyles.topValue, { color: accentColor }]}>— s</Text>
-        </View>
-      </View>
-
-      {/* Loudness */}
-      <View style={nvStyles.loudnessSection}>
-        <View style={nvStyles.loudnessHeader}>
-          <Text style={[nvStyles.loudnessLabel, { color: c.mutedForeground }]}>Relative loudness</Text>
-        </View>
-
-        {/* Bar */}
-        <View style={[nvStyles.barTrack, { backgroundColor: c.muted }]}>
-          <View style={[nvStyles.barFill, { width: `${loudnessPct}%` as any, backgroundColor: accentColor }]} />
-          <View style={[nvStyles.thresholdLine, { backgroundColor: c.foreground }]} />
-        </View>
-        <View style={nvStyles.barLabels}>
-          <Text style={[nvStyles.thresholdLabel, { color: c.mutedForeground }]}>threshold</Text>
-          <Text style={[nvStyles.dBFS, { color: accentColor }]}>{dBFS} dBFS</Text>
-        </View>
-      </View>
-    </View>
-  );
-}
-
-const nvStyles = StyleSheet.create({
-  card: { borderRadius: 12, borderWidth: 1, borderLeftWidth: 3, overflow: "hidden" },
-  typeLabel: { fontSize: 10, fontFamily: "Inter_400Regular", paddingHorizontal: 14, paddingTop: 10, paddingBottom: 6 },
-  topRow: { flexDirection: "row", borderBottomWidth: 1, paddingHorizontal: 14, paddingBottom: 12 },
-  topCell: { flex: 1 },
-  topLabel: { fontSize: 10, fontFamily: "Inter_400Regular", marginBottom: 3 },
-  topValue: { fontSize: 14, fontFamily: "Inter_700Bold" },
-  vDivider: { width: 1, marginHorizontal: 12, marginVertical: 2 },
-  loudnessSection: { padding: 14 },
-  loudnessHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
-  loudnessLabel: { fontSize: 10, fontFamily: "Inter_400Regular" },
-  badge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 20 },
-  badgeText: { fontSize: 10, fontFamily: "Inter_600SemiBold" },
-  barTrack: { height: 8, borderRadius: 4, overflow: "visible", position: "relative" },
-  barFill: { position: "absolute", left: 0, top: 0, height: "100%", borderRadius: 4 },
-  thresholdLine: { position: "absolute", left: "75%", top: -4, width: 2, height: 16, borderRadius: 1 },
-  barLabels: { flexDirection: "row", justifyContent: "space-between", marginTop: 6 },
-  thresholdLabel: { fontSize: 9, fontFamily: "Inter_400Regular", marginLeft: "55%" as any },
-  dBFS: { fontSize: 10, fontFamily: "Inter_600SemiBold" },
-  actionRow: { flexDirection: "row", gap: 10, marginTop: 12 },
-  notBtn: { flex: 1, paddingVertical: 12, borderRadius: 10, borderWidth: 1, alignItems: "center", justifyContent: "center" },
-  notBtnText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
-  confirmBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 12, borderRadius: 10, backgroundColor: "#f59e0b" },
-  confirmBtnText: { color: "#fff", fontSize: 14, fontFamily: "Inter_600SemiBold" },
-});
-
 export default function AssignmentDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { getAssignment, acceptAssignment, resolveAssignment, dismissAssignment } = useAssignments();
@@ -1103,9 +1099,11 @@ export default function AssignmentDetailScreen() {
   const [resolveModalVisible, setResolveModalVisible] = useState(false);
   const [busy, setBusy] = useState(false);
   const [showAllOfficers, setShowAllOfficers] = useState(false);
+  const [tip, setTip] = useState<"status" | "object" | null>(null);
   const [citationsForAlert, setCitationsForAlert] = useState<api.ApiCitation[]>([]);
+  // The citation the sheet is correcting, or null when filing a new one.
+  const [editingCitation, setEditingCitation] = useState<api.ApiCitation | null>(null);
 
-  const isNoiseViolation = assignment?.violationType.code === "noise";
 
   // Sourced from the server (not local state) so a partially-filed scene —
   // two of four cited, app closed and reopened — still shows "2 filed"
@@ -1134,6 +1132,11 @@ export default function AssignmentDetailScreen() {
   }
 
   const isUnassigned = assignment.status === "active";
+  // Somebody has closed this incident — resolved, or dismissed as a false
+  // alarm. The citation is the record of it from here on, so corrections stop.
+  // Mirrors CanEditOwnOpenCitation on the server, which is what actually
+  // enforces it; this only keeps the UI from offering what would be refused.
+  const sceneClosed = assignment.status === "resolved" || assignment.status === "acknowledged";
   const isMine = officer?.officerId != null && assignment.assignedOfficerIds.includes(officer.officerId);
   const canAct = (isUnassigned || isMine) && assignment.status !== "resolved" && assignment.status !== "acknowledged";
   const isClosed = assignment.status === "resolved" || assignment.status === "acknowledged";
@@ -1210,14 +1213,34 @@ export default function AssignmentDetailScreen() {
           </View>
         </View>
 
-        {/* Dismissal reason — shown when the assignment was dismissed */}
-        {assignment.status === "acknowledged" && !!assignment.notes && (
-          <View style={[styles.card, { backgroundColor: c.dangerLight, borderColor: c.destructive }]}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <Feather name="x-circle" size={15} color={c.destructive} />
-              <Text style={[styles.cardLabel, { color: c.destructive }]}>DISMISSAL REASON</Text>
+        {/* Closing banner: who dismissed / resolved it, when, and why */}
+        {isClosed && (
+          <View style={[styles.closedBanner, {
+            backgroundColor: assignment.status === "acknowledged" ? "rgba(244,63,94,0.10)" : "rgba(16,185,129,0.10)",
+            borderColor: assignment.status === "acknowledged" ? "rgba(244,63,94,0.35)" : "rgba(16,185,129,0.4)",
+          }]}>
+            <Feather
+              name={assignment.status === "acknowledged" ? "x" : "check"}
+              size={15}
+              color={assignment.status === "acknowledged" ? "#e11d48" : "#059669"}
+              style={{ marginTop: 3 }}
+            />
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.closedTitle, { color: c.foreground }]}>
+                {assignment.status === "acknowledged" ? "Dismissed" : "Resolved"}
+              </Text>
+              {(!!assignment.reviewedBy || !!assignment.reviewedAt) && (
+                <Text style={[styles.closedMeta, { color: c.mutedForeground }]}>
+                  {[assignment.reviewedBy ? `by ${assignment.reviewedBy}` : "",
+                    assignment.reviewedAt ? formatDate(assignment.reviewedAt) : ""].filter(Boolean).join(" · ")}
+                </Text>
+              )}
+              <Text style={[styles.closedBody, { color: c.foreground }]}>
+                {assignment.status === "acknowledged"
+                  ? (assignment.notes || "No reason provided.")
+                  : (assignment.citationIssued ? "Citation issued" : "No citation")}
+              </Text>
             </View>
-            <Text style={[styles.description, { color: c.foreground, fontSize: 14 }]}>{assignment.notes}</Text>
           </View>
         )}
 
@@ -1233,27 +1256,98 @@ export default function AssignmentDetailScreen() {
           />
         )}
 
-        {!isNoiseViolation && (
-          <View style={[styles.card, { backgroundColor: c.card, borderColor: c.border }]}>
-            <Text style={[styles.description, { color: c.foreground }]}>{assignment.description}</Text>
-          </View>
-        )}
+        <View style={[styles.card, { backgroundColor: c.card, borderColor: c.border }]}>
+          <Text style={[styles.description, { color: c.foreground }]}>{assignment.description}</Text>
+        </View>
 
         <View style={[styles.card, { backgroundColor: c.card, borderColor: c.border }]}>
           <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>LOCATION</Text>
-          {[
-            { icon: "map-pin" as const, label: "Zone / Camera", value: assignment.location },
-            { icon: "percent" as const, label: "AI Confidence", value: `${assignment.confidence}%` },
-          ].map((row) => (
-            <View key={row.label} style={[styles.infoRow, { borderBottomColor: c.border }]}>
-              <Feather name={row.icon} size={15} color={c.mutedForeground} />
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.infoLabel, { color: c.mutedForeground }]}>{row.label}</Text>
-                <Text style={[styles.infoValue, { color: c.foreground }]}>{row.value}</Text>
-              </View>
+          <View style={[styles.infoRow, { borderBottomColor: c.border, borderBottomWidth: 0, paddingBottom: 0 }]}>
+            <Feather name="map-pin" size={15} color={c.mutedForeground} />
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.infoLabel, { color: c.mutedForeground }]}>Zone / Camera</Text>
+              <Text style={[styles.infoValue, { color: c.foreground }]}>{assignment.location}</Text>
             </View>
-          ))}
+          </View>
         </View>
+
+        {/* Status and Object confidence, side by side. The Status is a word, never a number; the
+            evidence behind it is under Details. Tap the (i) for what each one means. */}
+        <View style={{ flexDirection: "row", gap: 10 }}>
+          <View style={[styles.card, { flex: 1, backgroundColor: c.card, borderColor: c.border }]}>
+            <View style={styles.cardTitleRow}>
+              <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>STATUS</Text>
+              <Pressable onPress={() => setTip(tip === "status" ? null : "status")} hitSlop={8}>
+                <Feather name="info" size={13} color={c.mutedForeground} />
+              </Pressable>
+            </View>
+            <View style={{ marginTop: 6, flexDirection: "row" }}>
+              <LevelPill label={assignment.levelLabel} />
+            </View>
+          </View>
+          <View style={[styles.card, { flex: 1, backgroundColor: c.card, borderColor: c.border }]}>
+            <View style={styles.cardTitleRow}>
+              <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>OBJECT CONFIDENCE</Text>
+              <Pressable onPress={() => setTip(tip === "object" ? null : "object")} hitSlop={8}>
+                <Feather name="info" size={13} color={c.mutedForeground} />
+              </Pressable>
+            </View>
+            <Text style={[styles.bigValue, { color: assignment.objectConfidence != null ? assignment.violationType.color : c.foreground }]}>
+              {assignment.objectConfidence != null ? `${Math.round(assignment.objectConfidence * 100)}% conf` : "—"}
+            </Text>
+          </View>
+        </View>
+
+        {tip && (
+          <View style={[styles.card, { backgroundColor: c.card, borderColor: c.foreground }]}>
+            <Text style={[styles.evidenceText, { color: c.foreground }]}>
+              {tip === "status"
+                ? "Shows how strongly the detected evidence points to a violation. It's based only on what the system detected (objects, movement, duration, and time), not on the AI.\n\nMonitoring: An object linked to a violation was detected. Watch the scene.\nPossible: Some signs of a violation, but not enough to be sure. Review the alert before acting.\nLikely: Strong evidence of a violation. Review and respond."
+                : "How certain the YOLOv8 model detected the respective object of the violation."}
+            </Text>
+          </View>
+        )}
+
+        {/* AI context: what a local vision model saw. Marked AI-generated, dashed border. It
+            never changes the Status above.
+
+            Absent entirely for a violation with no checker (parking): the server sends
+            null rather than an "unavailable" payload, so there is no card to draw. */}
+        {assignment.ai && <View style={[styles.card, styles.aiCard, { backgroundColor: c.card, borderColor: c.border }]}>
+          <View style={styles.aiHeader}>
+            <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>AI CONTEXT</Text>
+            <Text style={[styles.aiNote, { color: c.mutedForeground }]}>AI-generated · may be wrong</Text>
+          </View>
+          {assignment.ai?.state === "done" ? (
+            <>
+              <View style={[styles.aiPill, { backgroundColor: assignment.ai.badge.code === "ordinary" ? "rgba(245,158,11,0.16)" : assignment.ai.badge.code === "supports" ? "rgba(16,185,129,0.14)" : "rgba(100,116,139,0.14)" }]}>
+                <Text style={[styles.aiPillText, { color: assignment.ai.badge.code === "ordinary" ? "#b45309" : assignment.ai.badge.code === "supports" ? "#047857" : c.mutedForeground }]}>
+                  {assignment.ai.badge.text}
+                  {assignment.ai.confidence ? ` · ${assignment.ai.confidence} confidence` : ""}
+                </Text>
+              </View>
+              {assignment.ai.observations ? (
+                <Text style={[styles.aiReason, { color: c.foreground }]}>
+                  &ldquo;{assignment.ai.observations}&rdquo;
+                </Text>
+              ) : null}
+            </>
+          ) : (
+            <Text style={[styles.aiReason, { color: c.mutedForeground }]}>
+              {assignment.ai?.state === "pending" ? "AI is checking this event…" : "AI context unavailable"}
+            </Text>
+          )}
+        </View>}
+
+        {/* Status with AI context: a suggestion only. The official Status does not change.
+            Dropped with the card above when there is no checker for this violation. */}
+        {assignment.ai && <View style={[styles.card, styles.aiCard, { backgroundColor: c.card, borderColor: c.border }]}>
+          <View style={styles.aiHeader}>
+            <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>STATUS WITH AI CONTEXT</Text>
+            <Text style={[styles.aiNote, { color: c.mutedForeground }]}>suggestion only</Text>
+          </View>
+          <SuggestedStatus assignment={assignment} muted={c.mutedForeground} />
+        </View>}
 
         <View style={[styles.card, { backgroundColor: c.card, borderColor: c.border }]}>
           <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>ASSIGNMENT INFO</Text>
@@ -1298,24 +1392,40 @@ export default function AssignmentDetailScreen() {
               CITATIONS FILED ({citationsForAlert.length})
             </Text>
             <View style={{ gap: 8 }}>
-              {citationsForAlert.map((cit) => (
-                <View key={cit.id} style={[officersStyles.row, { backgroundColor: c.secondary, borderColor: c.border }]}>
-                  <View style={[officersStyles.avatar, { backgroundColor: c.successLight }]}>
-                    <Feather name="file-text" size={12} color={c.success} />
-                  </View>
-                  <Text style={[officersStyles.name, { color: c.foreground }]}>{cit.violator_name}</Text>
-                </View>
-              ))}
+              {citationsForAlert.map((cit) => {
+                // Tappable only when the server would actually accept the edit
+                // (CanEditOwnOpenCitation): your own citation, on an alert
+                // nobody has closed yet. Offering the row otherwise would open
+                // a form that can only end in a 403.
+                const canEdit = cit.officer === (officer?.officerId ?? null) && !sceneClosed;
+                const Row = canEdit ? Pressable : View;
+                return (
+                  <Row
+                    key={cit.id}
+                    {...(canEdit
+                      ? {
+                          onPress: () => { setEditingCitation(cit); setResolveModalVisible(true); },
+                          accessibilityRole: "button" as const,
+                          accessibilityLabel: `Edit the citation for ${cit.violator_name}`,
+                        }
+                      : {})}
+                    style={[officersStyles.row, { backgroundColor: c.secondary, borderColor: c.border }]}
+                  >
+                    <View style={[officersStyles.avatar, { backgroundColor: c.successLight }]}>
+                      <Feather name="file-text" size={12} color={c.success} />
+                    </View>
+                    <Text style={[officersStyles.name, { color: c.foreground }]}>{cit.violator_name}</Text>
+                    {canEdit && <Feather name="edit-2" size={13} color={c.mutedForeground} />}
+                  </Row>
+                );
+              })}
             </View>
+            {!sceneClosed && (
+              <Text style={[styles.cardLabel, { color: c.mutedForeground, marginTop: 10, marginBottom: 0 }]}>
+                TAP A NAME TO CORRECT IT
+              </Text>
+            )}
           </View>
-        )}
-
-        {/* Noise violation card */}
-        {isNoiseViolation && (
-          <NoiseViolationCard
-            camera={assignment.cameraCode}
-            confidence={assignment.confidence / 100}
-          />
         )}
 
       </AutoScrollView>
@@ -1367,7 +1477,7 @@ export default function AssignmentDetailScreen() {
           )}
 
           <Pressable
-            onPress={isUnassigned ? handleAccept : () => setResolveModalVisible(true)}
+            onPress={isUnassigned ? handleAccept : () => { setEditingCitation(null); setResolveModalVisible(true); }}
             disabled={busy}
             style={({ pressed }) => [
               styles.advanceBtn,
@@ -1400,7 +1510,8 @@ export default function AssignmentDetailScreen() {
         officerId={officer?.officerId ?? null}
         officerName={officer?.name ?? ""}
         existingCitations={citationsForAlert}
-        onClose={() => setResolveModalVisible(false)}
+        editing={editingCitation}
+        onClose={() => { setResolveModalVisible(false); setEditingCitation(null); }}
         onFiled={refreshCitations}
         onFinished={handleFinished}
       />
@@ -1427,6 +1538,54 @@ const rStyles = StyleSheet.create({
   confirmBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 13, borderRadius: 12, backgroundColor: "#10b981" },
   confirmText: { color: "#fff", fontSize: 14, fontFamily: "Inter_600SemiBold" },
 });
+
+const PILL: Record<string, { color: string; bg: string }> = {
+  Monitoring: { color: "#64748b", bg: "rgba(100,116,139,0.16)" },
+  Possible:   { color: "#d97706", bg: "rgba(245,158,11,0.16)" },
+  Likely:     { color: "#dc2626", bg: "rgba(220,38,38,0.12)" },
+};
+
+function LevelPill({ label }: { label?: string | null }) {
+  const st = (label && PILL[label]) || { color: "#64748b", bg: "rgba(100,116,139,0.16)" };
+  return (
+    <View style={{ backgroundColor: st.bg, borderRadius: 999, paddingHorizontal: 9, paddingVertical: 3 }}>
+      <Text style={{ color: st.color, fontSize: 12, fontFamily: "Inter_600SemiBold" }}>{label || "—"}</Text>
+    </View>
+  );
+}
+
+// "Likely → Possible (suggested) — AI sees ordinary activity" as: old status struck through, arrow,
+// suggested status pill, and the reason in grey.
+function SuggestedStatus({ assignment, muted }: { assignment: Assignment; muted: string }) {
+  const ai = assignment.ai;
+  const sug = ai?.suggestion;
+  const text = ai?.state === "pending" ? "AI context pending…" : (sug?.text ?? "AI context unavailable");
+  const reason = text.includes(" — ") ? text.split(" — ").slice(1).join(" — ") : "";
+  const small = { color: muted, fontSize: 12, fontFamily: "Inter_400Regular" } as const;
+  if (sug?.changed && sug.suggested && assignment.levelLabel) {
+    return (
+      <View style={{ marginTop: 6, gap: 4 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          <Text style={[small, { textDecorationLine: "line-through" }]}>{assignment.levelLabel}</Text>
+          <Text style={small}>→</Text>
+          <LevelPill label={sug.suggested} />
+        </View>
+        <Text style={small}>(suggested){reason ? ` — ${reason}` : ""}</Text>
+      </View>
+    );
+  }
+  if (sug?.suggested && PILL[sug.suggested]) {
+    const noChange = text.startsWith("No change");
+    return (
+      <View style={{ marginTop: 6, flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+        {noChange && <Text style={small}>No change —</Text>}
+        <LevelPill label={sug.suggested} />
+        {reason ? <Text style={small}>{noChange ? reason : `— ${reason}`}</Text> : null}
+      </View>
+    );
+  }
+  return <Text style={[small, { marginTop: 6 }]}>{text}</Text>;
+}
 
 const cfStyles = StyleSheet.create({
   justFiledBanner: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 12, borderRadius: 12, marginBottom: 12 },
@@ -1458,6 +1617,7 @@ const cfStyles = StyleSheet.create({
   errorText: { fontSize: 13, fontFamily: "Inter_500Medium", marginTop: 12 },
   actionRow: { flexDirection: "row", gap: 10, marginTop: 16 },
   secondaryBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 15, borderRadius: 12, borderWidth: 1 },
+  addAnotherBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 14, borderRadius: 12, borderWidth: 1, borderStyle: "dashed", marginTop: 22, marginBottom: 8 },
   secondaryBtnText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
   primaryBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 15, borderRadius: 12 },
   primaryBtnText: { color: "#fff", fontSize: 14, fontFamily: "Inter_600SemiBold" },
@@ -1497,6 +1657,42 @@ const styles = StyleSheet.create({
   codeText: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 2 },
   description: { fontSize: 15, fontFamily: "Inter_400Regular", lineHeight: 22 },
   infoRow: { flexDirection: "row", alignItems: "flex-start", gap: 12, paddingBottom: 12, borderBottomWidth: 1 },
+  evidenceRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    paddingVertical: 4,
+  },
+  evidenceText: {
+    flex: 1,
+    fontSize: 14,
+    lineHeight: 19,
+  },
+  evidenceDivider: {
+    borderTopWidth: 1,
+    marginTop: 10,
+    paddingTop: 10,
+  },
+  aiCard: { borderStyle: "dashed" },
+  cardTitleRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  bigValue: { fontSize: 14, fontFamily: "Inter_600SemiBold", marginTop: 6, lineHeight: 22 },
+  aiPill: { alignSelf: "flex-start", borderRadius: 999, paddingHorizontal: 9, paddingVertical: 3, marginTop: 6 },
+  aiPillText: { fontSize: 12, fontFamily: "Inter_500Medium" },
+  detailsToggle: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 8 },
+  detailsText: { fontSize: 12, fontFamily: "Inter_500Medium" },
+  closedBanner: { flexDirection: "row", gap: 10, borderRadius: 12, borderWidth: 1, padding: 14 },
+  closedTitle: { fontSize: 16, fontFamily: "Inter_600SemiBold" },
+  closedMeta: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 2 },
+  closedBody: { fontSize: 14, fontFamily: "Inter_400Regular", marginTop: 6, lineHeight: 20 },
+  aiHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  aiNote: { fontSize: 11, fontFamily: "Inter_400Regular" },
+  aiBadge: { fontSize: 14, fontFamily: "Inter_600SemiBold", marginTop: 6 },
+  aiSuggestion: { fontSize: 15, fontFamily: "Inter_600SemiBold", marginTop: 6 },
+  aiReason: {
+    fontSize: 13,
+    lineHeight: 18,
+    fontStyle: "italic",
+  },
   infoLabel: { fontSize: 11, fontFamily: "Inter_400Regular", textTransform: "uppercase", letterSpacing: 0.5 },
   infoValue: { fontSize: 14, fontFamily: "Inter_500Medium", marginTop: 2 },
   actionBar: { flexDirection: "row", padding: 16, gap: 12, borderTopWidth: 1 },

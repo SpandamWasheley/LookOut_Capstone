@@ -5,9 +5,7 @@ from .models import (
     Camera,
     Citation,
     DetectionJob,
-    FaceEmbedding,
     Officer,
-    Person,
     SystemSettings,
     User,
     ViolationType,
@@ -58,8 +56,8 @@ class CameraSerializer(serializers.ModelSerializer):
     class Meta:
         model = Camera
         fields = [
-            "id", "code", "name", "zone", "status", "fps",
-            "last_motion_at", "image_url", "is_live", "stream_url",
+            "id", "code", "name", "zone", "address", "status",
+            "image_url", "is_live", "stream_url",
             "edges", "edges_width", "edges_height",
             "obstruction_pct", "obstruction_minutes",
         ]
@@ -83,39 +81,6 @@ class OfficerSerializer(serializers.ModelSerializer):
         return obj.user.username if obj.user_id else ""
 
 
-class FaceEmbeddingSerializer(serializers.ModelSerializer):
-    """Full representation — used for the standalone embeddings admin endpoint.
-    Never exposes the raw `embedding` vector field."""
-
-    class Meta:
-        model = FaceEmbedding
-        fields = ["id", "person", "angle", "image", "det_score", "created_at"]
-        read_only_fields = fields
-
-
-class PersonEmbeddingSerializer(serializers.ModelSerializer):
-    """Nested-in-Person representation: angle + image URL only, per spec —
-    no det_score/timestamps, and never the raw embedding vector."""
-
-    class Meta:
-        model = FaceEmbedding
-        fields = ["id", "angle", "image"]
-
-
-class PersonSerializer(serializers.ModelSerializer):
-    embeddings = PersonEmbeddingSerializer(many=True, read_only=True)
-
-    class Meta:
-        model = Person
-        fields = [
-            "id", "person_code", "full_name", "status",
-            "enrolled_at", "notes", "created_at", "embeddings",
-        ]
-        # status/enrolled_at are only ever changed by the enroll-face /
-        # embeddings actions, never directly by the client.
-        read_only_fields = ["person_code", "status", "enrolled_at", "created_at"]
-
-
 def _format_full_name(last, first, middle, suffix):
     name = f"{last}, {first}"
     if middle:
@@ -133,7 +98,7 @@ class ViolatorSerializer(serializers.ModelSerializer):
         model = Violator
         fields = [
             "id", "first_name", "middle_name", "last_name", "suffix", "full_name",
-            "normalized_name", "matched_person", "aliases", "first_seen", "last_seen",
+            "normalized_name", "aliases", "first_seen", "last_seen",
             "citation_count",
         ]
         read_only_fields = ["normalized_name", "aliases", "first_seen", "last_seen"]
@@ -177,7 +142,7 @@ class CitationSerializer(serializers.ModelSerializer):
             "first_name_entered", "middle_name_entered", "last_name_entered", "suffix_entered",
             "officer", "officer_name", "barangay_of_violation", "violator_barangay",
             "violations", "violation_labels",
-            "matched_person", "match_confidence", "notes", "created_by", "created_at",
+            "notes", "created_by", "created_at",
             "resolve_alert", "client_uuid",
         ]
         read_only_fields = ["created_by", "created_at"]
@@ -186,6 +151,39 @@ class CitationSerializer(serializers.ModelSerializer):
         if not value:
             raise serializers.ValidationError("At least one violation must be selected.")
         return value
+
+    # Fields that say WHICH citation this is, rather than what it records.
+    # Writable on create, frozen afterwards — see validate().
+    IDENTITY_FIELDS = ("alert", "officer", "violator")
+
+    def validate(self, attrs):
+        """A correction may change what the citation SAYS, never what it IS.
+
+        `alert`, `officer` and `violator` are writable on create and must not
+        be on update. CitationViewSet's permission authorises the edit against
+        the citation as it currently stands — your own, on an open alert — so
+        letting the same request move it onto a different alert, or credit it
+        to a different officer, authorises one thing and performs another.
+
+        `violator` is the sharpest of the three: it is resolved server-side
+        FROM the entered names (see perform_create/perform_update), so an
+        explicit id on update would pin the citation to a person record that
+        does not match the name printed on it — which is precisely the
+        mismatch perform_update re-resolves to prevent.
+
+        Rejected rather than silently dropped: a client sending these is
+        either a bug worth seeing or an attempt worth refusing, and neither
+        should look like success. (resolve_alert and client_uuid ARE dropped
+        quietly in perform_update — they are create-time instructions, not
+        identity, and an older client may still send them.)
+        """
+        if self.instance is not None:
+            frozen = [f for f in self.IDENTITY_FIELDS if f in attrs]
+            if frozen:
+                raise serializers.ValidationError({
+                    f: "Cannot be changed after the citation is filed." for f in frozen
+                })
+        return attrs
 
     def get_violator_name(self, obj):
         return _format_full_name(obj.last_name_entered, obj.first_name_entered, obj.middle_name_entered, obj.suffix_entered)
@@ -197,7 +195,18 @@ class CitationSerializer(serializers.ModelSerializer):
 class AlertSerializer(serializers.ModelSerializer):
     type = serializers.SlugRelatedField(slug_field="code", queryset=ViolationType.objects.all())
     camera = serializers.SlugRelatedField(slug_field="code", queryset=Camera.objects.all(), required=False, allow_null=True)
-    camera_zone = serializers.CharField(source="camera.name", read_only=True)
+    # Footage uploaded for testing is filed on a "<CODE>-TEST" camera; show it for what it is.
+    camera_zone = serializers.SerializerMethodField()
+    # True once a citation has been filed against this alert (closed banner: "Citation issued").
+    citation_issued = serializers.SerializerMethodField()
+    # "recorded" (uploaded clip with a Recorded-at time), "processed" (uploaded clip without one:
+    # the time is when it was processed) or "live" (a real camera, real time).
+    time_source = serializers.SerializerMethodField()
+    # Where the camera is. The alert shows this as the location of the
+    # violation -- the system knows which camera saw it, so the camera's own
+    # address is the most precise honest answer it can give.
+    camera_address = serializers.CharField(source="camera.address", read_only=True,
+                                           default="")
     # Written/read by stable Officer id, not display name — Officer.name has
     # no uniqueness constraint, so matching by name risked merging two
     # different officers that happen to share a name (or silently failing
@@ -207,7 +216,7 @@ class AlertSerializer(serializers.ModelSerializer):
         queryset=Officer.objects.all(), required=False, many=True
     )
     officers_assigned_names = serializers.SerializerMethodField()
-    matched_person_name = serializers.SerializerMethodField()
+    reviewed_by_name = serializers.SerializerMethodField()
     # The watchers store a relative path (see core/media.py) — resolved to an
     # absolute URL here, against THIS request, so the host always matches
     # whatever the client actually connected through (localhost, a LAN IP, or
@@ -220,20 +229,118 @@ class AlertSerializer(serializers.ModelSerializer):
     video_url = serializers.SerializerMethodField()
     raw_video_url = serializers.SerializerMethodField()
 
+    # Spec 2: "watch/warning/violation" reads as three severities of the same
+    # claim; Monitoring/Possible/Confirmed reads as three degrees of certainty,
+    # which is what the score actually measures. Derived here rather than mapped
+    # in the client so both dashboards and the officer app agree by default.
+    level_label = serializers.SerializerMethodField()
+    peak_level_label = serializers.SerializerMethodField()
+    # AI checker cards (display only): badge, observations, checklist and the suggested
+    # status, recomputed on every read from the stored reply and the CURRENT level.
+    ai_context = serializers.SerializerMethodField()
+
+    def get_camera_zone(self, obj):
+        cam = obj.camera
+        if cam is None:
+            return ""
+        return "Uploaded footage" if cam.code.endswith("-TEST") else cam.name
+
+    def get_citation_issued(self, obj):
+        return obj.citations.exists()
+
+    def get_time_source(self, obj):
+        return (obj.cues or {}).get("time_source") or ("processed" if obj.camera and obj.camera.code.endswith("-TEST") else "live")
+
+    def update(self, instance, validated_data):
+        """Save only the fields the client sent. A full-row save would write back the whole row as
+        it was loaded, and could undo an update the detector made to the same event in between
+        (its status, evidence clip, last-seen time) while an officer is being assigned."""
+        officers = validated_data.pop("officers_assigned", None)
+        for name, value in validated_data.items():
+            setattr(instance, name, value)
+        if validated_data:
+            instance.save(update_fields=list(validated_data))
+        if officers is not None:
+            instance.officers_assigned.set(officers)
+        return instance
+
+    def get_ai_context(self, obj):
+        """The AI cards' data, or None when this kind has no checker at all.
+
+        None is not the same as "unavailable". Unavailable means a check was
+        expected and did not produce an answer — Ollama unreachable, the reply
+        unparseable, still running — and the card should say so, because the
+        reader is entitled to wonder where the AI's opinion went.
+
+        Parking has no checker and never has: its question is a measurement
+        ("how much of the vehicle is in the area, for how long"), already
+        answered exactly by geometry, with nothing for a vision model to
+        adjudicate. Rendering "AI context unavailable" on every one of its
+        alerts advertises a missing feature that was never meant to be there.
+        So the field is omitted entirely and the clients simply draw no card.
+        """
+        from core.vision import ai_checker, ai_status
+        cues = obj.cues or {}
+        kind = ai_checker.kind_for(cues.get("kind"))
+        if kind is None:
+            return None
+        ctx = ai_status.ai_context(kind, obj.ai, obj.level, puff_only=bool(cues.get("puff_only")))
+        request = self.context.get("request")
+        if request is not None:
+            ctx["frames"] = [request.build_absolute_uri(u) for u in ctx["frames"]]
+        return ctx
+
+    def get_level_label(self, obj):
+        from core.vision.scoring import label_of
+        return label_of(obj.level) if obj.level else ""
+
+    def get_peak_level_label(self, obj):
+        """The highest status this event reached. The UI badges `level_label`
+        (what it is NOW) and lists on this (what it earned)."""
+        from core.vision.scoring import label_of
+        return label_of(obj.peak_level) if obj.peak_level else ""
+
     class Meta:
         model = Alert
         fields = [
-            "id", "code", "type", "status", "camera", "camera_zone", "timestamp",
+            "id", "code", "type", "status", "camera", "camera_zone",
+            "camera_address", "timestamp",
             "confidence", "description", "image_url", "video_url", "raw_video_url",
             "officers_assigned", "officers_assigned_names", "suspect", "notes",
-            "matched_person", "matched_person_name", "match_confidence",
+            # Weighted-sum scoring (core/vision/scoring.py). `level` is what the
+            # dashboard should badge on -- `confidence` is now a violation
+            # likelihood, so a bare percentage badge reads differently than it
+            # used to. `cues` is the audit trail: which indicators fired and
+            # what each was worth.
+            "level", "level_label", "peak_level", "peak_level_label", "last_seen_at",
+            "object_confidence", "cues", "ai_context", "timeline", "citation_issued", "time_source",
+            # `reviewed_valid` is the only one of these a client writes: it is
+            # the human label calibrate_weights fits the final weights against.
+            # The reviewer's identity is stamped server-side alongside it.
+            "reviewed_valid", "reviewed_by", "reviewed_by_name", "reviewed_at",
         ]
-        # Set only by the watchers' recognition step (see core/face_registry.py),
-        # never by a client PATCH.
-        read_only_fields = ["matched_person", "match_confidence"]
+        read_only_fields = [
+            # Written by the detectors through the ORM only. A client that
+            # could PATCH its own cue vector could rewrite the calibration
+            # training data after the fact.
+            "level", "level_label", "peak_level", "peak_level_label", "last_seen_at",
+            "object_confidence", "cues", "ai_context", "timeline",
+            # Who reviewed it is recorded FROM the authenticated request, so a
+            # client cannot name somebody else as the reviewer.
+            "reviewed_by", "reviewed_by_name", "reviewed_at",
+        ]
 
     def get_officers_assigned_names(self, obj):
         return [o.name for o in obj.officers_assigned.all()]
+
+    def get_reviewed_by_name(self, obj):
+        """Display name of whoever reviewed this, or "" if nobody has.
+
+        Survives the reviewer's account being deleted: reviewed_by is
+        SET_NULL, so the alert keeps its label and simply loses the name
+        rather than losing the review.
+        """
+        return str(obj.reviewed_by) if obj.reviewed_by else ""
 
     def _resolve_media_url(self, value):
         if not value:
@@ -260,19 +367,19 @@ class AlertSerializer(serializers.ModelSerializer):
     def get_raw_video_url(self, obj):
         return self._resolve_media_url(obj.raw_video_url)
 
-    def get_matched_person_name(self, obj):
-        return obj.matched_person.full_name if obj.matched_person_id else None
-
 
 class SystemSettingsSerializer(serializers.ModelSerializer):
+    # The spec value of every adjustable timing, so the UI can show 'default' and reset.
+    spec_defaults = serializers.SerializerMethodField()
+
+    def get_spec_defaults(self, obj):
+        import datetime
+        from core.vision.spec_settings import SPEC_DEFAULTS
+        return {k: (v.strftime('%H:%M:%S') if isinstance(v, datetime.time) else v) for k, v in SPEC_DEFAULTS.items()}
+
     class Meta:
         model = SystemSettings
         fields = [
-            "curfew_start", "curfew_end", "curfew_age", "curfew_confidence", "curfew_dwell",
-            "guardian_check", "unknown_alert",
-            "noise_enabled", "noise_threshold_db", "noise_duration",
-            "waste_enabled", "waste_confidence", "waste_dwell",
-            "waste_collection_start", "waste_collection_end",
             "parking_enabled", "parking_confidence", "parking_dwell",
             "parking_move_tolerance",
             "smoking_enabled", "smoking_confidence", "smoking_dwell",
@@ -281,11 +388,27 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
             "drinking_held_dwell", "drinking_evidence_max_age",
             "drinking_mouth_proximity", "drinking_cooldown_center_dist",
             "drinking_hours_enabled", "drinking_start", "drinking_end",
-            "alert_cooldown", "evidence_retention_days",
-            "auto_dispatch", "email_alerts", "sms_alerts",
-            "updated_at",
+            "drinking_min_group", "drinking_group_duration",
+            "vlm_enabled", "vlm_model", "vlm_model_holdup", "vlm_endpoint",
+            "vlm_timeout",
+            "object_confirm_seconds", "cue_hold_seconds", "monitoring_min_seconds", "smoking_puff_count", "smoking_puff_window_minutes",
+            "holdup_loiter_seconds", "holdup_near_person_heights",
+            "vlm_frames", "vlm_max_edge", "vlm_async",
+            "alert_cooldown", "evidence_retention_days", "evidence_auto_purge", "show_testing_tools", "auto_start_detection",
+            "updated_at", "spec_defaults",
         ]
-        read_only_fields = ["updated_at"]
+        read_only_fields = ["updated_at", "spec_defaults"]
+
+    def validate(self, attrs):
+        """Timings / conditions stay inside the ranges that still mean what the spec says."""
+        from core.vision.spec_settings import LIMITS
+        errors = {}
+        for field, (low, high) in LIMITS.items():
+            if field in attrs and not (low <= attrs[field] <= high):
+                errors[field] = f"Must be between {low:g} and {high:g}."
+        if errors:
+            raise serializers.ValidationError(errors)
+        return attrs
 
 
 class DetectionJobSerializer(serializers.ModelSerializer):
@@ -300,7 +423,7 @@ class DetectionJobSerializer(serializers.ModelSerializer):
         model = DetectionJob
         fields = [
             "id", "violation_type", "source_filename", "status", "started_at",
-            "finished_at", "error", "created_by_name", "camera_code", "is_live",
+            "finished_at", "error", "created_by_name", "camera_code", "is_live", "recorded_at",
         ]
         # Every field here is set by the server (upload handling / the watcher
         # thread) — the client only ever POSTs the file + violation_type (or

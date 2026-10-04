@@ -153,7 +153,7 @@ export default function ProfileScreen() {
         <View style={styles.statsRow}>
           <View style={[styles.statCard, { backgroundColor: c.card, borderColor: c.border }]}>
             <Text style={[styles.statNum, { color: c.foreground }]}>{activeCount}</Text>
-            <Text style={[styles.statLabel, { color: c.mutedForeground }]}>Active</Text>
+            <Text style={[styles.statLabel, { color: c.mutedForeground }]}>Pending</Text>
           </View>
           <View style={[styles.statCard, { backgroundColor: c.card, borderColor: c.border }]}>
             <Text style={[styles.statNum, { color: c.foreground }]}>{resolvedCount}</Text>

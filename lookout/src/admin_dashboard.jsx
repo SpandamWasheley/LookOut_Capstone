@@ -1,15 +1,16 @@
 import { useState, useEffect } from "react";
-import { AlertTriangle, Camera, Users, Zap, ArrowUpRight, Radio } from "lucide-react";
+import { AlertTriangle, Camera, CalendarDays, Zap, ArrowUpRight, Radio } from "lucide-react";
 import { AlertFeed } from "./AlertFeed";
 import { CameraGrid } from "./CameraGrid";
+import { LiveMonitor } from "./LiveMonitor";
 import { RecordsPage } from "./RecordsPage";
 import { Sidebar } from "./Sidebar";
 import { OfficersPage } from "./OfficersPage";
-// Registry tab hidden from the UI
-// import { ResidentDatabase } from "./ResidentDatabase";
 import { SystemConfig } from "./SystemConfig";
 import { ResidentLog } from "./ResidentLog";
 import { RunDetectionPage } from "./RunDetectionPage";
+import { AboutPage } from "./AboutPage";
+import { useTestingTools } from "./useTestingTools";
 import { getAlerts, getCameras, getOfficers } from "./api";
 
 function useLiveOverviewData() {
@@ -32,10 +33,10 @@ function useLiveOverviewData() {
 }
 
 const ROLE_PAGES = {
-  admin:      ["dashboard", "cameras", "alerts", "records", "residentlog", /* "residents", */ "rundetection", "officers", "config"],
-  dispatcher: ["dashboard", "cameras", "alerts", "records", "residentlog"],
-  officer:    ["cameras", "alerts", "records"],
-  both:       ["dashboard", "cameras", "alerts", "records"],
+  admin:      ["dashboard", "cameras", "alerts", "records", "residentlog", "rundetection", "officers", "config", "about"],
+  dispatcher: ["dashboard", "cameras", "alerts", "records", "residentlog", "about"],
+  officer:    ["cameras", "alerts", "records", "about"],
+  both:       ["dashboard", "cameras", "alerts", "records", "about"],
 };
 
 function LiveClock() {
@@ -63,22 +64,31 @@ const statusDot = (color, pulse = false) => (
 
 function AdminDashboard({ user, onLogout }) {
   const role = user?.role ?? "officer";
-  const allowed = ROLE_PAGES[role] ?? [];
+  // Run Detection is a testing tool: only for an admin, and only while "Show testing tools" is on
+  // in Settings -> System. When off its route is blocked as well as hidden.
+  const testingTools = useTestingTools(role === "admin");
+  const allowed = (ROLE_PAGES[role] ?? []).filter((p) => p !== "rundetection" || testingTools);
   const [activePage, setActivePage] = useState(allowed[0]);
   const safePage = allowed.includes(activePage) ? activePage : allowed[0];
 
-  const { alerts, cameras, officers } = useLiveOverviewData();
+  const { alerts } = useLiveOverviewData();
 
   const activeAlerts = alerts.filter((a) => a.status === "active");
   const dispatchedAlerts = alerts.filter((a) => a.status === "dispatched");
-  const officersOnDuty = officers.filter((o) => o.status !== "off-duty").length;
-  const responding = officers.filter((o) => o.status === "responding").length;
   const alertCount = activeAlerts.length;
 
+  // Alerts raised since local midnight. The comparison is on the VIEWER's day,
+  // not UTC: a dispatcher in Zamboanga reading "today" means their today, and
+  // the two diverge for the eight hours either side of midnight UTC.
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  const todays = alerts.filter((a) => new Date(a.timestamp) >= startOfToday);
+  const openToday = todays.filter((a) => a.status === "active" || a.status === "dispatched").length;
+
   const kpis = [
-    { label: "Active Violations", value: alertCount, sub: "Requires review", accent: "#ef4444", icon: AlertTriangle },
+    { label: "Pending Review", value: alertCount, sub: "Not yet assigned", accent: "#ef4444", icon: AlertTriangle },
     { label: "Assigned", value: dispatchedAlerts.length, sub: `${activeAlerts.length} awaiting assignment`, accent: "#3b82f6", icon: Radio },
-    { label: "Officers on Duty", value: officersOnDuty, sub: `${responding} responding`, accent: "#3b82f6", icon: Users },
+    { label: "Alerts Today", value: todays.length, sub: `${openToday} still open`, accent: "#3b82f6", icon: CalendarDays },
     { label: "Total Alerts", value: alerts.length, sub: `${alerts.filter((a) => a.status === "resolved").length} resolved`, accent: "#a855f7", icon: Zap },
   ];
 
@@ -90,6 +100,7 @@ function AdminDashboard({ user, onLogout }) {
         activeRole={role}
         alertCount={alertCount}
         onLogout={onLogout}
+        hiddenItems={testingTools ? [] : ["rundetection"]}
       />
 
       <main className="flex-1 overflow-auto">
@@ -111,7 +122,7 @@ function AdminDashboard({ user, onLogout }) {
                   }}
                 >
                   {statusDot(alertCount > 0 ? "#ef4444" : "#10b981", alertCount > 0)}
-                  <span className="font-medium">{alertCount > 0 ? `${alertCount} alerts` : "All clear"}</span>
+                  <span className="font-medium">{alertCount > 0 ? `${alertCount} to review` : "Nothing to review"}</span>
                 </div>
               </div>
               <div className="flex items-center gap-6">
@@ -142,7 +153,7 @@ function AdminDashboard({ user, onLogout }) {
                     <div className="min-w-0">
                       <div className="text-xl font-semibold leading-none" style={{ color: "var(--foreground)" }}>{kpi.value}</div>
                       <div className="text-xs font-medium mt-1" style={{ color: "var(--muted-foreground)" }}>{kpi.label}</div>
-                      <div className="text-[11px] mt-0.5" style={{ color: kpi.accent, opacity: 0.85 }}>{kpi.sub}</div>
+                      <div className="text-[13px] mt-0.5" style={{ color: kpi.accent, opacity: 0.85 }}>{kpi.sub}</div>
                     </div>
                   </div>
                 );
@@ -165,7 +176,7 @@ function AdminDashboard({ user, onLogout }) {
                     <span className="text-sm font-medium" style={{ color: "var(--foreground)" }}>Live Feeds</span>
                   </div>
                   <div className="flex items-center gap-2">
-                    <div className="flex items-center gap-1.5 text-[11px]" style={{ color: "#ef4444" }}>
+                    <div className="flex items-center gap-1.5 text-[13px]" style={{ color: "#ef4444" }}>
                       <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse inline-block" />
                       REC
                     </div>
@@ -174,7 +185,7 @@ function AdminDashboard({ user, onLogout }) {
                       style={{ color: "var(--muted-foreground)" }}
                       onClick={() => setActivePage("cameras")}
                     >
-                      View all <ArrowUpRight size={11} />
+                      Open Live Feeds <ArrowUpRight size={11} />
                     </button>
                   </div>
                 </div>
@@ -198,10 +209,10 @@ function AdminDashboard({ user, onLogout }) {
                   </div>
                   {alertCount > 0 && (
                     <span
-                      className="text-[11px] font-medium px-2 py-0.5 rounded-full"
+                      className="text-[13px] font-medium px-2 py-0.5 rounded-full"
                       style={{ background: "rgba(239,68,68,0.12)", color: "#ef4444" }}
                     >
-                      {alertCount} active
+                      {alertCount} to review
                     </span>
                   )}
                 </div>
@@ -215,7 +226,7 @@ function AdminDashboard({ user, onLogout }) {
 
         {safePage === "alerts" && <div className="h-full"><AlertFeed showFilters user={user} /></div>}
 
-        {safePage === "records" && <div className="h-full"><RecordsPage /></div>}
+        {safePage === "records" && <div className="h-full"><RecordsPage user={user} /></div>}
 
         {safePage === "cameras" && (
           <div className="flex flex-col h-full overflow-hidden">
@@ -226,14 +237,14 @@ function AdminDashboard({ user, onLogout }) {
               <h1 className="text-xl font-bold" style={{ color: "var(--foreground)" }}>Live Feeds</h1>
             </div>
             <div className="flex-1 overflow-auto p-6">
+              {role === "admin" && <LiveMonitor />}
               <CameraGrid isAdmin={role === "admin"} />
             </div>
           </div>
         )}
 
-        {/* Registry tab hidden from the UI */}
-        {/* {safePage === "residents" && <div className="h-full"><ResidentDatabase /></div>} */}
         {safePage === "rundetection" && <RunDetectionPage />}
+        {safePage === "about" && <div className="h-full"><AboutPage /></div>}
         {safePage === "officers" && <div className="h-full"><OfficersPage /></div>}
         {safePage === "config" && <div className="h-full"><SystemConfig /></div>}
         {safePage === "residentlog" && <div className="h-full"><ResidentLog /></div>}

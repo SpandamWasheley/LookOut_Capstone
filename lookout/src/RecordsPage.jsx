@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { CheckCircle, X, MapPin, Clock, Shield, Search, FileText } from "lucide-react";
 import { violationDisplay } from "./constants/violationTypes";
 import { ViolationModal } from "./ViolationModal";
-import { getAlerts } from "./api";
+import { mapAlert } from "./alertModel";
+import { getAlerts, updateAlert } from "./api";
 
 const outcomeConfig = {
   resolved:     { label: "Resolved",  color: "#10b981", bg: "rgba(16,185,129,0.1)",  icon: CheckCircle },
@@ -16,25 +17,7 @@ function formatFull(ts) {
   });
 }
 
-function mapAlert(raw) {
-  return {
-    id: raw.code,
-    type: raw.type,
-    status: raw.status,
-    camera: raw.camera,
-    cameraZone: raw.camera_zone,
-    timestamp: raw.timestamp,
-    confidence: raw.confidence,
-    description: raw.description,
-    imageUrl: raw.image_url,
-    officersAssignedIds: raw.officers_assigned ?? [],
-    officersAssignedNames: raw.officers_assigned_names ?? [],
-    suspect: raw.suspect,
-    notes: raw.notes,
-  };
-}
-
-export function RecordsPage() {
+export function RecordsPage({ user }) {
   const [finishedAlerts, setFinishedAlerts] = useState([]);
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
@@ -45,7 +28,14 @@ export function RecordsPage() {
       getAlerts()
         .then((res) =>
           setFinishedAlerts(
-            (res.results ?? res).map(mapAlert).filter((a) => a.status === "acknowledged" || a.status === "resolved")
+            (res.results ?? res)
+              .map(mapAlert)
+              .filter((a) => a.status === "acknowledged" || a.status === "resolved")
+              // Newest first. Sorted here rather than trusted from the API:
+              // the list is paginated and re-fetched on a poll, and relying on
+              // server order means the page silently reorders itself the day
+              // someone adds an `ordering` parameter upstream.
+              .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
           )
         )
         .catch(() => {});
@@ -96,7 +86,7 @@ export function RecordsPage() {
             <div key={s.label} className="rounded-xl p-4 text-center"
               style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
               <div className="text-2xl font-semibold leading-none" style={{ color: s.color }}>{s.value}</div>
-              <div className="text-[11px] mt-1.5" style={{ color: "var(--muted-foreground)" }}>{s.label}</div>
+              <div className="text-[13px] mt-1.5" style={{ color: "var(--muted-foreground)" }}>{s.label}</div>
             </div>
           ))}
         </div>
@@ -141,7 +131,7 @@ export function RecordsPage() {
         <div className="flex-1 overflow-y-auto rounded-xl" style={{ border: "1px solid var(--border)" }}>
           {/* Header */}
           <div
-            className="grid px-4 py-2.5 text-[11px] font-semibold sticky top-0"
+            className="grid px-4 py-2.5 text-[13px] font-semibold sticky top-0"
             style={{
               gridTemplateColumns: "2fr 2fr 1.5fr 1fr 0.5fr",
               color: "var(--muted-foreground)",
@@ -179,26 +169,42 @@ export function RecordsPage() {
                     <vcfg.icon size={14} style={{ color: vcfg.color }} />
                   </div>
                   <div>
-                    <div className="text-[12px] font-medium leading-none" style={{ color: "var(--foreground)" }}>{vcfg.label}</div>
-                    <div className="text-[10px] mt-0.5"
+                    <div className="text-[14px] font-medium leading-none" style={{ color: "var(--foreground)" }}>{vcfg.label}</div>
+                    <div className="text-[12px] mt-0.5"
                       style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>{alert.id}</div>
                   </div>
                 </div>
 
                 {/* Zone + time */}
                 <div>
-                  <div className="text-[12px] text-white flex items-center gap-1">
+                  <div className="text-[14px] text-white flex items-center gap-1">
                     <MapPin size={9} style={{ color: "var(--muted-foreground)", flexShrink: 0 }} />
                     {alert.cameraZone}
                   </div>
-                  <div className="text-[10px] mt-0.5 flex items-center gap-1"
+                  <div className="text-[12px] mt-0.5 flex items-center gap-1"
                     style={{ color: "var(--muted-foreground)" }}>
                     <Clock size={9} /> {formatFull(alert.timestamp)}
                   </div>
+                  {/* Who reviewed the footage and closed this alert. A record
+                      saying a violation was dismissed, without saying who
+                      dismissed it, is not an audit trail. */}
+                  {alert.reviewedBy && (
+                    <div className="text-[12px] mt-0.5 flex items-center gap-1"
+                      style={{ color: "var(--muted-foreground)" }}>
+                      <Shield size={11} style={{ flexShrink: 0 }} />
+                      <span>
+                        Reviewed by{" "}
+                        <span style={{ color: "var(--foreground)", fontWeight: 500 }}>
+                          {alert.reviewedBy}
+                        </span>
+                        {alert.reviewedAt ? ` · ${formatFull(alert.reviewedAt)}` : ""}
+                      </span>
+                    </div>
+                  )}
                 </div>
 
                 {/* Officer */}
-                <div className="text-[12px] flex items-center gap-1.5" style={{ color: "var(--muted-foreground)" }}>
+                <div className="text-[14px] flex items-center gap-1.5" style={{ color: "var(--muted-foreground)" }}>
                   {alert.officersAssignedNames.length > 0
                     ? <>
                         <Shield size={10} style={{ color: "#3b82f6", flexShrink: 0 }} />
@@ -211,7 +217,7 @@ export function RecordsPage() {
 
                 {/* Outcome */}
                 <div>
-                  <span className="flex items-center gap-1.5 w-fit text-[11px] font-medium px-2 py-1 rounded-md"
+                  <span className="flex items-center gap-1.5 w-fit text-[13px] font-medium px-2 py-1 rounded-md"
                     style={{ background: oc.bg, color: oc.color }}>
                     <OcIcon size={10} /> {oc.label}
                   </span>
@@ -219,7 +225,7 @@ export function RecordsPage() {
 
                 {/* View */}
                 <div className="flex justify-end">
-                  <span className="text-[11px] opacity-0 group-hover:opacity-100 flex items-center gap-1 px-2 py-1 rounded-md"
+                  <span className="text-[13px] opacity-0 group-hover:opacity-100 flex items-center gap-1 px-2 py-1 rounded-md"
                     style={{ color: "#f59e0b", background: "rgba(245,158,11,0.08)" }}>
                     <FileText size={10} /> View
                   </span>
@@ -243,10 +249,15 @@ export function RecordsPage() {
         <ViolationModal
           alert={selected}
           assignedOfficerNames={selected.officersAssignedNames ?? []}
+          onReopen={async () => {
+            await updateAlert(selected.dbId, { status: "active", officers_assigned: [] });
+            setSelected(null);          // it leaves Records and returns to Violations
+          }}
           onDismiss={() => {}}
           onDispatch={() => {}}
           onResolved={() => {}}
           onClose={() => setSelected(null)}
+          userRole={user?.role}
         />
       )}
     </div>

@@ -1,56 +1,27 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronRight, Undo2, Trash2, FlipHorizontal } from "lucide-react";
+import { Undo2, Trash2 } from "lucide-react";
 
-// Ported from detection_sandbox/obstruction_web.py's drawing screen — same
-// geometry, same interaction, so an edge drawn here means exactly what
-// watch_parking and the sandbox tester already agree it means. Extracted out
-// of EdgeEditorModal so both it (per-camera edge zones, live snapshot or an
-// uploaded clip) and RunDetectionPage (upload -> draw -> detect) share one
-// implementation of the canvas geometry instead of forking it.
-const BAND = 46; // how far the shaded protected-side band extends, in canvas px
-const EDGE_COLOURS = { left: "#ffa657", right: "#56d4ff" };
+// The drawing canvas for the parking no-parking area. Extracted out of
+// EdgeEditorModal so both it (per-camera areas, live snapshot or an uploaded
+// clip) and RunDetectionPage (upload -> draw -> detect) share one
+// implementation of the geometry instead of forking it.
+//
+// ONE SHAPE: a closed polygon around the road. Any vehicle whose ground point
+// (bottom-centre of its box — where the wheels meet the road) sits inside it
+// is in the no-parking area.
+//
+// This used to offer a second mode, "kerb lines": one or two open paths plus
+// the side the footpath was on, defining a half-plane. It was dropped with the
+// move to core/vision/obstruction_zone.py, which tests a point against a
+// closed polygon (cv2.pointPolygonTest) and has no way to express a half-plane
+// running off to infinity. The polygon was the better of the two anyway — an
+// open kerb line divides the WHOLE frame in two, so it also condemns whatever
+// sits on the footpath side of it: a yard, a shop front, the opposite
+// pavement. A polygon only ever means the ground inside it.
+const ZONE_COLOUR = "#ff5f56";
+const ZONE_MIN_POINTS = 3;
 
-// Default the protected side to whichever faces the nearer frame edge: the
-// road runs up the middle and footpaths sit on the outside.
-function defaultSide(points, canvasWidth) {
-  const a = points[0], b = points[points.length - 1];
-  const mx = (a.x + b.x) / 2;
-  const dx = b.x - a.x, dy = b.y - a.y;
-  const length = Math.hypot(dx, dy) || 1;
-  const nx = -dy / length;
-  return mx < canvasWidth / 2 ? (nx < 0 ? 1 : -1) : (nx > 0 ? 1 : -1);
-}
-
-// Offsets a path along its local normal — shades the protected side of a
-// path that may bend, without any polygon clipping.
-function offsetPath(points, side, dist) {
-  return points.map((q, i) => {
-    const a = points[Math.max(i - 1, 0)];
-    const b = points[Math.min(i + 1, points.length - 1)];
-    const dx = b.x - a.x, dy = b.y - a.y;
-    const length = Math.hypot(dx, dy) || 1;
-    return { x: q.x - (dy / length) * dist * side, y: q.y + (dx / length) * dist * side };
-  });
-}
-
-function drawPath(ctx, points, colour, side) {
-  if (points.length >= 2) {
-    const off = offsetPath(points, side, BAND);
-    ctx.fillStyle = `${colour}33`;
-    ctx.beginPath();
-    ctx.moveTo(points[0].x, points[0].y);
-    points.forEach((q) => ctx.lineTo(q.x, q.y));
-    for (let i = off.length - 1; i >= 0; i--) ctx.lineTo(off[i].x, off[i].y);
-    ctx.closePath();
-    ctx.fill();
-
-    ctx.strokeStyle = colour;
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.moveTo(points[0].x, points[0].y);
-    points.forEach((q) => ctx.lineTo(q.x, q.y));
-    ctx.stroke();
-  }
+function drawVertices(ctx, points, colour) {
   ctx.fillStyle = colour;
   points.forEach((q) => {
     ctx.beginPath();
@@ -59,41 +30,63 @@ function drawPath(ctx, points, colour, side) {
   });
 }
 
-// Builds the {left,right} points/side spec exactly as EdgeEditorModal.handleSave
-// and DetectionJobViewSet.create's `edges` field expect it.
-function toSpec(paths, sides) {
-  const spec = {};
-  for (const side of ["left", "right"]) {
-    if (paths[side].length >= 2) {
-      spec[side] = { points: paths[side].map((p) => [Math.round(p.x), Math.round(p.y)]), side: sides[side] };
+// Drawn CLOSED from the third point on, so what the operator sees is the
+// filled area the rule will actually test — not an open path they then have to
+// imagine joined up.
+function drawZone(ctx, points, colour) {
+  if (points.length >= 2) {
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    points.forEach((q) => ctx.lineTo(q.x, q.y));
+    if (points.length >= ZONE_MIN_POINTS) {
+      ctx.closePath();
+      ctx.fillStyle = `${colour}2e`;
+      ctx.fill();
     }
+    ctx.strokeStyle = colour;
+    ctx.lineWidth = 3;
+    ctx.stroke();
   }
-  return spec;
+  drawVertices(ctx, points, colour);
+}
+
+// The spec EdgeEditorModal.handleSave and DetectionJobViewSet.create's `edges`
+// field store, and obstruction.build_edge / ObstructionZone read.
+//
+// "type": "zone" is still written explicitly even though it is now the only
+// shape: core/vision/obstruction.py's build_edge defaults a MISSING type to
+// EDGE, so dropping it would silently turn every polygon into an open path
+// along its own outline. watch_merged_all still runs that code.
+function toSpec(points) {
+  if (points.length < ZONE_MIN_POINTS) return {};
+  return {
+    road: {
+      type: "zone",
+      points: points.map((p) => [Math.round(p.x), Math.round(p.y)]),
+    },
+  };
 }
 
 /**
- * Controlled-ish edge-drawing canvas: owns paths/sides/active internally
- * (seeded once from initialPaths/initialSides at mount — callers must not
- * render this until `frame` and any prefill are both already known), and
- * reports the current spec + whether it's save-able via onChange whenever
- * the geometry settles.
+ * Controlled-ish drawing canvas for the parking no-parking area: owns the
+ * points internally (seeded once from `initialPoints` at mount — callers must
+ * not render this until `frame` and any prefill are both already known), and
+ * reports the current spec + whether it's save-able via onChange whenever the
+ * geometry settles.
  *
  * `frame` = { src, width, height }, width/height being the SOURCE frame's
  * real pixel dimensions, never the CSS-displayed canvas size.
  */
 export function EdgeCanvas({
   frame,
-  initialPaths,
-  initialSides,
+  initialPoints,
   pct,
   onPctChange,
   minutes,
   onMinutesChange,
   onChange,
 }) {
-  const [paths, setPaths] = useState(initialPaths ?? { left: [], right: [] });
-  const [sides, setSides] = useState(initialSides ?? { left: 1, right: 1 });
-  const [active, setActive] = useState("left");
+  const [points, setPoints] = useState(() => initialPoints ?? []);
 
   const canvasRef = useRef(null);
   const imgElRef = useRef(null);
@@ -106,8 +99,7 @@ export function EdgeCanvas({
     canvas.height = frame.height;
     const ctx = canvas.getContext("2d");
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-    drawPath(ctx, paths.left, EDGE_COLOURS.left, sides.left);
-    drawPath(ctx, paths.right, EDGE_COLOURS.right, sides.right);
+    drawZone(ctx, points, ZONE_COLOUR);
   }
 
   // Loads the frame image once per `frame.src`, then redraws.
@@ -122,9 +114,9 @@ export function EdgeCanvas({
   // Redraws whenever the geometry changes, and reports the current spec up.
   useEffect(() => {
     redraw();
-    onChange?.(toSpec(paths, sides), paths.left.length >= 2 || paths.right.length >= 2);
+    onChange?.(toSpec(points), points.length >= ZONE_MIN_POINTS);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paths, sides]);
+  }, [points]);
 
   // Converts a click's CSS coordinates to the canvas's real pixel space —
   // canvas.width/height are the source frame's native size, so this ratio
@@ -134,47 +126,29 @@ export function EdgeCanvas({
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    const point = {
+    setPoints((prev) => [...prev, {
       x: (e.clientX - rect.left) * (canvas.width / rect.width),
       y: (e.clientY - rect.top) * (canvas.height / rect.height),
-    };
-    const nextActivePath = [...paths[active], point];
-    setPaths((prev) => ({ ...prev, [active]: nextActivePath }));
-    if (nextActivePath.length >= 2) {
-      setSides((prev) => ({ ...prev, [active]: defaultSide(nextActivePath, canvas.width) }));
-    }
+    }]);
   };
-
-  const handleUndo = () => {
-    const next = paths[active].slice(0, -1);
-    setPaths((prev) => ({ ...prev, [active]: next }));
-    if (next.length >= 2 && canvasRef.current) {
-      setSides((prev) => ({ ...prev, [active]: defaultSide(next, canvasRef.current.width) }));
-    }
-  };
-
-  const handleClearBoth = () => {
-    setPaths({ left: [], right: [] });
-    setActive("left");
-  };
-
-  const handleFlip = (side) => setSides((prev) => ({ ...prev, [side]: -prev[side] }));
-  const handleNextEdge = () => setActive((a) => (a === "left" ? "right" : "left"));
 
   if (!frame) return null;
 
-  const otherSide = active === "left" ? "right" : "left";
-  const activeCount = paths[active].length;
+  const count = points.length;
 
   return (
     <>
       <div className="rounded-xl p-3" style={{ background: "rgba(11,84,113,0.06)", border: "1px solid rgba(11,84,113,0.2)" }}>
-        <span className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
-          Drawing the{" "}
-          <span className="font-semibold" style={{ color: EDGE_COLOURS[active] }}>{active.toUpperCase()}</span>
-          {" "}edge — {activeCount} point{activeCount === 1 ? "" : "s"}. Click along the edge; add extra points
-          where it bends. {activeCount >= 2 ? "Then Next edge, or continue." : "At least 2 points needed."}
-          {" "}Either edge alone is fine if the street only has one.
+        <span className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>
+          Tracing the{" "}
+          <span className="font-semibold" style={{ color: ZONE_COLOUR }}>ROAD ZONE</span>
+          {" "}— {count} point{count === 1 ? "" : "s"}. Click around the edge of the road to enclose it;
+          any vehicle standing inside counts as an obstruction.
+          {" "}{count >= ZONE_MIN_POINTS
+            ? "The shape closes automatically — add more points where the road bends."
+            : `At least ${ZONE_MIN_POINTS} points needed.`}
+          {" "}Follow the road as it narrows into the distance rather than drawing a rectangle — a camera
+          sees the carriageway as a trapezium, not a box.
         </span>
       </div>
 
@@ -187,43 +161,28 @@ export function EdgeCanvas({
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        <button onClick={handleNextEdge}
-          className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-[12px] font-medium"
-          style={{ background: "var(--secondary)", color: "var(--foreground)", border: "1px solid var(--border)" }}>
-          <ChevronRight size={13} /> Next edge ({otherSide})
-        </button>
-        <button onClick={handleUndo} disabled={!paths[active].length}
-          className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-[12px] font-medium disabled:opacity-40"
+        <button onClick={() => setPoints((prev) => prev.slice(0, -1))} disabled={!count}
+          className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-[14px] font-medium disabled:opacity-40"
           style={{ background: "var(--secondary)", color: "var(--foreground)", border: "1px solid var(--border)" }}>
           <Undo2 size={13} /> Undo point
         </button>
-        <button onClick={handleClearBoth}
-          className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-[12px] font-medium"
+        <button onClick={() => setPoints([])}
+          className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-[14px] font-medium"
           style={{ background: "var(--secondary)", color: "var(--foreground)", border: "1px solid var(--border)" }}>
-          <Trash2 size={13} /> Clear both
-        </button>
-        <button onClick={() => handleFlip("left")} disabled={paths.left.length < 2}
-          className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-[12px] font-medium disabled:opacity-40"
-          style={{ background: "var(--secondary)", color: EDGE_COLOURS.left, border: "1px solid var(--border)" }}>
-          <FlipHorizontal size={13} /> Flip left side
-        </button>
-        <button onClick={() => handleFlip("right")} disabled={paths.right.length < 2}
-          className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-[12px] font-medium disabled:opacity-40"
-          style={{ background: "var(--secondary)", color: EDGE_COLOURS.right, border: "1px solid var(--border)" }}>
-          <FlipHorizontal size={13} /> Flip right side
+          <Trash2 size={13} /> Clear zone
         </button>
       </div>
 
       <div className="flex items-center gap-5 pt-1">
-        <label className="flex items-center gap-2 text-[12px]" style={{ color: "var(--muted-foreground)" }}>
-          Past the line
+        <label className="flex items-center gap-2 text-[14px]" style={{ color: "var(--muted-foreground)" }}>
+          Inside the road
           <input type="number" min={10} max={90} value={pct}
             onChange={(e) => onPctChange(e.target.value)}
             className="w-16 px-2 py-1.5 rounded-lg text-sm outline-none"
             style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
           %
         </label>
-        <label className="flex items-center gap-2 text-[12px]" style={{ color: "var(--muted-foreground)" }}>
+        <label className="flex items-center gap-2 text-[14px]" style={{ color: "var(--muted-foreground)" }}>
           for
           <input type="number" min={0.1} step={0.1} value={minutes}
             onChange={(e) => onMinutesChange(e.target.value)}

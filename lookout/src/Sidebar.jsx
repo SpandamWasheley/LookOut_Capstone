@@ -1,8 +1,8 @@
 import { useState, useEffect } from "react";
 import {
-  LayoutDashboard, Camera, Bell, Users, Settings,
+  LayoutDashboard, Camera, Bell, Settings,
   ChevronLeft, ChevronRight, Eye, LogOut, Shield,
-  Archive, TrendingUp, Sun, Moon, PlayCircle,
+  Archive, TrendingUp, Sun, Moon, PlayCircle, Info,
 } from "lucide-react";
 
 const navGroups = [
@@ -19,8 +19,6 @@ const navGroups = [
   {
     label: "Manage",
     items: [
-      // Registry tab hidden from the UI — keep entry disabled rather than deleted.
-      // { id: "residents", label: "", icon: Users,    roles: ["admin"] },
       { id: "rundetection", label: "Run Detection", icon: PlayCircle, roles: ["admin"] },
       { id: "officers",  label: "Personnel", icon: Shield,   roles: ["admin"] },
       { id: "config",    label: "Settings",  icon: Settings, roles: ["admin"] },
@@ -28,7 +26,7 @@ const navGroups = [
   },
 ];
 
-export function Sidebar({ activeView, onViewChange, activeRole, onRoleChange, alertCount, onLogout }) {
+export function Sidebar({ activeView, onViewChange, activeRole, onRoleChange, alertCount, onLogout, hiddenItems = [] }) {
   const [collapsed, setCollapsed] = useState(false);
 
   const [isLight, setIsLight] = useState(() => {
@@ -101,7 +99,7 @@ export function Sidebar({ activeView, onViewChange, activeRole, onRoleChange, al
             <div className="text-sm font-semibold leading-none" style={{ color: "var(--sidebar-primary)" }}>
               LookOut
             </div>
-            <div className="text-[11px] mt-0.5 truncate"
+            <div className="text-[13px] mt-0.5 truncate"
               style={{ color: mutedColor, fontFamily: "'DM Mono', monospace" }}>
               Barangay Tetuan
             </div>
@@ -117,7 +115,7 @@ export function Sidebar({ activeView, onViewChange, activeRole, onRoleChange, al
               <button
                 key={role}
                 onClick={() => onRoleChange(role)}
-                className="flex-1 py-1.5 text-[11px] font-medium transition-all duration-150 capitalize"
+                className="flex-1 py-1.5 text-[13px] font-medium transition-all duration-150 capitalize"
                 style={{
                   background: activeRole === role ? "var(--sidebar-primary)" : "transparent",
                   color: activeRole === role ? "var(--sidebar-primary-foreground)" : mutedColor,
@@ -133,13 +131,13 @@ export function Sidebar({ activeView, onViewChange, activeRole, onRoleChange, al
       {/* Nav */}
       <nav className="flex-1 overflow-y-auto py-3">
         {navGroups.map((group) => {
-          const visible = group.items.filter((i) => i.roles.includes(activeRole));
+          const visible = group.items.filter((i) => i.roles.includes(activeRole) && !hiddenItems.includes(i.id));
           if (visible.length === 0) return null;
           return (
             <div key={group.label} className="mb-1">
               {!collapsed && (
                 <div
-                  className="px-4 py-1.5 text-[10px] font-semibold uppercase"
+                  className="px-4 py-1.5 text-[12px] font-semibold uppercase"
                   style={{ color: mutedColor, fontFamily: "'DM Mono', monospace", letterSpacing: "0.08em", opacity: 0.6 }}
                 >
                   {group.label}
@@ -166,7 +164,7 @@ export function Sidebar({ activeView, onViewChange, activeRole, onRoleChange, al
                         <Icon size={15} />
                         {showBadge && collapsed && (
                           <span
-                            className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full text-[9px] font-bold flex items-center justify-center"
+                            className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full text-[11px] font-bold flex items-center justify-center"
                             style={{ background: "#0E7C86", color: "#fff" }}
                           >
                             {alertCount > 9 ? "9+" : alertCount}
@@ -174,11 +172,11 @@ export function Sidebar({ activeView, onViewChange, activeRole, onRoleChange, al
                         )}
                       </div>
                       {!collapsed && (
-                        <span className="text-[13px] font-medium flex-1 text-left">{item.label}</span>
+                        <span className="text-[15px] font-medium flex-1 text-left">{item.label}</span>
                       )}
                       {showBadge && !collapsed && (
                         <span
-                          className="ml-auto text-[10px] font-bold w-5 h-5 rounded-full flex items-center justify-center"
+                          className="ml-auto text-[12px] font-bold w-5 h-5 rounded-full flex items-center justify-center"
                           style={{ background: "#0E7C86", color: "#fff" }}
                         >
                           {alertCount > 9 ? "9+" : alertCount}
@@ -196,6 +194,25 @@ export function Sidebar({ activeView, onViewChange, activeRole, onRoleChange, al
       {/* Bottom: AI status + theme toggle + sign out */}
       <div className="flex-shrink-0 p-3 space-y-1.5" style={{ borderTop: `1px solid ${sidebarBorder}` }}>
         <button
+          onClick={() => onViewChange("about")}
+          title="About LookOut"
+          className="w-full flex items-center gap-2 rounded-md py-2 px-2 transition-all duration-150"
+          style={{
+            justifyContent: collapsed ? "center" : "flex-start",
+            color: activeView === "about" ? activeColor : mutedColor,
+            background: activeView === "about" ? activeBg : "transparent",
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.background = activeBg; e.currentTarget.style.color = activeColor; }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = activeView === "about" ? activeBg : "transparent";
+            e.currentTarget.style.color = activeView === "about" ? activeColor : mutedColor;
+          }}
+        >
+          <Info size={14} className="flex-shrink-0" />
+          {!collapsed && <span className="text-[15px] font-medium">About</span>}
+        </button>
+
+        <button
           onClick={() => setIsLight((v) => !v)}
           title={isLight ? "Switch to dark mode" : "Switch to light mode"}
           className="w-full flex items-center gap-2 rounded-md py-2 px-2 transition-all duration-150"
@@ -204,7 +221,7 @@ export function Sidebar({ activeView, onViewChange, activeRole, onRoleChange, al
           onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = mutedColor; }}
         >
           {isLight ? <Moon size={14} className="flex-shrink-0" /> : <Sun size={14} className="flex-shrink-0" />}
-          {!collapsed && <span className="text-[13px] font-medium">{isLight ? "Dark mode" : "Light mode"}</span>}
+          {!collapsed && <span className="text-[15px] font-medium">{isLight ? "Dark mode" : "Light mode"}</span>}
         </button>
 
         <button
@@ -216,7 +233,7 @@ export function Sidebar({ activeView, onViewChange, activeRole, onRoleChange, al
           onMouseLeave={(e) => { e.currentTarget.style.color = mutedColor; e.currentTarget.style.background = "transparent"; }}
         >
           <LogOut size={14} className="flex-shrink-0" />
-          {!collapsed && <span className="text-[13px] font-medium">Sign out</span>}
+          {!collapsed && <span className="text-[15px] font-medium">Sign out</span>}
         </button>
       </div>
     </aside>

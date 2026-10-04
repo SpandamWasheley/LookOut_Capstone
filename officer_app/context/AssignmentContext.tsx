@@ -18,7 +18,19 @@ export interface Assignment {
   description: string;
   location: string;
   cameraCode: string | null;
-  confidence: number;
+  // What the officer reads: the Status, "Possible" or "Likely". There is deliberately no
+  // score or percentage: it would read like a probability, which it is not.
+  levelLabel: string;
+  // What the object detector was sure of, separately from the score above.
+  objectConfidence: number | null;
+  // Plain-language evidence lines, and anything that adjusted the status.
+  checklist: { found: string[]; adjusted_by: string[]; tag: string } | null;
+  // The AI checker's context card and suggested status (display only).
+  ai: api.ApiAiContext | null;
+  // Closing details, for the Dismissed / Resolved banner.
+  reviewedBy: string;
+  reviewedAt: string | null;
+  citationIssued: boolean;
   dispatchedAt: string;
   assignedOfficerIds: number[];
   assignedOfficerNames: string[];
@@ -39,7 +51,19 @@ function mapAlert(raw: api.ApiAlert, typesByCode: Record<string, ViolationTypeMe
     description: raw.description,
     location: raw.camera_zone || "Unknown location",
     cameraCode: raw.camera,
-    confidence: Math.round(raw.confidence * 100),
+    levelLabel: raw.level_label || "",
+    objectConfidence: raw.object_confidence ?? null,
+    checklist: raw.cues?.checklist
+      ? {
+          found: raw.cues.checklist.found ?? [],
+          adjusted_by: raw.cues.checklist.adjusted_by ?? [],
+          tag: raw.cues.checklist.tag ?? "",
+        }
+      : null,
+    ai: raw.ai_context ?? null,
+    reviewedBy: raw.reviewed_by_name || "",
+    reviewedAt: raw.reviewed_at ?? null,
+    citationIssued: !!raw.citation_issued,
     dispatchedAt: raw.timestamp,
     assignedOfficerIds: raw.officers_assigned,
     assignedOfficerNames: raw.officers_assigned_names,

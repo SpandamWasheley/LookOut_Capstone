@@ -75,7 +75,11 @@ export default function AssignmentCard({ assignment }: Props) {
         </Text>
         <View style={styles.footer}>
           <Text style={[styles.code, { color: c.mutedForeground }]}>{assignment.code}</Text>
-          <Text style={[styles.confidence, { color: c.mutedForeground }]}>{assignment.confidence}% conf.</Text>
+          {assignment.levelLabel ? (
+            <Text style={[styles.confidence, { color: assignment.levelLabel === "Likely" ? "#dc2626" : "#f59e0b" }]}>
+              {assignment.levelLabel}
+            </Text>
+          ) : null}
         </View>
       </View>
     </Pressable>
@@ -104,5 +108,5 @@ const styles = StyleSheet.create({
   description: { fontSize: 13, fontFamily: "Inter_400Regular", lineHeight: 19 },
   footer: { flexDirection: "row", justifyContent: "space-between", marginTop: 2 },
   code: { fontSize: 11, fontFamily: "Inter_400Regular" },
-  confidence: { fontSize: 11, fontFamily: "Inter_400Regular" },
+  confidence: { fontSize: 12, fontFamily: "Inter_600SemiBold" },
 });

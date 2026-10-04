@@ -1,9 +1,15 @@
 import { useRef, useState } from "react";
 import { X, Upload, FileVideo, Loader2, AlertTriangle } from "lucide-react";
 import { uploadDetectionJob } from "./api";
-import { DETECTION_TYPES } from "./constants/detectionTypes";
+import { DETECTION_TYPES, TYPES_REQUIRING_EDGES } from "./constants/detectionTypes";
 
 const ALLOWED_EXTENSIONS = [".mp4", ".mkv", ".avi"];
+// This modal uploads a clip and starts the run in one step — it has no canvas to
+// draw a no-parking area on, so a detector that refuses to start without one
+// cannot be offered here. Run Detection has the drawing step; it is where those
+// belong. Parking is NOT filtered out: with nothing drawn it falls back to its
+// plain dwell rule, which is a valid run.
+const OFFERED_TYPES = DETECTION_TYPES.filter((t) => !TYPES_REQUIRING_EDGES.has(t.key));
 const MAX_BYTES = 1024 * 1024 * 1024; // 1GB
 
 function formatBytes(bytes) {
@@ -24,7 +30,7 @@ function validateFile(file) {
 
 export function UploadDetectionModal({ onClose, onJobStarted }) {
   const [file, setFile] = useState(null);
-  const [violationType, setViolationType] = useState(DETECTION_TYPES[0].key);
+  const [violationType, setViolationType] = useState(OFFERED_TYPES[0].key);
   const [dragOver, setDragOver] = useState(false);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -82,7 +88,7 @@ export function UploadDetectionModal({ onClose, onJobStarted }) {
             </div>
             <div>
               <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Test Detection</div>
-              <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+              <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>
                 Run a detector against an uploaded clip
               </div>
             </div>
@@ -98,12 +104,12 @@ export function UploadDetectionModal({ onClose, onJobStarted }) {
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
           {/* Violation type selector */}
           <div>
-            <div className="text-[11px] font-semibold uppercase tracking-wide mb-2"
+            <div className="text-[13px] font-semibold uppercase tracking-wide mb-2"
               style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
               Detector
             </div>
             <div className="grid grid-cols-2 gap-2">
-              {DETECTION_TYPES.map((t) => {
+              {OFFERED_TYPES.map((t) => {
                 const Icon = t.icon;
                 const isActive = violationType === t.key;
                 return (
@@ -119,7 +125,7 @@ export function UploadDetectionModal({ onClose, onJobStarted }) {
                     }}
                   >
                     <Icon size={14} style={{ color: isActive ? t.color : "var(--muted-foreground)" }} />
-                    <span className="text-[12px] font-medium"
+                    <span className="text-[14px] font-medium"
                       style={{ color: isActive ? t.color : "var(--foreground)" }}>
                       {t.label}
                     </span>
@@ -131,7 +137,7 @@ export function UploadDetectionModal({ onClose, onJobStarted }) {
 
           {/* Drop zone / file picker */}
           <div>
-            <div className="text-[11px] font-semibold uppercase tracking-wide mb-2"
+            <div className="text-[13px] font-semibold uppercase tracking-wide mb-2"
               style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
               Clip
             </div>
@@ -158,20 +164,20 @@ export function UploadDetectionModal({ onClose, onJobStarted }) {
               {file ? (
                 <>
                   <FileVideo size={22} style={{ color: "#f59e0b" }} />
-                  <div className="text-[12px] font-medium text-center" style={{ color: "var(--foreground)" }}>
+                  <div className="text-[14px] font-medium text-center" style={{ color: "var(--foreground)" }}>
                     {file.name}
                   </div>
-                  <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>
+                  <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>
                     {formatBytes(file.size)}
                   </div>
                 </>
               ) : (
                 <>
                   <Upload size={22} style={{ color: "var(--muted-foreground)" }} />
-                  <div className="text-[12px] text-center" style={{ color: "var(--muted-foreground)" }}>
+                  <div className="text-[14px] text-center" style={{ color: "var(--muted-foreground)" }}>
                     Drag a clip here, or click to browse
                   </div>
-                  <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>
+                  <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>
                     .mp4, .mkv, .avi — up to 1GB
                   </div>
                 </>
@@ -180,14 +186,14 @@ export function UploadDetectionModal({ onClose, onJobStarted }) {
           </div>
 
           {error && (
-            <div className="flex items-start gap-2 text-[12px] px-3 py-2.5 rounded-xl"
+            <div className="flex items-start gap-2 text-[14px] px-3 py-2.5 rounded-xl"
               style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", color: "#ef4444" }}>
               <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
               <span>{error}</span>
             </div>
           )}
 
-          <div className="text-[11px] leading-relaxed" style={{ color: "var(--muted-foreground)" }}>
+          <div className="text-[13px] leading-relaxed" style={{ color: "var(--muted-foreground)" }}>
             Detection runs in the background and may take a few minutes for a longer clip.
             Any alerts it produces will appear in the Violations tab as detection runs.
           </div>

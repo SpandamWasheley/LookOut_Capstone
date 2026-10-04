@@ -60,7 +60,7 @@ function MergeModal({ violator, suggestions, onMerge, onClose }) {
         style={{ background: "var(--card)", border: "1px solid var(--border)", maxHeight: "85vh" }}>
         <div className="px-5 py-4 flex-shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
           <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Merge into {violator.full_name}</div>
-          <div className="text-[11px] mt-0.5" style={{ color: "var(--muted-foreground)" }}>
+          <div className="text-[13px] mt-0.5" style={{ color: "var(--muted-foreground)" }}>
             Pick the duplicate record — its citations move here, and it's deleted.
           </div>
         </div>
@@ -89,15 +89,15 @@ function MergeModal({ violator, suggestions, onMerge, onClose }) {
             <div key={r.id} className="flex items-center justify-between gap-3 px-3 py-2.5 rounded-xl"
               style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
               <div className="min-w-0">
-                <div className="text-[13px] font-medium truncate" style={{ color: "var(--foreground)" }}>{r.full_name}</div>
-                <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+                <div className="text-[15px] font-medium truncate" style={{ color: "var(--foreground)" }}>{r.full_name}</div>
+                <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>
                   {r.citation_count} citation{r.citation_count !== 1 ? "s" : ""}
                 </div>
               </div>
               <button
                 disabled={merging}
                 onClick={() => confirmMerge(r)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium flex-shrink-0"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium flex-shrink-0"
                 style={{ background: "#f59e0b", color: "#0c0f16", cursor: merging ? "not-allowed" : "pointer", opacity: merging ? 0.6 : 1 }}>
                 <GitMerge size={11} /> Merge
               </button>
@@ -284,19 +284,19 @@ function ViolatorDetail({ violator, onBack, onMerged }) {
         <div className="flex-1 min-w-0">
           <div className="text-base font-bold truncate" style={{ color: "var(--foreground)" }}>{violator.full_name}</div>
           {violator.last_seen && (
-            <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }} title={fmtDate(violator.last_seen)}>
+            <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }} title={fmtDate(violator.last_seen)}>
               Last seen {relativeTime(violator.last_seen)}
             </div>
           )}
         </div>
         <div className="text-right flex-shrink-0">
           <div className="text-lg font-bold tabular-nums leading-none" style={{ color: "var(--foreground)" }}>{violator.citation_count}</div>
-          <div className="text-[10px] uppercase tracking-wide font-semibold mt-0.5" style={{ color: "var(--muted-foreground)" }}>
+          <div className="text-[12px] uppercase tracking-wide font-semibold mt-0.5" style={{ color: "var(--muted-foreground)" }}>
             Citation{violator.citation_count !== 1 ? "s" : ""}
           </div>
         </div>
         <button onClick={() => setShowMerge(true)} aria-label="Merge duplicate record"
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium flex-shrink-0"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium flex-shrink-0"
           style={{ background: "transparent", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}>
           <GitMerge size={11} /> Merge duplicate
         </button>
@@ -305,12 +305,12 @@ function ViolatorDetail({ violator, onBack, onMerged }) {
       <div className="flex-1 overflow-y-auto p-6 space-y-4">
         {violator.aliases?.length > 0 && (
           <div className="rounded-xl px-4 py-3" style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-            <div className="text-[10px] uppercase tracking-wide font-semibold mb-1.5" style={{ color: "var(--muted-foreground)" }}>
+            <div className="text-[12px] uppercase tracking-wide font-semibold mb-1.5" style={{ color: "var(--muted-foreground)" }}>
               Also known as (merged records)
             </div>
             <div className="flex flex-wrap gap-1.5">
               {violator.aliases.map((a, i) => (
-                <span key={i} className="text-[11px] px-2 py-0.5 rounded-full" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--foreground)" }}>
+                <span key={i} className="text-[13px] px-2 py-0.5 rounded-full" style={{ background: "var(--card)", border: "1px solid var(--border)", color: "var(--foreground)" }}>
                   {a}
                 </span>
               ))}
@@ -321,22 +321,22 @@ function ViolatorDetail({ violator, onBack, onMerged }) {
         {!loading && !loadError && totalCitations > 0 && (
           <div className="flex flex-wrap rounded-xl overflow-hidden" style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
             <div className="flex-1 min-w-[120px] px-4 py-3" style={{ borderRight: "1px solid var(--border)" }}>
-              <div className="text-[10px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted-foreground)" }}>Total citations</div>
+              <div className="text-[12px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted-foreground)" }}>Total citations</div>
               <div className="text-lg font-bold tabular-nums mt-1" style={{ color: "var(--foreground)" }}>{totalCitations}</div>
             </div>
             <div className="flex-1 min-w-[160px] px-4 py-3" style={{ borderRight: "1px solid var(--border)" }}>
-              <div className="text-[10px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted-foreground)" }}>Most common violation</div>
+              <div className="text-[12px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted-foreground)" }}>Most common violation</div>
               {mostCommon ? (
                 <div className="flex items-center gap-1.5 mt-1">
                   <mostCommon.type.icon size={13} style={{ color: `var(--violation-${mostCommon.type.code}-dot)` }} />
-                  <div className="text-[13px] font-semibold truncate" style={{ color: "var(--foreground)" }}>{mostCommon.type.label}</div>
+                  <div className="text-[15px] font-semibold truncate" style={{ color: "var(--foreground)" }}>{mostCommon.type.label}</div>
                 </div>
               ) : (
                 <div className="text-lg font-bold mt-1" style={{ color: "var(--muted-foreground)" }}>—</div>
               )}
             </div>
             <div className="flex-1 min-w-[100px] px-4 py-3">
-              <div className="text-[10px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted-foreground)" }}>This month</div>
+              <div className="text-[12px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted-foreground)" }}>This month</div>
               <div className="text-lg font-bold tabular-nums mt-1" style={{ color: "var(--foreground)" }}>{thisMonthCount}</div>
             </div>
           </div>
@@ -352,7 +352,7 @@ function ViolatorDetail({ violator, onBack, onMerged }) {
                   key={opt.key}
                   onClick={() => setSort(opt.key)}
                   aria-pressed={sortParam === opt.key}
-                  className="px-3 py-1.5 text-[12px] font-medium"
+                  className="px-3 py-1.5 text-[14px] font-medium"
                   style={{
                     background: sortParam === opt.key ? "var(--primary)" : "var(--secondary)",
                     color: sortParam === opt.key ? "var(--primary-foreground)" : "var(--muted-foreground)",
@@ -365,7 +365,7 @@ function ViolatorDetail({ violator, onBack, onMerged }) {
           </div>
         )}
 
-        <div className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+        <div className="text-[12px] font-semibold uppercase tracking-wide" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
           Citation history · {totalCitations}
         </div>
 
@@ -388,7 +388,7 @@ function ViolatorDetail({ violator, onBack, onMerged }) {
             <Filter size={22} style={{ color: "var(--muted-foreground)" }} />
             <div className="text-sm" style={{ color: "var(--muted-foreground)" }}>No citations match the selected type filter.</div>
             {hasActiveFilters && (
-              <button onClick={clearFilters} className="text-[12px] font-medium px-3 py-1.5 rounded-lg"
+              <button onClick={clearFilters} className="text-[14px] font-medium px-3 py-1.5 rounded-lg"
                 style={{ background: "var(--secondary)", color: "var(--primary)", border: "1px solid var(--border)" }}>
                 Clear filters
               </button>
@@ -398,7 +398,7 @@ function ViolatorDetail({ violator, onBack, onMerged }) {
           <div>
             {groups.map(([label, group], groupIdx) => (
               <div key={label}>
-                <div className="text-[10px] font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--muted-foreground)" }}>
+                <div className="text-[12px] font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--muted-foreground)" }}>
                   {label}
                 </div>
                 <div>
@@ -415,12 +415,12 @@ function ViolatorDetail({ violator, onBack, onMerged }) {
 
                         <div className="rounded-xl px-4 py-3" style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
                           <div className="flex items-start justify-between gap-3 flex-wrap">
-                            <div className="flex items-center gap-1.5 text-[12px] font-medium" style={{ color: "var(--foreground)" }}>
+                            <div className="flex items-center gap-1.5 text-[14px] font-medium" style={{ color: "var(--foreground)" }}>
                               <Calendar size={11} style={{ color: "var(--muted-foreground)" }} />
                               {fmtDateTime(c.created_at)}
-                              <span className="text-[11px] font-normal" style={{ color: "var(--muted-foreground)" }}>· {relativeTime(c.created_at)}</span>
+                              <span className="text-[13px] font-normal" style={{ color: "var(--muted-foreground)" }}>· {relativeTime(c.created_at)}</span>
                             </div>
-                            <div className="flex items-center gap-1 text-[11px] flex-shrink-0 px-2 py-0.5 rounded-full"
+                            <div className="flex items-center gap-1 text-[13px] flex-shrink-0 px-2 py-0.5 rounded-full"
                               style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}>
                               <Shield size={10} /> {c.officer_name || `Officer #${c.officer}`}
                             </div>
@@ -430,13 +430,13 @@ function ViolatorDetail({ violator, onBack, onMerged }) {
                             {types.map((t) => {
                               const Icon = t.icon;
                               return (
-                                <span key={t.code} className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border" style={violationChipStyle(t)}>
+                                <span key={t.code} className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[13px] font-medium border" style={violationChipStyle(t)}>
                                   <Icon size={10} /> {t.short}
                                 </span>
                               );
                             })}
                             {c.violator_barangay && (
-                              <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px]"
+                              <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[13px]"
                                 style={{ color: "var(--muted-foreground)", background: "transparent", border: "1px dashed var(--border)" }}>
                                 <MapPin size={10} /> {c.violator_barangay}
                               </span>
@@ -444,14 +444,14 @@ function ViolatorDetail({ violator, onBack, onMerged }) {
                           </div>
 
                           {aliasDiffers(c, violator) && (
-                            <div className="flex items-center gap-1.5 mt-2 px-2.5 py-1.5 rounded-lg text-[11px]"
+                            <div className="flex items-center gap-1.5 mt-2 px-2.5 py-1.5 rounded-lg text-[13px]"
                               style={{ background: "rgba(245,158,11,0.1)", color: "#f59e0b", border: "1px dashed rgba(245,158,11,0.3)" }}>
                               <GitMerge size={11} /> Entered as: <span className="font-medium">{c.violator_name}</span>
                             </div>
                           )}
 
                           {c.notes && (
-                            <div className="text-[11px] mt-2 italic" style={{ color: "var(--muted-foreground)" }}>{c.notes}</div>
+                            <div className="text-[13px] mt-2 italic" style={{ color: "var(--muted-foreground)" }}>{c.notes}</div>
                           )}
                         </div>
                       </div>
@@ -728,7 +728,7 @@ export function ResidentLog() {
         <h1 className="text-xl font-bold" style={{ color: "var(--foreground)" }}>Violator Log</h1>
         <div className="text-right">
           <div className="text-lg font-bold tabular-nums leading-none" style={{ color: "var(--foreground)" }}>{totalViolators}</div>
-          <div className="text-[10px] uppercase tracking-wide font-semibold mt-0.5" style={{ color: "var(--muted-foreground)" }}>On record</div>
+          <div className="text-[12px] uppercase tracking-wide font-semibold mt-0.5" style={{ color: "var(--muted-foreground)" }}>On record</div>
         </div>
       </div>
 
@@ -736,13 +736,13 @@ export function ResidentLog() {
         {/* Summary figures */}
         <div className="flex flex-wrap flex-shrink-0 rounded-xl overflow-hidden" style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
           <div className="flex-1 min-w-[140px] px-4 py-3" style={{ borderRight: "1px solid var(--border)" }}>
-            <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted-foreground)" }}>
+            <div className="flex items-center gap-1.5 text-[12px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted-foreground)" }}>
               <Users size={11} /> Total violators
             </div>
             <div className="text-lg font-bold tabular-nums mt-1" style={{ color: "var(--foreground)" }}>{totalViolators}</div>
           </div>
           <div className="flex-1 min-w-[140px] px-4 py-3" style={{ borderRight: "1px solid var(--border)" }}>
-            <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted-foreground)" }}>
+            <div className="flex items-center gap-1.5 text-[12px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted-foreground)" }}>
               <Repeat size={11} /> Repeat offenders
             </div>
             <div className="text-lg font-bold tabular-nums mt-1" style={{ color: repeatOffenders > 0 ? "#f59e0b" : "var(--foreground)" }}>
@@ -750,13 +750,13 @@ export function ResidentLog() {
             </div>
           </div>
           <div className="flex-1 min-w-[180px] px-4 py-3">
-            <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted-foreground)" }}>
+            <div className="flex items-center gap-1.5 text-[12px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted-foreground)" }}>
               <Award size={11} /> Most cited
             </div>
             {mostCited ? (
               <div className="mt-1">
-                <div className="text-[13px] font-semibold truncate" style={{ color: "var(--foreground)" }}>{mostCited.full_name}</div>
-                <div className="text-[11px] tabular-nums" style={{ color: "var(--muted-foreground)" }}>
+                <div className="text-[15px] font-semibold truncate" style={{ color: "var(--foreground)" }}>{mostCited.full_name}</div>
+                <div className="text-[13px] tabular-nums" style={{ color: "var(--muted-foreground)" }}>
                   {mostCited.citation_count} citation{mostCited.citation_count !== 1 ? "s" : ""}
                 </div>
               </div>
@@ -832,7 +832,7 @@ export function ResidentLog() {
               <Search size={22} style={{ color: "var(--muted-foreground)" }} />
               <div className="text-sm" style={{ color: "var(--muted-foreground)" }}>No matches for your search or filters.</div>
               {hasActiveFilters && (
-                <button onClick={clearFilters} className="text-[12px] font-medium px-3 py-1.5 rounded-lg"
+                <button onClick={clearFilters} className="text-[14px] font-medium px-3 py-1.5 rounded-lg"
                   style={{ background: "var(--secondary)", color: "var(--primary)", border: "1px solid var(--border)" }}>
                   Clear filters
                 </button>
@@ -860,15 +860,15 @@ export function ResidentLog() {
                       {v.first_name[0]}{v.last_name[0]}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <div className="text-[13px] font-medium truncate" style={{ color: "var(--foreground)" }}>{v.full_name}</div>
+                      <div className="text-[15px] font-medium truncate" style={{ color: "var(--foreground)" }}>{v.full_name}</div>
                       {v.last_seen && (
-                        <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }} title={fmtDate(v.last_seen)}>
+                        <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }} title={fmtDate(v.last_seen)}>
                           Last seen {relativeTime(v.last_seen)}
                         </div>
                       )}
                     </div>
                     <ViolationIconCluster codes={violationsByViolator.get(v.id)} />
-                    <span className="text-[11px] font-semibold px-2.5 py-1 rounded-full flex-shrink-0 tabular-nums" style={TIER_STYLE[tier]}>
+                    <span className="text-[13px] font-semibold px-2.5 py-1 rounded-full flex-shrink-0 tabular-nums" style={TIER_STYLE[tier]}>
                       {v.citation_count} citation{v.citation_count !== 1 ? "s" : ""}
                     </span>
                   </button>

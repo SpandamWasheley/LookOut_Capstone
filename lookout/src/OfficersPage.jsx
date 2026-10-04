@@ -192,7 +192,7 @@ function AddAccountModal({ role, onAdd, onClose }) {
           style={{ borderBottom: "1px solid var(--border)" }}>
           <div>
             <div className="text-sm font-semibold text-white">{cfg.title}</div>
-            <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>{cfg.subtitle}</div>
+            <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>{cfg.subtitle}</div>
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg"
             style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}>
@@ -208,14 +208,14 @@ function AddAccountModal({ role, onAdd, onClose }) {
             return (
               <div key={s.id} className="flex items-center">
                 <div className="flex items-center gap-1.5">
-                  <div className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold"
+                  <div className="w-5 h-5 rounded-full flex items-center justify-center text-[12px] font-bold"
                     style={{
                       background: done ? "#10b981" : active ? "var(--primary)" : "var(--secondary)",
                       color: done ? "#fff" : active ? "var(--primary-foreground)" : "var(--muted-foreground)",
                     }}>
                     {done ? <CheckCircle size={11} /> : s.id}
                   </div>
-                  <span className="text-[11px] font-medium"
+                  <span className="text-[13px] font-medium"
                     style={{ color: done ? "#10b981" : active ? "var(--primary)" : "var(--muted-foreground)" }}>
                     {s.label}
                   </span>
@@ -307,7 +307,7 @@ function AddAccountModal({ role, onAdd, onClose }) {
               {form.emailVerified && (
                 <div className="flex items-center gap-2 rounded-xl p-3" style={{ background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.25)" }}>
                   <CheckCircle size={14} style={{ color: "#10b981" }} />
-                  <span className="text-[12px] font-medium" style={{ color: "#10b981" }}>Email verified</span>
+                  <span className="text-[14px] font-medium" style={{ color: "#10b981" }}>Email verified</span>
                 </div>
               )}
             </>
@@ -333,7 +333,7 @@ function AddAccountModal({ role, onAdd, onClose }) {
               </div>
               <div className="rounded-xl p-3.5 flex items-start gap-2.5" style={{ background: "rgba(59,130,246,0.06)", border: "1px solid rgba(59,130,246,0.12)" }}>
                 <Lock size={13} style={{ color: "#3b82f6", flexShrink: 0, marginTop: 1 }} />
-                <p className="text-[11px] leading-relaxed" style={{ color: "var(--muted-foreground)" }}>
+                <p className="text-[13px] leading-relaxed" style={{ color: "var(--muted-foreground)" }}>
                   This is a <span style={{ color: "var(--foreground)" }}>temporary password</span>. The officer will be required to set a new password the first time they log in.
                 </p>
               </div>
@@ -341,7 +341,7 @@ function AddAccountModal({ role, onAdd, onClose }) {
           )}
 
           {error && (
-            <div className="flex items-start gap-2 rounded-xl p-3 text-[12px]" style={{ background: "rgba(239,68,68,0.1)", color: "#ef4444" }}>
+            <div className="flex items-start gap-2 rounded-xl p-3 text-[14px]" style={{ background: "rgba(239,68,68,0.1)", color: "#ef4444" }}>
               <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" /> {error}
             </div>
           )}
@@ -429,7 +429,7 @@ function EditCredentialsModal({ target, onSaved, onClose }) {
         <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: "1px solid var(--border)" }}>
           <div>
             <div className="text-sm font-semibold text-white">Edit Credentials</div>
-            <div className="text-[11px] mt-0.5" style={{ color: "var(--muted-foreground)" }}>{target.name}</div>
+            <div className="text-[13px] mt-0.5" style={{ color: "var(--muted-foreground)" }}>{target.name}</div>
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg"
             style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}>
@@ -456,7 +456,7 @@ function EditCredentialsModal({ target, onSaved, onClose }) {
           </div>
 
           {error && (
-            <div className="text-[11px] px-3 py-2 rounded-lg" style={{ background: "rgba(239,68,68,0.08)", color: "#ef4444" }}>
+            <div className="text-[13px] px-3 py-2 rounded-lg" style={{ background: "rgba(239,68,68,0.08)", color: "#ef4444" }}>
               {error}
             </div>
           )}
@@ -611,8 +611,8 @@ export function OfficersPage() {
                       <opt.icon size={15} />
                     </div>
                     <div className="min-w-0">
-                      <div className="text-[13px] font-medium text-white">{opt.label}</div>
-                      <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>{opt.desc}</div>
+                      <div className="text-[15px] font-medium text-white">{opt.label}</div>
+                      <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>{opt.desc}</div>
                     </div>
                   </button>
                 ))}
@@ -634,7 +634,7 @@ export function OfficersPage() {
             <div key={s.label} className="rounded-xl p-4 text-center"
               style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
               <div className="text-2xl font-semibold leading-none" style={{ color: s.color }}>{s.value}</div>
-              <div className="text-[11px] mt-1.5" style={{ color: "var(--muted-foreground)" }}>{s.label}</div>
+              <div className="text-[13px] mt-1.5" style={{ color: "var(--muted-foreground)" }}>{s.label}</div>
             </div>
           ))}
         </div>
@@ -661,7 +661,7 @@ export function OfficersPage() {
         <div className="rounded-xl flex-shrink-0" style={{ border: "1px solid var(--border)", maxHeight: 420, overflowY: "auto" }}>
           {/* Header */}
           <div
-            className="grid px-4 py-2.5 text-[11px] font-semibold sticky top-0"
+            className="grid px-4 py-2.5 text-[13px] font-semibold sticky top-0"
             style={{
               gridTemplateColumns: "2fr 1fr 1fr 1fr 0.5fr",
               color: "var(--muted-foreground)",
@@ -686,7 +686,7 @@ export function OfficersPage() {
             <div className="flex flex-col items-center justify-center py-16 gap-2" style={{ background: "var(--card)" }}>
               <AlertTriangle size={24} style={{ color: "#ef4444" }} />
               <div className="text-sm font-medium text-white">Failed to load officers</div>
-              <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>{loadError}</div>
+              <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>{loadError}</div>
             </div>
           ) : (
             filtered.map((officer, idx) => {
@@ -709,8 +709,8 @@ export function OfficersPage() {
                       {officer.name.split(" ")[1]?.[0] ?? officer.name[0] ?? "O"}
                     </div>
                     <div>
-                      <div className="text-[13px] font-medium text-white">{officer.name}</div>
-                      <div className="text-[10px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+                      <div className="text-[15px] font-medium text-white">{officer.name}</div>
+                      <div className="text-[12px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
                         {officer.badge} · {formatPhone(officer.phone ?? "")}
                       </div>
                     </div>
@@ -719,7 +719,7 @@ export function OfficersPage() {
                   {/* Status */}
                   <button
                     onClick={() => toggleStatus(officer.id)}
-                    className="flex items-center gap-1.5 px-2 py-1 rounded-md w-fit text-[11px] font-medium transition-all"
+                    className="flex items-center gap-1.5 px-2 py-1 rounded-md w-fit text-[13px] font-medium transition-all"
                     style={{ background: scfg.bg, color: scfg.color }}
                     title="Click to toggle on-duty / off-duty"
                   >
@@ -727,12 +727,12 @@ export function OfficersPage() {
                   </button>
 
                   {/* Username */}
-                  <div className="text-[12px] flex items-center gap-1" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+                  <div className="text-[14px] flex items-center gap-1" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
                     {officer.username || "—"}
                   </div>
 
                   {/* Email */}
-                  <div className="text-[11px] truncate" style={{ color: "var(--muted-foreground)" }}>
+                  <div className="text-[13px] truncate" style={{ color: "var(--muted-foreground)" }}>
                     {officer.email || "—"}
                   </div>
 
@@ -773,7 +773,7 @@ export function OfficersPage() {
           <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>{dispatchers.length} total</span>
         </div>
         <div className="rounded-xl overflow-hidden flex-shrink-0" style={{ border: "1px solid var(--border)" }}>
-          <div className="grid px-4 py-2.5 text-[11px] font-semibold rounded-t-xl"
+          <div className="grid px-4 py-2.5 text-[13px] font-semibold rounded-t-xl"
             style={{ gridTemplateColumns: "2fr 2fr 1fr", color: "var(--muted-foreground)", background: "var(--card)", borderBottom: "1px solid var(--border)" }}>
             <span>Name</span>
             <span>Email</span>
@@ -795,17 +795,17 @@ export function OfficersPage() {
                   </div>
                   <div>
                     <div className="flex items-center gap-1.5">
-                      <span className="text-[13px] font-medium text-white">{d.name}</span>
+                      <span className="text-[15px] font-medium text-white">{d.name}</span>
                       {d.role === "both" && (
-                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: "rgba(59,130,246,0.15)", color: "#3b82f6" }}>
+                        <span className="text-[11px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: "rgba(59,130,246,0.15)", color: "#3b82f6" }}>
                           OFFICER & DISPATCHER
                         </span>
                       )}
                     </div>
-                    <div className="text-[10px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>{d.username}</div>
+                    <div className="text-[12px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>{d.username}</div>
                   </div>
                 </div>
-                <div className="text-[11px] truncate" style={{ color: "var(--muted-foreground)" }}>{d.email || "—"}</div>
+                <div className="text-[13px] truncate" style={{ color: "var(--muted-foreground)" }}>{d.email || "—"}</div>
                 <div className="flex items-center gap-1 justify-end">
                   <button
                     onClick={() => setEditTarget({ type: "dispatcher", dbId: d.dbId, name: d.name, email: d.email })}
@@ -842,7 +842,7 @@ export function OfficersPage() {
                   : <Clock size={18} style={{ color: "#64748b" }} />}
               </div>
               <div className="text-sm font-semibold text-white">Change duty status?</div>
-              <p className="text-[12px] mt-1" style={{ color: "var(--muted-foreground)" }}>
+              <p className="text-[14px] mt-1" style={{ color: "var(--muted-foreground)" }}>
                 Set <span className="text-white">{statusConfirm.name}</span> to{" "}
                 <span style={{ color: statusConfirm.next === "on-duty" ? "#10b981" : "#64748b", fontWeight: 600 }}>
                   {statusConfirm.next === "on-duty" ? "On Duty" : "Off Duty"}
@@ -883,7 +883,7 @@ export function OfficersPage() {
               <div className="text-sm font-semibold text-white">
                 {deleteTarget.type === "dispatcher" ? "Remove dispatcher?" : "Remove officer?"}
               </div>
-              <p className="text-[12px] mt-1" style={{ color: "var(--muted-foreground)" }}>
+              <p className="text-[14px] mt-1" style={{ color: "var(--muted-foreground)" }}>
                 {deleteTarget.name} will lose access and be removed from the {deleteTarget.type === "dispatcher" ? "dispatcher list" : "roster"}.
               </p>
             </div>

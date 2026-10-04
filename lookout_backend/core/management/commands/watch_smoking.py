@@ -6,15 +6,16 @@ from collections import Counter
 import cv2
 from django.conf import settings
 from django.core.management.base import BaseCommand
-from django.utils import timezone
 
-from core import face_registry
+from core import descriptions
 from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
-from core.vision import recognition, tracking
+from core.vision import trim as trimming
+from core.vision import recognition, scoring, tracking, ai_checker
+from ._incidents import IncidentMixin
 
-SMOKING_CAMERA_CODE = "CAM-SMOKING"
+SMOKING_CAMERA_CODE = "CAM-SMOKE-01"
 SETTINGS_REFRESH_SECONDS = 5  # re-poll SystemSettings this often, not every frame
 PRESENCE_GRACE_SECONDS = 2    # tolerate a couple smoke-free frames before resetting dwell
 
@@ -42,8 +43,9 @@ COOLDOWN_CENTER_DIST = 1.5
 # footage be replayed with a single rule removed, so each rule's contribution to
 # the true/false alert counts can be measured rather than asserted. Everything is
 # ON by default; this exists for evaluation, not for production tuning.
-# ("face" is the same switch as --no-face-check, exposed here for symmetry.)
-ABLATABLE = ("class-floor", "face", "vote", "dwell", "cooldown", "puff", "preprocess")
+# ("mouth" is the same switch as --no-mouth-check, exposed here for symmetry.)
+ABLATABLE = ("class-floor", "mouth", "vote", "dwell", "cooldown", "puff", "preprocess",
+             "pose", "scoring", "vlm")
 
 # Per-class policy, same idea as watch_thief's. The model's classes are not
 # equally trustworthy: a `cigarette` or `vape` is an object held at the face,
@@ -78,8 +80,16 @@ DEFAULT_POLICY = {"conf_scale": 1.0, "dwell_scale": 1.0}
 # Matched case-insensitively, for the same reason as CLASS_POLICY: a model that
 # exports "Cigarette" instead of "cigarette" would otherwise skip the rule
 # entirely and no longer check the mouth at all.
-FACE_ANCHORED_CLASSES = {"cigarette", "vape", "smoking"}
-FACE_PROXIMITY = 2.5    # allowed distance from the mouth, in face widths
+MOUTH_ANCHORED_CLASSES = {"cigarette", "vape", "smoking"}
+MOUTH_PROXIMITY = 2.5    # allowed distance from the mouth, in face widths
+
+# How recently an at-the-mouth sighting must have happened for the `near_mouth`
+# cue to still count at alert time. Matched to the vote window's order of
+# magnitude: the cue describes this incident, not something seen a minute ago.
+MOUTH_CUE_MAX_AGE = 5.0      # (no longer used: the hold window is the cue_hold setting)
+MOUTH_FRESH_SECONDS = 1.0     # a mouth check older than this is not 'now'
+# Minimum IoU for a pose box to be attributed to an existing person track.
+POSE_MATCH_IOU = 0.3
 
 # Puff-cycle rule: when --require-puff is on, an alert additionally needs the
 # person to have shown the hand-to-mouth RHYTHM (cigarette raised to the lips and
@@ -88,20 +98,31 @@ FACE_PROXIMITY = 2.5    # allowed distance from the mouth, in face widths
 # rhythm — but it needs a decent frame rate and a visible face to observe the
 # motion, so it is OPT-IN, not the default.
 PUFF_MIN_CYCLES = 1
+# Spec v6 section 6: 1 puff 20, 2+ puffs 20, 3+ puffs within 5 minutes 15 -- all
+# counted by the POSE hand-to-mouth counter (tracking.Track.update_gesture).
+PUFF_PATTERN_COUNT = 3     # spec default; the live value is self.puff_count (Settings)
+# Path 2 (a puff but no item detected): for this long after the first gesture the
+# cigarette detector runs on a native-resolution crop of that person's head and
+# hands. Found -> the normal path; not found -> the puff is only logged.
+HIRES_SECONDS = 4.0
+HIRES_BOX_FRACTION = 0.6      # top share of the person box = head + hands region
+# Pose runs on every processed frame by default; set to 2 to run it every other
+# frame if the cost proves too high (the gesture counter is time-based).
+POSE_EVERY_N_FRAMES = 1
 
 
-def _is_face_anchored(label):
-    return label.lower() in FACE_ANCHORED_CLASSES
+def _is_mouth_anchored(label):
+    return label.lower() in MOUTH_ANCHORED_CLASSES
 
-# A face pass costs ~400ms per person — about 4x the person + smoking detectors
+# A pose pass costs ~35ms per person (insightface was ~150-400ms) — about 4x the person + smoking detectors
 # combined — so running it every frame would drop the pipeline under 2 FPS with a
 # single smoker in view. The anchor is cached per track and stored relative to
 # the person box, so it re-projects as they move; it is only re-detected this
 # often, which is frequent enough to follow someone turning their head.
-FACE_CACHE_SECONDS = 1.0
+MOUTH_CACHE_SECONDS = 1.0
 
 
-class Command(BaseCommand):
+class Command(IncidentMixin, BaseCommand):
     help = (
         "Detects public smoking (cigarette/smoke/vape) using the custom smoking "
         "model. Use --image PATH to test on a single still picture, or run with "
@@ -116,8 +137,10 @@ class Command(BaseCommand):
         self._alert_log = []   # (box, timestamp) — cooldown that survives track churn
         self.dry_run = False
         self.tracker_name = "greedy"
-        self.face_check = True
+        self.mouth_check = True
         self.require_puff = False
+        self.pose = True
+        self.cascade_extra = False     # add a native-res person-crop pass to --far (watch_all sets it)
         self.cascade = False
         self.far = True
         self.preprocess = False
@@ -187,16 +210,28 @@ class Command(BaseCommand):
             "--stats",
             action="store_true",
             help="On exit, print how many detections each stage discarded "
-                 "(class floor / face rule / vote / dwell / cooldown) plus "
+                 "(class floor / mouth rule / vote / dwell / cooldown) plus "
                  "effective FPS. Use this to tune the thresholds against real "
                  "footage instead of guessing.",
         )
         parser.add_argument(
-            "--no-face-check",
+            "--no-mouth-check", "--no-face-check",
+            dest="no_mouth_check",
             action="store_true",
             help="Disable the mouth-proximity rule, accepting any cigarette/vape "
-                 "found anywhere on a person's body. Faster (skips a face pass "
+                 "found anywhere on a person's body. Faster (skips a pose pass "
                  "per smoker) and more permissive.",
+        )
+        parser.add_argument(
+            "--pose",
+            action="store_true",
+            help="Deprecated / no-op: the pose hand-to-mouth counter is ALWAYS on "
+                 "now (spec v6: puffs come from the pose gesture counter).",
+        )
+        parser.add_argument(
+            "--no-pose",
+            action="store_true",
+            help="Turn the pose gesture counter off (ablation / speed tests only).",
         )
         parser.add_argument(
             "--require-puff",
@@ -250,6 +285,7 @@ class Command(BaseCommand):
                  "(/Streaming/Channels/101); cheaper than --far (no tiling).",
         )
         preproc.add_cli_flags(parser)
+        trimming.add_cli_flags(parser)
         parser.add_argument(
             "--tiles",
             default="2x2",
@@ -266,7 +302,7 @@ class Command(BaseCommand):
         )
         self.camera, _ = Camera.objects.get_or_create(
             code=options["camera"],
-            defaults={"name": "Smoking Monitor", "status": Camera.Status.ONLINE},
+            defaults={"name": "Hikvision DS-2CD1047G2", "status": Camera.Status.ONLINE},
         )
         self.violations_dir = settings.MEDIA_ROOT / "violations"
         os.makedirs(self.violations_dir, exist_ok=True)
@@ -288,6 +324,7 @@ class Command(BaseCommand):
         self.cascade = options["cascade"]
         self.far = not options["fast"] and not self.cascade
         self.dry_run = options["dry_run"]
+        self.trim = trimming.Trim(options["start"], options["end"])
         self.tracker_name = options["tracker"]
         self.show_stats = options["stats"]
 
@@ -305,9 +342,19 @@ class Command(BaseCommand):
                 "measurement run, not a production configuration."
             ))
 
-        # --no-face-check and --ablate face are the same switch.
-        self.face_check = not options["no_face_check"] and "face" not in self.ablate
+        # --no-mouth-check and --ablate mouth are the same switch.
+        self.mouth_check = not options["no_mouth_check"] and "mouth" not in self.ablate
         self.require_puff = options["require_puff"] and "puff" not in self.ablate
+        self.pose = not options.get("no_pose") and "pose" not in self.ablate
+
+        # AI checker (spec v6 section 8): local Qwen3-VL, display-only, asynchronous.
+        self._ai_setup(off="vlm" in self.ablate)
+
+        if self.pose:
+            self.stdout.write(
+                "Pose gesture cue: ON (fifth model — expect a lower frame rate)"
+            )
+
         # Must stay AFTER --ablate is parsed above, or 'preprocess' in --ablate
         # would be read against the empty default set and silently ignored.
         self.preprocess = options["preprocess"] and "preprocess" not in self.ablate
@@ -322,6 +369,8 @@ class Command(BaseCommand):
             return
 
         cfg = SystemSettings.load()
+
+        self.apply_spec_settings(cfg)
         if not cfg.smoking_enabled:
             self.stdout.write(self.style.WARNING(
                 "Smoking detection is disabled in Settings (smoking_enabled=False). "
@@ -371,76 +420,154 @@ class Command(BaseCommand):
     def _mouth_anchor(self, frame, track, now_ts):
         """Mouth position and face width for a track, in full-frame coordinates.
 
-        Cached per track for FACE_CACHE_SECONDS and held relative to the person
-        box, so a moving smoker keeps a valid anchor without paying for a face
-        pass every frame. Returns None when no face could be found.
+        Cached per track for MOUTH_CACHE_SECONDS and held relative to the person
+        box, so a moving smoker keeps a valid anchor without paying for a pose
+        pass every frame. Returns None when no mouth anchor could be found.
         """
         bx1, by1, bx2, by2 = track.box
         bw, bh = max(bx2 - bx1, 1), max(by2 - by1, 1)
 
-        cached = track.face_anchor
-        if cached is not None and now_ts - cached[3] < FACE_CACHE_SECONDS:
+        cached = track.mouth_anchor
+        if cached is not None and now_ts - cached[3] < MOUTH_CACHE_SECONDS:
             rel_x, rel_y, rel_w, _ = cached
-            self.stats["face rule: anchor cache hit"] += 1
+            self.stats["mouth rule: anchor cache hit"] += 1
             return bx1 + rel_x * bw, by1 + rel_y * bh, rel_w * bw
 
-        found = recognition.find_mouth(frame, track.box)
+        # An unknown anchor (person facing away / too far) is also cached, briefly,
+        # so pose is not re-run on the same track every frame just to fail again.
+        if now_ts < track.mouth_miss_until:
+            return None
+        found = recognition.find_mouth_pose(frame, track.box)
         if found is None:
+            track.mouth_miss_until = now_ts + recognition.MOUTH_MISS_CACHE_SECONDS
             return None
         mx, my, face_w = found
-        track.face_anchor = ((mx - bx1) / bw, (my - by1) / bh, face_w / bw, now_ts)
+        track.mouth_anchor = ((mx - bx1) / bw, (my - by1) / bh, face_w / bw, now_ts)
         return mx, my, face_w
 
-    def _apply_face_rule(self, frame, per_track, now_ts):
-        """Mouth-proximity rule: a held smoking object must be near the person's
-        mouth, not merely somewhere on their body.
+    def _apply_mouth_cue(self, frame, per_track, now_ts):
+        """Item-at-the-mouth CUE (spec v6 section 6, +15): records how close a held
+        smoking item is to the person's mouth, in face-widths.
 
-        Runs per person and only when that person actually has a held-object
-        detection, so the extra face pass costs nothing on empty frames. When no
-        face can be found the detection is KEPT, not rejected — see
-        recognition.find_mouth for why treating "no face" as "not smoking" would
-        quietly switch the whole detector off at CCTV range.
+        This used to be a hard REJECT of items far from the mouth. It no longer
+        removes anything: a cigarette held at the side is still a cigarette (it
+        reaches scoring and shows as Monitoring); only `near_mouth` is withheld.
+        An unknown mouth anchor (person facing away / too far) is "unknown", never
+        "not near".
         """
-        if not self.face_check:
+        if not self.mouth_check:
             return per_track
 
         for track, dets in per_track.items():
             if track.is_scene or not dets:
                 continue
-            if not any(_is_face_anchored(d[5]) for d in dets):
+            if not any(_is_mouth_anchored(d[5]) for d in dets):
                 continue
 
             anchor = self._mouth_anchor(frame, track, now_ts)
             if anchor is None:
-                self.stats["face rule: no face found, kept"] += 1
+                self.stats["mouth cue: no mouth anchor found"] += 1
+                recognition.log_mouth(kind="smoking", t=now_ts, track=track.id, anchor=None)
                 continue
 
             mx, my, face_w = anchor
-            limit = face_w * FACE_PROXIMITY
-            kept = []
-            nearest_ratio = None   # closest cigarette->mouth distance, in face-widths
+            nearest_ratio = None   # closest item->mouth distance, in face-widths
             for d in dets:
-                if not _is_face_anchored(d[5]):
-                    kept.append(d)
+                if not _is_mouth_anchored(d[5]):
                     continue
                 cx, cy = (d[0] + d[2]) / 2, (d[1] + d[3]) / 2
-                dist = ((cx - mx) ** 2 + (cy - my) ** 2) ** 0.5
-                ratio = dist / max(face_w, 1)
+                ratio = ((cx - mx) ** 2 + (cy - my) ** 2) ** 0.5 / max(face_w, 1)
                 if nearest_ratio is None or ratio < nearest_ratio:
                     nearest_ratio = ratio
-                if dist <= limit:
-                    kept.append(d)
-                else:
-                    self.stats[f"cut by face rule:{d[5]}"] += 1
-            per_track[track] = kept
-
-            # Feed the closest object's mouth distance into the puff-cycle state
-            # machine so the rhythm (raise-lower-raise) can be counted per person.
+            recognition.log_mouth(kind="smoking", t=now_ts, track=track.id, anchor="pose",
+                                  face_w=face_w, ratio=nearest_ratio, kept=len(dets), of=len(dets))
             if nearest_ratio is not None:
-                n = track.update_puff(nearest_ratio, now_ts)
-                if n:
-                    self.stats[f"puffs observed (person #{track.id})"] = n
+                # Stamped on the track so scoring can tell "at the mouth" from
+                # "no anchor". Only the first is evidence.
+                track.last_mouth_ratio = nearest_ratio
+                track.last_mouth_seen = now_ts
+                self.stats["mouth cue: near" if nearest_ratio <= MOUTH_PROXIMITY
+                           else "mouth cue: away from mouth (kept)"] += 1
         return per_track
+
+    def _hires_check(self, frame, per_track, now_ts):
+        """Path 2 (spec v6 section 6): a puff but no cigarette detected.
+
+        For HIRES_SECONDS after the first hand-to-mouth gesture, run the cigarette
+        detector on a native-resolution crop of that person's head-and-hands
+        region. Found -> the detection joins the normal path (item + puff = 60,
+        Possible). Not found -> nothing changes: the puff is logged only.
+        """
+        for track, dets in per_track.items():
+            if track.is_scene or track.box is None or now_ts >= track.hires_until or dets:
+                continue
+            x1, y1, x2, y2 = track.box
+            top = (x1, y1, x2, int(y1 + (y2 - y1) * HIRES_BOX_FRACTION))
+            try:
+                found = recognition.detect_smoking_cascade(frame, [top], conf=0.30)
+            except Exception as exc:                      # never let a check stop the loop
+                self.stats[f"hires check unavailable: {type(exc).__name__}"] += 1
+                track.hires_until = 0.0
+                continue
+            self.stats["hires check ran"] += 1
+            if found:
+                per_track[track] = list(found)
+                self.stats["hires check: cigarette found"] += 1
+        return per_track
+
+    def _feed_pose(self, frame, tracks, now_ts):
+        """Feed the POSE hand-to-mouth gesture into each track's rhythm state.
+
+        This is what brings watch_smoking_pose's "Strong" gesture indicator into
+        the production pipeline. It lived only in that standalone command, which
+        watch_all does not run -- so in a real deployment the indicator scored
+        nothing at all.
+
+        Always on (spec v6: puffs come from this counter). It costs one
+        full-frame pose pass per processed frame; POSE_EVERY_N_FRAMES = 2 halves
+        that if needed, since the counter is time-based.
+
+        Wrist and nose keypoints stay resolvable long after an 85mm cigarette
+        becomes two pixels, so this is the only smoking indicator that reaches
+        past object range.
+        """
+        if not self.pose or not tracks:
+            return
+        self._pose_tick = getattr(self, "_pose_tick", -1) + 1
+        if POSE_EVERY_N_FRAMES > 1 and self._pose_tick % POSE_EVERY_N_FRAMES:
+            return
+        try:
+            poses = recognition.detect_pose(frame)
+        except Exception as exc:
+            self.stats[f"pose unavailable: {type(exc).__name__}"] += 1
+            self.pose = False   # don't retry every frame once it's broken
+            self.stdout.write(self.style.WARNING(
+                f"Pose model failed, continuing without the gesture cue: {exc}"
+            ))
+            return
+
+        for box, kpts in poses:
+            ratio = recognition.hand_to_mouth_ratio(kpts)
+            if ratio is None:
+                continue
+            # Greedy IoU match, same association rule the rest of this command
+            # uses. A pose with no matching person track is dropped rather than
+            # creating one -- person detection owns track creation.
+            best, best_iou = None, 0.0
+            for track in tracks:
+                if track.is_scene or track.box is None:
+                    continue
+                iou = recognition._iou(track.box, box)
+                if iou > best_iou:
+                    best, best_iou = track, iou
+            if best is not None and best_iou >= POSE_MATCH_IOU:
+                n = best.update_gesture(ratio, now_ts, self.puff_window)
+                if n:
+                    self.stats[f"hand-to-mouth gestures (person #{best.id})"] = n
+                # A NEW puff starts the high-resolution cigarette check (path 2).
+                if n > getattr(best, "gestures_seen", 0):
+                    best.hires_until = now_ts + HIRES_SECONDS
+                best.gestures_seen = n
 
     def _detect_persons(self, frame):
         """Person boxes + (optionally) external track ids for the chosen tracker."""
@@ -473,6 +600,11 @@ class Command(BaseCommand):
             dets = recognition.detect_smoking_far(
                 frame, conf=conf, tiles=self.tiles, person_boxes=persons,
             )
+        if self.cascade_extra and not self.cascade and persons:
+            extra = recognition.detect_smoking_cascade(
+                frame, persons, conf=conf, crop_imgsz=recognition.NEAR_IMGSZ)
+            if extra:
+                dets = recognition._nms(list(dets) + extra)
         return self._apply_class_floors(dets, conf)
 
     # ---- single-image test mode -------------------------------------------
@@ -492,10 +624,6 @@ class Command(BaseCommand):
             ))
             return
 
-        # Snapshot before the boxes below are drawn — see the identical note
-        # in handle()'s live loop for why face matching needs this.
-        clean_frame = frame.copy()
-
         for (x1, y1, x2, y2, score, label) in smokes:
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 165, 245), 2)
             recognition.draw_label(frame, f"{label} {score * 100:.0f}%",
@@ -507,10 +635,9 @@ class Command(BaseCommand):
         _, _, _, _, best_score, best_label = best
         summary = ", ".join(sorted({s[5] for s in smokes}))
         alert = self._create_alert(
-            best_score, best_label, frame, face_frame=clean_frame,
+            best_score, best_label, frame,
             description=(
-                f"Public smoking detected on still image: "
-                f"{len(smokes)} detection(s) [{summary}]."
+                descriptions.smoking(best_label)
             ),
         )
         self.stdout.write(self.style.SUCCESS(
@@ -549,16 +676,22 @@ class Command(BaseCommand):
         # from it later (see _create_alert) instead of relying only on the
         # annotated buffer's sparser processed frames.
         self._source_path = None if is_live else source
-        # Live sources can't be seeked backwards, and record_camera's segments
-        # aren't safely readable while the current one is still open (see
-        # RawFrameRecorder's docstring) — so a live source gets its own rolling
-        # buffer of RAW (unannotated) frames to cut a raw clip from instead.
+        # Live sources can't be seeked backwards, so a live source gets its own
+        # rolling buffer of RAW (unannotated) frames to cut a raw clip from
+        # instead (see RawFrameRecorder's docstring).
         self._raw_buffer = recognition.RawFrameRecorder() if is_live else None
+        # Jump straight to the chosen start rather than decoding and throwing
+        # away everything before it — on CPU that discarded prefix costs the
+        # same per frame as the part being tested.
+        if self.trim.seek(cap, is_live):
+            self.stdout.write(self.style.SUCCESS(
+                f"Trimmed to {self.trim.describe()} of the clip."))
 
         # Settings are re-polled every few seconds (like watch_curfew/watch_parking)
         # so edits made in the dashboard's Smoking config take effect live, without
         # a restart. CLI flags, if given, still win over the stored values.
         cfg = SystemSettings.load()
+        self.apply_spec_settings(cfg)
         cfg_loaded_at = time.time()
 
         # Per-person tracking: the cigarette itself is too small/transient to
@@ -582,7 +715,7 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(
             f"Watching {source} for public smoking "
             f"[{mode} mode, {self.tracker_name} tracker, "
-            f"face check {'on' if self.face_check else 'off'}] "
+            f"mouth check {'on' if self.mouth_check else 'off'}] "
             f"(dwell {self.dwell_override or cfg.smoking_dwell}s, "
             f"reads live from Settings). Press Ctrl+C to stop."
         ))
@@ -610,6 +743,7 @@ class Command(BaseCommand):
                 # touches it — see RawFrameRecorder.
                 if self._raw_buffer is not None:
                     self._raw_buffer.add(frame, time.time())
+                self._frame_start(frame)      # clean pixels for the AI checker and the live view
 
                 # Enhance dim/noisy frames before detection (daytime bypasses).
                 frame = self._preprocess(frame)
@@ -617,6 +751,7 @@ class Command(BaseCommand):
                 wall_now = time.time()
                 if wall_now - cfg_loaded_at >= SETTINGS_REFRESH_SECONDS:
                     cfg = SystemSettings.load()
+                    self.apply_spec_settings(cfg)
                     cfg_loaded_at = wall_now
 
                 if not cfg.smoking_enabled:
@@ -639,6 +774,14 @@ class Command(BaseCommand):
                 else:
                     now_ts = wall_now
 
+                # Reported as an ordinary end-of-clip finish: a trimmed run and
+                # a whole one must look identical to _watch_detection_job,
+                # which only sees the exit code.
+                if self.trim.past_end(now_ts, is_live):
+                    self.stdout.write(self.style.SUCCESS(
+                        f"End of {source} ({self.trim.describe()}) — done."))
+                    break
+
                 self.stats["frames"] += 1
                 conf = self.conf_override or (cfg.smoking_confidence / 100)
                 dwell_seconds = self.dwell_override or cfg.smoking_dwell
@@ -649,15 +792,10 @@ class Command(BaseCommand):
                 smokes = self._detect(frame, conf, persons=persons)
 
                 tracks = tracker.update(persons, now_ts, ids=ids)
-                per_track = self._apply_face_rule(
-                    frame, tracker.assign(smokes, now_ts), now_ts,
-                )
-
-                # Snapshot before any drawing touches it — the violation box
-                # drawn below lands right over the mouth/cigarette area, which
-                # is exactly where a face would be, so face recognition must
-                # run against this clean copy, not the annotated `frame`.
-                clean_frame = frame.copy()
+                self._feed_pose(frame, tracks, now_ts)
+                per_track = self._hires_check(
+                    frame, tracker.assign(smokes, now_ts), now_ts)
+                per_track = self._apply_mouth_cue(frame, per_track, now_ts)
 
                 # Draw person boxes ALWAYS (not just in debug) so the evidence
                 # clip and snapshot show the context, not only the debug window.
@@ -670,11 +808,12 @@ class Command(BaseCommand):
                 for track, dets in per_track.items():
                     self._process_track(
                         track, dets, now_ts, dwell_seconds, cfg.alert_cooldown,
-                        frame, debug, cfg.curfew_confidence, clean_frame,
+                        frame, debug,
                     )
 
                 # Buffer this annotated frame for the evidence clip.
                 self.clip.add(frame, now_ts)
+                self._incident_gc(now_ts, frame)   # close incidents whose object is gone
 
                 # Confirmation is time-based, but VOTE_MIN_FRAMES still needs a
                 # few frames to land inside the window — below ~2 FPS that floor,
@@ -687,7 +826,7 @@ class Command(BaseCommand):
                             f"Running at {fps:.1f} FPS — below ~2 FPS it takes "
                             f"{tracking.VOTE_MIN_FRAMES / fps:.0f}s just to confirm "
                             "a detection. Use fewer --tiles, a smaller frame, or "
-                            "--no-face-check."
+                            "--no-mouth-check."
                         ))
 
                 if debug:
@@ -729,126 +868,89 @@ class Command(BaseCommand):
     # ---- per-track temporal confirmation ----------------------------------
 
     def _process_track(self, track, dets, now_ts, dwell_seconds, cooldown,
-                       frame, debug, face_threshold, clean_frame=None):
-        """Votes, dwell-times and (maybe) alerts ONE track for this frame.
+                       frame, debug):
+        """Scores ONE person's smoking evidence for this frame and keeps their
+        incident (Monitoring -> Possible -> Likely) up to date.
 
-        Time-based N-of-M voting + dwell + grace, per person: each track's
-        votes/timers/cooldown are its own, so one smoker's alert doesn't mask
-        or reset another's.
+        Object cue: the smoking item held long enough (vote + dwell; momentum
+        replaces this gate in the next phase). Pose cues: the hand-to-mouth
+        counter (1 puff, 2+ puffs, 3+ within 5 minutes) -- these need no item,
+        which is what makes the capped puff-only path possible.
         """
-        # Smoking is committed by a person by definition. An unattributed
-        # ("scene") detection has no person box behind it at all — cooking,
-        # steam, vehicle exhaust are the usual cause — and the person detector
-        # already runs every frame regardless, so a real smoker almost always
-        # produces SOME person box. No dwell length makes an unattributed
-        # detection into an actionable alert (Alert.suspect would just read
-        # "unattributed detection #N", which the guardian-SMS and
-        # resolve-checklist flows can't do anything with), so these are
-        # discarded outright rather than held to a longer dwell.
+        # Smoking is committed by a person. An unattributed ("scene") detection
+        # (steam, exhaust, cooking) has no person behind it and is discarded.
         if track.is_scene:
             self.stats["discarded: no person (scene)"] += 1
             return
 
-        track.vote(dets, now_ts)
-        # Ablating the vote removes temporal confirmation entirely: a detection
-        # in THIS frame is taken at face value, which is the no-heuristics
-        # baseline the evaluation compares against.
-        active = bool(dets) if "vote" in self.ablate else track.accruing(now_ts)
-        present_for = track.tick(now_ts, active)
+        track.vote(dets, now_ts)       # keeps the label history that track.dets draws from
+        # Object cue: momentum per (track, class) -- replaces the vote + dwell gate.
+        cue = self._object_cue(track, dets, now_ts)
+        object_on, best_label, best_score = cue.on, cue.label, cue.conf
+        self._draw_object_cue(frame, track, dets, cue, color_on=(0, 165, 245))
+        if not object_on and dets:
+            self.stats["held back: momentum below ON"] += 1
 
-        if not active:
-            # Clear the dwell only when the person is visibly standing there NOT
-            # smoking any more. If the track wasn't matched this frame they are
-            # out of view, not innocent — hold the progress and let the tombstone
-            # hand it back when they reappear.
-            if track.seen_at(now_ts) and now_ts - track.last_threat_seen > PRESENCE_GRACE_SECONDS:
-                track.reset_dwell()
+        # --- the cues (spec v6 section 6) ---
+        puffs = track.gesture_count(now_ts, self.puff_window)   # pose counter (Settings window)
+        cues = set()
+        if object_on:
+            cues.add("cigarette")
+            if self._near_mouth(track, now_ts):
+                cues.add("near_mouth")
+        if puffs >= 1:
+            cues.add("gesture")
+        if puffs >= 2:
+            cues.add("puffs")
+        if puffs >= self.puff_count:
+            cues.add("puff_pattern")
+
+        key = ("smoke", track.id)
+        score = scoring.Score("smoking", scoring.SMOKING_WEIGHTS, cues,
+                              previous_level=self._incident_level(key), object_on=object_on)
+        self._debug_note("Smoking", key, track.id, track.box, score, cue.momentum)
+        if not score.stored:
+            if puffs and not object_on:
+                self.stats[f"puffs logged only ({puffs})"] += 1
+            self._incident_sync(key, score, now_ts, create=None)   # closes an open incident's state
             return
 
-        # The class that held up across the window, not whichever spiked
-        # highest in a single frame.
-        best = track.best_detection()
-        if best is None:
-            return
-        _, _, _, _, best_score, best_label = best
-
-        required = 0 if "dwell" in self.ablate else self._dwell_for(
-            best_label, dwell_seconds,
-        )
-
-        # Draw the violation boxes ALWAYS (green while building, orange once the
-        # dwell is met) so the evidence clip shows the cigarette being
-        # detected. `dets` is only THIS frame's detections, but active/
-        # present_for can still be confirmed on a frame with none at all
-        # (track.accruing() tolerates brief flicker within the vote window)
-        # — draw the track's last KNOWN detections instead so the clip has
-        # something to show for a dwell/alert that built up across a gap,
-        # dashed and dimmed to mark it as historical, not live this frame.
-        draw_dets = dets if dets else track.dets
-        is_historical = not dets and bool(track.dets)
-        for (x1, y1, x2, y2, score, label) in draw_dets:
-            color = (0, 165, 245) if present_for >= required else (0, 200, 0)
-            label_text = f"{label} {score * 100:.0f}% {present_for:.0f}/{required:.0f}s"
-            if is_historical:
-                color = tuple(c // 2 for c in color)
-                recognition.draw_dashed_rect(frame, (x1, y1), (x2, y2), color, 2)
-                label_text += " (last seen)"
-            else:
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            recognition.draw_label(frame, label_text, x1, max(y1 - 8, 0), color)
-
-        if present_for < required:
-            self.stats[f"held back: dwell not met:{best_label}"] += 1
-            return
-
-        # Puff-cycle gate (opt-in): require the hand-to-mouth rhythm as well as
-        # the dwell. (Scene tracks never reach here — see the early return above.)
-        if self.require_puff:
-            puffs = track.puff_count(now_ts)
-            if puffs < PUFF_MIN_CYCLES:
-                self.stats[f"held back: no puff rhythm (person #{track.id})"] += 1
-                return
-
-        box = track.box or best[:4]
-        if "cooldown" not in self.ablate:
-            # Phase C: a cooldown timing out is not the same thing as this
-            # incident ending. Once this track has ever alerted, it must not
-            # alert again — only a genuine end (track dies, no tombstone
-            # revival) and a fresh track re-forming resets this. See
-            # tracking.Track.has_alerted.
-            if track.has_alerted:
-                self.stats["suppressed: track already alerted (same incident)"] += 1
-                return
-            if track.in_cooldown(now_ts, cooldown):
-                self.stats["suppressed: track cooldown"] += 1
-                return
-            if self._cooldown_blocks(box, now_ts, cooldown):
-                self.stats["suppressed: recent alert at same spot"] += 1
-                return
-
-        summary = ", ".join(sorted({s[5] for s in track.dets}))
+        box = track.box
+        summary = best_label or ", ".join(sorted({s[5] for s in track.dets})) or "hand-to-mouth movement"
         who = track.display
-        puff_note = ""
-        puffs = track.puff_count(now_ts)
-        if puffs:
-            puff_note = f", {puffs} puff cycle(s) observed"
-        self.stats[f"ALERTS:{best_label}"] += 1
-        alert = self._create_alert(
-            best_score, best_label, frame,
-            description=(
-                f"Public smoking detected: {summary} on {who}, present "
-                f"for {present_for:.0f}s{puff_note} on {self.camera.code} feed."
-            ),
-            box=box, face_threshold=face_threshold, face_frame=clean_frame,
-            now=now_ts,
+
+        def describe(sc):
+            return descriptions.smoking(best_label, puffs)
+
+        def create(level, with_clip):
+            return self._create_alert(
+                score.score, best_label or "Puff-only", frame, description=describe(score),
+                box=box, now=now_ts, score_obj=score, object_confidence=best_score,
+                with_clip=with_clip)
+
+        self._incident_sync(
+            key, score, now_ts, create=create, describe=describe, frame=frame, box=box,
+            blocked=lambda: "cooldown" not in self.ablate and self._cooldown_blocks(box, now_ts, cooldown),
+            ai={"kind": "smoking", "keys": [("track", track.id)],
+                "note": ai_checker.system_note("smoking", puff_only=score.puff_only, puffs=puffs)},
+            extra_cues={"puffs_seen": puffs, "momentum": cue.snapshot,
+                        "object_confidence": None if best_score is None else round(best_score, 3)},
         )
-        track.last_alerted_at = now_ts
-        track.has_alerted = True
-        self._alert_log.append((tuple(box), now_ts))
-        self.stdout.write(self.style.SUCCESS(
-            (f"ALERT created: {alert.code}" if alert else "ALERT suppressed (dry run)")
-            + f" ({best_label}, {who}, held {present_for:.0f}s{puff_note})"
-        ))
+
+    def _near_mouth(self, track, now_ts):
+        """True when this track had a face-anchored object AT the mouth recently.
+
+        Deliberately not "the mouth rule didn't reject it" -- a detection kept
+        because no face could be resolved is not evidence that anything was
+        near a mouth.
+        """
+        seen = getattr(track, "last_mouth_seen", None)
+        ratio = getattr(track, "last_mouth_ratio", None)
+        fired = (seen is not None and ratio is not None
+                 and (now_ts - seen) <= MOUTH_FRESH_SECONDS and ratio <= MOUTH_PROXIMITY)
+        # Held for `cue_hold` seconds after it last fired: the item goes in and out of range of the
+        # mouth frame to frame, and scoring each frame alone made the status flicker.
+        return self._sticky(("smoke", track.id), "near_mouth", fired, now_ts)
 
     def _cooldown_blocks(self, box, now, cooldown):
         """True if we already alerted near roughly this spot inside the
@@ -861,13 +963,10 @@ class Command(BaseCommand):
 
     # ---- shared alert creation --------------------------------------------
 
-    def _create_alert(self, score, label, frame, description, box=None, face_threshold=45,
-                      face_frame=None, now=None):
-        ts_label = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{ts_label}_smoking_{label}.jpg"
-        cv2.imwrite(str(self.violations_dir / filename), frame)
-        image_url = violation_media_path(filename)
 
+    def _save_clips(self, base, frame, now):
+        """Write (or rewrite) the annotated and raw evidence clips named `base`.
+        Returns (video_url, raw_video_url); either may be empty on failure."""
         # Write the ~10s evidence clip (annotated frames leading up to the alert).
         video_url = ""
         clip = getattr(self, "clip", None)
@@ -886,17 +985,16 @@ class Command(BaseCommand):
             # of its own (--image test mode, which never touches self.clip
             # anyway).
             self.clip.add(frame, now if now is not None else time.time())
-            video_name = f"{ts_label}_smoking_{label}.mp4"
+            video_name = f"{base}.mp4"
             if clip.save(self.violations_dir / video_name):
                 video_url = violation_media_path(video_name)
 
         # RAW (unannotated, full source frame rate/resolution) clip. File
         # sources cut straight from the source file (best quality, real fps).
         # Live sources can't be seeked, so they fall back to the rolling
-        # RawFrameRecorder buffer of raw frames instead (see its docstring for
-        # why record_camera's segments aren't usable for this).
+        # RawFrameRecorder buffer of raw frames instead (see its docstring).
         raw_video_url = ""
-        raw_name = f"{ts_label}_smoking_{label}_raw.mp4"
+        raw_name = f"{base}_raw.mp4"
         raw_path = self.violations_dir / raw_name
         if self._source_path is not None and self._video_pos_sec is not None:
             start = max(0.0, self._video_pos_sec - recognition.RAW_CLIP_PRE_SECONDS)
@@ -913,33 +1011,47 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING(
                 "  raw clip not produced (see ffmpeg log above if one was attempted)"
             ))
+        return video_url, raw_video_url
 
+    def _create_alert(self, score, label, frame, description, box=None,
+                      now=None, score_obj=None, object_confidence=None, with_clip=True):
+        ts_label = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        base = f"{ts_label}_smoking_{label}"
+        self._last_clip_base = base
+        filename = f"{base}.jpg"
+        cv2.imwrite(str(self.violations_dir / filename), frame)
+        image_url = violation_media_path(filename)
+
+        # A Monitoring event gets ONE image and no clip; the clip is written when
+        # the event reaches Possible / Likely (and refreshed while it continues).
+        video_url = raw_video_url = ""
+        if with_clip:
+            video_url, raw_video_url = self._save_clips(base, frame, now)
+
+        # Optional run log ($LOOKOUT_MOUTH_LOG): what fired and with which cues,
+        # even in --dry-run, so before/after comparisons need no database rows.
+        recognition.log_mouth(kind="alert", engine="smoking", label=label, score=score,
+                              level=getattr(score_obj, "level", ""),
+                              cues=sorted(getattr(score_obj, "cues", None) or []))
         if self.dry_run:
             return None
-
-        # Best-effort face match against the enrolled registry for the
-        # citation form to prefill — never blocks alert creation on failure.
-        matched_person, match_confidence = None, None
-        try:
-            matched_person, match_confidence = face_registry.match_face_in_frame(
-                face_frame if face_frame is not None else frame, box, face_threshold,
-            )
-        except Exception as exc:
-            self.stdout.write(self.style.WARNING(
-                f"  Face recognition failed, continuing without a match: {exc}"
-            ))
 
         return Alert.objects.create(
             type=self.smoking_type,
             status=Alert.Status.ACTIVE,
             camera=self.camera,
-            timestamp=timezone.now(),
+            timestamp=self._event_time(now),
+            # Now the weighted violation likelihood, not the YOLO box score.
             confidence=score,
             description=description,
             image_url=image_url,
             video_url=video_url,
             raw_video_url=raw_video_url,
+            last_seen_at=self._event_time(now),
             suspect=label,
-            matched_person=matched_person,
-            match_confidence=match_confidence,
+            level=score_obj.level if score_obj is not None else "",
+            cues=score_obj.as_dict() if score_obj is not None else {},
+            # The DETECTOR's own confidence in the anchoring box, kept apart
+            # from `confidence` (the violation likelihood). See Alert.object_confidence.
+            object_confidence=object_confidence,
         )

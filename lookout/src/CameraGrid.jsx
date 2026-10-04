@@ -3,8 +3,10 @@ import { Maximize2, WifiOff, LayoutGrid, Check, X, Upload, Loader2, CheckCircle2
 import { getAlerts, getCameras, getCameraSnapshotUrl, getDetectionJobs, cancelDetectionJob } from "./api";
 import { UploadDetectionModal } from "./UploadDetectionModal";
 import { DetectionJobHistoryModal } from "./DetectionJobHistoryModal";
+import { useTestingTools } from "./useTestingTools";
 import { EdgeEditorModal } from "./EdgeEditorModal";
 import { CameraStreamModal } from "./CameraStreamModal";
+import { detectionLabel } from "./constants/detectionTypes";
 
 // Polls a live camera's snapshot proxy and returns the latest frame as an
 // object URL, or null for a non-live camera. Object URLs are revoked as they're
@@ -67,17 +69,6 @@ const LAYOUTS = [
   { key: "4x4", label: "4 × 4", tiles: 16, cols: 4 },
 ];
 
-const LAYOUT_STORAGE_KEY = "lookout.cameraLayout";
-
-function timeAgo(iso) {
-  if (!iso) return "—";
-  const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
-  if (diff < 60) return "just now";
-  if (diff < 3600) return `${Math.floor(diff / 60)} min ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)} hr ago`;
-  return `${Math.floor(diff / 86400)}d ago`;
-}
-
 function mapCamera(raw) {
   return {
     id: raw.code,
@@ -85,8 +76,6 @@ function mapCamera(raw) {
     name: raw.name,
     zone: raw.zone,
     status: raw.status,
-    fps: raw.fps,
-    lastMotion: timeAgo(raw.last_motion_at),
     imageUrl: raw.image_url,
     isLive: raw.is_live,   // poll the snapshot proxy instead of the static image
     // Obstruction-zone config, passed through as-is for the edge editor.
@@ -194,8 +183,8 @@ function DetectionJobsPanel({ jobs, onDismiss, onCancel }) {
                 style={{ color: cfg.color, flexShrink: 0, marginTop: 1 }} />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-[12px] font-semibold capitalize" style={{ color: "var(--foreground)" }}>
-                    {job.violationType} test
+                  <span className="text-[14px] font-semibold capitalize" style={{ color: "var(--foreground)" }}>
+                    {detectionLabel(job.violationType)} test
                   </span>
                   {job.status === "running" && onCancel ? (
                     <button onClick={() => onCancel(job.id)} className="flex-shrink-0"
@@ -210,19 +199,19 @@ function DetectionJobsPanel({ jobs, onDismiss, onCancel }) {
                     </button>
                   )}
                 </div>
-                <div className="text-[10px] truncate" style={{ color: "var(--muted-foreground)" }} title={job.sourceFilename}>
+                <div className="text-[12px] truncate" style={{ color: "var(--muted-foreground)" }} title={job.sourceFilename}>
                   {job.sourceFilename}
                 </div>
-                <div className="text-[10px] mt-1" style={{ color: cfg.color, fontFamily: "'DM Mono', monospace" }}>
+                <div className="text-[12px] mt-1" style={{ color: cfg.color, fontFamily: "'DM Mono', monospace" }}>
                   {cfg.label}{job.status === "running" ? ` · ${elapsedLabel(job.startedAt)}` : ""}
                 </div>
                 {job.status === "failed" && job.error && (
-                  <div className="text-[10px] mt-1 line-clamp-3" style={{ color: "var(--muted-foreground)" }}>
+                  <div className="text-[12px] mt-1 line-clamp-3" style={{ color: "var(--muted-foreground)" }}>
                     {job.error.slice(0, 200)}
                   </div>
                 )}
                 {job.status === "done" && (
-                  <div className="text-[10px] mt-1" style={{ color: "var(--muted-foreground)" }}>
+                  <div className="text-[12px] mt-1" style={{ color: "var(--muted-foreground)" }}>
                     Check the Violations tab for new alerts.
                   </div>
                 )}
@@ -272,7 +261,7 @@ function EmptyTile({ fill }) {
     >
       <WifiOff size={16} style={{ color: "var(--muted-foreground)" }} />
       <span
-        className="text-[9px] mt-1"
+        className="text-[11px] mt-1"
         style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}
       >
         NO CAMERA
@@ -296,16 +285,16 @@ function CameraTile({ cam, alert, isSelected, onSelect, onExpand, fill }) {
     >
       {/* Feed image — live snapshot for CCTV cameras, static image otherwise */}
       <div className={`relative w-full overflow-hidden bg-black ${fill ? "flex-1 min-h-0" : "aspect-video"}`}>
-        <img
+        <FeedImage
           src={liveUrl || cam.imageUrl}
           alt={`${cam.name} feed`}
+          offline={cam.status === "offline"}
           className="w-full h-full object-cover transition-all duration-300"
-          style={{ opacity: cam.status === "offline" ? 0.2 : 1 }}
         />
 
         {/* LIVE badge for a streaming camera */}
         {cam.isLive && cam.status !== "offline" && (
-          <div className="absolute top-2 right-2 flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold"
+          <div className="absolute top-2 right-2 flex items-center gap-1 px-1.5 py-0.5 rounded text-[12px] font-semibold"
             style={{ background: "rgba(239,68,68,0.85)", color: "#fff" }}>
             <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
             LIVE
@@ -324,7 +313,7 @@ function CameraTile({ cam, alert, isSelected, onSelect, onExpand, fill }) {
         {/* Top-left badges */}
         <div className="absolute top-2 left-2 flex items-center gap-1.5">
           <div
-            className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium"
+            className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[12px] font-medium"
             style={{ background: "rgba(0,0,0,0.65)", color: "#cbd5e1", backdropFilter: "blur(4px)", fontFamily: "'DM Mono', monospace" }}
           >
             {cam.id}
@@ -332,17 +321,9 @@ function CameraTile({ cam, alert, isSelected, onSelect, onExpand, fill }) {
           {cam.status === "online" && (
             <div className="flex items-center gap-1 px-1.5 py-0.5 rounded" style={{ background: "rgba(239,68,68,0.85)" }}>
               <span className="w-1 h-1 rounded-full bg-white animate-pulse" />
-              <span className="text-[9px] font-semibold" style={{ color: "#fff", fontFamily: "'DM Mono', monospace" }}>LIVE</span>
+              <span className="text-[11px] font-semibold" style={{ color: "#fff", fontFamily: "'DM Mono', monospace" }}>LIVE</span>
             </div>
           )}
-        </div>
-
-        {/* Top-right FPS */}
-        <div
-          className="absolute top-2 right-2 text-[9px] px-1.5 py-0.5 rounded"
-          style={{ background: "rgba(0,0,0,0.55)", color: "#94a3b8", fontFamily: "'DM Mono', monospace" }}
-        >
-          {cam.fps}fps
         </div>
 
         {/* Expand to fullscreen */}
@@ -360,7 +341,7 @@ function CameraTile({ cam, alert, isSelected, onSelect, onExpand, fill }) {
         {cam.status === "offline" && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-1">
             <WifiOff size={18} style={{ color: "#ef4444" }} />
-            <span className="text-[10px] font-medium" style={{ color: "#ef4444", fontFamily: "'DM Mono', monospace" }}>
+            <span className="text-[12px] font-medium" style={{ color: "#ef4444", fontFamily: "'DM Mono', monospace" }}>
               NO SIGNAL
             </span>
           </div>
@@ -370,21 +351,18 @@ function CameraTile({ cam, alert, isSelected, onSelect, onExpand, fill }) {
       {/* Footer */}
       <div className="px-3 py-2 flex items-center justify-between shrink-0">
         <div className="min-w-0">
-          <div className="text-[12px] font-semibold text-white leading-none truncate">{cam.name}</div>
-          <div className="text-[10px] mt-0.5 truncate" style={{ color: "var(--muted-foreground)" }}>{cam.zone}</div>
+          <div className="text-[14px] font-semibold text-white leading-none truncate">{cam.name}</div>
+          <div className="text-[12px] mt-0.5 truncate" style={{ color: "var(--muted-foreground)" }}>{cam.zone}</div>
         </div>
         <div className="text-right shrink-0 ml-2">
           <div
-            className="text-[10px] font-medium"
+            className="text-[12px] font-medium"
             style={{
               color: cam.status === "online" ? "#10b981" : cam.status === "degraded" ? "#f59e0b" : "#ef4444",
               fontFamily: "'DM Mono', monospace",
             }}
           >
             {cam.status}
-          </div>
-          <div className="text-[10px] mt-0.5" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
-            {cam.lastMotion}
           </div>
         </div>
       </div>
@@ -418,11 +396,12 @@ function ExpandedCamera({ cam, alert, onClose, isAdmin, onCameraUpdated }) {
         style={{ maxWidth: "min(95vw, 1600px)", border: "1px solid var(--border)", background: "#000" }}
       >
         <div className="relative w-full bg-black" style={{ aspectRatio: "16 / 9" }}>
-          <img
+          <FeedImage
             src={liveUrl || cam.imageUrl}
             alt={`${cam.name} feed`}
+            offline={cam.status === "offline"}
             className="w-full h-full object-contain"
-            style={{ opacity: cam.status === "offline" ? 0.2 : 1 }}
+            iconSize={34}
           />
           {cam.isLive && cam.status !== "offline" && (
             <div className="absolute top-3 left-3 flex items-center gap-1.5 px-2 py-1 rounded text-xs font-semibold"
@@ -451,7 +430,7 @@ function ExpandedCamera({ cam, alert, onClose, isAdmin, onCameraUpdated }) {
           style={{ background: "var(--card)", borderTop: "1px solid var(--border)" }}>
           <div>
             <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>{cam.name}</div>
-            <div className="text-[11px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+            <div className="text-[13px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
               {cam.id} · {cam.zone || "—"} · {cam.status}
             </div>
           </div>
@@ -460,7 +439,7 @@ function ExpandedCamera({ cam, alert, onClose, isAdmin, onCameraUpdated }) {
               <button
                 type="button"
                 onClick={() => setShowStreamModal(true)}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium"
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[13px] font-medium"
                 style={{ background: "var(--secondary)", color: "var(--foreground)", border: "1px solid var(--border)" }}
               >
                 <Link2 size={12} /> Stream
@@ -470,15 +449,12 @@ function ExpandedCamera({ cam, alert, onClose, isAdmin, onCameraUpdated }) {
               <button
                 type="button"
                 onClick={() => setShowEdgeEditor(true)}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium"
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[13px] font-medium"
                 style={{ background: "var(--secondary)", color: "var(--foreground)", border: "1px solid var(--border)" }}
               >
                 <Shapes size={12} /> Edge Zones
               </button>
             )}
-            <div className="text-[11px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
-              {cam.lastMotion ? `motion ${cam.lastMotion}` : ""}
-            </div>
           </div>
         </div>
       </div>
@@ -503,14 +479,47 @@ function ExpandedCamera({ cam, alert, onClose, isAdmin, onCameraUpdated }) {
   );
 }
 
-export function CameraGrid({ compact = false, isAdmin = false }) {
+// The camera picture. When the stream / snapshot fails (or the camera is marked offline) a clean
+// "Camera offline" panel replaces the browser's broken-image icon and alt text. The <img> stays
+// mounted (hidden) while failed, so the snapshot polling that keeps updating `src` also brings
+// the picture back by itself when the camera returns.
+function FeedImage({ src, alt, offline, className, iconSize = 22 }) {
+  const [failed, setFailed] = useState(false);
+  const down = offline || failed || !src;
+  return (
+    <>
+      {src ? (
+        <img
+          src={src}
+          alt={alt}
+          className={className}
+          style={{ display: down ? "none" : undefined }}
+          onError={() => setFailed(true)}
+          onLoad={() => setFailed(false)}
+        />
+      ) : null}
+      {down && (
+        <div className="w-full h-full flex flex-col items-center justify-center gap-1.5"
+          style={{ background: "#0b0f14", color: "#64748b" }}>
+          <WifiOff size={iconSize} />
+          <span className="text-[13px] font-medium">Camera offline</span>
+        </div>
+      )}
+    </>
+  );
+}
+
+export function CameraGrid({ compact = false, isAdmin: isAdminRole = false }) {
+  // Upload Video and History are testing tools: admin only AND switched on in Settings -> System.
+  const testingTools = useTestingTools(isAdminRole);
+  const isAdmin = isAdminRole;
   const [expanded, setExpanded] = useState(null);
   const [selected, setSelected] = useState(null);
   const [allCameras, setAllCameras] = useState([]);
   const [alerts, setAlerts] = useState([]);
-  const [layoutKey, setLayoutKey] = useState(
-    () => localStorage.getItem(LAYOUT_STORAGE_KEY) || "2x2"
-  );
+  // Always opens 1x1. Switching layout is a per-visit choice and is deliberately
+  // not persisted, so leaving the tab or logging out resets it.
+  const [layoutKey, setLayoutKey] = useState("1x1");
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef(null);
   const [showUpload, setShowUpload] = useState(false);
@@ -585,7 +594,7 @@ export function CameraGrid({ compact = false, isAdmin = false }) {
   }, [menuOpen]);
 
   const getAlert = (cameraId) =>
-    alerts.find((a) => a.camera === cameraId && (a.status === "active" || a.status === "acknowledged"));
+    alerts.find((a) => a.camera === cameraId && (a.status === "active" || a.status === "dispatched"));
 
   // Merges a saved edge-zone update back into the grid's own camera list, so
   // it reflects immediately without waiting for the next 4s poll.
@@ -597,15 +606,15 @@ export function CameraGrid({ compact = false, isAdmin = false }) {
 
   const selectLayout = (key) => {
     setLayoutKey(key);
-    localStorage.setItem(LAYOUT_STORAGE_KEY, key);
     setMenuOpen(false);
   };
 
-  // Compact (dashboard overview) keeps its simple fixed 2×2 of the first 4 cams.
+  // Compact (dashboard overview) shows the single camera at full card width.
   if (compact) {
     return (
-      <div className="grid gap-3 grid-cols-2">
-        {allCameras.slice(0, 4).map((cam) => (
+      <div className="grid gap-3 grid-cols-1">
+        {allCameras.length === 0 && <EmptyTile />}
+        {allCameras.slice(0, 1).map((cam) => (
           <CameraTile
             key={cam.id}
             cam={cam}
@@ -631,15 +640,15 @@ export function CameraGrid({ compact = false, isAdmin = false }) {
     <div>
       {/* Toolbar with the layout switcher */}
       <div className="flex items-center justify-between mb-3">
-        <div className="text-[11px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+        <div className="text-[13px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
           {activeCount} camera{activeCount === 1 ? "" : "s"} · showing {Math.min(activeCount, layout.tiles)}/{layout.tiles}
         </div>
 
         <div className="flex items-center gap-2">
-          {isAdmin && (
+          {testingTools && (
             <button
               onClick={() => setShowUpload(true)}
-              className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[12px] transition-colors"
+              className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[14px] transition-colors"
               style={{ border: "1px solid var(--border)", background: "var(--card)", color: "var(--foreground)" }}
             >
               <Upload size={14} />
@@ -647,10 +656,10 @@ export function CameraGrid({ compact = false, isAdmin = false }) {
             </button>
           )}
 
-          {isAdmin && (
+          {testingTools && (
             <button
               onClick={() => setShowHistory(true)}
-              className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[12px] transition-colors"
+              className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[14px] transition-colors"
               style={{ border: "1px solid var(--border)", background: "var(--card)", color: "var(--foreground)" }}
             >
               <History size={14} />
@@ -661,7 +670,7 @@ export function CameraGrid({ compact = false, isAdmin = false }) {
           <div className="relative" ref={menuRef}>
           <button
             onClick={() => setMenuOpen((o) => !o)}
-            className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[12px] transition-colors"
+            className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[14px] transition-colors"
             style={{ border: "1px solid var(--border)", background: "var(--card)", color: "var(--foreground)" }}
           >
             <LayoutGrid size={14} />
@@ -679,7 +688,7 @@ export function CameraGrid({ compact = false, isAdmin = false }) {
                   <button
                     key={l.key}
                     onClick={() => selectLayout(l.key)}
-                    className="w-full flex items-center gap-3 px-3 py-1.5 text-[12px] transition-colors hover:opacity-80"
+                    className="w-full flex items-center gap-3 px-3 py-1.5 text-[14px] transition-colors hover:opacity-80"
                     style={{ color: isActive ? "#f59e0b" : "var(--foreground)", background: isActive ? "rgba(245,158,11,0.08)" : "transparent" }}
                   >
                     <LayoutIcon layout={l} />
@@ -732,14 +741,14 @@ export function CameraGrid({ compact = false, isAdmin = false }) {
           isAdmin={isAdmin} onCameraUpdated={handleCameraUpdated} />
       )}
 
-      {isAdmin && showUpload && (
+      {testingTools && showUpload && (
         <UploadDetectionModal
           onClose={() => setShowUpload(false)}
           onJobStarted={(job) => setDetectionJobs((prev) => [mapDetectionJob(job), ...prev])}
         />
       )}
 
-      {isAdmin && showHistory && (
+      {testingTools && showHistory && (
         <DetectionJobHistoryModal jobs={detectionJobs} onClose={() => setShowHistory(false)} onCancel={handleCancelJob} />
       )}
 

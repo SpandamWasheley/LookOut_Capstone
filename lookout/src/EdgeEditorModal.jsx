@@ -27,7 +27,7 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
   const [frameError, setFrameError] = useState("");
 
   // Seeds EdgeCanvas once the frame is known — see acceptFrame below.
-  const [prefill, setPrefill] = useState({ paths: { left: [], right: [] }, sides: { left: 1, right: 1 } });
+  const [prefill, setPrefill] = useState({ points: [], legacyKerbs: false });
   const [edgeSpec, setEdgeSpec] = useState({});
   const [canSave, setCanSave] = useState(false);
 
@@ -59,16 +59,29 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
     const srcW = camera.edges_width, srcH = camera.edges_height;
     const scaleX = srcW ? nextFrame.width / srcW : 1;
     const scaleY = srcH ? nextFrame.height / srcH : 1;
-    const nextPaths = { left: [], right: [] };
-    const nextSides = { left: 1, right: 1 };
-    for (const side of ["left", "right"]) {
+    const scale = (points) => points.map(([x, y]) => ({ x: x * scaleX, y: y * scaleY }));
+
+    // A ZONE is found by its "type", not by its key, so a camera saved under
+    // any key name still loads.
+    const zoneSpec = Object.values(stored).find(
+      (spec) => spec && spec.type === "zone" && Array.isArray(spec.points) && spec.points.length >= 3,
+    );
+
+    // Kerb lines (open paths keyed left/right, no "type") were the other way
+    // of marking the area before the move to a single polygon. They cannot be
+    // converted — a half-plane running off to infinity is not a closed shape —
+    // so a camera still holding one opens with an EMPTY canvas and is told to
+    // retrace. Silently prefilling nothing with no explanation would read as
+    // the saved area having been lost.
+    const legacyKerbs = !zoneSpec && ["left", "right"].some((side) => {
       const spec = stored[side];
-      if (spec && Array.isArray(spec.points) && spec.points.length >= 2) {
-        nextPaths[side] = spec.points.map(([x, y]) => ({ x: x * scaleX, y: y * scaleY }));
-        nextSides[side] = spec.side ?? 1;
-      }
-    }
-    setPrefill({ paths: nextPaths, sides: nextSides });
+      return spec && spec.type !== "zone" && Array.isArray(spec.points) && spec.points.length >= 2;
+    });
+
+    setPrefill({
+      points: zoneSpec ? scale(zoneSpec.points) : [],
+      legacyKerbs,
+    });
   };
 
   // Try a live snapshot first; fall back to "upload a clip" if the camera
@@ -157,7 +170,7 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
             <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>
               Road-edge obstruction zones
             </div>
-            <div className="text-[11px]" style={{ color: "var(--muted-foreground)" }}>
+            <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>
               {camera.name} ({camera.id})
             </div>
           </div>
@@ -173,7 +186,7 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
           {loadingLive && (
             <div className="flex flex-col items-center justify-center gap-2 py-16">
               <Loader2 size={22} className="animate-spin" style={{ color: "var(--muted-foreground)" }} />
-              <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>
+              <div className="text-[14px]" style={{ color: "var(--muted-foreground)" }}>
                 Requesting a live snapshot…
               </div>
             </div>
@@ -181,7 +194,7 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
 
           {!loadingLive && needsUpload && !frame && (
             <div>
-              <div className="flex items-center gap-2 text-[12px] px-3 py-2.5 rounded-xl mb-3"
+              <div className="flex items-center gap-2 text-[14px] px-3 py-2.5 rounded-xl mb-3"
                 style={{ background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.2)", color: "#f59e0b" }}>
                 <WifiOff size={13} className="flex-shrink-0" />
                 <span>Camera unreachable for a live snapshot — upload a clip to grab a frame from it instead.</span>
@@ -206,22 +219,22 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
                 {uploading ? (
                   <>
                     <Loader2 size={22} className="animate-spin" style={{ color: "var(--muted-foreground)" }} />
-                    <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>Reading first frame…</div>
+                    <div className="text-[14px]" style={{ color: "var(--muted-foreground)" }}>Reading first frame…</div>
                   </>
                 ) : (
                   <>
                     <FileVideo size={22} style={{ color: "var(--muted-foreground)" }} />
-                    <div className="text-[12px] text-center" style={{ color: "var(--muted-foreground)" }}>
+                    <div className="text-[14px] text-center" style={{ color: "var(--muted-foreground)" }}>
                       Click to choose a clip
                     </div>
-                    <div className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>
+                    <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>
                       .mp4, .mkv, .avi — up to 1GB
                     </div>
                   </>
                 )}
               </div>
               {frameError && (
-                <div className="flex items-start gap-2 text-[12px] px-3 py-2.5 rounded-xl mt-3"
+                <div className="flex items-start gap-2 text-[14px] px-3 py-2.5 rounded-xl mt-3"
                   style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", color: "#ef4444" }}>
                   <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
                   <span>{frameError}</span>
@@ -232,10 +245,17 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
 
           {frame && (
             <>
+              {prefill.legacyKerbs && (
+                <div className="text-[13px] px-3 py-2.5 rounded-xl"
+                  style={{ background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.3)", color: "#f59e0b" }}>
+                  This camera still has the old kerb lines saved. Parking now uses a single
+                  closed polygon around the road, which a kerb line cannot be converted into —
+                  trace the road below and save to replace them.
+                </div>
+              )}
               <EdgeCanvas
                 frame={frame}
-                initialPaths={prefill.paths}
-                initialSides={prefill.sides}
+                initialPoints={prefill.points}
                 pct={pct}
                 onPctChange={setPct}
                 minutes={minutes}
@@ -244,7 +264,7 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
               />
 
               {saveError && (
-                <div className="flex items-start gap-2 text-[12px] px-3 py-2.5 rounded-xl"
+                <div className="flex items-start gap-2 text-[14px] px-3 py-2.5 rounded-xl"
                   style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", color: "#ef4444" }}>
                   <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
                   <span>{saveError}</span>

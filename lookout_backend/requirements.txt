@@ -1,7 +1,7 @@
 # API/web dependencies ONLY - this is what the cloud host installs.
 #
 # The computer-vision stack lives in requirements-detection.txt and is
-# DELIBERATELY not here. torch + insightface + onnxruntime run to several GB,
+# DELIBERATELY not here. torch + ultralytics run to several GB,
 # which exceeds the build limits of every free PaaS tier, and the detectors
 # cannot run in the cloud anyway: they read RTSP streams from cameras on the
 # barangay LAN, which a datacentre cannot reach. Installing them on the API
@@ -35,3 +35,7 @@ dj-database-url==2.3.0     # DATABASE_URL -> Django DATABASES
 psycopg[binary]==3.2.13    # PostgreSQL driver; 3.2.3 has no cp314 wheel
 whitenoise==6.8.2          # serves Django's own static files without nginx
 django-storages[s3]==1.14.4  # evidence media -> S3-compatible bucket
+# Evidence storage. Cloudinary is NOT S3-compatible, so it needs its own
+# backend alongside django-storages (which stays for the S3/R2 path).
+cloudinary>=1.40
+django-cloudinary-storage>=0.3

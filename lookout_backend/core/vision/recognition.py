@@ -1,9 +1,8 @@
-"""Shared CV plumbing for curfew face detection/recognition.
+"""Shared CV plumbing for the detection pipeline.
 
-Pipeline: YOLOv8 (ultralytics) locates people in a frame, then insightface's
-FaceAnalysis (ArcFace/buffalo_l) locates and recognizes a face within each
-person crop, producing a 512-d embedding matched against `face_db.json`
-(built by the `enroll_faces` management command).
+YOLOv8 (ultralytics) detects people and the violation objects (see MODEL_PATH);
+YOLOv8-pose gives the keypoints the mouth anchor and the hand-to-mouth gesture
+are built from. There is no facial recognition in LookOut.
 
 No Django model access happens here — this module is pure CV plumbing so it
 stays importable/testable independent of the management commands that use it.
@@ -17,7 +16,6 @@ import subprocess
 import tempfile
 import threading
 import time
-import urllib.request
 from collections import deque
 from pathlib import Path
 
@@ -99,10 +97,25 @@ class ClipRecorder:
     which case it's choppy but still the full N seconds).
     """
 
-    def __init__(self, seconds=10, playback_fps=12, label=""):
+    # Longest edge a buffered frame is kept at. Evidence clips are watched in a
+    # browser panel a few hundred pixels wide, so holding 2560x1440 buys nothing
+    # visible and costs 10.5 MB per frame: 30 seconds at 5 fps is ~1.6 GB for
+    # ONE recorder, and merged mode runs three. That is what exhausted memory on
+    # a 16 GB machine with the vision-language model also resident, and it
+    # failed as a crash mid-run rather than as anything that named the cause.
+    MAX_EDGE = 1280
+
+    # A hard ceiling as well as the time window. The window alone assumes a
+    # steady frame rate; a fast source or a stalled cutoff lets the deque grow
+    # without bound, and running out of memory is a worse failure than a clip
+    # with fewer frames in it.
+    MAX_FRAMES = 450
+
+    def __init__(self, seconds=10, playback_fps=12, label="", max_edge=None):
         self.seconds = seconds
         self.playback_fps = playback_fps
         self.label = label            # e.g. camera code, drawn next to the time
+        self.max_edge = max_edge or self.MAX_EDGE
         self._buf = deque()  # (timestamp, annotated_frame)
         # Cap in seconds on how long a single buffered frame can be held during
         # playback. Without this, a detector stall (e.g. a slow far-mode tile
@@ -111,10 +124,26 @@ class ClipRecorder:
         self._max_hold_seconds = 2.0
 
     def add(self, frame, now):
-        self._buf.append((now, frame.copy()))
+        self._buf.append((now, self._fit(frame)))
         cutoff = now - self.seconds
         while self._buf and self._buf[0][0] < cutoff:
             self._buf.popleft()
+        while len(self._buf) > self.MAX_FRAMES:
+            self._buf.popleft()
+
+    def _fit(self, frame):
+        """A copy no larger than `max_edge` on its longest side.
+
+        Always a copy: the capture loop reuses its buffer, so a stored reference
+        would be overwritten within milliseconds and the clip would be a reel of
+        whatever the camera is looking at now.
+        """
+        h, w = frame.shape[:2]
+        if max(h, w) <= self.max_edge:
+            return frame.copy()
+        scale = self.max_edge / float(max(h, w))
+        return cv2.resize(frame, (max(int(w * scale), 1), max(int(h * scale), 1)),
+                          interpolation=cv2.INTER_AREA)
 
     def _stamp(self, frame, ts):
         """Burns the real capture date/time (system clock) into the frame — the
@@ -240,12 +269,13 @@ class RawFrameRecorder:
     200KB/frame (~45MB for the same window). Encode cost is paid once per frame
     on capture; decode only happens if save() is actually called.
 
-    Segment files from record_camera were considered as a source for this
-    instead, but its cv2.VideoWriter-based mp4 muxing doesn't finalize the
-    moov atom until the segment rolls over/closes (the same class of problem
-    fixed for the annotated clip's own mp4v output) — the currently-open
-    segment, which always covers "right now", isn't safely readable by a
-    second process. This buffer sidesteps that entirely.
+    A continuous segment recorder was considered as a source for this instead
+    of an in-process buffer, and rejected: cv2.VideoWriter-based mp4 muxing
+    doesn't finalize the moov atom until the segment rolls over and closes (the
+    same class of problem fixed for the annotated clip's own mp4v output), so
+    the currently-open segment — which is always the one covering "right now" —
+    isn't safely readable by a second process. This buffer sidesteps that, and
+    is why no continuous recorder is needed for evidence capture.
     """
 
     def __init__(self, seconds=RAW_CLIP_PRE_SECONDS + RAW_CLIP_POST_SECONDS,
@@ -324,7 +354,7 @@ class LatestFrameReader:
     Also reconnects: a dropped RTSP connection otherwise leaves cap.read()
     returning False forever — the process stays alive, burning CPU, silently
     producing zero detections. After max_consecutive_failures failed reads
-    (same threshold record_camera.py uses to decide a stream is "really gone"),
+    (the point past which a stream is treated as "really gone"),
     this releases the dead capture and calls open_fn() in a retry loop until a
     fresh one opens, logging every attempt and the eventual recovery via `log`.
     Pass open_fn=None to opt out and keep the old non-reconnecting behavior.
@@ -402,35 +432,28 @@ class LatestFrameReader:
         self.cap.release()
 
 VISION_DIR = Path(__file__).resolve().parent
-FACE_DB_PATH = VISION_DIR / "face_db.json"
 
-# Custom-trained smoking detector (cigarette/smoke/vape/smoking). Unlike the
-# COCO yolov8n used for persons/vehicles, this is a separate fine-tuned model,
-# so it loads its own weights. Override with the SMOKING_MODEL env var.
-SMOKING_MODEL_PATH = Path(os.environ.get("SMOKING_MODEL", str(VISION_DIR / "smoking_v5.pt")))
+# LookOut uses a single merged model (merged_v2: Bottle, Cigarette, knife) for all
+# violations. Vapes have no class (puff-only path). Holdup detects knives only.
+#
+# Override with the LOOKOUT_MODEL env var. The per-violation names below are
+# aliases of this one path, kept so callers and error messages keep working;
+# each detector keeps only its own classes (see SMOKING_CLASSES etc.).
+#
+# Labels come from the model's own names dict (see _smoking_boxes_from_result),
+# so class index/order is irrelevant -- only the name strings matter, matched
+# case-insensitively (Bottle / Cigarette / knife).
+MODEL_PATH = Path(os.environ.get("LOOKOUT_MODEL", str(VISION_DIR / "merged_v2.pt")))
+SMOKING_MODEL_PATH = THIEF_MODEL_PATH = DRINKING_MODEL_PATH = MERGED_MODEL_PATH = MODEL_PATH
 
-# Custom-trained thief/robbery detector (gun/knife/robbery activity/stealing).
-# Same deal as the smoking model: separate fine-tuned weights, trained with
-# detection_sandbox/train_thief.py. Override with the THIEF_MODEL env var.
-THIEF_MODEL_PATH = Path(os.environ.get("THIEF_MODEL", str(VISION_DIR / "thief.pt")))
+SMOKING_CLASSES = {"cigarette", "vape"}
+DRINKING_CLASSES = {"bottle"}
+THIEF_CLASSES = {"knife"}
 
-# Custom-trained public-drinking detector. NOTE: this model has a single class,
-# "Red Horse" — it detects one beer BRAND, i.e. a product, not the act of
-# drinking. The watcher's heuristics carry the gap between "a bottle is present"
-# and "someone is drinking in public"; see watch_drinking.py. Override with the
-# DRINKING_MODEL env var.
-DRINKING_MODEL_PATH = Path(os.environ.get("DRINKING_MODEL", str(VISION_DIR / "drinking.pt")))
 
-# Merged detector: a single fine-tuned model covering Bottle/Cigarette/knife in
-# one network, used by watch_merged.py to run one detection pass per frame and
-# route each class to its own rule engine (smoking/drinking/thief). Labels come
-# from THIS model's own names dict (see _smoking_boxes_from_result), so the
-# per-model class index/order used during training is irrelevant here — only
-# the class-name strings matter, and they must match what each rule engine's
-# CLASS_POLICY/FACE_ANCHORED_CLASSES/GENERIC_LABELS expect (case rules differ
-# per engine; see watch_merged.py's module docstring). Override with the
-# MERGED_MODEL env var.
-MERGED_MODEL_PATH = Path(os.environ.get("MERGED_MODEL", str(VISION_DIR / "merged.pt")))
+def _only(dets, classes):
+    """Keeps detections whose label is in `classes` (case-insensitive)."""
+    return [d for d in dets if str(d[5]).lower() in classes]
 
 PERSON_CLASS_ID = 0  # COCO class id for "person"
 
@@ -495,19 +518,14 @@ def _gpu_available():
 # (where 960 would drop near mode well under 10 FPS — the plan's own fallback).
 NEAR_IMGSZ = int(os.environ.get("LOOKOUT_IMGSZ", 960 if _gpu_available() else 640))
 CASCADE_IMGSZ = int(os.environ.get("LOOKOUT_CASCADE_IMGSZ", 1280))
-
-# insightface (ArcFace) cosine similarity for a genuine same-person match
-# typically falls in ~0.35-0.70 (35-70 once scaled to a percent), unlike a
-# percentage-intuition 0-100 scale. SystemSettings.curfew_confidence defaults
-# to 75, which is stricter than that normal genuine-match range. Lower it
-# (e.g. to ~40) in Django admin when testing, instead of treating 75 as a
-# "75% sure" bar.
+# The far path (whole frame + tiles + person crops) used to call the model with
+# ultralytics' default imgsz of 640 while the near path used NEAR_IMGSZ (960 on a
+# GPU), so a 2560 px frame was shrunk 4x before the model ever saw it. Both paths
+# now use the same size. Override with LOOKOUT_FAR_IMGSZ (e.g. 640 to trade
+# recall for speed).
+FAR_IMGSZ = int(os.environ.get("LOOKOUT_FAR_IMGSZ", NEAR_IMGSZ))
 
 _yolo_model = None
-_face_app = None
-_smoking_model = None
-_thief_model = None
-_drinking_model = None
 _merged_model = None
 _pose_model = None
 
@@ -529,13 +547,34 @@ def load_yolo():
 
 def load_pose():
     """Lazy-loads YOLOv8-pose (person keypoints). Auto-downloads yolov8n-pose.pt
-    on first use, like the plain detector."""
+    on first use, like the plain detector. Prints the device it ends up on once,
+    so a run log shows whether pose is on the GPU and in half precision."""
     global _pose_model
     if _pose_model is None:
         from ultralytics import YOLO
 
         _pose_model = YOLO("yolov8n-pose.pt")
     return _pose_model
+
+
+_pose_logged = False
+
+
+def _log_pose_device_once():
+    """Prints where pose inference REALLY runs. Must be called after the first
+    prediction: ultralytics only moves the model to the GPU (and applies half
+    precision) when it first predicts, so the device at load time is misleading."""
+    global _pose_logged
+    if _pose_logged:
+        return
+    _pose_logged = True
+    m = load_pose()
+    try:
+        pred = m.predictor
+        print(f"[pose] YOLOv8n-pose running on {pred.device}, "
+              f"{'FP16' if pred.args.half else 'FP32'}", flush=True)
+    except Exception:
+        print("[pose] YOLOv8n-pose device unknown", flush=True)
 
 
 def detect_pose(frame, conf=0.4, imgsz=None):
@@ -590,44 +629,8 @@ def smoking_model_available():
 
 
 def load_smoking_model():
-    """Lazy-loads the custom smoking detector. Raises if the weights are missing —
-    stock YOLOv8 (COCO) has no cigarette/smoking class, so this model is required."""
-    global _smoking_model
-    if _smoking_model is None:
-        if not SMOKING_MODEL_PATH.exists():
-            raise FileNotFoundError(
-                f"Smoking model not found at {SMOKING_MODEL_PATH}. Train one with "
-                "detection_sandbox/train_smoking.py and copy best.pt here, or set "
-                "the SMOKING_MODEL env var."
-            )
-        from ultralytics import YOLO
-
-        _smoking_model = YOLO(str(SMOKING_MODEL_PATH))
-    return _smoking_model
-
-
-def load_face_app():
-    """Lazy-loads insightface's FaceAnalysis (buffalo_l pack, CPU).
-
-    Model weights (~280MB) auto-download on first use to
-    ~/.insightface/models/buffalo_l — no manual download step needed, but
-    the first run will be slow while that completes.
-
-    providers is pinned to CPU explicitly. Without this, insightface builds
-    each ONNX session with onnxruntime.get_available_providers() — which
-    lists CUDAExecutionProvider as "available" whenever onnxruntime-gpu is
-    installed, regardless of whether its CUDA DLLs actually load — so every
-    process start was attempting and failing a CUDA load per model (5 error
-    blocks in the log) before silently landing on CPU anyway via ctx_id=-1
-    below. Same effective behavior, no more misleading failure spam.
-    """
-    global _face_app
-    if _face_app is None:
-        from insightface.app import FaceAnalysis
-
-        _face_app = FaceAnalysis(name="buffalo_l", providers=["CPUExecutionProvider"])
-        _face_app.prepare(ctx_id=-1, det_size=(320, 320))  # ctx_id=-1 -> CPU
-    return _face_app
+    """Smoking uses the shared merged model; see MODEL_PATH."""
+    return load_merged_model()
 
 
 def detect_persons(frame, conf=0.5, imgsz=None):
@@ -649,40 +652,125 @@ def detect_persons(frame, conf=0.5, imgsz=None):
     return boxes
 
 
-def find_mouth(frame, box):
-    """Locates the mouth of the most prominent face inside a person box.
+# --- pose-based mouth anchor ---------------------------------------------------
+#
+# Locates a person's mouth from YOLOv8-pose keypoints alone (no face detector),
+# returning (x, y, face_width) in full-frame
+# coordinates, or None when it can't be told. "Face width" is a PROXY built
+# from whichever of ear-to-ear / eye-to-eye / shoulder-to-shoulder keypoints are
+# confident, scaled so it matches the width the rules were tuned in
+# (MOUTH_PROXIMITY / drinking_mouth_proximity are in face-widths). The scale
+# factors come from detection_sandbox/mouth_calibration.py run on the test clips
+# (1,547 person boxes, 5 clips, fitted against insightface's face width, since
+# removed): medians of that width / pose width, and of (mouth - nose) in
+# face-widths.
+POSE_HALF = _gpu_available()  # FP16 inference on CUDA (ultralytics rejects half on CPU)
+MOUTH_MISS_CACHE_SECONDS = 0.5   # after "no mouth anchor", don't re-run pose for this long (per track)
+POSE_CROP_PAD = 0.10          # extra margin around the person box before pose
+POSE_CROP_IMGSZ = 640         # pose inference size on that crop
+POSE_EAR_TO_FACE = 0.92       # face width = ear-to-ear distance x this
+POSE_EYE_TO_FACE = 2.51       # ... or eye-to-eye distance x this
+POSE_SHOULDER_TO_FACE = 0.55  # ... or shoulder-to-shoulder distance x this
+POSE_MOUTH_DY = 0.29          # mouth sits this many face-widths below the nose
 
-    Returns (x, y, face_width) in FULL-FRAME coordinates, or None when no face
-    could be found. Reuses the same insightface FaceAnalysis the curfew pipeline
-    already loads, so this adds no new model or download.
+KP_LEYE, KP_REYE, KP_LEAR, KP_REAR = 1, 2, 3, 4
 
-    None is common and expected — a person facing away, or standing far enough
-    down the street that their face is a handful of pixels, yields no detection.
-    Callers must read None as "unknown", never as "no face is present", or a
-    mouth-proximity rule built on this would silently disable itself at exactly
-    the CCTV distances the far-mode cascade exists to cover.
-    """
-    app = load_face_app()
+
+def pose_on_box(frame, box):
+    """Runs YOLOv8-pose on ONE person's padded box and returns the (17, 3)
+    keypoints, in FULL-FRAME coordinates, of the pose that belongs to that
+    person -- or None. Only the box is processed, so it costs one small pose
+    pass per queried person, not a full-frame one."""
+    h, w = frame.shape[:2]
     x1, y1, x2, y2 = (int(v) for v in box[:4])
-    x1, y1 = max(x1, 0), max(y1, 0)
-    crop = frame[y1:y2, x1:x2]
+    bw, bh = max(x2 - x1, 1), max(y2 - y1, 1)
+    cx1 = max(int(x1 - bw * POSE_CROP_PAD), 0)
+    cy1 = max(int(y1 - bh * POSE_CROP_PAD), 0)
+    cx2 = min(int(x2 + bw * POSE_CROP_PAD), w)
+    cy2 = min(int(y2 + bh * POSE_CROP_PAD), h)
+    crop = frame[cy1:cy2, cx1:cx2]
     if crop.size == 0:
         return None
-    faces = app.get(crop)
-    if not faces:
+    res = load_pose()(crop, verbose=False, imgsz=POSE_CROP_IMGSZ, half=POSE_HALF)[0]
+    _log_pose_device_once()
+    if res.keypoints is None or res.boxes is None or len(res.boxes) == 0:
         return None
+    kpts = res.keypoints.data.cpu().numpy()
+    best, best_score = None, 0.0
+    for i in range(len(kpts)):
+        bx1, by1, bx2, by2 = (float(v) for v in res.boxes.xyxy[i].tolist())
+        mx, my = (bx1 + bx2) / 2 + cx1, (by1 + by2) / 2 + cy1
+        if not (x1 <= mx <= x2 and y1 <= my <= y2):
+            continue                      # a different person caught in the margin
+        score = float(res.boxes.conf[i]) * (bx2 - bx1) * (by2 - by1)
+        if score > best_score:
+            best, best_score = i, score
+    if best is None:
+        return None
+    out = kpts[best].copy()
+    out[:, 0] += cx1
+    out[:, 1] += cy1
+    return out
 
-    face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
-    fx1, fy1, fx2, fy2 = (float(v) for v in face.bbox)
-    kps = getattr(face, "kps", None)
-    if kps is not None and len(kps) >= 5:
-        # insightface's 5-point landmarks: 0/1 eyes, 2 nose, 3/4 mouth corners.
-        mx = (float(kps[3][0]) + float(kps[4][0])) / 2
-        my = (float(kps[3][1]) + float(kps[4][1])) / 2
-    else:
-        # No landmarks: approximate the mouth at three-quarters down the face box.
-        mx, my = (fx1 + fx2) / 2, fy1 + (fy2 - fy1) * 0.75
-    return (mx + x1, my + y1, fx2 - fx1)
+
+def _kp_dist(kpts, a, b):
+    """Pixel distance between two keypoints, or None unless both are confident."""
+    if kpts[a][2] < KP_MIN_CONF or kpts[b][2] < KP_MIN_CONF:
+        return None
+    return float(((kpts[a][0] - kpts[b][0]) ** 2 + (kpts[a][1] - kpts[b][1]) ** 2) ** 0.5)
+
+
+def pose_face_metrics(kpts):
+    """Raw widths (pixels) the face-width proxy is built from: ear-to-ear,
+    eye-to-eye, shoulder-to-shoulder. Each is None when its keypoints aren't
+    confident. Exposed so the calibration script can fit the scale factors."""
+    return {
+        "ear": _kp_dist(kpts, KP_LEAR, KP_REAR),
+        "eye": _kp_dist(kpts, KP_LEYE, KP_REYE),
+        "shoulder": _kp_dist(kpts, KP_LSHOULDER, KP_RSHOULDER),
+    }
+
+
+def pose_face_width(kpts):
+    """(face_width_proxy, source) using the first confident of ear -> eye ->
+    shoulder, or (None, None)."""
+    m = pose_face_metrics(kpts)
+    for src, factor in (("ear", POSE_EAR_TO_FACE), ("eye", POSE_EYE_TO_FACE),
+                        ("shoulder", POSE_SHOULDER_TO_FACE)):
+        if m[src]:
+            return m[src] * factor, src
+    return None, None
+
+
+def find_mouth_pose(frame, box, with_source=False):
+    """Locates the mouth from pose keypoints: the mouth is the nose plus a small
+    downward offset, and the face width is the proxy from pose_face_width().
+
+    Returns (x, y, face_width) in FULL-FRAME coordinates, or None when the nose
+    or every width keypoint is unconfident. None means UNKNOWN, not "no face" --
+    callers must keep the detection rather than reject it: a person facing away,
+    or far down the street, simply has no confident nose at CCTV distance.
+    With with_source=True returns (x, y, face_width, source) instead.
+    """
+    kpts = pose_on_box(frame, box)
+    if kpts is None or kpts[KP_NOSE][2] < KP_MIN_CONF:
+        return None
+    face_w, source = pose_face_width(kpts)
+    if face_w is None:
+        return None
+    mx = float(kpts[KP_NOSE][0])
+    my = float(kpts[KP_NOSE][1]) + POSE_MOUTH_DY * face_w
+    return (mx, my, face_w, source) if with_source else (mx, my, face_w)
+
+
+def log_mouth(**fields):
+    """Appends one JSON line to $LOOKOUT_MOUTH_LOG when that variable is set;
+    a no-op otherwise. Used to compare mouth distances before/after the swap."""
+    path = os.environ.get("LOOKOUT_MOUTH_LOG")
+    if not path:
+        return
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(fields, default=float) + chr(10))
 
 
 def detect_persons_tracked(frame, conf=0.5, tracker="bytetrack.yaml", imgsz=None):
@@ -848,6 +936,40 @@ def detect_vehicles(frame, conf=0.4, imgsz=VEHICLE_IMGSZ):
     return _vehicle_boxes_from_result(results, conf)
 
 
+def detect_vehicles_tracked(frame, conf=0.4, tracker="bytetrack.yaml",
+                            imgsz=VEHICLE_IMGSZ):
+    """detect_vehicles, but with ultralytics' multi-object tracker attached.
+
+    Returns (x1, y1, x2, y2, conf, label, track_id) tuples; track_id is None
+    while the tracker has not committed to an identity yet. The vehicle
+    equivalent of detect_persons_tracked, and it carries the same caveat:
+    `persist=True` keeps tracker state between calls, so this assumes it is
+    being fed consecutive frames of ONE stream.
+
+    That caveat is why this is a SEPARATE function rather than a flag on
+    detect_vehicles. load_yolo() returns one shared model, so a process that
+    tracked people and vehicles through it would interleave two persist=True
+    conversations into a single tracker state — the corruption watch_merged's
+    docstring describes. Only watch_parking's own loop calls this; the
+    untracked detect_vehicles/detect_vehicles_far stay the entry point for
+    anything that runs alongside the person pass (watch_all, watch_merged_all).
+    """
+    model = load_yolo()
+    results = model.track(frame, verbose=False, persist=True, tracker=tracker,
+                          imgsz=imgsz)[0]
+    out = []
+    for box in results.boxes:
+        cls_id = int(box.cls[0])
+        if cls_id not in VEHICLE_CLASS_IDS:
+            continue
+        if float(box.conf[0]) < conf:
+            continue
+        x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
+        out.append((x1, y1, x2, y2, float(box.conf[0]), VEHICLE_CLASS_IDS[cls_id],
+                    int(box.id[0]) if box.id is not None else None))
+    return out
+
+
 def detect_vehicles_far(frame, conf=0.4, tiles=(2, 2), overlap=0.2,
                         imgsz=VEHICLE_IMGSZ):
     """Long-range vehicle detection for CCTV footage — SAHI-style tiling.
@@ -917,8 +1039,8 @@ def detect_smoking(frame, conf=0.3, imgsz=None):
     the inference resolution (default NEAR_IMGSZ).
     """
     model = load_smoking_model()
-    results = model(frame, verbose=False, imgsz=imgsz or NEAR_IMGSZ)[0]
-    return _smoking_boxes_from_result(results, conf)
+    results = model(frame, verbose=False, imgsz=imgsz or NEAR_IMGSZ, conf=conf)[0]
+    return _only(_smoking_boxes_from_result(results, conf), SMOKING_CLASSES)
 
 
 def _iter_tiles(frame, rows, cols, overlap):
@@ -970,7 +1092,7 @@ def _nms(boxes, iou_thresh=0.5):
     return kept
 
 
-def _detect_far(model, frame, conf, tiles, overlap, person_boxes, upscale):
+def _detect_far(model, frame, conf, tiles, overlap, person_boxes, upscale, imgsz=None):
     """Long-range detection cascade for CCTV footage, merged from two
     resolution-preserving passes so a distant small object (a few pixels on the
     full frame) still lands on enough pixels to detect:
@@ -989,6 +1111,7 @@ def _detect_far(model, frame, conf, tiles, overlap, person_boxes, upscale):
     CCTV where high FPS isn't needed.
     """
     boxes = []
+    imgsz = imgsz or FAR_IMGSZ
 
     # The whole-frame pass ALWAYS runs, tiles or not. A tile is a zoomed-in
     # fragment with the surrounding context cropped away, and the model was
@@ -997,7 +1120,7 @@ def _detect_far(model, frame, conf, tiles, overlap, person_boxes, upscale):
     # whole-frame and nothing at all once cut into 320x320 quarters). Running
     # both and merging keeps far mode a strict superset of near mode: it can
     # only ever add recall, never trade it away.
-    results = model(frame, verbose=False)[0]
+    results = model(frame, verbose=False, imgsz=imgsz, conf=conf)[0]
     boxes.extend(_smoking_boxes_from_result(results, conf))
 
     rows, cols = tiles
@@ -1005,7 +1128,7 @@ def _detect_far(model, frame, conf, tiles, overlap, person_boxes, upscale):
         for tile, (ox, oy) in _iter_tiles(frame, rows, cols, overlap):
             if tile.size == 0:
                 continue
-            results = model(tile, verbose=False)[0]
+            results = model(tile, verbose=False, imgsz=imgsz, conf=conf)[0]
             boxes.extend(_smoking_boxes_from_result(results, conf, offset=(ox, oy)))
 
     scale = upscale or 1.0
@@ -1018,7 +1141,7 @@ def _detect_far(model, frame, conf, tiles, overlap, person_boxes, upscale):
         if scale != 1.0:
             crop = cv2.resize(crop, None, fx=scale, fy=scale,
                               interpolation=cv2.INTER_CUBIC)
-        results = model(crop, verbose=False)[0]
+        results = model(crop, verbose=False, imgsz=imgsz, conf=conf)[0]
         for (x1, y1, x2, y2, score, label) in _smoking_boxes_from_result(results, conf):
             # map the (possibly upscaled) crop-space box back to full-frame coords
             boxes.append((
@@ -1033,8 +1156,8 @@ def _detect_far(model, frame, conf, tiles, overlap, person_boxes, upscale):
 def detect_smoking_far(frame, conf=0.3, tiles=(2, 2), overlap=0.2,
                        person_boxes=None, upscale=2.0):
     """Long-range smoking detection — see _detect_far for how the cascade works."""
-    return _detect_far(load_smoking_model(), frame, conf, tiles, overlap,
-                       person_boxes, upscale)
+    return _only(_detect_far(load_smoking_model(), frame, conf, tiles, overlap,
+                             person_boxes, upscale), SMOKING_CLASSES)
 
 
 def detect_on_person_crops(model, frame, person_boxes, conf, pad=0.35,
@@ -1068,7 +1191,7 @@ def detect_on_person_crops(model, frame, person_boxes, conf, pad=0.35,
         crop = frame[y1:y2, x1:x2]
         if crop.size == 0:
             continue
-        results = model(crop, verbose=False, imgsz=crop_imgsz)[0]
+        results = model(crop, verbose=False, imgsz=crop_imgsz, conf=conf)[0]
         for (bx1, by1, bx2, by2, score, label) in _smoking_boxes_from_result(results, conf):
             boxes.append((bx1 + x1, by1 + y1, bx2 + x1, by2 + y1, score, label))
     return _nms(boxes)
@@ -1077,8 +1200,8 @@ def detect_on_person_crops(model, frame, person_boxes, conf, pad=0.35,
 def detect_smoking_cascade(frame, person_boxes, conf=0.3, pad=0.35, crop_imgsz=640):
     """Smoking detection by native-res person crops — see detect_on_person_crops.
     Frame must be native resolution (main stream) for the pixels to be there."""
-    return detect_on_person_crops(load_smoking_model(), frame, person_boxes,
-                                  conf, pad, crop_imgsz)
+    return _only(detect_on_person_crops(load_smoking_model(), frame, person_boxes,
+                                        conf, pad, crop_imgsz), SMOKING_CLASSES)
 
 
 def thief_model_available():
@@ -1087,45 +1210,30 @@ def thief_model_available():
 
 
 def load_thief_model():
-    """Lazy-loads the custom thief/robbery detector. Raises if the weights are
-    missing — stock YOLOv8 (COCO) has no gun/knife/robbery class, so this model
-    is required."""
-    global _thief_model
-    if _thief_model is None:
-        if not THIEF_MODEL_PATH.exists():
-            raise FileNotFoundError(
-                f"Thief model not found at {THIEF_MODEL_PATH}. Train one with "
-                "detection_sandbox/train_thief.py and copy best.pt here, or set "
-                "the THIEF_MODEL env var."
-            )
-        from ultralytics import YOLO
-
-        _thief_model = YOLO(str(THIEF_MODEL_PATH))
-    return _thief_model
+    """Holdup uses the shared merged model; see MODEL_PATH."""
+    return load_merged_model()
 
 
 def detect_thief(frame, conf=0.3, imgsz=None):
     """Single-pass thief/robbery detection over the whole frame (the fast path).
 
     Returns the same (x1,y1,x2,y2,conf,label) tuples as detect_smoking; labels
-    come from the trained model (gun/knife/robbery activity/stealing). Guns,
-    knives and whole-body actions are far larger than a cigarette, so this
-    covers more range than detect_smoking does — but at real CCTV distance a
-    handgun still shrinks to a few pixels; use detect_thief_far there. `imgsz`
+    come from the shared model, filtered to knife. A knife is larger than a
+    cigarette, so this covers more range than detect_smoking does — but at
+    real CCTV distance it still shrinks to a few pixels; use detect_thief_far there. `imgsz`
     raises the inference resolution (default NEAR_IMGSZ).
     """
     model = load_thief_model()
-    results = model(frame, verbose=False, imgsz=imgsz or NEAR_IMGSZ)[0]
-    return _smoking_boxes_from_result(results, conf)
+    results = model(frame, verbose=False, imgsz=imgsz or NEAR_IMGSZ, conf=conf)[0]
+    return _only(_smoking_boxes_from_result(results, conf), THIEF_CLASSES)
 
 
 def detect_thief_far(frame, conf=0.3, tiles=(2, 2), overlap=0.2,
                      person_boxes=None, upscale=2.0):
     """Long-range thief/robbery detection — see _detect_far for the cascade.
-    Mainly helps the small handheld classes (gun/knife); the whole-body classes
-    (robbery activity/stealing) usually don't need it."""
-    return _detect_far(load_thief_model(), frame, conf, tiles, overlap,
-                       person_boxes, upscale)
+    Helps the small handheld knife class at CCTV range."""
+    return _only(_detect_far(load_thief_model(), frame, conf, tiles, overlap,
+                             person_boxes, upscale), THIEF_CLASSES)
 
 
 def drinking_model_available():
@@ -1134,20 +1242,8 @@ def drinking_model_available():
 
 
 def load_drinking_model():
-    """Lazy-loads the custom public-drinking detector. Raises if the weights are
-    missing — stock YOLOv8 (COCO) has a `bottle` class but not a brand/alcohol
-    class, so this model is required."""
-    global _drinking_model
-    if _drinking_model is None:
-        if not DRINKING_MODEL_PATH.exists():
-            raise FileNotFoundError(
-                f"Drinking model not found at {DRINKING_MODEL_PATH}. Train one "
-                "and copy best.pt here, or set the DRINKING_MODEL env var."
-            )
-        from ultralytics import YOLO
-
-        _drinking_model = YOLO(str(DRINKING_MODEL_PATH))
-    return _drinking_model
+    """Drinking uses the shared merged model; see MODEL_PATH."""
+    return load_merged_model()
 
 
 def detect_drinking(frame, conf=0.35):
@@ -1158,15 +1254,15 @@ def detect_drinking(frame, conf=0.35):
     range — but at true CCTV distance use detect_drinking_far.
     """
     model = load_drinking_model()
-    results = model(frame, verbose=False)[0]
-    return _smoking_boxes_from_result(results, conf)
+    results = model(frame, verbose=False, imgsz=NEAR_IMGSZ, conf=conf)[0]
+    return _only(_smoking_boxes_from_result(results, conf), DRINKING_CLASSES)
 
 
 def detect_drinking_far(frame, conf=0.35, tiles=(2, 2), overlap=0.2,
                         person_boxes=None, upscale=2.0):
     """Long-range public-drinking detection — see _detect_far for the cascade."""
-    return _detect_far(load_drinking_model(), frame, conf, tiles, overlap,
-                       person_boxes, upscale)
+    return _only(_detect_far(load_drinking_model(), frame, conf, tiles, overlap,
+                             person_boxes, upscale), DRINKING_CLASSES)
 
 
 def merged_model_available():
@@ -1202,7 +1298,7 @@ def detect_merged(frame, conf=0.15, imgsz=None):
     class names.
     """
     model = load_merged_model()
-    results = model(frame, verbose=False, imgsz=imgsz or NEAR_IMGSZ)[0]
+    results = model(frame, verbose=False, imgsz=imgsz or NEAR_IMGSZ, conf=conf)[0]
     return _smoking_boxes_from_result(results, conf)
 
 
@@ -1216,84 +1312,3 @@ def detect_merged_far(frame, conf=0.15, tiles=(2, 2), overlap=0.2,
 def load_image(path):
     """Decodes an image file from disk into an OpenCV BGR array, or None on failure."""
     return cv2.imread(str(path))
-
-
-def compute_face_embedding(crop):
-    """Detects the best face in `crop` and returns its 512-d embedding, or None."""
-    if crop is None or crop.size == 0:
-        return None
-
-    app = load_face_app()
-    faces = app.get(crop)
-    if not faces:
-        return None
-
-    best_face = max(faces, key=lambda f: f.det_score)
-    return best_face.embedding
-
-
-def precompute_face_db(face_db):
-    """Adds a cached, L2-normalized embedding to each entry for fast repeated matching.
-
-    Without this, match_embedding() would recompute np.linalg.norm for every
-    enrolled face on every single call (every detected person, every frame) —
-    wasted work, since the enrolled embeddings never change between calls.
-    Returns a new list; does not mutate `face_db` or affect save_face_db
-    (the original plain-list "embedding" field is preserved alongside it).
-    """
-    precomputed = []
-    for entry in face_db:
-        vec = np.asarray(entry["embedding"], dtype=np.float32)
-        norm = np.linalg.norm(vec) or 1e-8
-        precomputed.append({**entry, "_normalized": vec / norm})
-    return precomputed
-
-
-def match_embedding(embedding, face_db, threshold_pct):
-    """Returns (best_matching_entry_or_None, score_pct) against a precomputed
-    face_db (see precompute_face_db — each entry needs a cached "_normalized" vector).
-    """
-    if embedding is None or not face_db:
-        return None, 0.0
-
-    query = np.asarray(embedding, dtype=np.float32)
-    query_norm = np.linalg.norm(query) or 1e-8
-    query_normalized = query / query_norm
-
-    best_entry = None
-    best_score = 0.0
-    for entry in face_db:
-        score = float(np.dot(query_normalized, entry["_normalized"]))
-        if score > best_score:
-            best_score = score
-            best_entry = entry
-
-    score_pct = best_score * 100
-    if best_entry is not None and score_pct >= threshold_pct:
-        return best_entry, score_pct
-    return None, score_pct
-
-
-def load_face_db():
-    if not FACE_DB_PATH.exists():
-        return []
-    with open(FACE_DB_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def save_face_db(entries):
-    FACE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(FACE_DB_PATH, "w", encoding="utf-8") as f:
-        json.dump(entries, f, indent=2)
-
-
-def fetch_image_as_array(url, timeout=10):
-    """Downloads an image URL and decodes it into an OpenCV BGR array, or None on failure."""
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = resp.read()
-        arr = np.frombuffer(data, dtype=np.uint8)
-        return cv2.imdecode(arr, cv2.IMREAD_COLOR)
-    except Exception:
-        return None

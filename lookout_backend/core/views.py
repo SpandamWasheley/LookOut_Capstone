@@ -12,12 +12,12 @@ from datetime import timedelta
 
 import cv2
 import django_filters
-import numpy as np
 import psutil
 from django.conf import settings as django_settings
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from django.core.mail import send_mail
+import threading
 from django.core.validators import validate_email
 from django.db import transaction
 from django.db.models import Count
@@ -33,8 +33,6 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from core.constants import ZAMBOANGA_BARANGAYS
-from core.face_registry import rebuild_face_db
-from core.vision import recognition
 
 from .models import (
     Alert,
@@ -42,9 +40,7 @@ from .models import (
     Citation,
     DetectionJob,
     EmailVerificationCode,
-    FaceEmbedding,
     Officer,
-    Person,
     SystemSettings,
     User,
     ViolationType,
@@ -52,7 +48,7 @@ from .models import (
     Zone,
     normalize_name,
 )
-from .permissions import IsAdmin, IsAdminOrReadOnly
+from .permissions import CanEditOwnOpenCitation, IsAdmin, IsAdminOrReadOnly
 from .throttling import (
     LoginThrottle,
     OtpSendThrottle,
@@ -60,6 +56,37 @@ from .throttling import (
     PasswordResetConfirmThrottle,
     PasswordResetSendThrottle,
 )
+
+def send_mail_async(subject, body, recipient):
+    """Queue an email and return immediately.
+
+    SMTP is slow -- Gmail measured at ~6.6s from this machine -- and it used to
+    run inside the request. React Native's HTTP client gives up after 10s, so a
+    phone on Wi-Fi would abort while the server was still talking to Gmail: the
+    code arrived in the inbox, the app showed a network error, and the screen
+    never advanced to the code input.
+
+    The caller no longer waits. The recipient does not care whether the message
+    took 200ms or 8s to leave, and nothing in the response depends on it: the
+    endpoint deliberately returns the same body whether or not an account
+    exists, so there was never anything to report back.
+
+    A daemon thread rather than a task queue: this is one email on a verification
+    path, and Celery or Redis for it would be a lot of moving parts for a problem
+    that is four lines. Daemon so a shutdown is not held open by a pending send.
+    """
+    def _send():
+        try:
+            send_mail(subject, body, django_settings.DEFAULT_FROM_EMAIL,
+                      [recipient], fail_silently=False)
+        except Exception:
+            # Logged, never surfaced. A delivery failure must not tell a caller
+            # whether the address belongs to a real account.
+            logger.exception("Failed to send mail to %s", recipient)
+
+    threading.Thread(target=_send, daemon=True).start()
+
+
 
 CODE_EXPIRY_MINUTES = 10
 logger = logging.getLogger(__name__)
@@ -69,9 +96,7 @@ from .serializers import (
     CitationSerializer,
     DetectionJobSerializer,
     DispatcherSerializer,
-    FaceEmbeddingSerializer,
     OfficerSerializer,
-    PersonSerializer,
     SystemSettingsSerializer,
     UserSerializer,
     ViolationTypeSerializer,
@@ -156,6 +181,16 @@ def send_officer_code(request):
         return Response({"email": "An account with this email already exists."}, status=400)
 
     code = f"{random.randint(0, 999999):06d}"
+    # Deliberately SYNCHRONOUS, unlike the password-reset path above.
+    #
+    # Registration happens on the web dashboard, where the browser has no short
+    # fetch timeout, and waiting buys something real: a typo'd address is caught
+    # here and reported, instead of the user staring at a code that will never
+    # arrive. There is no anti-enumeration concern either -- this endpoint
+    # already says whether an account exists.
+    #
+    # The reset path has the opposite shape: it runs on a phone whose HTTP
+    # client aborts at 10s, and it must never reveal whether delivery worked.
     try:
         send_mail(
             "Your LookOut verification code",
@@ -315,22 +350,19 @@ def forgot_password_send_code(request):
     user = User.objects.filter(email__iexact=email).first()
     if user:
         code = f"{random.randint(0, 999999):06d}"
-        try:
-            send_mail(
-                "Your LookOut password reset code",
-                f"Your password reset code is {code}. It expires in {CODE_EXPIRY_MINUTES} minutes. "
-                "If you didn't request this, you can ignore this email.",
-                django_settings.DEFAULT_FROM_EMAIL,
-                [email],
-                fail_silently=False,
-            )
-        except Exception:
-            # Logged only — the response below stays identical either way so a
-            # delivery failure can't be used to distinguish a real account from
-            # a fake one (same anti-enumeration reasoning as the user lookup above).
-            logger.exception("Failed to send password reset email to %s", email)
-        else:
-            EmailVerificationCode.objects.create(email=email, code=code)
+        # The row is written FIRST, then the mail is queued. It used to be the
+        # other way round -- row only on a successful send -- which was neat but
+        # meant the caller had to wait for SMTP to know whether to write it.
+        # Writing first costs an unused row when delivery fails, and buys a
+        # response that returns in milliseconds instead of seconds.
+        EmailVerificationCode.objects.create(email=email, code=code)
+        send_mail_async(
+            "Your LookOut password reset code",
+            f"Your password reset code is {code}. It expires in "
+            f"{CODE_EXPIRY_MINUTES} minutes. If you didn't request this, you "
+            "can ignore this email.",
+            email,
+        )
     # Same response whether or not the email exists, so this can't be used to enumerate accounts.
     return Response({"detail": "If an account exists for this email, a reset code has been sent."})
 
@@ -378,51 +410,58 @@ class SystemSettingsView(generics.RetrieveUpdateAPIView):
 
 
 @api_view(["POST"])
-@permission_classes([permissions.IsAuthenticated])
-def recording_start(request):
-    """Starts the continuous CCTV recorder — called on dashboard login. Records
-    from the dedicated recording.RECORD_CAMERA_CODE ("CCTV") camera's
-    stream_url specifically, falling back to whichever camera has one
-    configured if that row isn't set up yet. Idempotent: a second call while
-    it's already running is a no-op.
-
-    Deliberately NOT "whichever camera has a stream_url" any more: now that
-    admins can set stream_url on any camera (for live detection, which may
-    target a different, higher-resolution stream on the same physical camera
-    than what's good for continuous recording — see CAMERA_SETUP.md), picking
-    the first one found would record from an arbitrary, possibly-wrong camera
-    the moment more than one row has a stream_url configured.
-    """
-    from . import recording
-
-    cam = Camera.objects.filter(code=recording.RECORD_CAMERA_CODE).exclude(stream_url="").first() \
-        or Camera.objects.exclude(stream_url="").first()
-    if cam is None:
-        return Response(
-            {"recording": False,
-             "detail": "No camera has a stream_url configured to record."},
-            status=400,
-        )
-    started = recording.start_recording(cam.stream_url)
-    return Response({"recording": True, "started": started, "camera": cam.code})
-
-
-@api_view(["POST"])
-@permission_classes([permissions.IsAuthenticated])
-def recording_stop(request):
-    """Stops the continuous CCTV recorder — called on dashboard logout."""
-    from . import recording
-
-    stopped = recording.stop_recording()
-    return Response({"recording": False, "stopped": stopped})
+@permission_classes([permissions.IsAuthenticated, IsAdmin])
+def reset_spec_defaults(request):
+    """'Reset to spec defaults' for one violation group: {"violation": "drinking" | "smoking" |
+    "holdup" | "all"}. Only the adjustable timings / conditions are touched."""
+    from core.vision import spec_settings
+    group = request.data.get("violation", "")
+    if group not in spec_settings.GROUPS:
+        return Response({"detail": f"violation must be one of {', '.join(spec_settings.GROUPS)}."}, status=400)
+    cfg = SystemSettings.load()
+    fields = spec_settings.defaults_for(group)
+    for name, value in fields.items():
+        setattr(cfg, name, value)
+    cfg.save(update_fields=list(fields))
+    return Response(SystemSettingsSerializer(cfg).data)
 
 
 @api_view(["GET"])
-@permission_classes([permissions.IsAuthenticated])
-def recording_status(request):
-    from . import recording
+@permission_classes([permissions.IsAuthenticated, IsAdmin])
+def monitor_status(request):
+    """Live monitoring status for the Live Feeds page (admin only)."""
+    from core.monitor import monitor
+    return Response(monitor.status())
 
-    return Response({"recording": recording.is_recording()})
+
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated, IsAdmin])
+def monitor_start(request):
+    from core.monitor import monitor
+    ok, message = monitor.start(request.user)
+    body = monitor.status()
+    body["detail"] = message
+    return Response(body, status=200 if ok else 400)
+
+
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated, IsAdmin])
+def monitor_stop(request):
+    from core.monitor import monitor
+    monitor.stop()
+    return Response(monitor.status())
+
+
+@api_view(["GET"])
+@permission_classes([permissions.IsAuthenticated, IsAdmin])
+def monitor_state(request):
+    """The live processing view of the running live monitor (same shape as a job's /state/)."""
+    from core import debug_state
+    from core.monitor import live_dir, monitor
+    since = request.query_params.get("since")
+    data = debug_state.payload(live_dir(), int(since) if since and since.isdigit() else None)
+    data["monitor"] = monitor.status()
+    return Response(data)
 
 
 @api_view(["GET"])
@@ -449,60 +488,13 @@ def dashboard_stats(request):
     )
 
     return Response({
-        "cameras_online": Camera.objects.filter(status=Camera.Status.ONLINE).count(),
-        "cameras_total": Camera.objects.count(),
+        "cameras_online": Camera.objects.exclude(code__endswith="-TEST").filter(status=Camera.Status.ONLINE).count(),
+        "cameras_total": Camera.objects.exclude(code__endswith="-TEST").count(),
         "alerts_by_status": by_status,
         "alerts_by_type_7d": by_type,
         "weekly_trend": list(weekly_trend),
         "officers_on_duty": Officer.objects.exclude(status=Officer.Status.OFF_DUTY).count(),
-        "people_total": Person.objects.count(),
     })
-
-
-@api_view(["POST"])
-@permission_classes([permissions.IsAuthenticated])
-def send_sms(request):
-    import requests as http_requests
-
-    recipients = request.data.get("recipients", [])
-    message = request.data.get("message", "")
-    if not recipients:
-        return Response({"detail": "No recipients specified."}, status=400)
-    if not message.strip():
-        return Response({"detail": "Message cannot be empty."}, status=400)
-
-    api_key = django_settings.SEMAPHORE_API_KEY
-    sender  = getattr(django_settings, "SEMAPHORE_SENDER_NAME", "LookOut")
-
-    if not api_key:
-        # No key configured — log only (dev/demo mode)
-        for number in recipients:
-            print(f"[SMS stub] → {number}: {message[:120]}")
-        return Response({"sent": len(recipients), "recipients": recipients})
-
-    failed = []
-    for number in recipients:
-        try:
-            resp = http_requests.post(
-                "https://api.semaphore.co/api/v4/messages",
-                data={
-                    "apikey": api_key,
-                    "number": number,
-                    "message": message,
-                    "sendername": sender,
-                },
-                timeout=10,
-            )
-            resp.raise_for_status()
-        except Exception as exc:
-            failed.append({"number": number, "error": str(exc)})
-
-    if failed:
-        return Response(
-            {"sent": len(recipients) - len(failed), "failed": failed},
-            status=207,
-        )
-    return Response({"sent": len(recipients), "recipients": recipients})
 
 
 class ZoneViewSet(viewsets.ModelViewSet):
@@ -518,7 +510,10 @@ class ViolationTypeViewSet(viewsets.ModelViewSet):
 
 
 class CameraViewSet(viewsets.ModelViewSet):
-    queryset = Camera.objects.select_related("zone").all()
+    # "-TEST" cameras exist only to tag alerts from uploaded footage (see
+    # DetectionJobViewSet.create). They are not real cameras, so they never
+    # appear in any camera list; their alerts are still shown.
+    queryset = Camera.objects.select_related("zone").exclude(code__endswith="-TEST")
     serializer_class = CameraSerializer
     filterset_fields = ["zone", "status"]
     permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
@@ -554,7 +549,29 @@ class CameraViewSet(viewsets.ModelViewSet):
         m = re.search(r"/Channels/(\d+)", parsed.path)
         if m:
             channel = m.group(1)
-        snap_url = f"http://{host}/ISAPI/Streaming/channels/{channel}/picture"
+
+        # The scheme follows stream_url, and the port with it.
+        #
+        # A camera on the LAN is addressed rtsp://user:pass@192.168.1.64:554/...
+        # and its ISAPI stills are plain http on port 80 — so rtsp (and
+        # anything else) means http, as it always did.
+        #
+        # But when the API runs in the cloud and the camera sits behind an
+        # ngrok tunnel, stream_url holds the tunnel instead:
+        # https://user:pass@abc.ngrok-free.app/Streaming/Channels/102. Forcing
+        # http:// there fails outright — ngrok's edge only speaks TLS — and the
+        # symptom is "Camera unreachable" with a connection error that says
+        # nothing about the scheme. Honouring an explicit http/https lets the
+        # same field describe either topology.
+        # The PORT is only carried over for an explicit http/https URL. An RTSP
+        # one names the RTSP port (554), and ISAPI is not served there — reusing
+        # it produces http://camera:554/ISAPI/... which never answers.
+        if parsed.scheme in ("http", "https"):
+            scheme = parsed.scheme
+            netloc = host if parsed.port is None else f"{host}:{parsed.port}"
+        else:
+            scheme, netloc = "http", host
+        snap_url = f"{scheme}://{netloc}/ISAPI/Streaming/channels/{channel}/picture"
 
         try:
             r = requests.get(snap_url, auth=HTTPDigestAuth(user, pw), timeout=6)
@@ -653,106 +670,6 @@ class DispatcherViewSet(viewsets.ModelViewSet):
         instance.delete()
 
 
-FACE_ENROLL_ANGLES = ["front", "right", "left"]
-FACE_MIN_DIMENSION = 200
-
-
-class PersonViewSet(viewsets.ModelViewSet):
-    queryset = Person.objects.prefetch_related("embeddings").all()
-    serializer_class = PersonSerializer
-    filterset_fields = ["status"]
-    permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
-
-    def perform_destroy(self, instance):
-        for embedding in instance.embeddings.all():
-            embedding.image.delete(save=False)
-        instance.delete()
-        rebuild_face_db()
-
-    @action(detail=True, methods=["post"], url_path="enroll-face", parser_classes=[MultiPartParser, FormParser])
-    def enroll_face(self, request, pk=None):
-        """All-or-nothing 3-angle enrollment. Validates every image before
-        writing anything, so a bad 'left' shot can't leave a person half-enrolled."""
-        person = self.get_object()
-
-        decoded = {}
-        for angle in FACE_ENROLL_ANGLES:
-            upload = request.FILES.get(angle)
-            if upload is None:
-                return Response(
-                    {"detail": f"Missing image for angle '{angle}'.", "angle": angle},
-                    status=400,
-                )
-
-            data = np.frombuffer(upload.read(), dtype=np.uint8)
-            image = cv2.imdecode(data, cv2.IMREAD_COLOR)
-            if image is None:
-                return Response(
-                    {"detail": f"Could not decode image for angle '{angle}'.", "angle": angle},
-                    status=400,
-                )
-
-            height, width = image.shape[:2]
-            if width < FACE_MIN_DIMENSION or height < FACE_MIN_DIMENSION:
-                return Response(
-                    {
-                        "detail": f"Image for angle '{angle}' is too small "
-                                  f"({width}x{height}); must be at least "
-                                  f"{FACE_MIN_DIMENSION}x{FACE_MIN_DIMENSION}.",
-                        "angle": angle,
-                    },
-                    status=400,
-                )
-
-            embedding = recognition.compute_face_embedding(image)
-            if embedding is None:
-                return Response(
-                    {"detail": f"No face detected in image for angle '{angle}'.", "angle": angle},
-                    status=400,
-                )
-
-            upload.seek(0)
-            decoded[angle] = {"upload": upload, "embedding": embedding.flatten().tolist()}
-
-        with transaction.atomic():
-            for angle, result in decoded.items():
-                FaceEmbedding.objects.update_or_create(
-                    person=person,
-                    angle=angle,
-                    defaults={"image": result["upload"], "embedding": result["embedding"]},
-                )
-            person.status = Person.Status.ENROLLED
-            person.enrolled_at = timezone.now()
-            person.save(update_fields=["status", "enrolled_at"])
-
-        rebuild_face_db()
-        person = self.get_queryset().get(pk=person.pk)  # drop the stale (pre-write) embeddings prefetch cache
-        return Response(self.get_serializer(person).data, status=201)
-
-    @action(detail=True, methods=["delete"], url_path="embeddings")
-    def embeddings(self, request, pk=None):
-        person = self.get_object()
-        for embedding in person.embeddings.all():
-            embedding.image.delete(save=False)
-        person.embeddings.all().delete()
-        person.status = Person.Status.PENDING
-        person.enrolled_at = None
-        person.save(update_fields=["status", "enrolled_at"])
-        rebuild_face_db()
-        return Response(self.get_serializer(person).data)
-
-
-class FaceEmbeddingViewSet(viewsets.ReadOnlyModelViewSet):
-    """Read-only: creation/replacement only happens through
-    PersonViewSet.enroll_face, which validates quality and keeps face_db.json
-    (and the all-or-nothing 3-angle guarantee) consistent."""
-
-    queryset = FaceEmbedding.objects.all()
-    serializer_class = FaceEmbeddingSerializer
-    filterset_fields = ["person", "angle"]
-    permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
-
-
 class CitationFilter(django_filters.FilterSet):
     # lookup_expr="date__..." compares the calendar date, not the raw
     # datetime — plain "gte"/"lte" against a date would compare against
@@ -767,10 +684,10 @@ class CitationFilter(django_filters.FilterSet):
 
 
 class CitationViewSet(viewsets.ModelViewSet):
-    queryset = Citation.objects.select_related("alert", "officer", "matched_person").prefetch_related("violations").all()
+    queryset = Citation.objects.select_related("alert", "officer").prefetch_related("violations").all()
     serializer_class = CitationSerializer
     filterset_class = CitationFilter
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, CanEditOwnOpenCitation]
 
     def perform_create(self, serializer):
         """Filing a citation against an alert resolves that alert in the same
@@ -808,24 +725,84 @@ class CitationViewSet(viewsets.ModelViewSet):
                 middle = serializer.validated_data.get("middle_name_entered", "")
                 last = serializer.validated_data.get("last_name_entered", "")
                 suffix = serializer.validated_data.get("suffix_entered", "")
-                violator, created = Violator.objects.get_or_create(
+                violator, _ = Violator.objects.get_or_create(
                     normalized_name=normalize_name(first, middle, last),
                     defaults={
                         "first_name": first, "middle_name": middle,
                         "last_name": last, "suffix": suffix,
                     },
                 )
-                matched_person = serializer.validated_data.get("matched_person")
-                if created and matched_person:
-                    violator.matched_person = matched_person
-                    violator.save(update_fields=["matched_person"])
 
             violator.last_seen = timezone.now()
             violator.save(update_fields=["last_seen"])
 
             citation = serializer.save(created_by=self.request.user, violator=violator, client_uuid=client_uuid)
             if citation.alert_id and resolve_alert:
-                Alert.objects.filter(pk=citation.alert_id).update(status=Alert.Status.RESOLVED)
+                from core import timeline
+                who = getattr(self.request.user, "display_name", "") or self.request.user.username
+                Alert.objects.filter(pk=citation.alert_id).update(
+                    status=Alert.Status.RESOLVED, reviewed_by=self.request.user,
+                    reviewed_at=timezone.now(), reviewed_valid=True)
+                timeline.add(citation.alert_id, "resolved", "Resolved · citation issued", by=who)
+
+    def perform_update(self, serializer):
+        """Correcting a filed citation. Who may, and when, is CanEditOwnOpenCitation.
+
+        The entered names are the citation's own snapshot of what was typed,
+        but `violator` is a LINK to a person record resolved from them. Saving
+        a corrected name without re-resolving that link leaves the citation
+        reading "Juan Cruz" while still counting against whoever it was first
+        matched to — the kind of wrong that looks right on screen and only
+        surfaces much later, in somebody's citation history. So the same
+        resolution perform_create runs happens again here whenever the
+        normalized name actually changes.
+
+        Deliberately NOT done here:
+
+        * The alert is never touched. resolve_alert is a create-time decision
+          about finishing a scene; an edit is not a second filing, and
+          re-resolving (or un-resolving) on a correction would let a typo fix
+          silently reopen or close an incident.
+        * The old Violator is left alone. It may be shared with other
+          citations, and a person record with no citations is still a real
+          record — pruning it here would be a side effect nobody asked for.
+        * client_uuid is left alone. It identifies the original submission for
+          retry purposes; an edit is not a new submission.
+        """
+        citation = serializer.instance
+        data = serializer.validated_data
+        # Create-time instructions, not part of the record. Dropped quietly
+        # because an older client may still send them; the identity fields
+        # (alert / officer / violator) are REFUSED instead, in
+        # CitationSerializer.validate — see there for why the two differ. The
+        # pops below are belt-and-braces for any future caller that reaches
+        # perform_update without passing through that validator.
+        for field in ("resolve_alert", "client_uuid", *CitationSerializer.IDENTITY_FIELDS):
+            data.pop(field, None)
+
+        def entered(field):
+            """The value this save will leave on the row — PATCH is partial, so
+            a field the client left out keeps what is already stored."""
+            return data.get(f"{field}_entered", getattr(citation, f"{field}_entered"))
+
+        with transaction.atomic():
+            # Always from the names. There is no "did you mean" confirmation
+            # flow on update the way there is on create, so a name is the only
+            # thing a correction can be resolved from.
+            first, middle = entered("first_name"), entered("middle_name")
+            last, suffix = entered("last_name"), entered("suffix")
+            normalized = normalize_name(first, middle, last)
+            if normalized == citation.violator.normalized_name:
+                serializer.save()
+                return
+            violator, _ = Violator.objects.get_or_create(
+                normalized_name=normalized,
+                defaults={"first_name": first, "middle_name": middle,
+                          "last_name": last, "suffix": suffix},
+            )
+            violator.last_seen = timezone.now()
+            violator.save(update_fields=["last_seen"])
+            serializer.save(violator=violator)
 
 
 class ViolatorViewSet(viewsets.ReadOnlyModelViewSet):
@@ -902,9 +879,93 @@ def barangays(request):
 
 
 class AlertViewSet(viewsets.ModelViewSet):
-    queryset = Alert.objects.select_related("type", "camera").prefetch_related("officers_assigned").all()
+    queryset = (
+        Alert.objects
+        .select_related("type", "camera", "reviewed_by")
+        .prefetch_related("officers_assigned")
+        .all()
+    )
     serializer_class = AlertSerializer
     filterset_fields = ["status", "type", "camera"]
+
+    def get_queryset(self):
+        """Monitoring events are a quiet watchlist (spec v6): they never appear in
+        the normal alert list or notify anyone. Ask for them explicitly with
+        ?level=monitoring (the dashboard watchlist) or ?include_monitoring=1.
+
+        Both lists split on peak_level, NOT on the current level, so the two
+        remain a clean partition and nothing can fall between them. An event
+        that reached Possible and then faded back to Monitoring stays in
+        Potential Violations and does not reappear on the watchlist: it has
+        already earned a reviewer's attention, and having it vanish from under
+        them mid-review was the behaviour this replaces. Its badge still reads
+        the CURRENT status — only where it is listed is decided by the peak.
+        """
+        qs = super().get_queryset()
+        if self.action == "list":
+            params = self.request.query_params
+            if params.get("level") == "monitoring":
+                return qs.filter(peak_level="monitoring")
+            if params.get("include_monitoring") not in ("1", "true"):
+                qs = qs.exclude(peak_level="monitoring")
+        return qs
+
+    # Statuses that mean somebody has looked at the footage and closed the
+    # matter: resolved (attended and dealt with) or acknowledged (judged a
+    # false alarm and dismissed). These are exactly the alerts the Records
+    # page lists, which is where the reviewer needs to be shown.
+    REVIEWED_STATUSES = (Alert.Status.RESOLVED, Alert.Status.ACKNOWLEDGED)
+
+    def perform_update(self, serializer):
+        """Records WHO closed the alert, keeps its timeline, and silently records the verdict.
+
+        The reviewer is whoever dismissed the alert or marked it resolved, taken from the
+        authenticated request (never from the payload). The verdict `reviewed_valid` has no UI; it
+        is recorded for evaluating the system:
+            Dismiss (web or officer app, also after assignment)  -> False  (a false alarm)
+            Assign officers / an officer accepting               -> True   (worth attending)
+        """
+        from core import timeline
+        before = serializer.instance
+        previous_status = before.status
+        previous_officers = set(before.officers_assigned.values_list("pk", flat=True))
+        alert = serializer.save()
+        user = self.request.user if self.request.user.is_authenticated else None
+        who = (getattr(user, "display_name", "") or getattr(user, "username", "")) if user else ""
+        officers = list(alert.officers_assigned.all())
+        events = []
+        update = {}
+
+        if set(o.pk for o in officers) != previous_officers and officers:
+            events.append(("assigned", "Assigned to " + ", ".join(o.name for o in officers)))
+            update["reviewed_valid"] = True
+        elif alert.status == Alert.Status.DISPATCHED and previous_status != Alert.Status.DISPATCHED:
+            events.append(("assigned", "Assigned"))
+            update["reviewed_valid"] = True
+
+        if alert.status != previous_status:
+            if alert.status == Alert.Status.ACKNOWLEDGED:
+                events.append(("dismissed", alert.notes or "Dismissed"))
+                update["reviewed_valid"] = False          # a false alarm, even after it was assigned
+            elif alert.status == Alert.Status.RESOLVED:
+                events.append(("resolved", "Resolved"))
+                update["reviewed_valid"] = True
+            elif previous_status in self.REVIEWED_STATUSES:
+                events.append(("reopened", "Reopened"))
+            if alert.status in self.REVIEWED_STATUSES:
+                update["reviewed_by"] = user
+                update["reviewed_at"] = timezone.now()
+            else:
+                # Reopened (or assigned): the earlier reviewer no longer closed anything.
+                update["reviewed_by"] = None
+                update["reviewed_at"] = None
+
+        for kind, label in events:
+            timeline.add(alert.pk, kind, label, by=who)
+        if update:
+            Alert.objects.filter(pk=alert.pk).update(**update)
+            for name, value in update.items():
+                setattr(alert, name, value)
 
     @action(detail=True, methods=["post"])
     def accept(self, request, pk=None):
@@ -920,10 +981,15 @@ class AlertViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Only officer accounts can accept assignments."}, status=403)
 
         alert = self.get_object()
+        was_assigned = alert.officers_assigned.filter(pk=officer.pk).exists()
         alert.officers_assigned.add(officer)
         if alert.status == Alert.Status.ACTIVE:
             alert.status = Alert.Status.DISPATCHED
             alert.save(update_fields=["status"])
+        if not was_assigned:
+            from core import timeline
+            timeline.add(alert.pk, "assigned", f"Assigned to {officer.name}", by=officer.name)
+            Alert.objects.filter(pk=alert.pk).update(reviewed_valid=True)
 
         return Response(self.get_serializer(alert).data)
 
@@ -946,7 +1012,25 @@ DETECTION_COMMANDS = {
     # ViolationTypes; "merged" itself is only the DetectionJob's own label,
     # not a ViolationType.
     "merged": "watch_merged",
+    # The same three plus road-edge obstruction, from one feed (see
+    # watch_merged_all.py). Parking's own detector and rule layer run
+    # alongside the merged model's, so a single run can produce alerts of all
+    # four ViolationTypes. Obstruction only — it refuses to start without a
+    # marked no-parking area, which is why it is in EDGE_REQUIRED below.
+    "merged4": "watch_merged_all",
 }
+# Detectors that judge vehicles against a marked no-parking area. Two tiers,
+# because the two mean different things to a caller:
+#
+#   EDGE_CAPABLE   an area is used if one was drawn, and the run is still
+#                  valid without it. "parking" falls back to its plain dwell
+#                  rule (see watch_parking.py).
+#   EDGE_REQUIRED  the run is refused without one. watch_merged_all has no
+#                  fallback on purpose, so rejecting it here turns what would
+#                  be a FAILED job with the reason buried in a subprocess log
+#                  into an immediate, visible error on the page.
+EDGE_REQUIRED = frozenset({"merged4"})
+EDGE_CAPABLE = frozenset({"parking"}) | EDGE_REQUIRED
 DETECTION_UPLOAD_EXTENSIONS = {".mp4", ".mkv", ".avi"}
 DETECTION_MAX_UPLOAD_BYTES = 1024 * 1024 * 1024  # 1GB
 
@@ -1077,7 +1161,21 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
             "height": h,
         })
 
+    # Refused where the detectors cannot run. A job here Popens `manage.py
+    # watch_*`, which needs the GPU, the model weights and the camera — none of
+    # which exist on the hosted API. Without this the job row is created, the
+    # subprocess dies on a missing .pt file, and the page sits on "processing"
+    # for ever with the reason in a log nobody opens. 503 says it is the
+    # server's capability, not the request, that is wrong.
+    DETECTION_DISABLED = (
+        "This server does not run detectors — it has no GPU, no model weights "
+        "and no camera. Run detection on the machine beside the camera; its "
+        "alerts appear here automatically."
+    )
+
     def create(self, request, *args, **kwargs):
+        if not getattr(django_settings, "DETECTION_ENABLED", True):
+            return Response({"detail": self.DETECTION_DISABLED}, status=503)
         violation_type = request.data.get("violation_type", "")
         command = DETECTION_COMMANDS.get(violation_type)
         if command is None:
@@ -1104,6 +1202,17 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
                 return Response({"detail": "Camera not found."}, status=400)
             if not camera.stream_url:
                 return Response({"detail": "Camera has no stream_url configured."}, status=400)
+            # A live run takes the area off the camera record (Live Feeds →
+            # Edge Zones), so there is nothing to stage — but an EDGE_REQUIRED
+            # detector still cannot run without one, and the camera row is the
+            # only place to check.
+            if violation_type in EDGE_REQUIRED and not camera.edges:
+                return Response(
+                    {"detail": f"{camera.name} has no no-parking area saved. Draw one on "
+                               "Live Feeds → Edge Zones first — this detector judges "
+                               "vehicles by how much of them sits inside that area."},
+                    status=400,
+                )
             source_arg = camera.stream_url
             source_filename = f"Live — {camera.name}"
             camera_code = camera.code
@@ -1158,25 +1267,40 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
                 return Response({"detail": "No file uploaded."}, status=400)
 
             source_arg = str(saved_path)
+            # The "-TEST" suffix is load-bearing: it marks alerts from uploaded
+            # footage (kept for accuracy evaluation) so they stay separable from
+            # live-camera alerts, and CameraViewSet / dashboard_stats hide any
+            # camera with that suffix. Do not rename or drop it.
             camera_code = f"CAM-{violation_type.upper()}-TEST"
 
-            # Parking-only: edges drawn against the staged frame are written onto
-            # the shared CAM-PARKING-TEST camera before the subprocess starts, so
-            # watch_parking's own self.camera.edges branch (which correctly
-            # rescales from edges_width/height to whatever the clip actually
-            # decodes at — see watch_parking._build_monitors) picks them up. Two
-            # parking runs started close together will race on this shared row;
-            # accepted as a known limitation of the existing single-camera test
-            # harness rather than fixed here.
+            # Edge-using detectors only: edges drawn against the staged frame
+            # are written onto the shared CAM-<TYPE>-TEST camera before the
+            # subprocess starts, so watch_parking's own self.camera.edges
+            # branch (which correctly rescales from edges_width/height to
+            # whatever the clip actually decodes at — see
+            # watch_parking._build_monitors) picks them up, whether it is
+            # running as the parking watcher or as watch_merged_all's fourth
+            # engine. Two runs of the same type started close together will
+            # race on this shared row; accepted as a known limitation of the
+            # existing single-camera test harness rather than fixed here.
             edges_raw = request.data.get("edges")
-            if violation_type == "parking" and edges_raw:
+            if violation_type in EDGE_REQUIRED and not edges_raw:
+                return Response(
+                    {"detail": "Draw the no-parking area on the clip's first frame "
+                               "before starting this run — it judges vehicles by how "
+                               "much of them sits inside that area, so without one "
+                               "there is nothing to judge them against."},
+                    status=400,
+                )
+            if violation_type in EDGE_CAPABLE and edges_raw:
                 try:
                     edges = json.loads(edges_raw) if isinstance(edges_raw, str) else edges_raw
                 except ValueError:
                     return Response({"detail": "Invalid edges JSON."}, status=400)
                 test_camera, _ = Camera.objects.get_or_create(
                     code=camera_code,
-                    defaults={"name": "Parking Monitor", "status": Camera.Status.ONLINE},
+                    defaults={"name": f"{violation_type.capitalize()} Monitor",
+                              "status": Camera.Status.ONLINE},
                 )
                 test_camera.edges = edges
                 edges_width = request.data.get("edges_width")
@@ -1214,26 +1338,73 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
             # watchers never define this flag, so passing it to them would
             # make argparse reject the whole command outright.
             cascade_args = ["--cascade"] if violation_type == "smoking" else []
-            proc = subprocess.Popen(
-                [sys.executable, "manage.py", command,
-                 "--source", source_arg, "--camera", camera_code, *cascade_args],
-                cwd=str(django_settings.BASE_DIR),
-                stdout=log_file, stderr=subprocess.STDOUT,
-                env=env,
+            # Trim: run over part of an uploaded clip instead of all of it.
+            # Every watcher this page can launch takes --start/--end (see
+            # core/vision/trim.py), so unlike --cascade this needs no per-type
+            # guard. Never for a live camera, which has no position to seek to.
+            if camera is None:
+                try:
+                    trim_start = float(request.data.get("trim_start") or 0)
+                    trim_end = float(request.data.get("trim_end") or 0)
+                except (TypeError, ValueError):
+                    log_file.close()
+                    return Response({"detail": "trim_start / trim_end must be seconds."},
+                                    status=400)
+                if trim_start < 0 or (trim_end and trim_end <= trim_start):
+                    log_file.close()
+                    return Response({"detail": "The trim must end after it starts."},
+                                    status=400)
+                if trim_start:
+                    cascade_args += ["--start", f"{trim_start:.3f}"]
+                if trim_end:
+                    cascade_args += ["--end", f"{trim_end:.3f}"]
+            # Footage start time ("recorded at"): drives the holdup time block and the drinking
+            # evening band. Only for uploaded clips, and only the commands that take --clock.
+            recorded_at = (request.data.get("recorded_at") or "").strip().replace("T", " ")[:16]
+            if recorded_at and camera is None and violation_type in (
+                    "drinking", "thief", "merged", "merged4"):
+                from core.vision.clock import parse_clock
+                try:
+                    parse_clock(recorded_at)
+                except ValueError:
+                    log_file.close()
+                    return Response({"detail": "recorded_at must look like 2026-08-24 16:17."}, status=400)
+                cascade_args += ["--clock", recorded_at]
+            else:
+                recorded_at = ""
+            job = DetectionJob.objects.create(
+                violation_type=violation_type,
+                source_filename=source_filename,
+                source_path=source_arg,
+                camera=camera,
+                status=DetectionJob.Status.RUNNING,
+                pid=None,
+                created_by=request.user,
+                recorded_at=recorded_at,
             )
+            # Where the detector publishes its live processing view (Run Detection page).
+            from core import monitor as live_monitor
+            view_dir = live_monitor.job_dir(job.id)
+            os.makedirs(view_dir, exist_ok=True)
+            env["LOOKOUT_DEBUG_DIR"] = str(view_dir)
+            try:
+                proc = subprocess.Popen(
+                    [sys.executable, "manage.py", command,
+                     "--source", source_arg, "--camera", camera_code, *cascade_args],
+                    cwd=str(django_settings.BASE_DIR),
+                    stdout=log_file, stderr=subprocess.STDOUT,
+                    env=env,
+                )
+            except OSError:
+                job.status = DetectionJob.Status.FAILED
+                job.finished_at = timezone.now()
+                job.save(update_fields=["status", "finished_at"])
+                raise
+            job.pid = proc.pid
+            job.save(update_fields=["pid"])
         finally:
             # The child inherits its own duplicated handle — safe to close ours.
             log_file.close()
-
-        job = DetectionJob.objects.create(
-            violation_type=violation_type,
-            source_filename=source_filename,
-            source_path=source_arg,
-            camera=camera,
-            status=DetectionJob.Status.RUNNING,
-            pid=proc.pid,
-            created_by=request.user,
-        )
 
         threading.Thread(
             target=_watch_detection_job,
@@ -1242,6 +1413,18 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
         ).start()
 
         return Response(self.get_serializer(job).data, status=201)
+
+    @action(detail=True, methods=["get"], url_path="state")
+    def state(self, request, pk=None):
+        """The live processing view of one job: the tracked subjects and the latest clean frame.
+        ?since=<seq> leaves the frame out when the page already has it."""
+        from core import debug_state, monitor as live_monitor
+        job = self.get_object()
+        since = request.query_params.get("since")
+        data = debug_state.payload(live_monitor.job_dir(job.id), int(since) if since and since.isdigit() else None)
+        data["job"] = {"id": job.id, "status": job.status, "violation_type": job.violation_type,
+                       "started_at": job.started_at, "finished_at": job.finished_at}
+        return Response(data)
 
     @action(detail=True, methods=["post"])
     def cancel(self, request, pk=None):

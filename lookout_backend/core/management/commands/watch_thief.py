@@ -8,14 +8,17 @@ from collections import Counter
 import cv2
 from django.conf import settings
 from django.core.management.base import BaseCommand
-from django.utils import timezone
 
+from core import descriptions
 from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
-from core.vision import recognition, theft, tracking
+from core.vision import trim as trimming
+from core.vision import clock as vclock
+from core.vision import recognition, scoring, theft, tracking, ai_checker
+from ._incidents import IncidentMixin
 
-THIEF_CAMERA_CODE = "CAM-THIEF"
+THIEF_CAMERA_CODE = "CAM-SMOKE-01"
 SETTINGS_REFRESH_SECONDS = 5  # re-poll SystemSettings this often, not every frame
 # Tolerate this many clean seconds before resetting dwell. Must stay ABOVE
 # knife's stale_scale-derived accrual window (currently 0.5*6.0 = 3.0s — see
@@ -27,18 +30,13 @@ PRESENCE_GRACE_SECONDS = 4
 
 # Temporal voting is time-based (see tracking.VOTE_WINDOW_SECONDS): a frame
 # counts as "threat present" only if enough of the last few SECONDS of frames
-# were positive. Guns/knives are small hand-held objects and "robbery activity"
-# /"stealing" are pose-like classes, so single-frame hits flicker; the vote
-# turns them into a stable signal before the dwell timer even starts counting.
+# were positive. A knife is a small hand-held object, so single-frame hits
+# flicker; the vote turns them into a stable signal before the dwell timer
+# even starts counting.
 
-# Per-class policy. The four classes are not equally trustworthy: gun and knife
-# are compact objects a frame-wise detector localises well, while "robbery
-# activity" and "stealing" are *actions* being inferred from a single still
-# frame — something an object detector is structurally weak at, and the usual
-# source of false alerts (someone reaching into a bag, crouching, hugging).
-# So the pose-like classes must clear a higher confidence bar and hold for
-# longer before they can raise an alert, while a weapon alerts at the settings
-# dwell. Scales multiply the dashboard values, so tuning Settings still works.
+# Per-class policy. LookOut's holdup detection is knife-only (the shared
+# merged_v2 model has no other holdup class). Scales multiply the dashboard
+# values, so tuning Settings still works.
 #
 # ratio_scale/stale_scale multiply tracking.VOTE_MIN_RATIO/ACCRUAL_STALE_SECONDS
 # the same way conf_scale/dwell_scale multiply the dashboard's confidence/dwell
@@ -62,13 +60,9 @@ PRESENCE_GRACE_SECONDS = 4
 # additional false-positive track surviving to a full alert (3/17 vs the
 # 2/17 that already survive today at the shared defaults) — not zero, but far
 # from the ~374 raw phantom detections the vote gate exists to suppress in the
-# first place. Gun is left at the shared defaults: it's a comparably compact,
-# well-localised object and hasn't shown the same recall gap.
+# first place.
 CLASS_POLICY = {
-    "gun":              {"conf_scale": 1.0, "dwell_scale": 1.0, "ratio_scale": 1.0,  "stale_scale": 1.0},
     "knife":            {"conf_scale": 1.0, "dwell_scale": 1.0, "ratio_scale": 0.25, "stale_scale": 6.0},
-    "robbery activity": {"conf_scale": 1.6, "dwell_scale": 2.0, "ratio_scale": 1.0,  "stale_scale": 1.0},
-    "stealing":         {"conf_scale": 1.6, "dwell_scale": 2.0, "ratio_scale": 1.0,  "stale_scale": 1.0},
 }
 DEFAULT_POLICY = {"conf_scale": 1.0, "dwell_scale": 1.0, "ratio_scale": 1.0, "stale_scale": 1.0}
 
@@ -76,7 +70,7 @@ DEFAULT_POLICY = {"conf_scale": 1.0, "dwell_scale": 1.0, "ratio_scale": 1.0, "st
 # constrained WHERE on a person a weapon detection could sit, so a box drawn
 # around someone's head/shoulders counted exactly the same as one at their
 # hand — geometrically impossible for a knife, but nothing rejected it.
-# Mirrors watch_smoking._apply_face_rule's placement: gated on the vote
+# Mirrors watch_smoking._apply_mouth_rule's placement: gated on the vote
 # input (per_track), before track.vote()/tick() ever sees the detection, so
 # a geometrically implausible box can't build dwell at all — not just a
 # check at the moment of alerting.
@@ -174,20 +168,32 @@ ABLATABLE = (
     # Layer E is ablatable per RULE as well as wholesale: E.9 of the spec calls
     # for per-cue removal so each weight can be revised against measured
     # precision instead of asserted. `--ablate e9` drops just the custody cue.
-    + tuple(f"e{i}" for i in range(1, 30))
+    + tuple(f"e{i}" for i in range(1, 34))
 )
 
-# Local hours the nocturnal amplifier (E20) applies to. Wraps midnight.
+# Local hours treated as night. This NO LONGER drives the E20 score
+# multiplier — that is now a per-three-hour-block lookup from Manila incident
+# data (scoring.MANILA_HOUR_BLOCKS). It still shortens the E16 carnapping
+# interaction dwell, which is a visibility argument (a person fiddling with a
+# parked motorcycle in the dark needs less dwell to be suspicious) and is
+# independent of when robberies actually happen.
 NIGHT_START, NIGHT_END = datetime.time(22, 0), datetime.time(5, 0)
 
 
 def _is_night(now_dt):
-    """E20 — 22:00 to 05:00 local time."""
+    """22:00 to 05:00 local time — E16 dwell only."""
     t = now_dt.time()
     return t >= NIGHT_START or t < NIGHT_END
 
 
-class Command(BaseCommand):
+# Spec §4.3 / Revised Penal Code Art. 293: robbery is committed against a
+# PERSON, so a holdup with no potential victim in frame is not a holdup. Applied
+# only to the holdup pattern -- property theft and carnapping have their own
+# evidence shapes and legitimately involve one actor.
+HOLDUP_MIN_PERSONS = 2
+
+
+class Command(IncidentMixin, BaseCommand):
     help = (
         "Detects theft/robbery indicators (gun/knife/robbery activity/stealing) "
         "using the custom thief model. Use --image PATH to test on a single "
@@ -208,7 +214,9 @@ class Command(BaseCommand):
         self.ablate = set()
         self.layer_e = True
         self.layer_e_only = False
-        self.weapon_alone_alerts = False
+        self._frame_tracks = []
+        self.clock_start = None       # --clock footage start (file sources only)
+        self._holdup_cues = {}        # holder track id -> (time, Layer E cues seen recently)
         self.observe_log = None
         self.engine = None
         # Set only for a file source (see _run_stream) — lets _create_alert cut
@@ -314,6 +322,7 @@ class Command(BaseCommand):
                  "tiles reach further but cost more inference per frame.",
         )
         preproc.add_cli_flags(parser)
+        trimming.add_cli_flags(parser)
         parser.add_argument(
             "--no-layer-e",
             action="store_true",
@@ -325,24 +334,19 @@ class Command(BaseCommand):
             action="store_true",
             help="Make Layer E the ONLY decision path, per the spec's "
                  "implementation binding ('the scoring function replaces the "
-                 "current conjunctive gate'). NOTE: with the written weights a "
-                 "lone weapon scores 0.45, below the 0.55 alert band, so a gun "
-                 "with no other cue stops raising alerts — pair this with "
-                 "--weapon-alone-alerts if that is not what you want.",
+                 "current conjunctive gate'). A lone weapon is Monitoring only.",
         )
         parser.add_argument(
-            "--weapon-alone-alerts",
-            action="store_true",
-            help="Promote any evidence containing the weapon cue (E14) to the "
-                 "Candidate band regardless of score. Resolves the spec's own "
-                 "conflict between E14's weight (0.45) and its stated rationale "
-                 "('sufficient alone to reach the alert band') in favour of the "
-                 "rationale.",
+            "--clock", default="",
+            help="Footage start time for an uploaded / test clip, e.g. "
+                 "\"2026-08-18 19:30\". Drives the holdup time block and the "
+                 "drinking evening band (position in the video is added to it). "
+                 "Ignored for live streams; without it the wall clock is used.",
         )
         parser.add_argument(
             "--observe-log",
             default=None,
-            help="Append Observe-band evidence (E29: 0.35-0.55) to this file as "
+            help="Append near-miss evidence (no knife, or nobody near it) to this file as "
                  "JSON lines, with the full cue vector. This is the ablation "
                  "store the spec calibrates the threshold against after the "
                  "field shoot — near-misses accumulate instead of being lost.",
@@ -361,7 +365,7 @@ class Command(BaseCommand):
         )
         self.camera, _ = Camera.objects.get_or_create(
             code=options["camera"],
-            defaults={"name": "Thief Monitor", "status": Camera.Status.ONLINE},
+            defaults={"name": "Hikvision DS-2CD1047G2", "status": Camera.Status.ONLINE},
         )
         self.violations_dir = settings.MEDIA_ROOT / "violations"
         os.makedirs(self.violations_dir, exist_ok=True)
@@ -380,10 +384,13 @@ class Command(BaseCommand):
         # --fast opts out to the single near pass.
         self.far = not options["fast"]
         self.dry_run = options["dry_run"]
+        self.trim = trimming.Trim(options["start"], options["end"])
         self.tracker_name = options["tracker"]
         self.show_stats = options["stats"]
 
         self.ablate = {s.strip() for s in options["ablate"].split(",") if s.strip()}
+        # AI checker (spec v6 section 8): local Qwen3-VL, display-only, asynchronous.
+        self._ai_setup(off="vlm" in self.ablate)
         unknown = self.ablate - set(ABLATABLE)
         if unknown:
             self.stdout.write(self.style.ERROR(
@@ -403,21 +410,16 @@ class Command(BaseCommand):
         # --- Layer E ---
         self.layer_e = not options["no_layer_e"] and "layer-e" not in self.ablate
         self.layer_e_only = options["layer_e_only"] and self.layer_e
-        self.weapon_alone_alerts = options["weapon_alone_alerts"]
         self.observe_log = options["observe_log"]
+        self.clock_start = vclock.parse_clock(options.get("clock"))
         if self.layer_e:
             # The engine shares self.stats, so --stats reports Layer E's
             # suppressions and cue counts in the same table as the legacy gate's.
-            self.engine = theft.TheftEngine(
-                ablate=self.ablate, stats=self.stats,
-                weapon_alone_alerts=self.weapon_alone_alerts,
-            )
+            self.engine = theft.TheftEngine(ablate=self.ablate, stats=self.stats)
         if self.layer_e_only:
             self.stdout.write(self.style.WARNING(
                 "LAYER E ONLY: the per-class dwell gate is off. A lone weapon "
-                f"scores {theft.WEIGHTS['E14']:.2f}, under the "
-                f"{theft.SCORE_ALERT:.2f} alert band, so it will land in "
-                "Observe rather than alerting unless --weapon-alone-alerts is set."
+                "is Monitoring (watchlist) only."
             ))
         try:
             rows, cols = (int(v) for v in options["tiles"].lower().split("x"))
@@ -429,6 +431,8 @@ class Command(BaseCommand):
             return
 
         cfg = SystemSettings.load()
+
+        self.apply_spec_settings(cfg)
         if not cfg.thief_enabled:
             self.stdout.write(self.style.WARNING(
                 "Thief detection is disabled in Settings (thief_enabled=False). "
@@ -485,10 +489,10 @@ class Command(BaseCommand):
         that person's own box to plausibly be that object, or isn't actually
         near a HAND (see KNIFE_MAX_WRIST_DIST_FRAC).
 
-        Mirrors watch_smoking._apply_face_rule's placement exactly: this runs
+        Mirrors watch_smoking._apply_mouth_rule's placement exactly: this runs
         on `per_track` right after tracker.assign(), so a rejected detection
         never reaches track.vote()/tick() at all — it can't build dwell, not
-        just get blocked at the final alert check. Unlike the face rule,
+        just get blocked at the final alert check. Unlike the mouth rule,
         there's no "keep it if we can't tell" fallback for the wrist check:
         a frame where neither wrist resolves confidently is rejected, not
         waved through — an unresolvable case is exactly the kind of thing
@@ -615,8 +619,7 @@ class Command(BaseCommand):
         alert = self._create_alert(
             best_score, best_label, frame,
             description=(
-                f"Theft/robbery indicator detected on still image: "
-                f"{len(threats)} detection(s) [{summary}]."
+                descriptions.holdup(best_label)
             ),
         )
         self.stdout.write(self.style.SUCCESS(
@@ -655,16 +658,22 @@ class Command(BaseCommand):
         # from it later (see _create_alert) instead of relying only on the
         # annotated buffer's sparser processed frames.
         self._source_path = None if is_live else source
-        # Live sources can't be seeked backwards, and record_camera's segments
-        # aren't safely readable while the current one is still open (see
-        # RawFrameRecorder's docstring) — so a live source gets its own rolling
-        # buffer of RAW (unannotated) frames to cut a raw clip from instead.
+        # Live sources can't be seeked backwards, so a live source gets its own
+        # rolling buffer of RAW (unannotated) frames to cut a raw clip from
+        # instead (see RawFrameRecorder's docstring).
         self._raw_buffer = recognition.RawFrameRecorder() if is_live else None
+        # Jump straight to the chosen start rather than decoding and throwing
+        # away everything before it — on CPU that discarded prefix costs the
+        # same per frame as the part being tested.
+        if self.trim.seek(cap, is_live):
+            self.stdout.write(self.style.SUCCESS(
+                f"Trimmed to {self.trim.describe()} of the clip."))
 
         # Settings are re-polled every few seconds (like watch_curfew/watch_smoking)
         # so edits made in the dashboard take effect live, without a restart.
         # CLI flags, if given, still win over the stored values.
         cfg = SystemSettings.load()
+        self.apply_spec_settings(cfg)
         cfg_loaded_at = time.time()
 
         # Per-person tracking: person boxes are matched across frames (IoU, with
@@ -724,6 +733,7 @@ class Command(BaseCommand):
                 # touches it — see RawFrameRecorder.
                 if self._raw_buffer is not None:
                     self._raw_buffer.add(frame, time.time())
+                self._frame_start(frame)      # clean pixels for the AI checker and the live view
 
                 # Enhance dim/noisy frames before detection (daytime bypasses).
                 frame = self._preprocess(frame)
@@ -731,6 +741,7 @@ class Command(BaseCommand):
                 wall_now = time.time()
                 if wall_now - cfg_loaded_at >= SETTINGS_REFRESH_SECONDS:
                     cfg = SystemSettings.load()
+                    self.apply_spec_settings(cfg)
                     cfg_loaded_at = wall_now
 
                 if not cfg.thief_enabled:
@@ -752,6 +763,14 @@ class Command(BaseCommand):
                     now_ts = self._video_pos_sec
                 else:
                     now_ts = wall_now
+
+                # Reported as an ordinary end-of-clip finish: a trimmed run and
+                # a whole one must look identical to _watch_detection_job,
+                # which only sees the exit code.
+                if self.trim.past_end(now_ts, is_live):
+                    self.stdout.write(self.style.SUCCESS(
+                        f"End of {source} ({self.trim.describe()}) — done."))
+                    break
 
                 self.stats["frames"] += 1
                 conf = self.conf_override or (cfg.thief_confidence / 100)
@@ -775,7 +794,7 @@ class Command(BaseCommand):
                 # frame.shape feeds the E25 edge-truncation guard: a box clipped
                 # by the frame border has a wrong centroid and height, which
                 # corrupts every normalized quantity in E1-E3.
-                tracks = tracker.update(persons, now_ts, ids=ids,
+                tracks = self._frame_tracks = tracker.update(persons, now_ts, ids=ids,
                                         frame_shape=frame.shape)
                 per_track = tracker.assign(threats, now_ts)
                 per_track = self._apply_weapon_region_rule(per_track, frame)
@@ -790,9 +809,11 @@ class Command(BaseCommand):
 
                 # Layer E: pattern rules over the tracks, scored and banded.
                 if self.layer_e:
+                    wall_now = self._clock_now(now_ts)
                     evidence = self.engine.update(
                         tracks, carriables, vehicles, threats, now_ts,
-                        is_night=_is_night(datetime.datetime.now()),
+                        is_night=_is_night(wall_now),
+                        now_dt=wall_now,
                     )
                     for ev in evidence:
                         self._handle_evidence(ev, frame, now_ts,
@@ -811,6 +832,7 @@ class Command(BaseCommand):
 
                 # Buffer this annotated frame for the evidence clip.
                 self.clip.add(frame, now_ts)
+                self._incident_gc(now_ts, frame)   # close incidents whose object is gone
 
                 # Confirmation is time-based, but VOTE_MIN_FRAMES still needs a
                 # few frames to land inside the window — below ~2 FPS that floor,
@@ -881,158 +903,108 @@ class Command(BaseCommand):
             self.stats["discarded: no person (scene)"] += 1
             return
 
-        track.vote(dets, now_ts)
-
-        # Which class's confirmation policy applies — the one most represented
-        # in the window so far, same resolution best_detection() below uses to
-        # pick what to REPORT, resolved here too since a per-class vote/dwell
-        # override (CLASS_POLICY's ratio_scale/stale_scale — currently just
-        # knife, see its comment) has to be known before the active/accruing
-        # check, not after. None when the window is still empty; _policy()
-        # falls back to DEFAULT_POLICY (scale 1.0, i.e. the shared default)
-        # for that and for any class without its own override.
-        label_votes = track.label_votes()
-        policy_label = max(label_votes, key=label_votes.get) if label_votes else None
-        policy = self._policy(policy_label)
-        vote_ratio = tracking.VOTE_MIN_RATIO * policy["ratio_scale"]
-        accrual_stale = tracking.ACCRUAL_STALE_SECONDS * policy["stale_scale"]
-
-        # Ablating the vote removes temporal confirmation entirely: a detection
-        # in THIS frame is taken at face value, which is the no-heuristics
-        # baseline the evaluation compares against.
-        active = bool(dets) if "vote" in self.ablate else track.accruing(
-            now_ts, min_ratio=vote_ratio, stale_seconds=accrual_stale,
-            target_label=policy_label,
-        )
-        present_for = track.tick(now_ts, active)
-
-        if not active:
+        track.vote(dets, now_ts)       # keeps the label history that track.dets draws from
+        # Object cue: momentum per (track, class) -- replaces the vote + dwell gate
+        # (and the per-class vote/stale overrides it needed for the flickery knife).
+        cue = self._object_cue(track, dets, now_ts)
+        self._draw_object_cue(frame, track, dets, cue, color_on=(0, 0, 220))
+        if not cue.on:
             if dets:
-                self.stats["held back: not enough votes yet"] += 1
-            # Clear the dwell only when the person is visibly standing there
-            # NOT doing it any more. If the track wasn't matched this frame they
-            # are out of view, not innocent — hold the progress and let the
-            # tombstone hand it back when they reappear.
-            if track.seen_at(now_ts) and now_ts - track.last_threat_seen > PRESENCE_GRACE_SECONDS:
-                track.reset_dwell()
+                self.stats["held back: momentum below ON"] += 1
+            self._debug_note("Holdup", ("knife", track.id), track.id, track.box, None, cue.momentum)
             return
+        best_label, best_score = cue.label, cue.conf
+        present_for = cue.momentum
 
-        # The class that held up across the window, not whichever spiked highest
-        # in one frame.
-        best = track.best_detection()
-        if best is None:
-            return
-        _, _, _, _, best_score, best_label = best
-
-        required = 0 if "dwell" in self.ablate else self._dwell_for(
-            best_label, dwell_seconds,
-        )
-
-        # Draw the violation boxes ALWAYS (green while building, red once the
-        # dwell is met) — not just in debug — so the evidence clip shows the
-        # weapon/pose being detected. Matches watch_smoking/watch_drinking.
-        # `dets` is only THIS frame's detections, but active/present_for can
-        # still be confirmed on a frame with none at all (track.accruing()
-        # tolerates brief flicker within the vote window) — draw the
-        # track's last KNOWN detections instead so the clip has something to
-        # show for a dwell/alert that built up across a gap, dashed and
-        # dimmed to mark it as historical, not live this frame.
-        draw_dets = dets if dets else track.dets
-        is_historical = not dets and bool(track.dets)
-        for (x1, y1, x2, y2, score, label) in draw_dets:
-            color = (0, 0, 220) if present_for >= required else (0, 200, 0)
-            label_text = f"{label} {score * 100:.0f}% {present_for:.0f}/{required:.0f}s"
-            if is_historical:
-                color = tuple(c // 2 for c in color)
-                recognition.draw_dashed_rect(frame, (x1, y1), (x2, y2), color, 2)
-                label_text += " (last seen)"
-            else:
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            recognition.draw_label(frame, label_text, x1, max(y1 - 8, 0), color)
-
-        if present_for < required:
-            self.stats[f"held back: dwell not met:{best_label}"] += 1
-            return
-
-        box = track.box or best[:4]
-        if "cooldown" not in self.ablate:
-            # Phase C: a cooldown timing out is not the same thing as this
-            # incident ending. See tracking.Track.has_alerted.
-            if track.has_alerted:
-                self.stats["suppressed: track already alerted (same incident)"] += 1
-                return
-            if track.in_cooldown(now_ts, cooldown):
-                self.stats["suppressed: track cooldown"] += 1
-                return
-            if self._cooldown_blocks(box, now_ts, cooldown):
-                self.stats["suppressed: recent alert at same spot"] += 1
-                return
-
-        summary = ", ".join(sorted({s[5] for s in track.dets}))
+        box = track.box
+        # The object cue is ON (momentum). The
+        # status now comes from the shared scoring rules: a knife is 45 points
+        # times the time-of-day block, Monitoring until a second person is NEAR
+        # the holder -- never the raw YOLO box confidence.
+        evidence = self._knife_evidence(track, best_label, present_for, now_ts, box)
+        self._ai_note(("partner", track.id), getattr(evidence, "partner_box", None))
+        self._debug_note("Holdup", ("knife", track.id), track.id, box, evidence, cue.momentum)
         who = track.display
-        self.stats[f"ALERTS:{best_label}"] += 1
-        alert = self._create_alert(
-            best_score, best_label, frame,
-            description=(
-                f"Theft/robbery indicator detected: {summary} on {who}, "
-                f"present for {present_for:.0f}s on {self.camera.code} feed."
-            ),
-            now=now_ts,
+        summary = ", ".join(sorted({s[5] for s in track.dets}))
+
+        def create(level, with_clip):
+            return self._create_alert(
+                evidence.score, best_label, frame,
+                description=self._describe(evidence, summary, who, present_for),
+                now=now_ts, evidence=evidence, with_clip=with_clip,
+                # The detector's own confidence in the winning box, kept apart
+                # from the evidence score (the two answer different questions).
+                object_confidence=best_score,
+            )
+
+        alert = self._incident_sync(
+            ("knife", track.id), evidence, now_ts, create=create, frame=frame, box=box,
+            describe=lambda sc: self._describe(sc, summary, who, present_for),
+            blocked=lambda: "cooldown" not in self.ablate and self._cooldown_blocks(box, now_ts, cooldown),
+            ai=self._ai_request(track, evidence),
+            extra_cues={"object_confidence": round(best_score, 3), "momentum": cue.snapshot},
         )
-        track.last_alerted_at = now_ts
-        track.has_alerted = True
-        self._alert_log.append((tuple(box), now_ts))
-        self.stdout.write(self.style.SUCCESS(
-            (f"ALERT created: {alert.code}" if alert else "ALERT suppressed (dry run)")
-            + f" ({best_label}, {who}, held {present_for:.0f}s)"
-        ))
+        if alert is not None or self.dry_run:
+            self.stats[f"status:{evidence.band}:{best_label}"] += 1
+
+    def _ai_request(self, track, evidence):
+        """What to ask the AI checker for a knife incident: both people (the holder and the
+        nearest other person) in the crop, and the system note in the spec's wording."""
+        keys = [("track", track.id)]
+        partner = getattr(evidence, "partner_box", None)
+        if partner is not None:
+            keys.append(("partner", track.id))
+        return {"kind": "holdup", "keys": keys,
+                "note": ai_checker.system_note("holdup", people=2 if evidence.people_near else None)}
+
+    def _clock_now(self, now_ts):
+        """Time of day for scoring: the --clock footage time for a file, else the wall clock."""
+        return vclock.clock_now(self.clock_start, now_ts, self._source_path is not None)
+
+    def _describe(self, ev, summary, who, present_for):
+        return descriptions.holdup(summary, bool(ev.people_near))
+
+    def _knife_evidence(self, track, label, present_for, now_ts, box):
+        """Evidence for one knife holder: the knife (E14), any recent Layer E
+        cues for the same holder, and the time-of-day block."""
+        cues = {"E14": theft.WEIGHTS["E14"]}
+        seen = self._holdup_cues.get(track.id)
+        if seen is not None and now_ts - seen[0] <= max(theft.EVIDENCE_WINDOW, self.cue_hold):
+            for rule in seen[1]:
+                cues[rule] = theft.WEIGHTS[rule]
+        mult = {}
+        factor = scoring.manila_time_multiplier(self._clock_now(now_ts))
+        if factor != 1.0 and "e20" not in self.ablate:
+            mult["E20"] = factor
+        near = any(o is not track and not getattr(o, "is_scene", False)
+                   and theft._person_norm_distance(track.box, o.box) <= theft.NEAR_PERSON_HEIGHTS
+                   for o in self._frame_tracks)
+        return theft.Evidence(
+            "weapon", tuple(box), cues, mult, set(), [track.id],
+            f"{label} (momentum {present_for:.1f})",
+            people_near=near, previous_level=self._incident_level(("knife", track.id)))
 
     # ---- Layer E evidence handling (E29) ----------------------------------
 
     def _handle_evidence(self, ev, frame, now_ts, cooldown, debug):
-        """E29 — route one scored evidence vector to its band's outcome.
-
-        Discard  (<0.35)      nothing beyond the suppression log
-        Observe  (0.35-0.55)  logged with the full cue vector, no alert
-        Candidate(>0.55)      an Alert row, entering the existing lifecycle
+        """E29 -- Layer E pattern evidence. It no longer creates alerts of its own:
+        the knife path (object cue ON) owns the incident, and the pattern cues
+        (E12 frozen pair, E10 loitering) are folded into its score for the same
+        holder. A pattern with no knife is not shown (spec: no object, no alert).
         """
         if debug:
             x1, y1, x2, y2 = ev.box
-            color = {theft.CANDIDATE: (0, 0, 220),
-                     theft.OBSERVE: (0, 165, 255)}.get(ev.band, (120, 120, 120))
+            color = {scoring.WARNING: (0, 0, 220),
+                     scoring.MONITORING: (0, 165, 255)}.get(ev.band, (120, 120, 120))
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
             recognition.draw_label(frame, f"{ev.kind} {ev.score:.2f} {ev.band}",
                                    x1, max(y1 - 8, 0), color)
-
-        if ev.band == theft.DISCARD:
-            return
-        if ev.band == theft.OBSERVE:
+        rules = {r for r in ev.cues if r in ("E12", "E10")}
+        if rules:
+            for tid in ev.tracks:
+                self._holdup_cues[tid] = (now_ts, rules)
+        if ev.band == scoring.NONE:
             self._log_observe(ev)
-            return
-
-        if "cooldown" not in self.ablate and self._cooldown_blocks(
-                ev.box, now_ts, cooldown):
-            self.stats["suppressed: recent alert at same spot"] += 1
-            return
-
-        self.stats[f"ALERTS:{ev.kind}"] += 1
-        alert = self._create_alert(
-            # Alert.confidence is a 0-1 field, but an E28 score is a weighted
-            # sum that can legitimately exceed 1.0 (weapon + custody + night).
-            # Clamp for storage; the true score is in the description.
-            min(ev.score, 1.0), ev.kind, frame,
-            description=(
-                f"Theft pattern detected ({ev.kind}): {ev.detail}. "
-                f"Layer E score {ev.score:.2f} "
-                f"[{', '.join(ev.rules)}] on {self.camera.code} feed."
-            ),
-            now=now_ts,
-        )
-        self._alert_log.append((tuple(ev.box), now_ts))
-        self.stdout.write(self.style.SUCCESS(
-            (f"ALERT created: {alert.code}" if alert else "ALERT suppressed (dry run)")
-            + f" [Layer E {ev.kind}] {ev.summary()}"
-        ))
 
     def _log_observe(self, ev):
         """The Observe band: a near miss, kept with its evidence vector intact.
@@ -1078,13 +1050,10 @@ class Command(BaseCommand):
 
     # ---- shared alert creation --------------------------------------------
 
-    def _create_alert(self, score, label, frame, description, now=None):
-        ts_label = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        safe_label = label.replace(" ", "_")
-        filename = f"{ts_label}_thief_{safe_label}.jpg"
-        cv2.imwrite(str(self.violations_dir / filename), frame)
-        image_url = violation_media_path(filename)
 
+    def _save_clips(self, base, frame, now):
+        """Write (or rewrite) the annotated and raw evidence clips named `base`.
+        Returns (video_url, raw_video_url); either may be empty on failure."""
         # Write the ~30s evidence clip (annotated frames leading up to the
         # alert). getattr guards --image test mode, which never creates
         # self.clip (mirrors watch_smoking/watch_drinking's own guard).
@@ -1104,17 +1073,16 @@ class Command(BaseCommand):
             # only covers a caller with no timeline of its own (--image
             # test mode, which never touches self.clip anyway).
             clip.add(frame, now if now is not None else time.time())
-            video_name = f"{ts_label}_thief_{safe_label}.mp4"
+            video_name = f"{base}.mp4"
             if clip.save(self.violations_dir / video_name):
                 video_url = violation_media_path(video_name)
 
         # RAW (unannotated, full source frame rate/resolution) clip. File
         # sources cut straight from the source file (best quality, real fps).
         # Live sources can't be seeked, so they fall back to the rolling
-        # RawFrameRecorder buffer of raw frames instead (see its docstring for
-        # why record_camera's segments aren't usable for this).
+        # RawFrameRecorder buffer of raw frames instead (see its docstring).
         raw_video_url = ""
-        raw_name = f"{ts_label}_thief_{safe_label}_raw.mp4"
+        raw_name = f"{base}_raw.mp4"
         raw_path = self.violations_dir / raw_name
         if self._source_path is not None and self._video_pos_sec is not None:
             start = max(0.0, self._video_pos_sec - recognition.RAW_CLIP_PRE_SECONDS)
@@ -1131,7 +1099,29 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING(
                 "  raw clip not produced (see ffmpeg log above if one was attempted)"
             ))
+        return video_url, raw_video_url
 
+    def _create_alert(self, score, label, frame, description, now=None,
+                      evidence=None, object_confidence=None, with_clip=True):
+        ts_label = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_label = label.replace(" ", "_")
+        base = f"{ts_label}_thief_{safe_label}"
+        self._last_clip_base = base
+        filename = f"{base}.jpg"
+        cv2.imwrite(str(self.violations_dir / filename), frame)
+        image_url = violation_media_path(filename)
+
+        # A Monitoring event gets ONE image and no clip; the clip is written when
+        # the event reaches Possible / Likely (and refreshed while it continues).
+        video_url = raw_video_url = ""
+        if with_clip:
+            video_url, raw_video_url = self._save_clips(base, frame, now)
+
+        # Optional run log ($LOOKOUT_MOUTH_LOG): what fired and with which cues,
+        # even in --dry-run, so before/after comparisons need no database rows.
+        recognition.log_mouth(kind="alert", engine="thief", label=label, score=score,
+                              level=getattr(evidence, "level", ""),
+                              cues=sorted(getattr(evidence, "cues", None) or []))
         if self.dry_run:
             return None
 
@@ -1139,11 +1129,21 @@ class Command(BaseCommand):
             type=self.thief_type,
             status=Alert.Status.ACTIVE,
             camera=self.camera,
-            timestamp=timezone.now(),
+            timestamp=self._event_time(now),
             confidence=score,
             description=description,
             image_url=image_url,
             video_url=video_url,
             raw_video_url=raw_video_url,
             suspect=label,
+            # The status (Monitoring / Possible / Likely), never a bare number.
+            level=evidence.band if evidence is not None else "",
+            # The full cue vector, for the audit trail and for
+            # calibrate_weights -- theft was the only detector not recording
+            # one, so none of its alerts could ever be fitted against.
+            cues=evidence.as_dict() if evidence is not None else {},
+            last_seen_at=self._event_time(now),
+            # The detector's own confidence in the anchoring box, distinct from
+            # the violation likelihood above.
+            object_confidence=object_confidence,
         )

@@ -114,41 +114,6 @@ vocabulary — see `database_design.md` for the one-to-one cardinality.
 
 ---
 
-## TABLE tblPerson
-*(`core_person` — a face-registry enrollment record, not a resident/household
-record.)*
-
-| Attribute Name | Data Type | Max Length | Key Type | Null |
-|---|---|---|---|---|
-| id | INTEGER | - | Primary Key | No |
-| person_code | VARCHAR | 20 | Unique | No |
-| full_name | VARCHAR | 150 | | No |
-| status | VARCHAR | 10 | | No |
-| enrolled_at | DATETIME | - | | Yes |
-| notes | TEXT | - | | No |
-| created_at | DATETIME | - | | No |
-
----
-
-## TABLE tblFaceEmbedding
-*(`core_faceembedding` — one biometric template per enrolled angle of a
-`tblPerson`.)*
-
-| Attribute Name | Data Type | Max Length | Key Type | Null |
-|---|---|---|---|---|
-| id | INTEGER | - | Primary Key | No |
-| person_id | INTEGER | - | Foreign Key | No |
-| angle | VARCHAR | 10 | | No |
-| image | VARCHAR | 100 | | No |
-| embedding | TEXT | - | | No |
-| det_score | FLOAT | - | | Yes |
-| created_at | DATETIME | - | | No |
-
-A composite unique constraint on (`person_id`, `angle`) also applies — not
-representable as a single Key Type value above.
-
----
-
 ## TABLE tblAlert
 *(`core_alert`)*
 
@@ -167,8 +132,6 @@ representable as a single Key Type value above.
 | raw_video_url | VARCHAR | 200 | | No |
 | suspect | VARCHAR | 150 | | No |
 | notes | TEXT | - | | No |
-| matched_person_id | INTEGER | - | Foreign Key | Yes |
-| match_confidence | FLOAT | - | | Yes |
 
 ---
 
@@ -196,7 +159,6 @@ class of its own.)*
 | middle_name | VARCHAR | 100 | | No |
 | suffix | VARCHAR | 5 | | No |
 | normalized_name | VARCHAR | 310 | | No |
-| matched_person_id | INTEGER | - | Foreign Key | Yes |
 | aliases | TEXT | - | | No |
 | first_seen | DATETIME | - | | No |
 | last_seen | DATETIME | - | | Yes |
@@ -221,8 +183,6 @@ it is not user-editable.
 | officer_id | INTEGER | - | Foreign Key | No |
 | barangay_of_violation | VARCHAR | 30 | | No |
 | violator_barangay | VARCHAR | 50 | | No |
-| matched_person_id | INTEGER | - | Foreign Key | Yes |
-| match_confidence | FLOAT | - | | Yes |
 | notes | TEXT | - | | No |
 | created_by_id | INTEGER | - | Foreign Key | Yes |
 | created_at | DATETIME | - | | No |
@@ -270,21 +230,6 @@ read/written through `SystemSettings.load()`.)*
 | Attribute Name | Data Type | Max Length | Key Type | Null |
 |---|---|---|---|---|
 | id | INTEGER | - | Primary Key | No |
-| curfew_start | TIME | - | | No |
-| curfew_end | TIME | - | | No |
-| curfew_age | SMALLINT | - | | No |
-| curfew_confidence | SMALLINT | - | | No |
-| curfew_dwell | SMALLINT | - | | No |
-| guardian_check | BOOLEAN | - | | No |
-| unknown_alert | BOOLEAN | - | | No |
-| noise_enabled | BOOLEAN | - | | No |
-| noise_threshold_db | SMALLINT | - | | No |
-| noise_duration | SMALLINT | - | | No |
-| waste_enabled | BOOLEAN | - | | No |
-| waste_confidence | SMALLINT | - | | No |
-| waste_dwell | SMALLINT | - | | No |
-| waste_collection_start | TIME | - | | No |
-| waste_collection_end | TIME | - | | No |
 | parking_enabled | BOOLEAN | - | | No |
 | parking_confidence | SMALLINT | - | | No |
 | parking_dwell | SMALLINT | - | | No |
@@ -309,23 +254,8 @@ read/written through `SystemSettings.load()`.)*
 | drinking_cooldown_center_dist | FLOAT | - | | No |
 | alert_cooldown | SMALLINT | - | | No |
 | evidence_retention_days | SMALLINT | - | | No |
-| auto_dispatch | BOOLEAN | - | | No |
-| email_alerts | BOOLEAN | - | | No |
-| sms_alerts | BOOLEAN | - | | No |
 | updated_at | DATETIME | - | | No |
 
-**Note for adviser discussion.** This table's 43 configuration fields (44
-including `id`) are documented here exactly as they exist, without deletion or
-omission, but three groups have no corresponding implementation in the
-codebase and should be flagged as scope questions: the `noise_*` fields (3)
-and `waste_*` fields (5) have no `watch_noise`/`watch_waste` management
-command anywhere in the project — no detector reads them; `sms_alerts` is a
-boolean toggle with no SMS-sending code anywhere in the codebase (no provider
-integration, no send function). Separately, `curfew_confidence` — despite its
-name and its home in the curfew field group — is actively read by
-`watch_all.py` and `watch_merged.py`, where it is passed as the generic
-face-match confidence threshold when checking smoking/drinking track
-detections against the enrolled `tblPerson`/`tblFaceEmbedding` registry. It is
-not used for curfew detection (curfew itself is out of scope and undocumented
-here); the field is simply being repurposed under its original name. This is
-flagged for awareness only — no rename is being made.
+**Note.** The curfew, noise, waste, SMS, e-mail-alert and auto-dispatch settings columns (18 in total) that earlier
+versions of this table listed were never read by any detector and have been removed (migration
+`0045_remove_unused_settings_columns`).
