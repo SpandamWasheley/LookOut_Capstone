@@ -1,21 +1,34 @@
 # Render blueprint for the LookOut API.
 #
-# NOTE ON SCOPE: this deploys the API and database ONLY. The detection watchers
-# (watch_parking, watch_curfew, ...) are not here and cannot be - they read RTSP
-# streams from cameras on the barangay LAN, which no datacentre can reach, and
-# their CV stack is several GB. They run on a PC beside the cameras, pointed at
-# this service's DATABASE_URL. See DEPLOYMENT.md.
+# NOTE ON SCOPE: this service runs the API, the database AND the detectors.
+#
+# The detectors need two things a datacentre does not have: the camera, which
+# sits on the barangay LAN, and Ollama for the VLM check. Both are reached
+# through tunnels from the PC on site -- STREAM_URL/the camera's stream URL for
+# the RTSP stream, VLM_ENDPOINT for Ollama. That PC therefore still has to be
+# on; it just runs the tunnels and Ollama instead of the detectors.
+#
+# The cheaper topology is the reverse: detectors on the PC beside the camera,
+# this service API-only. To go back to it, set DETECTION_ENABLED=False and
+# INSTALL_DETECTION=false (which skips the ~0.5GB torch install at build) and
+# drop the plan back to free.
 services:
   - type: web
     name: lookout-api
     runtime: python
-    plan: free
+    # NOT free: torch plus a loaded YOLO model and OpenCV video decode do not
+    # fit in the free tier's 512MB, and a free instance spins down after 15
+    # minutes idle, which kills the live monitor. Standard is 2GB.
+    plan: standard
     rootDir: lookout_backend
     # One script rather than four inline lines, so the same sequence can be run
     # by hand and so `set -o errexit` applies: an inline block carries on after
     # a failed step, which once let a deploy go live with no migrations.
     buildCommand: ./build.sh
-    startCommand: gunicorn lookout_backend.wsgi:application --workers 2 --timeout 120
+    # ONE worker. Each worker is a separate process with its own copy of the
+    # loaded YOLO weights, and its own live-monitor thread -- two of them race
+    # to spawn the same detector subprocesses and double the memory.
+    startCommand: gunicorn lookout_backend.wsgi:application --workers 1 --timeout 120
     healthCheckPath: /api/health/
     envVars:
       - key: PYTHON_VERSION
@@ -44,12 +57,34 @@ services:
         sync: false
       - key: ADMIN_EMAIL
         sync: false
-      # This server has no GPU, no model weights and no camera, so it must
-      # refuse to launch a detector. Without it a detection job is accepted,
-      # the subprocess dies on a missing .pt file, and the page sits on
-      # "processing" for ever with the reason in a log nobody opens.
+      # This service runs the detectors. The weights ship in the repo
+      # (core/vision/*.pt, 54MB), the CV stack is installed by build.sh, and
+      # the camera and Ollama arrive over tunnels (below). Set this False
+      # together with INSTALL_DETECTION=false to go back to an API-only host.
       - key: DETECTION_ENABLED
-        value: "False"
+        value: "True"
+      # Whether build.sh installs torch/ultralytics. Must agree with
+      # DETECTION_ENABLED: True here with a False install gives a service that
+      # accepts a detection job and dies on `import torch`.
+      - key: INSTALL_DETECTION
+        value: "true"
+      # Where this service reaches Ollama for the VLM check -- the ngrok HTTP
+      # tunnel fronting the on-site PC's Ollama. Overrides the stored
+      # SystemSettings.vlm_endpoint, which says localhost and is correct only
+      # on that PC. Ollama binds 127.0.0.1 and checks the Host header, so the
+      # tunnel needs OLLAMA_HOST=0.0.0.0:11434 and --host-header=rewrite.
+      - key: VLM_ENDPOINT
+        sync: false
+      # OPTIONAL, and usually better left unset: the camera's RTSP address.
+      #
+      # On a free ngrok plan the TCP address changes every restart, and
+      # changing an env var here triggers a full redeploy. The camera's
+      # stream URL is also settable from the dashboard (Live Feeds -> Stream
+      # URL), which takes effect immediately and takes priority over this --
+      # see Camera.resolved_stream_url. Use that for the rotating address and
+      # leave this unset.
+      - key: STREAM_URL
+        sync: false
       # Evidence media. Cloudinary is checked first and is NOT S3-compatible,
       # so it needs its own backend; the AWS_* block below is the alternative,
       # not a companion. Set one or the other, never both.
@@ -68,14 +103,16 @@ services:
         sync: false
       - key: AWS_S3_CUSTOM_DOMAIN
         sync: false
-      # Email (OTP codes) and SMS - see .env.example
-      - key: EMAIL_HOST_USER
+      # Email (OTP codes), sent through Brevo's HTTP API rather than SMTP --
+      # managed hosts block outbound SMTP ports. See core/mail.py and
+      # .env.example. The EMAIL_HOST_* pair is only needed if EMAIL_BACKEND is
+      # pointed back at Django's SMTP backend, and needs a DIFFERENT credential
+      # (an SMTP key, not this API key).
+      - key: BREVO_API_KEY
         sync: false
-      - key: EMAIL_HOST_PASSWORD
-        sync: false
+      # Must be an address verified under Brevo -> Senders, or Brevo accepts
+      # the message and drops it.
       - key: DEFAULT_FROM_EMAIL
-        sync: false
-      - key: SEMAPHORE_API_KEY
         sync: false
 
 databases:

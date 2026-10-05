@@ -377,14 +377,17 @@ MEDIA_ROOT = BASE_DIR / 'media'
 # re-encoding, no surprises in a court-facing record. Override with
 # CLOUDINARY_STORAGE_BACKEND if you specifically want image transformations.
 # --- can this process run detectors? ----------------------------------------
-# False on the hosted API, True on the PC beside the cameras.
+# True on the PC beside the camera, and True on a hosted service that has been
+# given the CV stack plus tunnels to the camera and Ollama. False on an
+# API-only host.
 #
 # The detectors are launched as real subprocesses (`manage.py watch_*`) by
-# DetectionJobViewSet and by the live monitor. That works only where the GPU,
-# the model weights and the camera all are. On Render none of the three exist:
-# the job starts, the subprocess dies on a missing .pt file, and the dashboard
-# shows a run that is "processing" for ever with the reason buried in a
-# subprocess log nobody opens.
+# DetectionJobViewSet and by the live monitor, so this process needs the model
+# weights (they ship in core/vision/), torch, a reachable stream and a
+# reachable VLM endpoint. Where any of those is missing the job starts, the
+# subprocess dies, and the dashboard shows a run that is "processing" for ever
+# with the reason buried in a subprocess log nobody opens -- hence the flag,
+# which turns that into an immediate 503.
 #
 # Explicit rather than inferred, because DATABASE_URL cannot tell them apart —
 # the edge PC sets it too, pointing at the hosted Postgres.

@@ -35,7 +35,7 @@ python manage.py test                # core/tests.py (currently empty/stub)
 
 Requires a `.env` in `lookout_backend/` (see `.env.example`) for `BREVO_API_KEY`/`DEFAULT_FROM_EMAIL` (OTP codes, sent via the Brevo HTTP API — see `core/mail.py`; the `EMAIL_HOST_*` SMTP vars are only read if `EMAIL_BACKEND` is pointed back at Django's SMTP backend). Other env vars read in `settings.py`: `SECRET_KEY`, `DEBUG`, `ALLOWED_HOSTS`, `ALLOWED_CORS_ORIGINS`, `SITE_BASE_URL`.
 
-The `watch_*` detectors need the heavy CV deps (`torch`, `ultralytics`, `opencv-python`, …) installed (see `requirements-detection.txt`); the YOLO weights load from `core/vision/`.
+The `watch_*` detectors need the heavy CV deps (`torch`, `ultralytics`, `opencv-python`, …) installed (`requirements-detection.txt` on a workstation, `requirements-detection-server.txt` on a server — the latter drops `opencv-python`, which needs `libGL.so.1`); the YOLO weights load from `core/vision/`. Whether a given process may launch a detector at all is the `DETECTION_ENABLED` setting; a hosted deployment that runs them reaches the camera and Ollama over tunnels (`STREAM_URL` / the camera's stream URL, and `VLM_ENDPOINT`) — see `render.yaml` and `ngrok.example.yml`.
 
 ### Web dashboard (`lookout/`)
 
