@@ -13,7 +13,7 @@ being hardcoded.
 from unittest import mock
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 
@@ -84,6 +84,7 @@ class SnapshotUrlTests(TestCase):
         self.assertIsInstance(auth, HTTPDigestAuth)
         self.assertEqual((auth.username, auth.password), ("admin", "p@ss"))
 
+    @override_settings(STREAM_URL="")
     def test_a_camera_with_no_stream_url_404s(self):
         cam = self.Camera.objects.create(code="CAM-UNSET", name="Unset")
         r = self.c.get(f"/api/cameras/{cam.pk}/snapshot/")
@@ -97,3 +98,82 @@ class SnapshotUrlTests(TestCase):
             r = self.c.get(f"/api/cameras/{cam.pk}/snapshot/")
         self.assertEqual(r.status_code, 502)
         self.assertIn("unreachable", r.json()["detail"])
+
+
+ENV_URL = "rtsp://admin:envpass@192.168.1.64:554/Streaming/Channels/102"
+JPEG = bytes.fromhex("ffd8") + b"jpg"   # a JPEG SOI marker
+
+
+class StreamUrlFromEnvTests(TestCase):
+    """STREAM_URL in .env as a source for the camera's RTSP address.
+
+    The camera is on a LAN, so seed_core deliberately leaves Camera.stream_url
+    empty rather than put credentials in a hosted database. That left typing it
+    into Live Feeds as the only way to supply it, which has to be redone every
+    time the database is reset. STREAM_URL lets the edge machine declare it
+    once, in its own .env.
+
+    It is a fallback, not an override: a URL saved from Live Feeds still wins,
+    so the dashboard never silently stops taking effect.
+    """
+
+    def setUp(self):
+        from core.models import Camera
+        User = get_user_model()
+        self.admin = User.objects.create_user(username="adm2", password="x", role="admin")
+        self.c = APIClient()
+        self.c.force_authenticate(self.admin)
+        self.Camera = Camera
+
+    @override_settings(STREAM_URL=ENV_URL)
+    def test_a_camera_with_no_saved_url_falls_back_to_the_env(self):
+        cam = self.Camera.objects.create(code="CAM-SMOKE-01", name="Hikvision")
+        self.assertEqual(cam.resolved_stream_url, ENV_URL)
+        self.assertTrue(cam.is_live)
+
+    @override_settings(STREAM_URL=ENV_URL)
+    def test_a_saved_url_wins_over_the_env(self):
+        cam = self.Camera.objects.create(code="CAM-SMOKE-01", name="Hikvision",
+                                         stream_url="rtsp://a:b@10.0.0.2:554/Streaming/Channels/101")
+        self.assertEqual(cam.resolved_stream_url,
+                         "rtsp://a:b@10.0.0.2:554/Streaming/Channels/101")
+
+    @override_settings(STREAM_URL=ENV_URL)
+    def test_a_test_camera_never_inherits_the_env_url(self):
+        # "-TEST" cameras only tag alerts from uploaded footage; they have no
+        # stream, so inheriting the real one would make them claim to be live.
+        cam = self.Camera.objects.create(code="CAM-SMOKING-TEST", name="Upload test")
+        self.assertEqual(cam.resolved_stream_url, "")
+        self.assertFalse(cam.is_live)
+
+    @override_settings(STREAM_URL="")
+    def test_no_saved_url_and_no_env_is_still_not_live(self):
+        cam = self.Camera.objects.create(code="CAM-SMOKE-01", name="Hikvision")
+        self.assertEqual(cam.resolved_stream_url, "")
+        self.assertFalse(cam.is_live)
+
+    @override_settings(STREAM_URL=ENV_URL)
+    def test_the_snapshot_proxy_uses_the_env_url(self):
+        # The whole point: every consumer honours the fallback, so a camera the
+        # monitor can start is never one the snapshot endpoint calls unset.
+        cam = self.Camera.objects.create(code="CAM-SMOKE-01", name="Hikvision")
+        with mock.patch("requests.get") as get:
+            get.return_value = mock.Mock(status_code=200, content=JPEG,
+                                         headers={"Content-Type": "image/jpeg"})
+            r = self.c.get(f"/api/cameras/{cam.pk}/snapshot/")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(get.call_args[0][0],
+                         "http://192.168.1.64/ISAPI/Streaming/channels/102/picture")
+        self.assertEqual(get.call_args[1]["auth"].password, "envpass")
+
+    @override_settings(STREAM_URL=ENV_URL)
+    def test_the_env_url_is_never_serialized_back_to_the_browser(self):
+        # stream_url is write-only so credentials never round-trip; the env
+        # fallback must not become a way around that.
+        self.Camera.objects.create(code="CAM-SMOKE-01", name="Hikvision")
+        body = self.c.get("/api/cameras/").json()
+        rows = body["results"] if isinstance(body, dict) else body
+        self.assertTrue(rows)
+        self.assertNotIn("stream_url", rows[0])
+        self.assertTrue(rows[0]["is_live"])
+        self.assertNotIn("envpass", self.c.get("/api/cameras/").content.decode())

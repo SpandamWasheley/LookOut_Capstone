@@ -441,13 +441,70 @@ elif AWS_STORAGE_BUCKET_NAME:
 SITE_BASE_URL = config('SITE_BASE_URL', default='http://localhost:8000')
 
 
-# Email (used for officer account email verification codes)
+# RTSP URL of the one camera (CAM-SMOKE-01), for the machine that can actually
+# reach it.
+#
+# The camera lives on a LAN, so its address is edge-local: seed_core
+# deliberately leaves Camera.stream_url empty rather than write an RTSP URL
+# with credentials into a hosted database. That left exactly one way to supply
+# it -- an operator typing it into Live Feeds -- which has to be redone by hand
+# every time the database is reset or redeployed.
+#
+# This gives the edge machine a second way: put it in that machine's .env and
+# every detector and snapshot call picks it up on its own. It is a FALLBACK,
+# not an override -- a stream_url saved from Live Feeds still wins, so the
+# dashboard never silently stops working. See Camera.resolved_stream_url, which
+# is the only thing that should read this.
+STREAM_URL = config('STREAM_URL', default='')
 
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = 'smtp.gmail.com'
-EMAIL_PORT = 587
-EMAIL_USE_TLS = True
+
+# Where this process reaches Ollama for the VLM second-stage check.
+#
+# Per-machine, and it OVERRIDES SystemSettings.vlm_endpoint -- the opposite
+# precedence to STREAM_URL above, for a reason. SystemSettings is one shared
+# singleton row: the edge PC and a hosted API read the same value, so a single
+# stored endpoint cannot be right for both. The edge wants localhost; a hosted
+# API wants the tunnel that fronts it. Only the environment is per-machine.
+#
+# Empty (the default) means "use the stored setting", so nothing changes for a
+# single-machine install. See SystemSettings.resolved_vlm_endpoint.
+VLM_ENDPOINT = config('VLM_ENDPOINT', default='')
+
+
+# Email (used for officer account email verification codes)
+#
+# Sent through Brevo over HTTPS rather than SMTP: managed hosts routinely block
+# outbound SMTP ports, and an API rejection names its cause where a 535 does
+# not. See core/mail.py.
+#
+# Brevo issues TWO credentials and they are NOT interchangeable:
+#   * an API key  (xkeysib-...)  -- BREVO_API_KEY, for the HTTP API
+#   * an SMTP key (xsmtpsib-...) -- EMAIL_HOST_PASSWORD, for the SMTP relay
+# Neither works in the other's place.
+#
+# NEITHER route bypasses Brevo -> Security -> Authorised IPs: that restriction
+# rejects an unlisted sender with 401 on the API and 535 over SMTP.
+
+# Brevo's HTTP API (see core/mail.py). Swap to
+# 'django.core.mail.backends.smtp.EmailBackend' via the environment to fall
+# back to the SMTP relay below, which stays configured for that case.
+EMAIL_BACKEND = config('EMAIL_BACKEND', default='core.mail.BrevoAPIBackend')
+
+# API key (xkeysib-...), used by BrevoAPIBackend. This is the key the SMTP
+# relay will NOT accept -- the two are not interchangeable.
+BREVO_API_KEY = config('BREVO_API_KEY', default='')
+BREVO_TIMEOUT = config('BREVO_TIMEOUT', default=15, cast=int)
+
+# --- SMTP relay, used only when EMAIL_BACKEND is pointed back at it ---------
+EMAIL_HOST = config('EMAIL_HOST', default='smtp-relay.brevo.com')
+EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
+EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
 EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
 EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
-DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default=EMAIL_HOST_USER)
+
+# No longer falls back to EMAIL_HOST_USER, as it did on Gmail where the two were
+# the same address. A Brevo SMTP login (...@smtp-brevo.com) is a credential, not
+# a mailbox -- using it as the From address gets the mail dropped as an
+# unverified sender. This must be an address verified in Brevo -> Senders.
+DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='')
 

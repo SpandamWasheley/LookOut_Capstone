@@ -60,7 +60,7 @@ def ai_setup(stdout, off=False):
     client, why = None, "switched off"
     by_kind = {}
     if cfg.vlm_enabled and not off:
-        candidate = ai_checker.OllamaClient(model=cfg.vlm_model, endpoint=cfg.vlm_endpoint,
+        candidate = ai_checker.OllamaClient(model=cfg.vlm_model, endpoint=cfg.resolved_vlm_endpoint,
                                             timeout=cfg.vlm_timeout)
         ok, why = candidate.available()
         client = candidate if ok else None
@@ -69,7 +69,7 @@ def ai_setup(stdout, off=False):
         # delay; it is asynchronous, so only the AI card waits.
         holdup_model = getattr(cfg, "vlm_model_holdup", "") or ""
         if client and holdup_model and holdup_model != cfg.vlm_model:
-            big = ai_checker.OllamaClient(model=holdup_model, endpoint=cfg.vlm_endpoint,
+            big = ai_checker.OllamaClient(model=holdup_model, endpoint=cfg.resolved_vlm_endpoint,
                                           timeout=max(cfg.vlm_timeout, 180))
             big_ok, big_why = big.available()
             if big_ok:

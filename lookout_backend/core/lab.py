@@ -443,7 +443,7 @@ def _ask(frame, kind, cfg):
     import cv2
 
     kind = ai_checker.kind_for(kind) or "smoking"
-    client = ai_checker.OllamaClient(model=cfg.vlm_model, endpoint=cfg.vlm_endpoint,
+    client = ai_checker.OllamaClient(model=cfg.vlm_model, endpoint=cfg.resolved_vlm_endpoint,
                                      timeout=max(cfg.vlm_timeout, 600))
     ok, why = client.available()
     if not ok:
