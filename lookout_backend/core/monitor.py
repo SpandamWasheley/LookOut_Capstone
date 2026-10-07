@@ -100,8 +100,9 @@ class LiveMonitor:
             camera = Camera.objects.filter(code=CAMERA_CODE).first()
             if camera is None:
                 return False, f"Camera {CAMERA_CODE} was not found."
-            if not camera.stream_url:
-                return False, "The camera has no stream address configured."
+            if not camera.resolved_stream_url:
+                return False, ("The camera has no stream address configured. Save an RTSP URL "
+                               "on Live Feeds, or set STREAM_URL in this machine's .env.")
             self._want = True
             self._started_at = timezone.now()
             self._restarts = 0
@@ -189,7 +190,7 @@ class LiveMonitor:
                 if not self._want:
                     break
             camera = Camera.objects.filter(code=CAMERA_CODE).first()
-            if camera is None or not camera.stream_url:
+            if camera is None or not camera.resolved_stream_url:
                 time.sleep(5)
                 continue
             ran_since = time.time()
@@ -250,9 +251,12 @@ class LiveMonitor:
         log_dir = settings.MEDIA_ROOT / "uploads"
         os.makedirs(log_dir, exist_ok=True)
 
-        commands = {"merged": ["watch_merged", "--source", camera.stream_url, "--camera", camera.code]}
+        # Resolved once: stream_url on the row if set, else settings.STREAM_URL from
+        # this machine's .env (see Camera.resolved_stream_url).
+        stream_url = camera.resolved_stream_url
+        commands = {"merged": ["watch_merged", "--source", stream_url, "--camera", camera.code]}
         if has_road_edge(camera):
-            commands["parking"] = ["watch_parking", "--source", camera.stream_url, "--camera", camera.code]
+            commands["parking"] = ["watch_parking", "--source", stream_url, "--camera", camera.code]
         procs, job_ids = {}, []
         for name, args in commands.items():
             child_env = dict(env)
@@ -265,7 +269,7 @@ class LiveMonitor:
             finally:
                 log.close()
             job = DetectionJob.objects.create(
-                violation_type=name, source_filename=f"Live — {camera.name}", source_path=camera.stream_url,
+                violation_type=name, source_filename=f"Live — {camera.name}", source_path=stream_url,
                 camera=camera, status=DetectionJob.Status.RUNNING, pid=procs[name].pid,
                 created_by_id=getattr(self, "_user_id", None))
             job_ids.append(job.pk)

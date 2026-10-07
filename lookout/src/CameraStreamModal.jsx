@@ -2,8 +2,9 @@ import { useState } from "react";
 import { X, Loader2, Save, CheckCircle2, XCircle, AlertTriangle } from "lucide-react";
 import { updateCamera } from "./api";
 
-// Sets a camera's stream_url (RTSP URL, credentials included) — the field the
-// dashboard has no other UI for today (it's admin-DB-only otherwise). The
+// Sets a camera's stream_url (RTSP URL, credentials included). The other way
+// to supply it is STREAM_URL in the backend machine's .env, which this cannot
+// see and does not overwrite — a URL saved here takes priority over it. The
 // current value can never be shown back (stream_url is write_only on the
 // serializer specifically so credentials never round-trip to the browser —
 // see CameraSerializer), so this only ever *sets a new value*: a blank

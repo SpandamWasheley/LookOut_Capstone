@@ -60,11 +60,11 @@ from .throttling import (
 def send_mail_async(subject, body, recipient):
     """Queue an email and return immediately.
 
-    SMTP is slow -- Gmail measured at ~6.6s from this machine -- and it used to
-    run inside the request. React Native's HTTP client gives up after 10s, so a
-    phone on Wi-Fi would abort while the server was still talking to Gmail: the
-    code arrived in the inbox, the app showed a network error, and the screen
-    never advanced to the code input.
+    SMTP is slow -- measured at ~6.6s from this machine, on the Gmail relay this
+    used to send through -- and it used to run inside the request. React Native's
+    HTTP client gives up after 10s, so a phone on Wi-Fi would abort while the
+    server was still talking to the relay: the code arrived in the inbox, the app
+    showed a network error, and the screen never advanced to the code input.
 
     The caller no longer waits. The recipient does not care whether the message
     took 200ms or 8s to leave, and nothing in the response depends on it: the
@@ -528,7 +528,7 @@ class CameraViewSet(viewsets.ModelViewSet):
         dashboard polls this a few times a second for a near-live feed.
 
         Hikvision exposes a still at ISAPI/Streaming/channels/<ch>/picture; the
-        RTSP channel in stream_url (…/Streaming/Channels/102) maps to it.
+        RTSP channel in the stream URL (…/Streaming/Channels/102) maps to it.
         """
         import urllib.parse
 
@@ -537,10 +537,11 @@ class CameraViewSet(viewsets.ModelViewSet):
         from requests.auth import HTTPDigestAuth
 
         camera = self.get_object()
-        if not camera.stream_url:
-            return Response({"detail": "Camera has no stream_url configured."}, status=404)
+        stream_url = camera.resolved_stream_url
+        if not stream_url:
+            return Response({"detail": "Camera has no stream URL configured."}, status=404)
 
-        parsed = urllib.parse.urlparse(camera.stream_url)
+        parsed = urllib.parse.urlparse(stream_url)
         host = parsed.hostname
         user = urllib.parse.unquote(parsed.username or "")
         pw = urllib.parse.unquote(parsed.password or "")
@@ -550,14 +551,14 @@ class CameraViewSet(viewsets.ModelViewSet):
         if m:
             channel = m.group(1)
 
-        # The scheme follows stream_url, and the port with it.
+        # The scheme follows the stream URL, and the port with it.
         #
         # A camera on the LAN is addressed rtsp://user:pass@192.168.1.64:554/...
         # and its ISAPI stills are plain http on port 80 — so rtsp (and
         # anything else) means http, as it always did.
         #
         # But when the API runs in the cloud and the camera sits behind an
-        # ngrok tunnel, stream_url holds the tunnel instead:
+        # ngrok tunnel, the stream URL holds the tunnel instead:
         # https://user:pass@abc.ngrok-free.app/Streaming/Channels/102. Forcing
         # http:// there fails outright — ngrok's edge only speaks TLS — and the
         # symptom is "Camera unreachable" with a connection error that says
@@ -1184,7 +1185,7 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
                 status=400,
             )
 
-        # A live camera runs the same watch_* command against its stream_url
+        # A live camera runs the same watch_* command against its stream URL
         # instead of an uploaded file: no staging, no decode check, and
         # --camera is the real camera's own code (not a synthetic "-TEST"
         # one), so alerts land where a live-camera alert belongs. Parking
@@ -1200,8 +1201,9 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
                 camera = Camera.objects.get(pk=camera_id)
             except (Camera.DoesNotExist, ValueError, TypeError):
                 return Response({"detail": "Camera not found."}, status=400)
-            if not camera.stream_url:
-                return Response({"detail": "Camera has no stream_url configured."}, status=400)
+            stream_url = camera.resolved_stream_url
+            if not stream_url:
+                return Response({"detail": "Camera has no stream URL configured."}, status=400)
             # A live run takes the area off the camera record (Live Feeds →
             # Edge Zones), so there is nothing to stage — but an EDGE_REQUIRED
             # detector still cannot run without one, and the camera row is the
@@ -1213,7 +1215,7 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
                                "vehicles by how much of them sits inside that area."},
                     status=400,
                 )
-            source_arg = camera.stream_url
+            source_arg = stream_url
             source_filename = f"Live — {camera.name}"
             camera_code = camera.code
         else:

@@ -73,8 +73,9 @@ class Command(BaseCommand):
 
         if not options["no_camera"]:
             # No stream_url: the RTSP address is edge-local and must never be
-            # written into a hosted database. It is set on the edge, or typed
-            # into Live Feeds by an operator who is on that network.
+            # written into a hosted database. It comes from STREAM_URL in the
+            # edge machine's .env, or is typed into Live Feeds by an operator
+            # who is on that network.
             _, made = Camera.objects.get_or_create(
                 code=CAMERA_CODE,
                 defaults={"name": options["camera_name"],

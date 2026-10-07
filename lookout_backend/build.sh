@@ -21,6 +21,21 @@ set -o pipefail   # a failure anywhere in a pipeline fails the pipeline
 echo "--> Installing dependencies"
 pip install -r requirements.txt
 
+# The CV stack, because this deployment runs the detectors itself (see
+# DETECTION_ENABLED in render.yaml) rather than leaving them to a PC on site.
+# torch alone is several hundred MB, so this dominates build time; Render
+# caches it between deploys as long as the file does not change.
+#
+# Skipped when the service is API-only, which is the cheaper topology: set
+# INSTALL_DETECTION=false and DETECTION_ENABLED=False together.
+if [ "${INSTALL_DETECTION:-true}" = "true" ]; then
+  echo "--> Installing the detection stack (torch, ultralytics)"
+  # The -server file, NOT requirements-detection.txt: that one pulls
+  # opencv-python, which needs libGL.so.1 (absent here) and collides with the
+  # headless build requirements.txt already installed.
+  pip install -r requirements-detection-server.txt
+fi
+
 echo "--> Collecting static files"
 # WhiteNoise serves from STATIC_ROOT; without this the Django admin and the
 # browsable API render unstyled.

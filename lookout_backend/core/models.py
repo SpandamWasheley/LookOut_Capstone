@@ -1,6 +1,7 @@
 import re
 from datetime import time
 
+from django.conf import settings
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 
@@ -108,6 +109,9 @@ class Camera(models.Model):
     # the /cameras/{id}/snapshot/ endpoint reads it server-side, pulls a JPEG
     # from the camera, and streams that to the grid. Credentials therefore stay
     # on the backend and are never exposed by the serializer.
+    #
+    # May be blank on a machine that supplies the URL through STREAM_URL in its
+    # .env instead; read `resolved_stream_url`, never this field directly.
     stream_url = models.CharField(max_length=500, blank=True)
     # Road-edge lines for parking-obstruction monitoring: {"left": {"points":
     # [[x,y],...], "side": 1}, "right": {...}}, in the pixel coordinates of
@@ -126,8 +130,31 @@ class Camera(models.Model):
         ordering = ["code"]
 
     @property
+    def resolved_stream_url(self):
+        """The RTSP URL to actually use: the saved one, else settings.STREAM_URL.
+
+        Every consumer (the snapshot proxy, the live monitor, Run Detection
+        against the live camera) must read this rather than `stream_url`, so
+        the .env fallback applies everywhere or nowhere -- a camera that the
+        monitor can start but the snapshot endpoint calls unconfigured is worse
+        than one that is plainly unset.
+
+        The saved value wins so that typing a URL into Live Feeds still takes
+        effect on a machine that also has STREAM_URL in its .env.
+
+        "-TEST" cameras are excluded: they exist only to tag alerts from
+        uploaded footage and have no stream of their own, so inheriting the
+        real camera's URL would make them claim to be live.
+        """
+        if self.stream_url:
+            return self.stream_url
+        if self.code and self.code.endswith("-TEST"):
+            return ""
+        return settings.STREAM_URL
+
+    @property
     def is_live(self):
-        return bool(self.stream_url)
+        return bool(self.resolved_stream_url)
 
     def save(self, *args, **kwargs):
         if not self.code:
@@ -509,6 +536,10 @@ class SystemSettings(models.Model):
     # machine, so there is no API key and no outbound request -- what used to
     # be "is the credential valid" is now "is the server up and is the model
     # pulled", which build_verifier checks once at startup.
+    #
+    # Read `resolved_vlm_endpoint`, not this field: a VLM_ENDPOINT in the
+    # environment overrides it, because this row is shared by every machine
+    # pointed at the database and they do not agree on where Ollama is.
     vlm_endpoint = models.CharField(max_length=200,
                                     default="http://localhost:11434")
     # Held as a setting because model ids turn over far faster than this code
@@ -605,6 +636,18 @@ class SystemSettings(models.Model):
     evidence_auto_purge = models.BooleanField(default=False)
 
     updated_at = models.DateTimeField(auto_now=True)
+
+    @property
+    def resolved_vlm_endpoint(self):
+        """Where to reach Ollama: VLM_ENDPOINT from the environment if set,
+        else the stored setting.
+
+        The environment wins here, unlike Camera.resolved_stream_url. This is a
+        singleton row shared by the edge PC and any hosted API; one stored
+        value cannot describe both, since each reaches Ollama at a different
+        address. The environment is the only per-machine input available.
+        """
+        return (getattr(settings, "VLM_ENDPOINT", "") or self.vlm_endpoint)
 
     class Meta:
         verbose_name = "System settings"

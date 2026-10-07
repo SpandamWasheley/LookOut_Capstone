@@ -1,0 +1,90 @@
+# ngrok agent config for the PC on site, in the deployment where the HOSTED
+# service runs the detectors (DETECTION_ENABLED=True on Render).
+#
+# That PC runs no Django and no detectors here. It runs two things: Ollama,
+# and this agent exposing Ollama plus the camera to the hosted service.
+#
+# Copy to the agent's config path and start BOTH tunnels in one session:
+#
+#     ngrok start --all --config ngrok.yml
+#
+# Windows config path: %LOCALAPPDATA%\ngrok\ngrok.yml
+version: "3"
+agent:
+  authtoken: YOUR_NGROK_AUTHTOKEN
+
+endpoints:
+  # --- Ollama, for the VLM second-stage check -------------------------------
+  # Put the one free static domain HERE, not on the camera: this address goes
+  # into Render's VLM_ENDPOINT, and an env-var change on Render triggers a full
+  # redeploy. A static domain means setting it once.
+  #
+  # host-header rewrite is REQUIRED. Ollama validates the Host header and
+  # answers 403 to anything that is not localhost -- which looks like a broken
+  # tunnel and is not. Ollama must also bind beyond loopback:
+  #     setx OLLAMA_HOST "0.0.0.0:11434"     (then restart Ollama)
+  #
+  # basic_auth because this publishes an LLM endpoint to the internet, where
+  # anyone holding the URL can spend your CPU on their prompts.
+  - name: ollama
+    url: https://your-static-domain.ngrok-free.dev
+    upstream:
+      url: 11434
+    traffic_policy:
+      on_http_request:
+        - actions:
+            - type: add-headers
+              config:
+                headers:
+                  host: localhost:11434
+            - type: basic-auth
+              config:
+                credentials:
+                  - "lookout:CHANGE_ME"
+
+  # --- the camera's RTSP stream --------------------------------------------
+  # TCP, not HTTP: RTSP is its own protocol and ngrok must pass bytes through
+  # rather than parse them.
+  #
+  # On the free plan this address is RANDOM and CHANGES EVERY RESTART, e.g.
+  # 4.tcp.ngrok.io:17234. Do NOT put it in Render's STREAM_URL -- that forces a
+  # redeploy each time. Put it in the dashboard instead:
+  #
+  #     Live Feeds -> Stream URL ->
+  #       rtsp://admin:PASSWORD@4.tcp.ngrok.io:17234/Streaming/Channels/101
+  #
+  # That is stored on the camera row, takes effect on the next poll with no
+  # redeploy, and takes priority over STREAM_URL (Camera.resolved_stream_url).
+  # SECURITY: a bare TCP endpoint publishes the camera to the internet. ngrok
+  # TCP addresses are a small, scannable space, and RTSP is PLAINTEXT -- the
+  # video is unencrypted on the wire and the auth is only as good as the
+  # camera's own digest. Treat the IP restriction below as the real control and
+  # the camera password as the backstop, not the reverse.
+  #
+  # restrict-ips must list the RENDER service's egress IPs (Render dashboard ->
+  # your service -> Settings -> Outbound IP Addresses, usually three). Nothing
+  # else needs to reach this endpoint.
+  #
+  # If your ngrok plan does not include Traffic Policy, this block is ignored
+  # and the camera IS exposed. Verify it applies -- connect to the endpoint
+  # from a machine that is not Render and confirm you are refused. If it is not
+  # available, use Tailscale or WireGuard instead: a private mesh is free, has
+  # stable addresses, and never publishes the camera at all.
+  #
+  # Also: give LookOut its own camera account with stream-view permission only,
+  # not the admin account. A leaked admin credential here is control of the
+  # device (firmware, network config, factory reset), not just a video feed.
+  - name: camera-rtsp
+    url: tcp://
+    upstream:
+      url: 192.168.1.64:554
+    traffic_policy:
+      on_tcp_connect:
+        - actions:
+            - type: restrict-ips
+              config:
+                allow:
+                  # Render egress IPs -- replace with your service's own.
+                  - 203.0.113.10/32
+                  - 203.0.113.11/32
+                  - 203.0.113.12/32

@@ -1,0 +1,18 @@
+# The CV stack for a SERVER that runs the detectors itself -- the hosted API
+# with DETECTION_ENABLED=True, reaching the camera and Ollama through tunnels.
+#
+# Install on top of requirements.txt:
+#
+#     pip install -r requirements.txt -r requirements-detection-server.txt
+#
+# This is requirements-detection.txt MINUS opencv-python, and the difference
+# matters. That wheel exists so `watch_* --debug` can open a cv2.imshow preview
+# window, and it needs libGL.so.1, which slim containers do not have -- the
+# import fails at runtime, not at build. requirements.txt already installs
+# opencv-python-headless, which is the server build; installing both puts two
+# copies of the cv2 module on the path and import order decides which wins.
+#
+# numpy is also omitted: requirements.txt pins it already.
+torch
+ultralytics
+lap  # ultralytics' ByteTrack/BoT-SORT (watch_* --tracker); auto-installs otherwise

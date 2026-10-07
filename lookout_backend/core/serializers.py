@@ -47,9 +47,11 @@ class ViolationTypeSerializer(serializers.ModelSerializer):
 class CameraSerializer(serializers.ModelSerializer):
     zone = serializers.SlugRelatedField(slug_field="name", queryset=Zone.objects.all())
     # `is_live` tells the dashboard to poll the snapshot endpoint instead of the
-    # static image_url. The raw stream_url (which holds credentials) is never
-    # serialized — it is write-only, so an admin can set it but it never leaves
-    # the server in a response.
+    # static image_url. It follows `resolved_stream_url`, so it is also true for
+    # a camera whose URL comes from STREAM_URL in the .env rather than the row.
+    # The raw stream_url (which holds credentials) is never serialized — it is
+    # write-only, so an admin can set it but it never leaves the server in a
+    # response.
     is_live = serializers.BooleanField(read_only=True)
     stream_url = serializers.CharField(write_only=True, required=False, allow_blank=True)
 
