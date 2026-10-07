@@ -225,9 +225,20 @@ REST_FRAMEWORK = {
 
 from datetime import timedelta
 
+# A SHORT access token plus a LONG refresh token, which is the point of having
+# two: the bearer token sent on every request is the one that leaks (logs,
+# proxies, an XSS payload reading it out of a variable), so it should stop being
+# useful quickly, while the refresh token is sent to exactly one endpoint and
+# can therefore live much longer.
+#
+# These were 8 hours / 1 day, which inverted that: the token on the wire all day
+# was valid all day, and refreshing bought only 16 more hours before a re-login
+# anyway -- so no client ever bothered to refresh, and /auth/refresh/ went
+# unused. Both clients now redeem the refresh token on a 401 and retry, so the
+# 30-minute access window is invisible to the user.
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(hours=8),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=30),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
 }
 
 ROOT_URLCONF = 'lookout_backend.urls'

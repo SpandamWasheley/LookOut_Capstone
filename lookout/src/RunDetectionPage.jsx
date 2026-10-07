@@ -58,6 +58,10 @@ export function RunDetectionPage() {
   // { stagedToken, sourceFilename, frame: { src, width, height } } once the clip's first frame is read.
   const [staged, setStaged] = useState(null);
   const [staging, setStaging] = useState(false);
+  // 0-100 while the clip's bytes are going up, null when nothing is in flight
+  // or when the browser could not tell us the total. Distinct from `staging`,
+  // which stays true through the server-side read that follows the upload.
+  const [uploadPct, setUploadPct] = useState(null);
   const [stageError, setStageError] = useState("");
 
   const [cameras, setCameras] = useState([]);
@@ -109,8 +113,9 @@ export function RunDetectionPage() {
     setStaged(null);
     setStageError("");
     setStaging(true);
+    setUploadPct(0);
     try {
-      const res = await stageDetectionFrame(f);
+      const res = await stageDetectionFrame(f, setUploadPct);
       setStaged({
         stagedToken: res.staged_token,
         sourceFilename: res.source_filename,
@@ -120,8 +125,20 @@ export function RunDetectionPage() {
       setStageError(err.message || "Could not read that clip.");
     } finally {
       setStaging(false);
+      setUploadPct(null);
     }
   };
+
+  // Two distinct phases hide behind `staging`, and they need different UI: the
+  // upload itself has a real percentage, while the server-side first-frame read
+  // that follows reports nothing. uploadPct === 100 means the bytes are away
+  // and we are in the second phase; null means the browser could not give a
+  // total, so there is no percentage to show at all.
+  const uploading = staging && uploadPct !== null && uploadPct < 100;
+  const stageSuffix = uploading ? ` · ${uploadPct}%`
+    : staging ? " · processing…"
+    : staged ? " · ready"
+    : "";
 
   const usesClock = source === "file" && ["thief", "drinking", "merged", "merged4"].includes(violationType);
   const canStart = source === "camera"
@@ -268,16 +285,35 @@ export function RunDetectionPage() {
                   onDragLeave={() => setDragOver(false)}
                   onDrop={(e) => { e.preventDefault(); setDragOver(false); pickFile(e.dataTransfer.files?.[0]); }}
                   onClick={() => !staging && inputRef.current?.click()}
-                  className="flex items-center gap-2 px-3 py-1.5 rounded-xl cursor-pointer min-w-[16rem]"
+                  className="relative overflow-hidden flex items-center gap-2 px-3 py-1.5 rounded-xl cursor-pointer min-w-[16rem]"
                   style={{ border: `1.5px dashed ${dragOver ? "#f59e0b" : "var(--border)"}`, background: dragOver ? "rgba(245,158,11,0.06)" : "var(--secondary)" }}>
                   <input ref={inputRef} type="file" accept={ALLOWED_EXTENSIONS.join(",")} className="hidden"
                     disabled={staging} onChange={(e) => pickFile(e.target.files?.[0])} />
-                  {staging ? <Loader2 size={14} className="animate-spin" style={{ color: "#f59e0b" }} />
+                  {/* While bytes are going up the BAR below carries the progress, so the
+                      icon stays a plain file. The spinner is kept for the server-side read
+                      that follows, which reports nothing and so has no bar to show. */}
+                  {staging && !uploading ? <Loader2 size={14} className="animate-spin" style={{ color: "#f59e0b" }} />
                     : file ? <FileVideo size={14} style={{ color: staged ? "#22c55e" : "#f59e0b" }} />
                     : <Upload size={14} style={{ color: "var(--muted-foreground)" }} />}
                   <span className="text-[14px] truncate" style={{ color: file ? "var(--foreground)" : "var(--muted-foreground)" }}>
-                    {file ? `${file.name} · ${formatBytes(file.size)}${staged ? " · ready" : ""}` : "Drop a clip here or click to browse (.mp4 .mkv .avi, up to 1GB)"}
+                    {file ? `${file.name} · ${formatBytes(file.size)}${stageSuffix}` : "Drop a clip here or click to browse (.mp4 .mkv .avi, up to 1GB)"}
                   </span>
+                  {staging && (
+                    <div className="absolute left-0 bottom-0 h-[3px] w-full" style={{ background: "var(--border)" }}>
+                      <div
+                        className={uploading ? "" : "animate-pulse"}
+                        style={{
+                          // Indeterminate phases (server-side read, or a browser that
+                          // would not tell us the total) fill the track and pulse
+                          // instead of parking the bar at a number that is not moving.
+                          width: uploading ? `${uploadPct}%` : "100%",
+                          height: "100%",
+                          background: "#f59e0b",
+                          transition: "width 150ms linear",
+                        }}
+                      />
+                    </div>
+                  )}
                 </div>
               ) : camerasLoading ? (
                 <span className="flex items-center gap-2 text-[14px]" style={{ color: "var(--muted-foreground)" }}>

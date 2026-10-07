@@ -15,12 +15,79 @@ const TUNNEL_HEADERS = { "ngrok-skip-browser-warning": "true" };
 // logging in again, so there's nothing to persist across reloads anyway.
 let accessToken = null;
 
+// The refresh token lives in a module variable too — NOT localStorage. Keeping
+// it here preserves the property above exactly: there is still nothing in
+// storage for a stored-XSS payload to read, and a hard reload still forces a
+// fresh login. What it buys is mid-session survival: with a 30-minute access
+// token, a dispatcher on a long shift would otherwise be thrown out to the
+// login screen every half hour.
+//
+// Persisting it instead would let a session survive reloads, and is deliberately
+// NOT done: a refresh token in localStorage is the long-lived, XSS-stealable
+// credential this design exists to avoid.
+let refreshToken = null;
+
+// Single-flight guard. The dashboard polls /alerts/, /cameras/ and /officers/
+// every 4 seconds, so an expiry lands on several in-flight requests at once.
+// Without this they would each POST /auth/refresh/ with the same token, and
+// under refresh-token rotation the first response would invalidate the token
+// the others are still using — logging the user out at the exact moment the
+// session was meant to be renewed.
+let refreshInFlight = null;
+
 export function getAccessToken() {
   return accessToken;
 }
 
 export function clearAuth() {
   accessToken = null;
+  refreshToken = null;
+  refreshInFlight = null;
+}
+
+// Trades the refresh token for a new access token. Returns the new token, or
+// null when the session is genuinely over (refresh expired/rejected), in which
+// case auth is cleared and the caller should surface the original 401.
+async function refreshAccess() {
+  if (!refreshToken) return null;
+  if (!refreshInFlight) {
+    refreshInFlight = (async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/auth/refresh/`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...TUNNEL_HEADERS },
+          body: JSON.stringify({ refresh: refreshToken }),
+        });
+        if (!response.ok) {
+          clearAuth();
+          return null;
+        }
+        const data = await response.json();
+        accessToken = data.access;
+        // Only present if ROTATE_REFRESH_TOKENS is ever turned on; keeping this
+        // means enabling rotation server-side needs no client change.
+        if (data.refresh) refreshToken = data.refresh;
+        return accessToken;
+      } catch {
+        clearAuth();
+        return null;
+      } finally {
+        refreshInFlight = null;
+      }
+    })();
+  }
+  return refreshInFlight;
+}
+
+// One 401 retry, shared by every authenticated request. `build` must return a
+// fresh RequestInit for the token it is given — the retry has to carry the NEW
+// Authorization header, so the init cannot be built once and reused.
+async function authedFetch(url, build) {
+  const response = await fetch(url, build(getAccessToken()));
+  if (response.status !== 401 || !refreshToken) return response;
+  const fresh = await refreshAccess();
+  if (!fresh) return response;
+  return fetch(url, build(fresh));
 }
 
 export async function login(username, password) {
@@ -49,6 +116,7 @@ export async function login(username, password) {
   };
 
   accessToken = data.access;
+  refreshToken = data.refresh;
 
   // Layout used to be remembered in localStorage; drop the stale value.
   try { localStorage.removeItem("lookout.cameraLayout"); } catch { /* storage unavailable */ }
@@ -57,8 +125,7 @@ export async function login(username, password) {
 }
 
 export async function apiFetch(path, options = {}) {
-  const token = getAccessToken();
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const response = await authedFetch(`${API_BASE_URL}${path}`, (token) => ({
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -66,7 +133,7 @@ export async function apiFetch(path, options = {}) {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options.headers,
     },
-  });
+  }));
 
   if (!response.ok) {
     const text = await response.text();
@@ -88,28 +155,83 @@ export async function apiFetch(path, options = {}) {
 // Like apiFetch, but for multipart/form-data bodies (file uploads) — the
 // Content-Type (with its boundary) must come from the browser, not be set
 // manually, so this skips the JSON header apiFetch always adds.
-async function apiUpload(path, formData) {
-  const token = getAccessToken();
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    method: "POST",
-    headers: { ...TUNNEL_HEADERS, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-    body: formData,
+//
+// XMLHttpRequest rather than fetch, for ONE reason: fetch cannot report how
+// much of a request BODY has been sent. It resolves only once the response
+// arrives, so a 250 MB clip can offer nothing but a spinner for the whole
+// upload. XHR's upload.onprogress gives real bytes-sent, which is what the
+// Run Detection progress bar needs. Everything else here mirrors apiFetch's
+// error contract exactly (message from the parsed body, .data, .status), so
+// callers cannot tell the two transports apart.
+//
+// `onProgress` is optional and receives a 0-100 integer, or null when the
+// total size is unknown (no Content-Length on the body — rare for a FormData
+// with a real File, but a caller must still render something sane).
+function apiUpload(path, formData, { onProgress } = {}) {
+  return sendUpload(path, formData, onProgress, getAccessToken()).catch(async (err) => {
+    // A 30-minute access token can expire DURING a long upload, so a 401 here
+    // is not necessarily a dead session. Refresh and send it again.
+    //
+    // This does re-send the whole body, and onProgress restarts from 0 — the
+    // bar visibly rewinds. That is the honest thing to show: the bytes really
+    // are going up a second time. A FormData holding a File can be re-sent
+    // (the File is re-read from disk), unlike a one-shot stream body.
+    if (err.status !== 401 || !refreshToken) throw err;
+    const fresh = await refreshAccess();
+    if (!fresh) throw err;
+    return sendUpload(path, formData, onProgress, fresh);
   });
+}
 
-  if (!response.ok) {
-    const text = await response.text();
-    let parsed = null;
-    try { parsed = JSON.parse(text); } catch { /* not JSON */ }
-    const message = parsed
-      ? Object.values(parsed).flat().join(" ") || text
-      : text || `Request failed with status ${response.status}`;
-    const err = new Error(message);
-    err.data = parsed;
-    err.status = response.status;
-    throw err;
-  }
+function sendUpload(path, formData, onProgress, token) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${API_BASE_URL}${path}`);
+    for (const [k, v] of Object.entries(TUNNEL_HEADERS)) xhr.setRequestHeader(k, v);
+    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
 
-  return response.json();
+    if (onProgress) {
+      xhr.upload.onprogress = (e) => {
+        onProgress(e.lengthComputable ? Math.round((e.loaded / e.total) * 100) : null);
+      };
+      // The body is away; anything further is the server reading the clip, which
+      // reports no progress of its own. Pin it at 100 so the caller can switch
+      // from "uploading" to "processing" rather than leaving a bar at 97%.
+      xhr.upload.onload = () => onProgress(100);
+    }
+
+    const fail = (message, status = 0, data = null) => {
+      const err = new Error(message);
+      err.data = data;
+      err.status = status;
+      reject(err);
+    };
+
+    // Network-level failures, which fetch would surface as a rejected promise.
+    xhr.onerror = () => fail("Network error — the upload did not reach the server.");
+    xhr.ontimeout = () => fail("The upload timed out.");
+    xhr.onabort = () => fail("The upload was cancelled.");
+
+    xhr.onload = () => {
+      const text = xhr.responseText;
+      if (xhr.status >= 200 && xhr.status < 300) {
+        if (xhr.status === 204 || !text) return resolve(null);
+        try {
+          return resolve(JSON.parse(text));
+        } catch {
+          return fail("The server returned a malformed response.", xhr.status);
+        }
+      }
+      let parsed = null;
+      try { parsed = JSON.parse(text); } catch { /* not JSON */ }
+      const message = parsed
+        ? Object.values(parsed).flat().join(" ") || text
+        : text || `Request failed with status ${xhr.status}`;
+      fail(message, xhr.status, parsed);
+    };
+
+    xhr.send(formData);
+  });
 }
 
 export const getSettings = () => apiFetch("/settings/");
@@ -205,10 +327,10 @@ export const uploadDetectionJob = (file, violationType) => {
 // plus a staged_token — for the "upload -> draw edges -> start" flow, where
 // the clip should only cross the wire once even though drawing happens
 // before the job itself is created. See DetectionJobViewSet.frame.
-export const stageDetectionFrame = (file) => {
+export const stageDetectionFrame = (file, onProgress) => {
   const formData = new FormData();
   formData.append("file", file);
-  return apiUpload("/detection-jobs/frame/", formData);
+  return apiUpload("/detection-jobs/frame/", formData, { onProgress });
 };
 
 // Starts a job from an already-staged clip (see stageDetectionFrame) instead
@@ -263,11 +385,13 @@ export const cancelDetectionJob = (id) =>
 // The caller MUST URL.revokeObjectURL the returned value when replacing it, or
 // object URLs leak for the life of the tab.
 export async function getCameraSnapshotUrl(dbId, signal) {
-  const token = getAccessToken();
-  const response = await fetch(`${API_BASE_URL}/cameras/${dbId}/snapshot/`, {
-    headers: { ...TUNNEL_HEADERS, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-    signal,
-  });
+  const response = await authedFetch(
+    `${API_BASE_URL}/cameras/${dbId}/snapshot/`,
+    (token) => ({
+      headers: { ...TUNNEL_HEADERS, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      signal,
+    }),
+  );
   if (!response.ok) throw new Error(`snapshot ${response.status}`);
   const blob = await response.blob();
   return URL.createObjectURL(blob);

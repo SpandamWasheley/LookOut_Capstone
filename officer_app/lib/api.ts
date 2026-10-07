@@ -75,24 +75,80 @@ export function setUnauthorizedHandler(fn: (() => void) | null) {
   onUnauthorized = fn;
 }
 
-export async function apiFetch<T = unknown>(path: string, options: RequestInit = {}): Promise<T> {
-  const token = await getAccessToken();
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      "ngrok-skip-browser-warning": "true",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...options.headers,
-    },
-  });
+// Single-flight guard. AssignmentContext polls /alerts/ every 4 seconds, so an
+// expiry lands on several in-flight requests at once. Without this they would
+// each POST /auth/refresh/ with the same token, and under refresh-token
+// rotation the first response would invalidate the token the others are still
+// using — logging the officer out at the exact moment the session was meant to
+// be renewed.
+let refreshInFlight: Promise<string | null> | null = null;
 
-  if (!response.ok) {
-    if (response.status === 401 && token) {
+/** Trades the stored refresh token for a new access token and persists it.
+ *
+ * Returns the new access token, or null when the session is genuinely over
+ * (no refresh token stored, or the server rejected it). The refresh token has
+ * been sitting in SecureStore since the very first version of this app and was
+ * never redeemed — a 401 simply logged the officer out, which on a phone, mid
+ * -shift, in the field, is the worst possible moment for it.
+ */
+async function refreshAccessToken(): Promise<string | null> {
+  const refresh = await authStorage.getItem(REFRESH_KEY);
+  if (!refresh) return null;
+  if (!refreshInFlight) {
+    refreshInFlight = (async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/auth/refresh/`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
+          body: JSON.stringify({ refresh }),
+        });
+        if (!response.ok) return null;
+        const data = (await response.json()) as { access: string; refresh?: string };
+        await authStorage.setItem(ACCESS_KEY, data.access);
+        // Only present if ROTATE_REFRESH_TOKENS is ever turned on server-side;
+        // storing it means enabling rotation needs no change here.
+        if (data.refresh) await authStorage.setItem(REFRESH_KEY, data.refresh);
+        return data.access;
+      } catch {
+        return null;
+      } finally {
+        refreshInFlight = null;
+      }
+    })();
+  }
+  return refreshInFlight;
+}
+
+export async function apiFetch<T = unknown>(path: string, options: RequestInit = {}): Promise<T> {
+  // Built per attempt, not once: the retry must carry the NEW Authorization
+  // header, so the request init cannot be shared between the two sends.
+  const send = (bearer: string | null) =>
+    fetch(`${API_BASE_URL}${path}`, {
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        "ngrok-skip-browser-warning": "true",
+        ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
+        ...options.headers,
+      },
+    });
+
+  const token = await getAccessToken();
+  let response = await send(token);
+
+  if (response.status === 401 && token) {
+    const fresh = await refreshAccessToken();
+    if (fresh) response = await send(fresh);
+    // Only now is the session really over: either there was nothing to refresh
+    // with, or the refreshed token was rejected too.
+    if (!fresh || response.status === 401) {
       await clearAuth();
       onUnauthorized?.();
       throw new ApiError("Your session has expired. Please log in again.", 401, null);
     }
+  }
+
+  if (!response.ok) {
     const text = await response.text();
     let parsed: Record<string, unknown> | null = null;
     try {
