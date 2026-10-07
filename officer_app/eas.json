@@ -9,7 +9,7 @@
       "distribution": "internal",
       "android": { "buildType": "apk" },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://lookout-api.onrender.com/api"
+        "EXPO_PUBLIC_API_URL": "https://turkey-semifinal-dullness.ngrok-free.dev/api"
       }
     },
     "production": {
