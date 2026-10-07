@@ -400,11 +400,17 @@ MEDIA_ROOT = BASE_DIR / 'media'
 # the edge PC sets it too, pointing at the hosted Postgres.
 DETECTION_ENABLED = config('DETECTION_ENABLED', default=True, cast=bool)
 
-# Biggest evidence file published to object storage, in MB. Raw clips run to
-# ~45 MB each and a free Cloudinary plan is 25 GB, so a few hundred alerts
-# would exhaust it and uploads would then fail at the moment somebody needs
-# them. 0 publishes everything. See core/media.py.
-EVIDENCE_MAX_UPLOAD_MB = config('EVIDENCE_MAX_UPLOAD_MB', default=25, cast=int)
+# Optional single ceiling on evidence published to object storage, in MB.
+#
+# UNSET IS THE NORMAL CASE, and it means core/media.py applies its per-resource
+# -type caps instead (10 MB for Cloudinary's `raw` type, 100 MB for `video`) —
+# the limits the storage provider actually enforces. This used to default to a
+# flat 25 MB, which silently overrode those: 25 sits above Cloudinary's real
+# 10 MB raw ceiling, so an oversized clip passed our check and was rejected at
+# the far end, then fell back to a local path that no hosted frontend can load.
+#
+# Set it only to be deliberately stingier than the plan allows. 0 means no cap.
+EVIDENCE_MAX_UPLOAD_MB = config('EVIDENCE_MAX_UPLOAD_MB', default=None)
 
 CLOUDINARY_URL = config('CLOUDINARY_URL', default='')
 AWS_STORAGE_BUCKET_NAME = config('AWS_STORAGE_BUCKET_NAME', default='')

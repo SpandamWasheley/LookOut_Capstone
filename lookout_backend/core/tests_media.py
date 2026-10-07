@@ -159,3 +159,64 @@ class BackendDetectionTests(TestCase):
     @override_settings(STORAGES={})
     def test_no_configured_backend_is_treated_as_local(self):
         self.assertFalse(media._storage_is_remote())
+
+
+CLOUDINARY = {"default": {"BACKEND": "cloudinary_storage.storage.RawMediaCloudinaryStorage"},
+              "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}}
+
+
+@override_settings(STORAGES=CLOUDINARY)
+class CloudinaryResourceTypeTests(TestCase):
+    """Clips must go to Cloudinary's `video` resource type, stills to `raw`.
+
+    The type is not cosmetic: it sets the size limit. On the free plan `raw`
+    allows 10 MB and `video` allows 100 MB, and every raw evidence clip (full
+    source resolution, ~15 MB) is over the raw limit. Sent as raw they were
+    rejected, _publish fell back to the local path, and since a local path is
+    resolved against the requesting host the clip was then served through
+    whatever tunnel the API was reached by -- where a <video> tag cannot play
+    it. No raw clip in the system had ever published successfully.
+    """
+
+    def _cap(self, filename):
+        return media._target_storage(filename)[1]
+
+    def test_clips_go_to_the_video_resource_type(self):
+        for name in ("a.mp4", "b_raw.mp4", "c.MP4", "d.mov", "e.webm"):
+            storage, cap = media._target_storage(name)
+            self.assertEqual(storage.RESOURCE_TYPE, "video", name)
+            self.assertEqual(cap, media.VIDEO_MAX_UPLOAD_MB, name)
+
+    def test_stills_stay_on_the_default_raw_storage(self):
+        for name in ("a.jpg", "ai/alert12/ai_00.jpg"):
+            _, cap = media._target_storage(name)
+            self.assertEqual(cap, media.RAW_MAX_UPLOAD_MB, name)
+
+    @override_settings(STORAGES=LOCAL)
+    def test_a_non_cloudinary_backend_is_never_rerouted(self):
+        # An S3/R2 bucket is one bucket with one set of rules. Handing it a
+        # Cloudinary storage class would upload to the wrong service entirely.
+        for name in ("a.mp4", "a.jpg"):
+            storage, cap = media._target_storage(name)
+            self.assertNotIn("Cloudinary", type(storage).__name__, name)
+            self.assertEqual(cap, media.MAX_UPLOAD_MB, name)
+
+    def test_an_unset_override_leaves_the_per_type_cap_in_force(self):
+        # REGRESSION: EVIDENCE_MAX_UPLOAD_MB used to default to a flat 25, so
+        # it was never unset and the per-type caps below were dead code -- 25
+        # sits above Cloudinary's real 10 MB raw ceiling, which is how 15 MB
+        # clips passed this check and were then rejected at the far end.
+        from django.conf import settings
+        self.assertIn(getattr(settings, "EVIDENCE_MAX_UPLOAD_MB", None), (None, ""),
+                      "EVIDENCE_MAX_UPLOAD_MB must default to unset so the "
+                      "per-resource-type caps apply")
+        self.assertEqual(self._cap("x_raw.mp4"), 100)
+        self.assertEqual(self._cap("x.jpg"), 10)
+
+    @override_settings(EVIDENCE_MAX_UPLOAD_MB=5)
+    def test_an_explicit_override_still_wins(self):
+        self.assertEqual(self._cap("x_raw.mp4"), 5)
+
+    @override_settings(EVIDENCE_MAX_UPLOAD_MB=0)
+    def test_a_zero_override_means_no_cap(self):
+        self.assertEqual(self._cap("x_raw.mp4"), 0)
