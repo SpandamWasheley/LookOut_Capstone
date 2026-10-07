@@ -181,11 +181,18 @@ CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', default='', cast=Csv())
 # django-cors-headers' own standard set plus Authorization, which this API needs
 # for every JWT call. Extend via the env only if a client starts sending a
 # custom header.
+#
+# ngrok-skip-browser-warning is in the list because both clients send it on
+# every request: without it ngrok's free tier returns its HTML interstitial
+# (ERR_NGROK_6024) rather than proxying, and that page has no CORS headers, so
+# the browser reports a CORS failure that has nothing to do with Django. Being
+# a custom header, it is itself what the preflight asks about -- leave it out
+# and the preflight denies it, which fails the request just as hard.
 CORS_ALLOW_HEADERS = config(
     'CORS_ALLOW_HEADERS',
     default=(
         'accept,accept-encoding,authorization,content-type,dnt,origin,'
-        'user-agent,x-csrftoken,x-requested-with'
+        'user-agent,x-csrftoken,x-requested-with,ngrok-skip-browser-warning'
     ),
     cast=Csv(),
 )

@@ -1,5 +1,13 @@
 const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000/api";
 
+// ngrok's free tier answers browser-looking requests with an HTML "you are
+// about to visit..." interstitial (ERR_NGROK_6024) instead of proxying them.
+// That page carries no Access-Control-Allow-Origin, so every call through a
+// tunnel fails as a CORS error even though Django's own CORS config is right.
+// This header opts out of the interstitial; harmless on any other host.
+// It is a custom header, so it must also be in the API's CORS_ALLOW_HEADERS.
+const TUNNEL_HEADERS = { "ngrok-skip-browser-warning": "true" };
+
 // Access token lives only in memory for the life of the tab — never written to
 // localStorage/sessionStorage, so it can't be read from DevTools storage panels
 // or exfiltrated by a stored-XSS payload scanning storage. This matches the
@@ -18,7 +26,7 @@ export function clearAuth() {
 export async function login(username, password) {
   const response = await fetch(`${API_BASE_URL}/auth/login/`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...TUNNEL_HEADERS },
     body: JSON.stringify({ username, password }),
   });
 
@@ -54,6 +62,7 @@ export async function apiFetch(path, options = {}) {
     ...options,
     headers: {
       "Content-Type": "application/json",
+      ...TUNNEL_HEADERS,
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options.headers,
     },
@@ -83,7 +92,7 @@ async function apiUpload(path, formData) {
   const token = getAccessToken();
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    headers: { ...TUNNEL_HEADERS, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     body: formData,
   });
 
@@ -256,7 +265,7 @@ export const cancelDetectionJob = (id) =>
 export async function getCameraSnapshotUrl(dbId, signal) {
   const token = getAccessToken();
   const response = await fetch(`${API_BASE_URL}/cameras/${dbId}/snapshot/`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    headers: { ...TUNNEL_HEADERS, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     signal,
   });
   if (!response.ok) throw new Error(`snapshot ${response.status}`);
