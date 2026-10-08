@@ -7,6 +7,7 @@ from .models import (
     DetectionJob,
     Officer,
     SystemSettings,
+    UploadSession,
     User,
     ViolationType,
     Violator,
@@ -435,3 +436,37 @@ class DetectionJobSerializer(serializers.ModelSerializer):
 
     def get_is_live(self, obj):
         return obj.camera_id is not None
+
+
+class UploadSessionSerializer(serializers.ModelSerializer):
+    """Progress of one chunked upload — everything the client needs to resume.
+
+    `received_indices` is read off the part directory on every call rather than
+    stored, so it is always what the disk actually has (see the model). The
+    client uploads whatever is missing from it, in any order.
+    """
+
+    received_indices = serializers.SerializerMethodField()
+    received_bytes = serializers.SerializerMethodField()
+    total_chunks = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = UploadSession
+        fields = [
+            "id", "filename", "size", "chunk_size", "total_chunks",
+            "received_indices", "received_bytes", "status", "staged_token",
+            "created_at", "updated_at",
+        ]
+        # The whole row is server-controlled: create() builds it from the
+        # declared filename/size/fingerprint, and chunks are plain binary
+        # bodies that never pass through a serializer.
+        read_only_fields = fields
+
+    def get_received_indices(self, obj):
+        return obj.received_indices()
+
+    def get_received_bytes(self, obj):
+        # A completed session has no parts left on disk (complete() consumes
+        # them), so report the whole clip rather than 0 — a client that polls
+        # right after completing must not see progress fall off a cliff.
+        return obj.size if obj.status == UploadSession.Status.COMPLETE else obj.received_bytes()

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Upload, FileVideo, Loader2, AlertTriangle, RotateCcw, Play, Radio, Square, CheckCircle2 } from "lucide-react";
+import { Upload, FileVideo, Loader2, AlertTriangle, RotateCcw, Play, Radio, Square, CheckCircle2, X, History } from "lucide-react";
 import {
-  stageDetectionFrame, startStagedDetectionJob, startLiveDetectionJob, getCameras, getJobState, cancelDetectionJob,
+  startStagedDetectionJob, startLiveDetectionJob, getCameras, getJobState, cancelDetectionJob,
 } from "./api";
+import { discardUpload, listPendingUploads, uploadClipInChunks } from "./chunkedUpload";
 import { DETECTION_TYPES, TYPES_WITH_EDGES } from "./constants/detectionTypes";
 import { ClipTrimmer } from "./ClipTrimmer";
 import { EdgeCanvas } from "./EdgeCanvas";
@@ -58,11 +59,19 @@ export function RunDetectionPage() {
   // { stagedToken, sourceFilename, frame: { src, width, height } } once the clip's first frame is read.
   const [staged, setStaged] = useState(null);
   const [staging, setStaging] = useState(false);
-  // 0-100 while the clip's bytes are going up, null when nothing is in flight
-  // or when the browser could not tell us the total. Distinct from `staging`,
-  // which stays true through the server-side read that follows the upload.
-  const [uploadPct, setUploadPct] = useState(null);
+  // What chunkedUpload.js last reported: { phase, pct, sentBytes, totalBytes,
+  // resumedBytes }, or null when nothing is in flight. `phase` matters as much
+  // as the number — "uploading" has a real percentage, "assembling" (the
+  // server stitching the chunks and decoding the first frame) has none.
+  const [progress, setProgress] = useState(null);
   const [stageError, setStageError] = useState("");
+  // Uploads this user left part-finished on an earlier visit. The server still
+  // holds those chunks; what it cannot hold is the file handle, so the only way
+  // back is for the user to pick the same clip again.
+  const [pending, setPending] = useState([]);
+  // Cancels the chunks in flight. Deliberately does NOT throw away the chunks
+  // already stored — that is what makes stopping cheap to undo.
+  const abortRef = useRef(null);
 
   const [cameras, setCameras] = useState([]);
   const [camerasLoading, setCamerasLoading] = useState(false);
@@ -102,8 +111,23 @@ export function RunDetectionPage() {
     return () => { cancelled = true; };
   }, [source, cameras.length, camerasLoading]);
 
-  // Choosing a clip reads its first frame straight away (needed for the parking edge and proves the
-  // file decodes), so there is no separate "stage" step.
+  // What the server is still holding from an earlier visit, so the page can
+  // offer to carry on instead of quietly making somebody send 200 MB twice.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const list = await listPendingUploads();
+      if (!cancelled) setPending(list);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const refreshPending = async () => setPending(await listPendingUploads());
+
+  // Choosing a clip uploads it in chunks and reads its first frame straight away (needed for the
+  // parking edge, and it proves the file decodes), so there is no separate "stage" step. If the
+  // server already holds part of this exact file — from a failed attempt, or from before a page
+  // refresh — uploadClipInChunks carries on from there instead of starting over.
   const pickFile = async (f) => {
     if (!f) return;
     const problem = validateFile(f);
@@ -113,31 +137,52 @@ export function RunDetectionPage() {
     setStaged(null);
     setStageError("");
     setStaging(true);
-    setUploadPct(0);
+    setProgress({ phase: "uploading", pct: 0, sentBytes: 0, totalBytes: f.size, resumedBytes: 0 });
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
-      const res = await stageDetectionFrame(f, setUploadPct);
+      const res = await uploadClipInChunks(f, { onProgress: setProgress, signal: controller.signal });
       setStaged({
         stagedToken: res.staged_token,
         sourceFilename: res.source_filename,
         frame: { src: res.image, width: res.width, height: res.height },
       });
+      setPending((list) => list.filter((s) => s.id !== res.session_id));
     } catch (err) {
-      setStageError(err.message || "Could not read that clip.");
+      if (err?.aborted) {
+        setStageError("Upload stopped. What already went up is kept — pick the same clip again to carry on.");
+      } else {
+        setStageError(err.message || "Could not upload that clip.");
+      }
+      // Either way there is now a part-finished upload worth offering a resume
+      // for, so the banner needs to hear about it.
+      refreshPending();
     } finally {
       setStaging(false);
-      setUploadPct(null);
+      setProgress(null);
+      abortRef.current = null;
     }
   };
 
-  // Two distinct phases hide behind `staging`, and they need different UI: the
-  // upload itself has a real percentage, while the server-side first-frame read
-  // that follows reports nothing. uploadPct === 100 means the bytes are away
-  // and we are in the second phase; null means the browser could not give a
-  // total, so there is no percentage to show at all.
-  const uploading = staging && uploadPct !== null && uploadPct < 100;
+  const stopUpload = () => abortRef.current?.abort();
+
+  const forgetPending = async (session) => {
+    setPending((list) => list.filter((s) => s.id !== session.id));
+    await discardUpload(session.id);
+  };
+
+  // Two distinct phases hide behind `staging` and they need different UI: the
+  // chunks going up have a real percentage, while the server stitching them and
+  // reading the first frame reports nothing at all.
+  const uploading = staging && progress?.phase === "uploading";
+  const uploadPct = progress?.pct ?? 0;
   const stageSuffix = uploading ? ` · ${uploadPct}%`
-    : staging ? " · processing…"
+    : staging ? " · assembling…"
     : staged ? " · ready"
+    : "";
+  // Worth saying out loud — a bar that starts at 62% is otherwise just puzzling.
+  const resumedNote = uploading && progress?.resumedBytes > 0
+    ? ` (resumed — ${formatBytes(progress.resumedBytes)} was already up)`
     : "";
 
   const usesClock = source === "file" && ["thief", "drinking", "merged", "merged4"].includes(violationType);
@@ -177,6 +222,7 @@ export function RunDetectionPage() {
   };
 
   const reset = () => {
+    abortRef.current?.abort();
     setFile(null); setFileError(""); setStaged(null); setStageError("");
     setCameraId(""); setRecordedAt(""); setEdgeSpec({}); setCanSaveEdges(false); setTrim({ start: 0, end: 0 });
     setPct(50); setMinutes(5); setStartError(""); setJob(null); setStopping(false);
@@ -191,6 +237,7 @@ export function RunDetectionPage() {
 
   const changeSource = (next) => {
     if (next === source) return;
+    abortRef.current?.abort();
     setSource(next);
     setFile(null); setFileError(""); setStaged(null); setStageError(""); setCameraId("");
     setTrim({ start: 0, end: 0 });
@@ -289,23 +336,33 @@ export function RunDetectionPage() {
                   style={{ border: `1.5px dashed ${dragOver ? "#f59e0b" : "var(--border)"}`, background: dragOver ? "rgba(245,158,11,0.06)" : "var(--secondary)" }}>
                   <input ref={inputRef} type="file" accept={ALLOWED_EXTENSIONS.join(",")} className="hidden"
                     disabled={staging} onChange={(e) => pickFile(e.target.files?.[0])} />
-                  {/* While bytes are going up the BAR below carries the progress, so the
-                      icon stays a plain file. The spinner is kept for the server-side read
+                  {/* While chunks are going up the BAR below carries the progress, so the
+                      icon stays a plain file. The spinner is kept for the stitch-and-decode
                       that follows, which reports nothing and so has no bar to show. */}
                   {staging && !uploading ? <Loader2 size={14} className="animate-spin" style={{ color: "#f59e0b" }} />
                     : file ? <FileVideo size={14} style={{ color: staged ? "#22c55e" : "#f59e0b" }} />
                     : <Upload size={14} style={{ color: "var(--muted-foreground)" }} />}
                   <span className="text-[14px] truncate" style={{ color: file ? "var(--foreground)" : "var(--muted-foreground)" }}>
-                    {file ? `${file.name} · ${formatBytes(file.size)}${stageSuffix}` : "Drop a clip here or click to browse (.mp4 .mkv .avi, up to 1GB)"}
+                    {file ? `${file.name} · ${formatBytes(file.size)}${stageSuffix}${resumedNote}` : "Drop a clip here or click to browse (.mp4 .mkv .avi, up to 1GB)"}
                   </span>
+                  {/* Stops the chunks in flight without discarding the ones already
+                      stored, so picking the same clip again carries on from here.
+                      stopPropagation, or the click reopens the file dialog. */}
+                  {uploading && (
+                    <button onClick={(e) => { e.stopPropagation(); stopUpload(); }} title="Stop uploading"
+                      className="ml-auto flex-shrink-0 p-1 rounded-md"
+                      style={{ background: "rgba(239,68,68,0.12)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.3)" }}>
+                      <X size={11} />
+                    </button>
+                  )}
                   {staging && (
                     <div className="absolute left-0 bottom-0 h-[3px] w-full" style={{ background: "var(--border)" }}>
                       <div
                         className={uploading ? "" : "animate-pulse"}
                         style={{
-                          // Indeterminate phases (server-side read, or a browser that
-                          // would not tell us the total) fill the track and pulse
-                          // instead of parking the bar at a number that is not moving.
+                          // Assembling reports no progress of its own, so it fills the
+                          // track and pulses rather than parking the bar at a number
+                          // that has stopped moving.
                           width: uploading ? `${uploadPct}%` : "100%",
                           height: "100%",
                           background: "#f59e0b",
@@ -351,6 +408,27 @@ export function RunDetectionPage() {
             </div>
 
             {(fileError || stageError || startError) && <Err>{fileError || stageError || startError}</Err>}
+
+            {/* An upload the server still holds chunks for. It cannot finish on its own: a browser
+                cannot re-open a File it no longer has a handle to, which is exactly why a refresh
+                used to lose the whole thing. Picking the same clip again resumes from these bytes
+                rather than resending them. */}
+            {source === "file" && !staging && !staged && pending.map((session) => (
+              <div key={session.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 text-[13px] px-3 py-2 rounded-xl"
+                style={{ background: "rgba(59,130,246,0.08)", border: "1px solid rgba(59,130,246,0.2)", color: "#60a5fa" }}>
+                <History size={13} className="flex-shrink-0" />
+                <span>
+                  <b>{session.filename}</b> was {Math.round((session.received_bytes / session.size) * 100)}% uploaded
+                  {" "}({formatBytes(session.received_bytes)} of {formatBytes(session.size)}).
+                  {" "}Choose the same clip again and it carries on from there.
+                </span>
+                <button onClick={() => forgetPending(session)}
+                  className="ml-auto px-2.5 py-1 rounded-lg text-[12px] font-medium"
+                  style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}>
+                  Discard
+                </button>
+              </div>
+            ))}
 
             {source === "file" && staged && (
               <ClipTrimmer file={file} onChange={setTrim} />

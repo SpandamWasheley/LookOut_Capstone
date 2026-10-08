@@ -14,6 +14,9 @@ router.register("violators", views.ViolatorViewSet, basename="violator")
 router.register("alerts", views.AlertViewSet)
 router.register("dispatchers", views.DispatcherViewSet)
 router.register("detection-jobs", views.DetectionJobViewSet)
+# Resumable chunked upload of a detection source clip — a 200 MB POST that
+# has to survive end to end is what this replaces. See UploadSessionViewSet.
+router.register("uploads", views.UploadSessionViewSet, basename="upload")
 
 urlpatterns = [
     # Kept FIRST and outside the router: the platform's health check must not

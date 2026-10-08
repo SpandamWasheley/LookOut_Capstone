@@ -1,4 +1,6 @@
+import os
 import re
+import uuid
 from datetime import time
 
 from django.conf import settings
@@ -412,6 +414,111 @@ class DetectionJob(models.Model):
 
     def __str__(self):
         return f"{self.violation_type} job #{self.id} ({self.status})"
+
+
+class UploadSession(models.Model):
+    """One resumable, chunked upload of a source clip for a detection run.
+
+    Why this exists: a 200 MB clip POSTed as a single multipart body is one
+    request that has to survive from first byte to last. A dropped Wi-Fi frame,
+    a tunnel hiccup or a proxy's request timeout 90% of the way through throws
+    away all 200 MB with nothing to show for it, and a page refresh does the
+    same — the browser cannot re-read a File it no longer holds, and the server
+    has no half-finished work to continue from. Splitting the clip into
+    CHUNK_BYTES pieces makes every request small enough to retry on its own,
+    and leaves the finished pieces on disk; this row is the record of how far
+    an upload got, so a retry (or a whole new tab) resumes instead of restarting.
+
+    The pieces live in MEDIA_ROOT/uploads/partial/<id>/<index>.part and are
+    concatenated into an ordinary MEDIA_ROOT/uploads clip by complete(), which
+    hands back the same "<32 hex>_<safe name>" staged_token a one-shot upload
+    produces. Past that point nothing downstream — DetectionJobViewSet.create,
+    the watch_* subprocess, cleanup — can tell the two apart.
+
+    Which chunks have arrived is deliberately NOT a column: it is whatever is
+    in the part directory. A crash between writing a chunk and updating a
+    counter would otherwise leave the DB claiming bytes the disk doesn't have
+    (or vice versa), and the client would resume from the wrong offset.
+    """
+
+    class Status(models.TextChoices):
+        UPLOADING = "uploading", "Uploading"
+        COMPLETE = "complete", "Complete"
+
+    # 5 MiB. Small enough that one lost chunk costs a second or two to redo and
+    # no single request outlives a typical 30-60s proxy/tunnel read timeout;
+    # large enough that a 200 MB clip is 40 requests rather than 2000.
+    CHUNK_BYTES = 5 * 1024 * 1024
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    filename = models.CharField(max_length=255)
+    size = models.BigIntegerField()
+    # "<name>|<size>|<lastModified>" as the browser reports it. Used for one
+    # thing only: finding THIS user's unfinished upload of the same file again
+    # (see UploadSessionViewSet.create). It is a convenience key, not a
+    # checksum and never a filesystem path — the chunk sizes are what actually
+    # police the bytes.
+    fingerprint = models.CharField(max_length=200, db_index=True)
+    chunk_size = models.IntegerField(default=CHUNK_BYTES)
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.UPLOADING)
+    # Set by complete(): the staged clip's handle under MEDIA_ROOT/uploads.
+    staged_token = models.CharField(max_length=300, blank=True)
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name="upload_sessions")
+    created_at = models.DateTimeField(auto_now_add=True)
+    # Bumped by every accepted chunk, so an upload someone walked away from can
+    # be told from one that is still moving (see _purge_stale_uploads).
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+
+    def __str__(self):
+        return f"upload {self.id} ({self.filename}, {self.status})"
+
+    @property
+    def total_chunks(self):
+        return max(1, -(-self.size // self.chunk_size))  # ceil division
+
+    def chunk_length(self, index):
+        """Exactly how many bytes chunk `index` must carry. Every chunk but the
+        last is full-sized; checking against this is what stops a client from
+        quietly writing a clip bigger (or smaller) than the size it declared."""
+        if index == self.total_chunks - 1:
+            return self.size - self.chunk_size * index
+        return self.chunk_size
+
+    @property
+    def part_dir(self):
+        return settings.MEDIA_ROOT / "uploads" / "partial" / str(self.id)
+
+    def part_path(self, index):
+        return self.part_dir / f"{index}.part"
+
+    def received_indices(self):
+        """Indices whose part file is on disk AT ITS FULL EXPECTED LENGTH. A
+        short part is a chunk request that died mid-write, so it is reported as
+        missing and simply sent again."""
+        try:
+            names = os.listdir(self.part_dir)
+        except OSError:
+            return []
+        found = []
+        for name in names:
+            stem, _, ext = name.partition(".")
+            if ext != "part" or not stem.isdigit():
+                continue
+            index = int(stem)
+            if index >= self.total_chunks:
+                continue
+            try:
+                if self.part_path(index).stat().st_size == self.chunk_length(index):
+                    found.append(index)
+            except OSError:
+                continue
+        return sorted(found)
+
+    def received_bytes(self):
+        return sum(self.chunk_length(i) for i in self.received_indices())
 
 
 class SystemSettings(models.Model):

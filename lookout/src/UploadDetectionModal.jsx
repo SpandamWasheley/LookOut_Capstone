@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { X, Upload, FileVideo, Loader2, AlertTriangle } from "lucide-react";
-import { uploadDetectionJob } from "./api";
+import { startStagedDetectionJob } from "./api";
+import { uploadClipInChunks } from "./chunkedUpload";
 import { DETECTION_TYPES, TYPES_REQUIRING_EDGES } from "./constants/detectionTypes";
 
 const ALLOWED_EXTENSIONS = [".mp4", ".mkv", ".avi"];
@@ -34,7 +35,11 @@ export function UploadDetectionModal({ onClose, onJobStarted }) {
   const [dragOver, setDragOver] = useState(false);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // What chunkedUpload.js last reported while the clip goes up, or null. See
+  // the comment on handleSubmit for why this modal uploads in chunks too.
+  const [progress, setProgress] = useState(null);
   const inputRef = useRef(null);
+  const uploading = progress?.phase === "uploading";
 
   const pickFile = (f) => {
     if (!f) return;
@@ -54,18 +59,30 @@ export function UploadDetectionModal({ onClose, onJobStarted }) {
     pickFile(e.dataTransfer.files?.[0]);
   };
 
+  // Two calls rather than the one POST this used to make: the clip goes up in
+  // chunks (a single 200 MB request is what times out and loses everything —
+  // see chunkedUpload.js), then the job is started from the staged clip. The
+  // backend's direct file+violation_type path still exists; nothing in the UI
+  // uses it, because nothing here knows the clip will be small.
   const handleSubmit = async () => {
     if (!file || submitting) return;
     setSubmitting(true);
     setError("");
+    setProgress({ phase: "uploading", pct: 0, sentBytes: 0, totalBytes: file.size, resumedBytes: 0 });
     try {
-      const job = await uploadDetectionJob(file, violationType);
+      const staged = await uploadClipInChunks(file, { onProgress: setProgress });
+      const job = await startStagedDetectionJob({
+        stagedToken: staged.staged_token,
+        sourceFilename: staged.source_filename,
+        violationType,
+      });
       onJobStarted(job);
       onClose();
     } catch (err) {
       setError(err.message || "Upload failed.");
     } finally {
       setSubmitting(false);
+      setProgress(null);
     }
   };
 
@@ -169,7 +186,24 @@ export function UploadDetectionModal({ onClose, onJobStarted }) {
                   </div>
                   <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>
                     {formatBytes(file.size)}
+                    {uploading ? ` · ${progress.pct}% uploaded` : progress ? " · assembling…" : ""}
                   </div>
+                  {/* A real bar, not a spinner: on a 200 MB clip the difference is
+                      between "it is 40% through" and "it might be stuck". The
+                      assembling phase reports nothing, so it pulses full-width. */}
+                  {progress && (
+                    <div className="w-full h-[3px] rounded-full overflow-hidden mt-1" style={{ background: "var(--border)" }}>
+                      <div
+                        className={uploading ? "" : "animate-pulse"}
+                        style={{
+                          width: uploading ? `${progress.pct}%` : "100%",
+                          height: "100%",
+                          background: "#f59e0b",
+                          transition: "width 150ms linear",
+                        }}
+                      />
+                    </div>
+                  )}
                 </>
               ) : (
                 <>
@@ -220,7 +254,7 @@ export function UploadDetectionModal({ onClose, onJobStarted }) {
             }}
           >
             {submitting ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />}
-            {submitting ? "Starting…" : "Run Detection"}
+            {uploading ? `Uploading ${progress.pct}%…` : submitting ? "Starting…" : "Run Detection"}
           </button>
         </div>
       </div>

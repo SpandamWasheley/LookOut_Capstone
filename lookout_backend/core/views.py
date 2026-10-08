@@ -4,6 +4,7 @@ import logging
 import os
 import random
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -27,7 +28,7 @@ from rapidfuzz import process as rapidfuzz_process
 from django.db import connection
 from rest_framework import generics, permissions, viewsets
 from rest_framework.decorators import action, api_view, permission_classes, throttle_classes
-from rest_framework.parsers import FormParser, MultiPartParser
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView
@@ -42,6 +43,7 @@ from .models import (
     EmailVerificationCode,
     Officer,
     SystemSettings,
+    UploadSession,
     User,
     ViolationType,
     Violator,
@@ -98,6 +100,7 @@ from .serializers import (
     DispatcherSerializer,
     OfficerSerializer,
     SystemSettingsSerializer,
+    UploadSessionSerializer,
     UserSerializer,
     ViolationTypeSerializer,
     ViolatorSerializer,
@@ -1036,6 +1039,58 @@ DETECTION_UPLOAD_EXTENSIONS = {".mp4", ".mkv", ".avi"}
 DETECTION_MAX_UPLOAD_BYTES = 1024 * 1024 * 1024  # 1GB
 
 
+def _check_clip_name(filename):
+    """The extension complaint for `filename`, or None if it is acceptable.
+
+    Checked at the START of a chunked upload as well as on a one-shot one: a
+    200 MB clip should be refused for its type before any of it crosses the
+    wire, not after.
+    """
+    ext = os.path.splitext(filename or "")[1].lower()
+    if ext not in DETECTION_UPLOAD_EXTENSIONS:
+        return (f"Unsupported file type {ext!r}. Allowed: "
+                f"{', '.join(sorted(DETECTION_UPLOAD_EXTENSIONS))}.")
+    return None
+
+
+def _staged_frame_response(saved_path, token, source_filename):
+    """Reads the staged clip's first frame and shapes the staging reply.
+
+    Shared by DetectionJobViewSet.frame (one-shot upload) and
+    UploadSessionViewSet.complete (chunked), so both hand the page the same
+    payload — and so the decode check that catches a corrupt or mislabelled
+    file (a matching extension can be spoofed) lives on exactly one path.
+    Deletes the staged clip on failure: there is nothing a detector could do
+    with a file that will not open.
+    """
+    cap = cv2.VideoCapture(str(saved_path))
+    ok, first = cap.read()
+    cap.release()
+    if not ok:
+        try:
+            os.remove(saved_path)
+        except OSError:
+            pass
+        return None, Response({"detail": "Could not read that video file."}, status=400)
+
+    ok, buf = cv2.imencode(".jpg", first)
+    if not ok:
+        try:
+            os.remove(saved_path)
+        except OSError:
+            pass
+        return None, Response({"detail": "Could not encode that frame."}, status=500)
+
+    h, w = first.shape[:2]
+    return {
+        "staged_token": token,
+        "source_filename": source_filename,
+        "image": "data:image/jpeg;base64," + base64.b64encode(buf).decode("ascii"),
+        "width": w,
+        "height": h,
+    }, None
+
+
 def _tail_log(path, max_chars=4000):
     """Last bit of a detection job's combined stdout/stderr, for surfacing why
     it failed without shipping the whole log to the client."""
@@ -1083,6 +1138,331 @@ def _watch_detection_job(job_id, proc, log_path, source_path):
             pass
 
 
+# Abandoned chunked uploads are swept on this schedule. The machine this runs
+# on has been down to 0.44 GB free (see core/apps._close_orphaned_jobs), so
+# half-sent 200 MB clips cannot be left lying around indefinitely.
+#
+# Two different clocks, because the two kinds of leftover mean different
+# things. A session still UPLOADING is only abandoned once nothing has touched
+# it for a while — the window has to be comfortably longer than a slow upload
+# of a 1 GB clip over a bad link, or the sweep would delete parts out from
+# under a user who is still sending them. A session already COMPLETE holds a
+# whole staged clip that nobody started a run with; a day is long enough for
+# somebody to come back and press Start.
+STALE_UPLOAD_HOURS = 12
+UNUSED_STAGED_CLIP_HOURS = 24
+# Most a single user may have part-way through at once. Nothing legitimate
+# needs more (the page uploads one clip at a time); the cap is what stops a
+# stuck client from filling the disk with part files faster than the sweep
+# clears them. Over the cap, that user's OLDEST unfinished upload is dropped.
+MAX_LIVE_UPLOADS_PER_USER = 3
+
+
+def _discard_upload_session(session):
+    """Deletes a session's row and its part files. Never touches a staged clip
+    a detection job is using."""
+    shutil.rmtree(session.part_dir, ignore_errors=True)
+    if session.staged_token:
+        staged = django_settings.MEDIA_ROOT / "uploads" / session.staged_token
+        # A run may already have been started from this clip — the subprocess
+        # is reading the file right now, and _watch_detection_job removes it
+        # when the run ends. Deleting it here would break a run in progress.
+        in_use = DetectionJob.objects.filter(source_path=str(staged)).exists()
+        if not in_use:
+            try:
+                os.remove(staged)
+            except OSError:
+                pass
+    session.delete()
+
+
+def _purge_stale_uploads():
+    """Clears out upload sessions nobody is coming back to.
+
+    Called when a session is created or listed rather than on a timer: those
+    are the moments a client is about to need disk, there is no task queue in
+    this project to schedule a sweep in, and it keeps the work proportional to
+    actual use.
+    """
+    now = timezone.now()
+    stale = UploadSession.objects.filter(
+        status=UploadSession.Status.UPLOADING,
+        updated_at__lt=now - timedelta(hours=STALE_UPLOAD_HOURS),
+    )
+    unused = UploadSession.objects.filter(
+        status=UploadSession.Status.COMPLETE,
+        updated_at__lt=now - timedelta(hours=UNUSED_STAGED_CLIP_HOURS),
+    )
+    for session in list(stale) + list(unused):
+        _discard_upload_session(session)
+
+
+class UploadSessionViewSet(viewsets.GenericViewSet):
+    """Resumable chunked upload of a source clip, for Run Detection.
+
+    The problem it solves: the clips this system is pointed at are routinely
+    200 MB, and a single multipart POST of 200 MB is one request that must
+    survive end to end. Over a LAN that is merely slow; through a tunnel or a
+    proxy with a read timeout it fails outright, and every failure costs the
+    whole upload. Worse, a page refresh (which this dashboard treats as a full
+    re-login, by design — see lookout/src/api.js) threw the upload away
+    entirely: the browser cannot re-read a File it no longer holds a handle to.
+
+    So the clip is sent as `chunk_size` pieces against one session row:
+
+        POST   /api/uploads/                 declare filename + size, get a session
+        POST   /api/uploads/<id>/chunk/      one piece (form fields: index, chunk)
+        GET    /api/uploads/<id>/            which pieces have landed
+        POST   /api/uploads/<id>/complete/   stitch them, decode-check, stage
+        DELETE /api/uploads/<id>/            give up, delete the pieces
+
+    Each chunk is its own small request, so a failure retries a few megabytes
+    instead of a few hundred, and pieces may go up in parallel. Nothing about
+    progress is stored beyond the files themselves, so "where was I" is
+    answered the same way after a dropped request, a new tab or a reboot: GET
+    the session and send whatever is missing from `received_indices`.
+
+    complete() returns exactly what DetectionJobViewSet.frame returns —
+    including the staged_token — so the rest of the flow (draw edges, trim,
+    Start) is unchanged and cannot tell a chunked upload from a one-shot one.
+    """
+
+    queryset = UploadSession.objects.all()
+    serializer_class = UploadSessionSerializer
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+    # Multipart carries the chunks; JSON is here because complete() and
+    # destroy() are called through the dashboard's ordinary JSON fetch helper
+    # and would otherwise be one added request.data read away from a 415.
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+    http_method_names = ["get", "post", "delete", "head"]
+
+    def get_queryset(self):
+        # Sessions are strictly per-user: one admin must never be able to
+        # resume, read or abort another's upload by guessing an id.
+        return UploadSession.objects.filter(created_by=self.request.user)
+
+    def list(self, request):
+        """This user's unfinished uploads, newest first.
+
+        The page asks on load, so it can say "clip.mp4 was 62% uploaded — pick
+        the same file to carry on". That is the honest version of surviving a
+        refresh: the server kept the bytes, but only the user can hand the
+        browser the file again. Resuming itself needs no call here — create()
+        matches on the fingerprint and returns the existing session.
+
+        `?fingerprint=` narrows the list to one file, for a client that wants to
+        ask about a specific clip rather than list everything.
+        """
+        _purge_stale_uploads()
+        sessions = self.get_queryset().filter(status=UploadSession.Status.UPLOADING)
+        fingerprint = request.query_params.get("fingerprint")
+        if fingerprint:
+            sessions = sessions.filter(fingerprint=fingerprint)
+        return Response(self.get_serializer(sessions, many=True).data)
+
+    def create(self, request):
+        """Starts an upload — or hands back the one already in progress for the
+        same file, which is what makes a resume a resume rather than a restart."""
+        if not getattr(django_settings, "DETECTION_ENABLED", True):
+            # Refused HERE, before a single chunk is sent, rather than at job
+            # creation: a clip staged on a server that cannot run detectors is
+            # 200 MB uploaded for nothing.
+            return Response({"detail": DetectionJobViewSet.DETECTION_DISABLED}, status=503)
+
+        _purge_stale_uploads()
+
+        filename = (request.data.get("filename") or "").strip()
+        if not filename:
+            return Response({"detail": "filename is required."}, status=400)
+        problem = _check_clip_name(filename)
+        if problem:
+            return Response({"detail": problem}, status=400)
+
+        try:
+            size = int(request.data.get("size"))
+        except (TypeError, ValueError):
+            return Response({"detail": "size must be the file's length in bytes."}, status=400)
+        if size <= 0:
+            return Response({"detail": "size must be the file's length in bytes."}, status=400)
+        if size > DETECTION_MAX_UPLOAD_BYTES:
+            limit_mb = DETECTION_MAX_UPLOAD_BYTES // (1024 * 1024)
+            return Response({"detail": f"File too large — limit is {limit_mb}MB."}, status=400)
+
+        fingerprint = (request.data.get("fingerprint") or "")[:200]
+
+        # Rejoin an unfinished upload of the same file. The size has to match
+        # as well as the fingerprint: an edited file reusing a name and
+        # timestamp would otherwise resume onto chunks of the old one and
+        # stitch two different videos together.
+        if fingerprint:
+            existing = self.get_queryset().filter(
+                status=UploadSession.Status.UPLOADING, fingerprint=fingerprint, size=size,
+            ).first()
+            if existing is not None:
+                os.makedirs(existing.part_dir, exist_ok=True)
+                return Response(self.get_serializer(existing).data, status=200)
+
+        session = UploadSession.objects.create(
+            filename=filename[:255], size=size, fingerprint=fingerprint,
+            chunk_size=UploadSession.CHUNK_BYTES, created_by=request.user,
+        )
+        os.makedirs(session.part_dir, exist_ok=True)
+
+        # Keep only the newest few unfinished uploads for this user; see
+        # MAX_LIVE_UPLOADS_PER_USER.
+        surplus = list(self.get_queryset().filter(
+            status=UploadSession.Status.UPLOADING,
+        )[MAX_LIVE_UPLOADS_PER_USER:])
+        for old in surplus:
+            _discard_upload_session(old)
+
+        return Response(self.get_serializer(session).data, status=201)
+
+    def retrieve(self, request, pk=None):
+        return Response(self.get_serializer(self.get_object()).data)
+
+    def destroy(self, request, pk=None):
+        """Give up on an upload and reclaim its disk straight away, instead of
+        waiting out STALE_UPLOAD_HOURS."""
+        _discard_upload_session(self.get_object())
+        return Response(status=204)
+
+    @action(detail=True, methods=["post"], url_path="chunk",
+            parser_classes=[MultiPartParser, FormParser])
+    def chunk(self, request, pk=None):
+        """Stores one piece. Idempotent: re-sending a piece that already
+        landed is harmless, so a client that gave up waiting for the reply can
+        simply send it again without corrupting anything."""
+        session = self.get_object()
+        if session.status == UploadSession.Status.COMPLETE:
+            return Response({"detail": "This upload is already complete."}, status=409)
+
+        try:
+            index = int(request.data.get("index"))
+        except (TypeError, ValueError):
+            return Response({"detail": "index must be the chunk's 0-based position."}, status=400)
+        if not 0 <= index < session.total_chunks:
+            return Response(
+                {"detail": f"index out of range — this upload has {session.total_chunks} chunks."},
+                status=400,
+            )
+
+        piece = request.FILES.get("chunk")
+        if piece is None:
+            return Response({"detail": "No chunk uploaded."}, status=400)
+
+        # The one real integrity check: every chunk but the last must be
+        # exactly chunk_size, and the last exactly the remainder. Together
+        # these make the stitched file's length provably the size declared (and
+        # already bounds-checked) at create(), so no sequence of chunk posts
+        # can write a file larger than the upload limit.
+        expected = session.chunk_length(index)
+        if piece.size != expected:
+            return Response(
+                {"detail": f"Chunk {index} should be {expected} bytes, got {piece.size}."},
+                status=400,
+            )
+
+        os.makedirs(session.part_dir, exist_ok=True)
+        # Written under a scratch name and renamed into place, so a request
+        # that dies mid-write never leaves a short file under a name the
+        # resume logic would read as "this chunk already landed". os.replace is
+        # atomic, which also makes a re-sent chunk safe to overwrite.
+        tmp = session.part_dir / f"{index}.{uuid.uuid4().hex}.tmp"
+        try:
+            with open(tmp, "wb") as dest:
+                for block in piece.chunks():
+                    dest.write(block)
+            os.replace(tmp, session.part_path(index))
+        except OSError as exc:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            return Response({"detail": f"Could not store that chunk: {exc}"}, status=500)
+
+        # Marks the session as still moving, so the sweep leaves it alone.
+        session.save(update_fields=["updated_at"])
+        return Response({"index": index, "received_bytes": session.received_bytes()})
+
+    @action(detail=True, methods=["post"], url_path="complete")
+    def complete(self, request, pk=None):
+        """Stitches the pieces into an ordinary staged clip and returns its
+        first frame — the same payload, and the same staged_token contract, as
+        DetectionJobViewSet.frame."""
+        session = self.get_object()
+        upload_dir = django_settings.MEDIA_ROOT / "uploads"
+
+        if session.status == UploadSession.Status.COMPLETE:
+            # A client whose complete() reply was lost retries it. The clip is
+            # already stitched, so re-read its frame rather than fail — unless
+            # the clip is gone (a run consumed it), in which case there is
+            # genuinely nothing left to stage.
+            staged = upload_dir / session.staged_token
+            if staged.is_file():
+                payload, error = _staged_frame_response(staged, session.staged_token, session.filename)
+                return error or Response(payload)
+            return Response({"detail": "Staged upload expired — upload the clip again."}, status=410)
+
+        missing = sorted(set(range(session.total_chunks)) - set(session.received_indices()))
+        if missing:
+            return Response(
+                {"detail": f"{len(missing)} chunk(s) are still missing.", "missing": missing[:50]},
+                status=409,
+            )
+
+        os.makedirs(upload_dir, exist_ok=True)
+        token = f"{uuid.uuid4().hex}_{get_valid_filename(session.filename)}"
+        staged = upload_dir / token
+        try:
+            with open(staged, "wb") as dest:
+                for index in range(session.total_chunks):
+                    part = session.part_path(index)
+                    with open(part, "rb") as piece:
+                        shutil.copyfileobj(piece, dest, 1024 * 1024)
+                    # Dropped as it is consumed, so stitching needs roughly the
+                    # clip's own size in free space rather than twice it. The
+                    # disk this runs on has been full enough for that to matter.
+                    try:
+                        os.remove(part)
+                    except OSError:
+                        pass
+        except OSError as exc:
+            try:
+                os.remove(staged)
+            except OSError:
+                pass
+            return Response({"detail": f"Could not assemble the upload: {exc}"}, status=500)
+
+        shutil.rmtree(session.part_dir, ignore_errors=True)
+
+        written = staged.stat().st_size
+        if written != session.size:
+            # Belt and braces — the per-chunk length checks should make this
+            # impossible. If it ever fires the clip is wrong, and a wrong clip
+            # must not be handed to a detector that produces violation records.
+            os.remove(staged)
+            session.delete()
+            return Response(
+                {"detail": f"Assembled {written} bytes but the file was declared as "
+                           f"{session.size}. Upload it again."},
+                status=400,
+            )
+
+        payload, error = _staged_frame_response(staged, token, session.filename)
+        if error is not None:
+            # _staged_frame_response already deleted the unreadable clip; the
+            # session goes with it, so a retry starts clean rather than
+            # resuming into a file that will never decode.
+            session.delete()
+            return error
+
+        session.status = UploadSession.Status.COMPLETE
+        session.staged_token = token
+        session.save(update_fields=["status", "staged_token", "updated_at"])
+        return Response(payload)
+
+
 class DetectionJobViewSet(viewsets.ModelViewSet):
     """Admin-only test harness: upload a video clip, run one of the existing
     watch_* management commands against it exactly as it runs from the
@@ -1121,13 +1501,9 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
         if upload is None:
             return Response({"detail": "No file uploaded."}, status=400)
 
-        ext = os.path.splitext(upload.name)[1].lower()
-        if ext not in DETECTION_UPLOAD_EXTENSIONS:
-            return Response(
-                {"detail": f"Unsupported file type {ext!r}. Allowed: "
-                           f"{', '.join(sorted(DETECTION_UPLOAD_EXTENSIONS))}."},
-                status=400,
-            )
+        problem = _check_clip_name(upload.name)
+        if problem:
+            return Response({"detail": problem}, status=400)
         if upload.size > DETECTION_MAX_UPLOAD_BYTES:
             limit_mb = DETECTION_MAX_UPLOAD_BYTES // (1024 * 1024)
             return Response({"detail": f"File too large — limit is {limit_mb}MB."}, status=400)
@@ -1141,26 +1517,8 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
             for chunk in upload.chunks():
                 dest.write(chunk)
 
-        cap = cv2.VideoCapture(str(saved_path))
-        ok, first = cap.read()
-        cap.release()
-        if not ok:
-            os.remove(saved_path)
-            return Response({"detail": "Could not read that video file."}, status=400)
-
-        ok, buf = cv2.imencode(".jpg", first)
-        if not ok:
-            os.remove(saved_path)
-            return Response({"detail": "Could not encode that frame."}, status=500)
-
-        h, w = first.shape[:2]
-        return Response({
-            "staged_token": token,
-            "source_filename": upload.name,
-            "image": "data:image/jpeg;base64," + base64.b64encode(buf).decode("ascii"),
-            "width": w,
-            "height": h,
-        })
+        payload, error = _staged_frame_response(saved_path, token, upload.name)
+        return error or Response(payload)
 
     # Refused where the detectors cannot run. A job here Popens `manage.py
     # watch_*`, which needs the GPU, the model weights and the camera — none of
@@ -1219,12 +1577,13 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
             source_filename = f"Live — {camera.name}"
             camera_code = camera.code
         else:
-            # Either a clip already staged via frame() above (staged_token), or a
-            # fresh direct upload (file) — the two DetectionJobHistoryModal /
-            # UploadDetectionModal / RunDetectionPage entry points use whichever
-            # fits: RunDetectionPage always stages first (so a big clip only
-            # crosses the wire once even for non-parking types); the older
-            # upload-only modal still posts file+violation_type directly.
+            # Either a clip already staged (staged_token), or a fresh direct
+            # upload (file). Every entry point in the web dashboard now stages
+            # first, and stages in CHUNKS (UploadSessionViewSet) — a single
+            # request carrying the 200 MB clips this is pointed at is what
+            # times out and loses the lot. The direct file path is kept because
+            # it is the simplest way to drive a run from a script or a test,
+            # where the clip is small and one request is fine.
             staged_token = request.data.get("staged_token", "")
             upload = request.FILES.get("file")
             if staged_token:

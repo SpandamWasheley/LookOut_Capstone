@@ -368,6 +368,16 @@ STORAGES = {
 MEDIA_URL = 'media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
+# Just above UploadSession.CHUNK_BYTES (5 MiB), so a chunked upload's pieces are
+# handled in memory rather than spooled to a temp file and copied out of it
+# again — a pointless extra write per chunk on a machine that has been at 98%
+# disk. Only the per-FILE threshold moves: a one-shot 200 MB upload is still far
+# over it and still streams to disk, and the ceiling on what may be uploaded at
+# all is unchanged (core/views.py DETECTION_MAX_UPLOAD_BYTES). Worst case in
+# memory is this times the number of chunk requests in flight, which the
+# dashboard caps at 3 (lookout/src/chunkedUpload.js CONCURRENCY).
+FILE_UPLOAD_MAX_MEMORY_SIZE = 6 * 1024 * 1024
+
 # --- evidence media: shared object storage ----------------------------------
 # THIS IS NOT OPTIONAL IN A CLOUD DEPLOYMENT, and the reason is the split
 # architecture. The detectors run on a PC at the barangay (they need the

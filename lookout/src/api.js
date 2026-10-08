@@ -167,24 +167,45 @@ export async function apiFetch(path, options = {}) {
 // `onProgress` is optional and receives a 0-100 integer, or null when the
 // total size is unknown (no Content-Length on the body — rare for a FormData
 // with a real File, but a caller must still render something sane).
-function apiUpload(path, formData, { onProgress } = {}) {
-  return sendUpload(path, formData, onProgress, getAccessToken()).catch(async (err) => {
+//
+// `signal` is an optional AbortSignal; aborting rejects with status 0 and the
+// message below. chunkedUpload.js needs it so cancelling a 200 MB upload stops
+// the chunk that is in flight instead of waiting it out.
+//
+// Exported because chunkedUpload.js sends every chunk through it, and must get
+// the same 401-refresh behaviour and the same error contract as any other
+// upload — a chunk request is nothing special.
+export function apiUpload(path, formData, { onProgress, signal } = {}) {
+  return sendUpload(path, formData, onProgress, getAccessToken(), signal).catch(async (err) => {
     // A 30-minute access token can expire DURING a long upload, so a 401 here
     // is not necessarily a dead session. Refresh and send it again.
     //
     // This does re-send the whole body, and onProgress restarts from 0 — the
     // bar visibly rewinds. That is the honest thing to show: the bytes really
-    // are going up a second time. A FormData holding a File can be re-sent
-    // (the File is re-read from disk), unlike a one-shot stream body.
+    // are going up a second time. A FormData holding a File or Blob can be
+    // re-sent (it is re-read from disk), unlike a one-shot stream body. With
+    // chunked uploads only the current chunk is ever re-sent, not the clip.
     if (err.status !== 401 || !refreshToken) throw err;
     const fresh = await refreshAccess();
     if (!fresh) throw err;
-    return sendUpload(path, formData, onProgress, fresh);
+    return sendUpload(path, formData, onProgress, fresh, signal);
   });
 }
 
-function sendUpload(path, formData, onProgress, token) {
+// Message an aborted upload rejects with. chunkedUpload.js matches on it to
+// tell "the user cancelled" apart from "the network failed", which must not be
+// retried the same way.
+export const UPLOAD_ABORTED = "The upload was cancelled.";
+
+function sendUpload(path, formData, onProgress, token, signal) {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      const err = new Error(UPLOAD_ABORTED);
+      err.status = 0;
+      err.aborted = true;
+      reject(err);
+      return;
+    }
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${API_BASE_URL}${path}`);
     for (const [k, v] of Object.entries(TUNNEL_HEADERS)) xhr.setRequestHeader(k, v);
@@ -210,7 +231,12 @@ function sendUpload(path, formData, onProgress, token) {
     // Network-level failures, which fetch would surface as a rejected promise.
     xhr.onerror = () => fail("Network error — the upload did not reach the server.");
     xhr.ontimeout = () => fail("The upload timed out.");
-    xhr.onabort = () => fail("The upload was cancelled.");
+    xhr.onabort = () => {
+      const err = new Error(UPLOAD_ABORTED);
+      err.status = 0;
+      err.aborted = true;
+      reject(err);
+    };
 
     xhr.onload = () => {
       const text = xhr.responseText;
@@ -229,6 +255,15 @@ function sendUpload(path, formData, onProgress, token) {
         : text || `Request failed with status ${xhr.status}`;
       fail(message, xhr.status, parsed);
     };
+
+    if (signal) {
+      const stop = () => xhr.abort();
+      signal.addEventListener("abort", stop, { once: true });
+      // Dropping the listener matters here: a cancelled upload would otherwise
+      // keep a reference to its XHR (and so to the chunk Blob) alive on the
+      // signal for as long as the page lives.
+      xhr.onloadend = () => signal.removeEventListener("abort", stop);
+    }
 
     xhr.send(formData);
   });
@@ -316,22 +351,61 @@ export const getMonitor = () => apiFetch("/monitor/");
 export const startMonitor = () => apiFetch("/monitor/start/", { method: "POST", body: "{}" });
 export const stopMonitor = () => apiFetch("/monitor/stop/", { method: "POST", body: "{}" });
 export const getMonitorState = (since) => apiFetch(`/monitor/state/${sinceQuery(since)}`);
-export const uploadDetectionJob = (file, violationType) => {
-  const formData = new FormData();
-  formData.append("file", file);
-  formData.append("violation_type", violationType);
-  return apiUpload("/detection-jobs/", formData);
-};
-
-// Stages a clip server-side and returns its first frame (native resolution)
-// plus a staged_token — for the "upload -> draw edges -> start" flow, where
-// the clip should only cross the wire once even though drawing happens
-// before the job itself is created. See DetectionJobViewSet.frame.
+// Stages a clip in ONE request and returns its first frame (native resolution)
+// plus a staged_token — the "upload -> draw edges -> start" flow, where the
+// clip must only cross the wire once even though drawing happens before the
+// job is created. See DetectionJobViewSet.frame.
+//
+// Kept for small clips and as the fallback path; chunkedUpload.js is what the
+// pages actually use, because a single request carrying 200 MB is exactly the
+// thing that times out and loses everything. Same return shape either way.
 export const stageDetectionFrame = (file, onProgress) => {
   const formData = new FormData();
   formData.append("file", file);
   return apiUpload("/detection-jobs/frame/", formData, { onProgress });
 };
+
+// ---- Resumable chunked upload (see core/views.py UploadSessionViewSet) -----
+// Thin wrappers only; the logic that drives them — splitting the file,
+// retrying a chunk, resuming — lives in chunkedUpload.js.
+
+// Declares a clip and gets a session back. `fingerprint` lets the server hand
+// back an upload of the same file that is ALREADY part-way done instead of
+// starting a new one, which is what turns a retry into a resume.
+export const createUploadSession = ({ filename, size, fingerprint }) => {
+  const formData = new FormData();
+  formData.append("filename", filename);
+  formData.append("size", size);
+  formData.append("fingerprint", fingerprint);
+  return apiUpload("/uploads/", formData);
+};
+
+// Unfinished uploads belonging to this user. With a fingerprint it answers
+// "did I already start sending this exact file?"; without one it answers "is
+// there an upload I abandoned?", which is what the resume banner shows after a
+// page refresh.
+export const getUploadSessions = (fingerprint) =>
+  apiFetch("/uploads/" + (fingerprint ? `?fingerprint=${encodeURIComponent(fingerprint)}` : ""));
+
+// One piece of the clip. `blob` must be exactly the length the server expects
+// for that index (chunk_size, or the remainder for the last one) — it rejects
+// anything else, which is what keeps the stitched file honest.
+export const uploadChunk = (id, index, blob, { onProgress, signal } = {}) => {
+  const formData = new FormData();
+  formData.append("index", index);
+  formData.append("chunk", blob);
+  return apiUpload(`/uploads/${id}/chunk/`, formData, { onProgress, signal });
+};
+
+// Stitches the pieces into a staged clip. Returns the same payload as
+// stageDetectionFrame: { staged_token, source_filename, image, width, height }.
+export const completeUploadSession = (id) =>
+  apiFetch(`/uploads/${id}/complete/`, { method: "POST", body: "{}" });
+
+// Abandon an upload and free its disk now rather than waiting for the server's
+// own sweep of stale sessions.
+export const abortUploadSession = (id) =>
+  apiFetch(`/uploads/${id}/`, { method: "DELETE" });
 
 // Starts a job from an already-staged clip (see stageDetectionFrame) instead
 // of re-uploading it. `edges` (parking only) is the same {left,right} spec
