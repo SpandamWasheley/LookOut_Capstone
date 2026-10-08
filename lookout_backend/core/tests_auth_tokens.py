@@ -13,6 +13,7 @@ extra hours), which is why test_access_expires_well_before_refresh exists.
 import datetime
 
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.test import TestCase
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import AccessToken
@@ -23,6 +24,11 @@ REFRESH = "/api/auth/refresh/"
 
 class TokenPairTests(TestCase):
     def setUp(self):
+        # LoginThrottle (10/min) counts in the cache, which is not rolled back
+        # between tests the way the database is — so a suite with enough logins
+        # in it starts 429ing on assertions that have nothing to do with rate
+        # limiting. Clearing it keeps each test independent.
+        cache.clear()
         User = get_user_model()
         self.user = User.objects.create_user(
             username="dispatch1", password="pw-correct-horse", role="dispatcher",

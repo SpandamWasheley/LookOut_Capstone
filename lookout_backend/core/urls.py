@@ -24,6 +24,9 @@ urlpatterns = [
     path("health/", views.health, name="health"),
     path("auth/login/", views.LoginView.as_view(), name="login"),
     path("auth/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
+    # Blacklists the refresh token so signing out ends the session server-side,
+    # not just in the one browser. See views.logout.
+    path("auth/logout/", views.logout, name="logout"),
     path("auth/me/", views.me, name="me"),
     path("auth/change-password/", views.change_password, name="change_password"),
     path("auth/forgot-password/send-code/", views.forgot_password_send_code, name="forgot_password_send_code"),

@@ -138,6 +138,11 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'rest_framework',
+    # Stores the jti of every refresh token that has been rotated away or
+    # logged out, so it can be refused afterwards. Without this a JWT is
+    # irrevocable by design: there is nothing to check a presented token
+    # against, and a leaked refresh token stays good until it expires.
+    'rest_framework_simplejwt.token_blacklist',
     'django_filters',
     'corsheaders',
     # Evidence storage on Cloudinary. Harmless when CLOUDINARY_URL is unset:
@@ -236,9 +241,34 @@ from datetime import timedelta
 # anyway -- so no client ever bothered to refresh, and /auth/refresh/ went
 # unused. Both clients now redeem the refresh token on a 401 and retry, so the
 # 30-minute access window is invisible to the user.
+#
+# ROTATION + BLACKLIST is what makes a stolen refresh token survivable. Every
+# call to /auth/refresh/ now returns a NEW refresh token and blacklists the one
+# presented, so the token is single-use. If a token is ever stolen, whichever
+# party refreshes second is refused -- a thief's copy dies the moment the real
+# client refreshes, and the real client being kicked out is itself the signal
+# that something used its token. That matters more here than it would in a
+# cookie-based app, because the web dashboard keeps its refresh token in
+# sessionStorage, where page script can read it (see lookout/src/api.js for
+# why that trade-off was taken).
+#
+# Both clients already persist a rotated token -- they re-store `data.refresh`
+# whenever the refresh response carries one -- so turning this on needed no
+# client change.
+#
+# The lifetime is now an IDLE timeout, not a hard cap: rotation issues each new
+# refresh token with a full lifetime, so a session in active use rolls forward
+# indefinitely and only an unused one lapses. 12 hours is therefore "log in
+# again if you have not touched it since your last shift".
+#
+# NOTE for the officer app: officers who open the app once a day will land
+# outside a 12-hour idle window and have to log in again each shift. Raise
+# REFRESH_TOKEN_HOURS if that is the wrong trade for them.
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=30),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    'REFRESH_TOKEN_LIFETIME': timedelta(hours=config('REFRESH_TOKEN_HOURS', default=12, cast=int)),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
 }
 
 ROOT_URLCONF = 'lookout_backend.urls'

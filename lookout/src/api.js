@@ -8,24 +8,49 @@ const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000/api"
 // It is a custom header, so it must also be in the API's CORS_ALLOW_HEADERS.
 const TUNNEL_HEADERS = { "ngrok-skip-browser-warning": "true" };
 
-// Access token lives only in memory for the life of the tab — never written to
-// localStorage/sessionStorage, so it can't be read from DevTools storage panels
-// or exfiltrated by a stored-XSS payload scanning storage. This matches the
-// app's existing design (see App.jsx) where every fresh page load requires
-// logging in again, so there's nothing to persist across reloads anyway.
+// The access token lives only in memory, for the life of the page — never
+// written to storage, so it can't be read out of a DevTools storage panel or
+// scraped by a stored-XSS payload walking localStorage. It does not need
+// persisting either: a fresh one is always one refresh call away.
 let accessToken = null;
 
-// The refresh token lives in a module variable too — NOT localStorage. Keeping
-// it here preserves the property above exactly: there is still nothing in
-// storage for a stored-XSS payload to read, and a hard reload still forces a
-// fresh login. What it buys is mid-session survival: with a 30-minute access
-// token, a dispatcher on a long shift would otherwise be thrown out to the
-// login screen every half hour.
+// The refresh token IS persisted, in sessionStorage, so that reloading the page
+// does not end the session. Pressing F5 used to drop you on the login screen —
+// that is what this storage exists to stop.
 //
-// Persisting it instead would let a session survive reloads, and is deliberately
-// NOT done: a refresh token in localStorage is the long-lived, XSS-stealable
-// credential this design exists to avoid.
-let refreshToken = null;
+// sessionStorage rather than localStorage, deliberately. Both are readable by a
+// stored-XSS payload, so neither is "safe"; what differs is how long a stolen
+// token stays useful and how far it travels. sessionStorage is scoped to the
+// one tab and destroyed when that tab closes, so the credential's life is the
+// working session rather than the refresh token's full 7 days, and it is never
+// left behind in a closed browser for someone to find later. localStorage would
+// be shared across every tab and persist indefinitely — the long-lived,
+// stealable credential genuinely worth avoiding.
+//
+// Only the REFRESH token goes in storage, never the access token: that would
+// put a directly-usable bearer token where script can read it, for no gain.
+const REFRESH_STORAGE_KEY = "lookout.refresh";
+
+function readStoredRefresh() {
+  try {
+    return sessionStorage.getItem(REFRESH_STORAGE_KEY);
+  } catch {
+    return null;                   // private mode, or storage disabled
+  }
+}
+
+function writeStoredRefresh(token) {
+  try {
+    if (token) sessionStorage.setItem(REFRESH_STORAGE_KEY, token);
+    else sessionStorage.removeItem(REFRESH_STORAGE_KEY);
+  } catch {
+    /* storage unavailable — the session just will not survive a reload */
+  }
+}
+
+// Seeded from storage at module load, so the 401-retry path already works on
+// the very first request after a reload, before restoreSession has answered.
+let refreshToken = readStoredRefresh();
 
 // Single-flight guard. The dashboard polls /alerts/, /cameras/ and /officers/
 // every 4 seconds, so an expiry lands on several in-flight requests at once.
@@ -43,6 +68,33 @@ export function clearAuth() {
   accessToken = null;
   refreshToken = null;
   refreshInFlight = null;
+  // Logging out — or a refresh token the server rejected — must not leave a
+  // credential behind for the next page load to try again with.
+  writeStoredRefresh(null);
+}
+
+// Signs out properly: asks the server to blacklist the refresh token, THEN
+// forgets it locally. Both halves matter — clearing only the browser would
+// leave the token valid for its whole lifetime, so a copy taken beforehand
+// (the sessionStorage exposure this design accepts) would still work.
+//
+// Never throws, and clears locally no matter what the server said. A user who
+// pressed Sign Out must end up signed out even if the network is down; the
+// token then lapses on its own instead of being revoked, which is the best
+// available outcome rather than a reason to keep them logged in.
+export async function logout() {
+  const token = refreshToken;
+  clearAuth();
+  if (!token) return;
+  try {
+    await fetch(`${API_BASE_URL}/auth/logout/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...TUNNEL_HEADERS },
+      body: JSON.stringify({ refresh: token }),
+    });
+  } catch {
+    /* offline — the token will expire by itself */
+  }
 }
 
 // Trades the refresh token for a new access token. Returns the new token, or
@@ -65,8 +117,12 @@ async function refreshAccess() {
         const data = await response.json();
         accessToken = data.access;
         // Only present if ROTATE_REFRESH_TOKENS is ever turned on; keeping this
-        // means enabling rotation server-side needs no client change.
-        if (data.refresh) refreshToken = data.refresh;
+        // means enabling rotation server-side needs no client change. It has to
+        // reach storage too, or a reload would retry the superseded token.
+        if (data.refresh) {
+          refreshToken = data.refresh;
+          writeStoredRefresh(data.refresh);
+        }
         return accessToken;
       } catch {
         clearAuth();
@@ -117,11 +173,48 @@ export async function login(username, password) {
 
   accessToken = data.access;
   refreshToken = data.refresh;
+  writeStoredRefresh(data.refresh);
 
   // Layout used to be remembered in localStorage; drop the stale value.
   try { localStorage.removeItem("lookout.cameraLayout"); } catch { /* storage unavailable */ }
 
   return user;
+}
+
+// Rebuilds the signed-in user after a page load, from the refresh token in
+// sessionStorage. Returns the same shape login() does, or null when there is
+// nothing to restore (no stored token, or the server rejected it) — in which
+// case the caller shows the login screen.
+//
+// Two calls, and both are needed. The refresh mints an access token; /auth/me/
+// supplies the user record. The token's own role/name claims are not enough —
+// the UI also needs must_change_password and officer_id — and asking the server
+// means a role or password-reset flag changed since login takes effect on the
+// next reload instead of living on in a stale client-side copy.
+export async function restoreSession() {
+  if (!refreshToken) return null;
+  const token = await refreshAccess();
+  if (!token) return null;
+  try {
+    const data = await apiFetch("/auth/me/");
+    // The same gate login() applies. An officer's JWT is valid against this
+    // API — the officer-vs-web split is enforced client-side — so without this
+    // check a restored session would let one into the dashboard by reloading.
+    if (data.role === "officer") {
+      clearAuth();
+      return null;
+    }
+    return {
+      username: data.username,
+      role: data.role,
+      name: data.display_name || data.username,
+      mustChangePassword: data.must_change_password,
+      officerId: data.officer_id ?? null,
+    };
+  } catch {
+    clearAuth();
+    return null;
+  }
 }
 
 export async function apiFetch(path, options = {}) {

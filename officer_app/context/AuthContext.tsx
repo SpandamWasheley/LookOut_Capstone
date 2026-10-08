@@ -59,7 +59,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const logout = async () => {
-    await api.clearAuth();
+    // api.logout, not api.clearAuth: the refresh token has to be revoked
+    // server-side, or it stays usable until it expires even though the officer
+    // signed out. It clears local storage either way.
+    await api.logout();
     setOfficer(null);
   };
 

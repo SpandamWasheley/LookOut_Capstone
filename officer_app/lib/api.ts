@@ -60,6 +60,33 @@ export async function clearAuth() {
   await Promise.all([ACCESS_KEY, REFRESH_KEY, USER_KEY].map((key) => authStorage.removeItem(key)));
 }
 
+/** Signs out properly: has the server blacklist the refresh token, then clears
+ * local storage.
+ *
+ * Clearing alone was not enough. This app persists its refresh token in the OS
+ * keychain for the token's full lifetime, so before this the only thing that
+ * ended a session was waiting for it to expire — a phone handed on, lost or
+ * restored from a backup kept a working credential. Blacklisting makes Sign Out
+ * mean it.
+ *
+ * Local storage is cleared whichever way the request goes: an officer who
+ * pressed Sign Out somewhere with no signal must still end up signed out.
+ */
+export async function logout() {
+  const refresh = await authStorage.getItem(REFRESH_KEY);
+  await clearAuth();
+  if (!refresh) return;
+  try {
+    await fetch(`${API_BASE_URL}/auth/logout/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
+      body: JSON.stringify({ refresh }),
+    });
+  } catch {
+    // No signal. The token lapses on its own instead of being revoked.
+  }
+}
+
 export class ApiError extends Error {
   data: unknown;
   status: number;

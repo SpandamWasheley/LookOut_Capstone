@@ -30,7 +30,9 @@ from rest_framework import generics, permissions, viewsets
 from rest_framework.decorators import action, api_view, permission_classes, throttle_classes
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
+from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from core.constants import ZAMBOANGA_BARANGAYS
@@ -167,6 +169,37 @@ def health(request):
 @permission_classes([permissions.IsAuthenticated])
 def me(request):
     return Response(UserSerializer(request.user).data)
+
+
+@api_view(["POST"])
+@permission_classes([permissions.AllowAny])
+def logout(request):
+    """Ends a session server-side by blacklisting the caller's refresh token.
+
+    Without this, signing out only cleared the client: the refresh token stayed
+    valid for its whole lifetime, so a copy taken beforehand still worked. That
+    is the gap this closes — it is the only way to make a JWT session actually
+    stop existing rather than merely be forgotten by one browser.
+
+    AllowAny on purpose, and it is not a hole: holding the refresh token IS the
+    authorization, and the only thing the endpoint can do with it is destroy
+    it. Requiring a valid ACCESS token instead would be worse than useless —
+    the common case for logging out is a session that has been sitting idle,
+    whose access token has already expired, and a 401 there would leave the
+    refresh token live precisely when the user asked for it to be killed.
+    """
+    raw = request.data.get("refresh")
+    if not raw:
+        return Response({"detail": "refresh is required."}, status=400)
+    try:
+        RefreshToken(raw).blacklist()
+    except TokenError:
+        # Expired, malformed, or already blacklisted. The session is over
+        # either way, which is all the caller asked for — reporting an error
+        # would only tell a caller holding a dead token that it is dead, and
+        # push clients into retry paths on a successful logout.
+        pass
+    return Response(status=204)
 
 
 @api_view(["POST"])
