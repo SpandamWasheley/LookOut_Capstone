@@ -110,3 +110,6 @@ lookout_context.md
 
 # local database backups
 db.sqlite3.bak-*
+
+# Local run marker written by the detection scripts (a bare timestamp)
+.last_safe_stamp
