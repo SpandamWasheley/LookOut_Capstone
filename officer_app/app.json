@@ -7,6 +7,12 @@
     "icon": "./assets/icon.png",
     "scheme": "lookoutofficer",
     "userInterfaceStyle": "automatic",
+    "updates": {
+      "url": "https://u.expo.dev/19df5f12-a206-4561-8589-9a39b1556d0d"
+    },
+    "runtimeVersion": {
+      "policy": "fingerprint"
+    },
     "ios": {
       "supportsTablet": true
     },

@@ -57,6 +57,8 @@ npm run start       # expo start --tunnel
 npm run android
 npm run ios
 npm run web
+npm run update:preview        # publish an EAS Update to the "preview" channel
+npm run update:production     # publish an EAS Update to the "production" channel
 ```
 
 Reads `EXPO_PUBLIC_API_URL`. If unset, `lib/api.ts` derives the dev machine's LAN IP from the Expo dev server's `hostUri` (native only — `localhost` on a phone means the phone itself, not the dev machine).
