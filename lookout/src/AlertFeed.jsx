@@ -624,19 +624,29 @@ export function AlertFeed({ showFilters = false, user }) {
     });
   };
 
-  const refresh = async () => {
+  // Alerts change constantly; officers and cameras rarely do, so they are
+  // re-fetched only every 30 s (or when forced) instead of on every 4 s tick.
+  const lastSlowRef = useRef(0);
+  const refresh = async (force = true) => {
+    const slowDue = force || Date.now() - lastSlowRef.current > 30000;
+    if (slowDue) lastSlowRef.current = Date.now();
     const [alertsRes, officersRes, camerasRes] = await Promise.all([
-      getAlerts(showMonitoringRef.current ? { include_monitoring: 1 } : undefined), getOfficers(), getCameras(),
+      getAlerts(showMonitoringRef.current ? { include_monitoring: 1 } : undefined),
+      slowDue ? getOfficers() : null,
+      slowDue ? getCameras() : null,
     ]);
     setAlerts((alertsRes.results ?? alertsRes).map(mapAlert));
-    setOfficers((officersRes.results ?? officersRes).map(mapOfficer));
-    setCameras(camerasRes.results ?? camerasRes);
+    if (officersRes) setOfficers((officersRes.results ?? officersRes).map(mapOfficer));
+    if (camerasRes) setCameras(camerasRes.results ?? camerasRes);
   };
 
   useEffect(() => {
     refresh().catch(() => {});
-    const id = setInterval(() => refresh().catch(() => {}), 4000);
-    return () => clearInterval(id);
+    // Skip ticks while the tab is hidden; catch up as soon as it is visible.
+    const tick = () => { if (!document.hidden) refresh(false).catch(() => {}); };
+    const id = setInterval(tick, 4000);
+    document.addEventListener("visibilitychange", tick);
+    return () => { clearInterval(id); document.removeEventListener("visibilitychange", tick); };
   }, []);
 
   const toggleMonitoring = () => {
