@@ -598,7 +598,8 @@ class Command(IncidentMixin, BaseCommand):
         """Opens a webcam index or a stream URL / file path."""
         if source.isdigit():
             return cv2.VideoCapture(int(source))
-        cap = cv2.VideoCapture(source)
+        os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|analyzeduration;500000|probesize;500000|stimeout;5000000")
+        cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
         # Far mode is slower than an RTSP stream's frame rate; a 1-frame buffer
         # keeps detection on what the camera sees now, not a stale backlog.
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)

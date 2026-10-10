@@ -399,7 +399,8 @@ class Command(BaseCommand):
         """Opens a webcam index or a stream URL / file path."""
         if source.isdigit():
             return cv2.VideoCapture(int(source))
-        cap = cv2.VideoCapture(source)
+        os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|analyzeduration;500000|probesize;500000|stimeout;5000000")
+        cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         return cap
 

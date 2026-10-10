@@ -20,6 +20,20 @@ class CoreConfig(AppConfig):
         if os.environ.get("RUN_MAIN") != "true" and "--noreload" not in sys.argv:
             return
 
+        # Django imports the URL config (and with it views -> vision -> PyTorch) on
+        # the FIRST request, so the dashboard's first call - login, /cameras/ -
+        # sat waiting for it. Do that import now, off the main thread, so the
+        # server is already warm when the first browser request arrives.
+        def _warm_urls():
+            try:
+                from django.urls import get_resolver
+                get_resolver().url_patterns
+            except Exception:                                        # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).exception("URL warm-up failed")
+
+        threading.Thread(target=_warm_urls, daemon=True, name="warm-urls").start()
+
         def _auto_start():
             time.sleep(8)
             _close_orphaned_jobs()
