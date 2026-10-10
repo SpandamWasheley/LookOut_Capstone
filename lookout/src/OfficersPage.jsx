@@ -580,7 +580,7 @@ export function OfficersPage() {
       <div className="flex items-center justify-between px-6 h-14 flex-shrink-0"
         style={{ borderBottom: "1px solid var(--border)" }}>
         <div className="flex items-center gap-3">
-          <h1 className="text-xl font-bold" style={{ color: "var(--foreground)" }}>Officers</h1>
+          <h1 className="text-xl font-bold" style={{ color: "var(--foreground)" }}>Personnel</h1>
         </div>
         <div className="relative">
           <button

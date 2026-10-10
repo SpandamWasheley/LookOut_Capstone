@@ -1,25 +1,32 @@
 import { useEffect, useState } from "react";
-import { getSettings } from "./api";
 
-// "Show testing tools" (Settings -> System, admin only, default off). Non-admins never see the
-// tools, so only an admin asks. Re-reads when Settings is saved.
+// "Show testing tools" (Settings -> System, admin only, default off). It is a per-browser choice:
+// it is kept in this browser only, so turning it on here does not show the tools on anyone else's
+// computer. Non-admins never see the tools.
+const KEY = "lookout:show-testing-tools";
+const EVENT = "lookout:testing-tools-changed";
+
+export function readTestingTools() {
+  try { return localStorage.getItem(KEY) === "1"; } catch { return false; }
+}
+
+export function writeTestingTools(on) {
+  try { localStorage.setItem(KEY, on ? "1" : "0"); } catch { /* storage blocked: stays off */ }
+  window.dispatchEvent(new Event(EVENT));
+}
+
 export function useTestingTools(isAdmin) {
-  const [on, setOn] = useState(false);
+  const [on, setOn] = useState(readTestingTools);
 
   useEffect(() => {
-    if (!isAdmin) return undefined;
-    let alive = true;
-    const read = () =>
-      getSettings()
-        .then((s) => { if (alive) setOn(!!s.show_testing_tools); })
-        .catch(() => {});
-    read();
-    window.addEventListener("lookout:settings-saved", read);
+    const read = () => setOn(readTestingTools());
+    window.addEventListener(EVENT, read);
+    window.addEventListener("storage", read);
     return () => {
-      alive = false;
-      window.removeEventListener("lookout:settings-saved", read);
+      window.removeEventListener(EVENT, read);
+      window.removeEventListener("storage", read);
     };
-  }, [isAdmin]);
+  }, []);
 
   return isAdmin && on;
 }

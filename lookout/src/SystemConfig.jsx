@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Save, RotateCcw, Car, Cigarette, Siren, Beer, AlertTriangle, Loader2, SlidersHorizontal } from "lucide-react";
 import { getSettings, saveSettings } from "./api";
+import { readTestingTools, writeTestingTools } from "./useTestingTools";
 
 // Settings. One form for the whole page and ONE save button (top right). Every panel is two
 // columns on a wide screen: "Detection" on the left, "Timings" on the right; they stack on a
@@ -212,6 +213,7 @@ const TwoCols = ({ left, right, below }) => (
 export function SystemConfig() {
   const [active, setActive] = useState("parking");
   const [saving, setSaving] = useState(false);
+  const [testingTools, setTestingTools] = useState(readTestingTools);
   const [saved, setSaved] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -407,7 +409,7 @@ export function SystemConfig() {
     system: (
       <TwoCols
         left={
-          <Card title="Alerts and records" onReset={() => resetKeys(["alert_cooldown", "evidence_retention_days", "evidence_auto_purge", "show_testing_tools", "auto_start_detection"])}>
+          <Card title="Alerts and records" onReset={() => resetKeys(["alert_cooldown", "evidence_retention_days", "evidence_auto_purge", "auto_start_detection"])}>
             <Slider label="Alert cooldown" value={form.alert_cooldown} min={30} max={600} unit=" sec"
               differs={differs("alert_cooldown")}
               desc="How long the system waits before reporting the same spot again."
@@ -426,8 +428,8 @@ export function SystemConfig() {
               onChange={(v) => set("auto_start_detection", v)} />
             <Toggle label="Show testing tools"
               desc="Shows Run Detection, and Upload Video and History on Live Feeds, for trying the system on recorded footage. Leave off for normal use."
-              value={form.show_testing_tools} differs={differs("show_testing_tools")}
-              onChange={(v) => set("show_testing_tools", v)} />
+              value={testingTools} differs={testingTools}
+              onChange={(v) => { writeTestingTools(v); setTestingTools(v); }} />
           </Card>
         }
         right={

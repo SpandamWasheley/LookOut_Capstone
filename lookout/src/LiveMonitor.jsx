@@ -6,7 +6,7 @@ import { useTestingTools } from "./useTestingTools";
 
 const DOT = { running: "#22c55e", starting: "#f59e0b", unreachable: "#ef4444", stopped: "#64748b" };
 
-// Live monitoring of the camera, started and stopped from Live Feeds (admin only; always visible).
+// Live monitoring of the camera, started and stopped from Live Feeds (admin only, and only while "Show testing tools" is on).
 // One live monitor for the whole system. The server restarts the detector by itself if it stops or
 // the stream drops, and shows a warning here while that is happening.
 export function LiveMonitor() {
@@ -39,7 +39,7 @@ export function LiveMonitor() {
 
   const fetchState = useCallback((since) => getMonitorState(since), []);
 
-  if (!status) return null;
+  if (!status || !testingTools) return null;
   const stopped = status.state === "stopped";
   const since = status.since
     ? new Date(status.since).toLocaleTimeString("en-PH", { hour: "numeric", minute: "2-digit", hour12: true })
