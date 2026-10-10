@@ -89,7 +89,7 @@ class PeakOnlyRisesTests(TestCase):
 
 
 class ListPartitionTests(TestCase):
-    """The two lists split on peak_level and must stay a clean partition."""
+    """The two lists split on the current level and must stay a clean partition."""
 
     def setUp(self):
         User = get_user_model()
@@ -112,15 +112,14 @@ class ListPartitionTests(TestCase):
         rows = body["results"] if isinstance(body, dict) else body   # paginated or not
         return {a["code"] for a in rows}
 
-    def test_a_faded_event_stays_in_potential_violations(self):
+    def test_a_faded_event_leaves_potential_violations(self):
         faded = self._alert(scoring.MONITORING, scoring.WARNING)
-        self.assertIn(faded.code, self._codes())
+        self.assertNotIn(faded.code, self._codes())
 
-    def test_a_faded_event_is_not_also_on_the_watchlist(self):
-        # In both lists would be worse than in neither: the same event would be
-        # counted twice and reviewed twice.
+    def test_a_faded_event_moves_to_the_watchlist(self):
+        # Listed in exactly one place: the watchlist, matching its Monitoring badge.
         faded = self._alert(scoring.MONITORING, scoring.WARNING)
-        self.assertNotIn(faded.code, self._codes(level="monitoring"))
+        self.assertIn(faded.code, self._codes(level="monitoring"))
 
     def test_an_event_that_never_rose_stays_on_the_watchlist_only(self):
         quiet = self._alert(scoring.MONITORING, scoring.MONITORING)

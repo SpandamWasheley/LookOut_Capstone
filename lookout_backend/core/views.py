@@ -586,6 +586,11 @@ class CameraViewSet(viewsets.ModelViewSet):
         m = re.search(r"/Channels/(\d+)", parsed.path)
         if m:
             channel = m.group(1)
+        # Detection reads the main stream (…01) for resolution, but the dashboard
+        # only needs a small picture: ask the camera for the matching sub-stream
+        # (…02) so the wall stays light and fast over the tunnel.
+        if channel.endswith("01"):
+            channel = channel[:-2] + "02"
 
         # The scheme follows the stream URL, and the port with it.
         #
@@ -930,21 +935,20 @@ class AlertViewSet(viewsets.ModelViewSet):
         the normal alert list or notify anyone. Ask for them explicitly with
         ?level=monitoring (the dashboard watchlist) or ?include_monitoring=1.
 
-        Both lists split on peak_level, NOT on the current level, so the two
-        remain a clean partition and nothing can fall between them. An event
-        that reached Possible and then faded back to Monitoring stays in
-        Potential Violations and does not reappear on the watchlist: it has
-        already earned a reviewer's attention, and having it vanish from under
-        them mid-review was the behaviour this replaces. Its badge still reads
-        the CURRENT status — only where it is listed is decided by the peak.
+        Both lists split on the CURRENT level, so the two remain a clean
+        partition and nothing can fall between them. An event that reached
+        Possible and then faded back to Monitoring leaves Potential Violations
+        and goes to the watchlist: with "Include Monitoring" off, nothing
+        labelled Monitoring is shown. (It used to split on peak_level, which
+        kept a faded event listed under a Monitoring badge.)
         """
         qs = super().get_queryset()
         if self.action == "list":
             params = self.request.query_params
             if params.get("level") == "monitoring":
-                return qs.filter(peak_level="monitoring")
+                return qs.filter(level="monitoring")
             if params.get("include_monitoring") not in ("1", "true"):
-                qs = qs.exclude(peak_level="monitoring")
+                qs = qs.exclude(level="monitoring")
         return qs
 
     # Statuses that mean somebody has looked at the footage and closed the
