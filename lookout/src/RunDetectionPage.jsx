@@ -93,23 +93,27 @@ export function RunDetectionPage() {
   const [jobStatus, setJobStatus] = useState("running");
   const [stopping, setStopping] = useState(false);
 
+  // Fetch once per visit to the camera source. "Loading" is NOT a dependency:
+  // it used to be, so setting it re-ran the effect, whose cleanup discarded
+  // the in-flight result and left "Loading cameras…" up for ever.
+  const camerasFetchedRef = useRef(false);
   useEffect(() => {
-    if (source !== "camera" || cameras.length || camerasLoading) return;
-    let cancelled = false;
+    if (source !== "camera" || camerasFetchedRef.current) return;
+    camerasFetchedRef.current = true;
     (async () => {
       setCamerasLoading(true);
       setCamerasError("");
       try {
         const list = await getCameras();
-        if (!cancelled) setCameras((list || []).filter((c) => c.is_live));
+        setCameras((list?.results ?? list ?? []).filter((c) => c.is_live));
       } catch (err) {
-        if (!cancelled) setCamerasError(err.message || "Could not load cameras.");
+        camerasFetchedRef.current = false;   // allow a retry on the next visit
+        setCamerasError(err.message || "Could not load cameras.");
       } finally {
-        if (!cancelled) setCamerasLoading(false);
+        setCamerasLoading(false);
       }
     })();
-    return () => { cancelled = true; };
-  }, [source, cameras.length, camerasLoading]);
+  }, [source]);
 
   // What the server is still holding from an earlier visit, so the page can
   // offer to carry on instead of quietly making somebody send 200 MB twice.
