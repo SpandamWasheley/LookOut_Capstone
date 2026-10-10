@@ -32,6 +32,11 @@ function useLiveSnapshot(cam, intervalMs = 40) {
     // finishes, so a slow or stalled frame delays the feed instead of stacking
     // overlapping requests on the dev server.
     const tick = async () => {
+      // Hidden tab: nobody is looking, so skip the fetch and check again later.
+      if (document.hidden) {
+        if (!cancelled) timer = setTimeout(tick, 1000);
+        return;
+      }
       try {
         const next = await getCameraSnapshotUrl(cam.dbId, controller.signal);
         if (cancelled) { URL.revokeObjectURL(next); return; }
@@ -271,7 +276,7 @@ function EmptyTile({ fill }) {
 }
 
 function CameraTile({ cam, alert, isSelected, onSelect, onExpand, fill }) {
-  const liveUrl = useLiveSnapshot(cam);
+  const liveUrl = useLiveSnapshot(cam, 1000);
   return (
     <div
       onClick={onSelect}
