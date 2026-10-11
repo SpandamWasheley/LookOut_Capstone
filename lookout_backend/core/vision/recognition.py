@@ -1116,7 +1116,7 @@ def _detect_far(model, frame, conf, tiles, overlap, person_boxes, upscale, imgsz
     # The whole-frame pass ALWAYS runs, tiles or not. A tile is a zoomed-in
     # fragment with the surrounding context cropped away, and the model was
     # trained on whole scenes — so tiling alone can score *worse* than the plain
-    # pass on a modest-resolution frame (a 640x640 test frame scores gun 0.77
+    # pass on a modest-resolution frame (a 640x640 test frame scores knife 0.77
     # whole-frame and nothing at all once cut into 320x320 quarters). Running
     # both and merging keeps far mode a strict superset of near mode: it can
     # only ever add recall, never trade it away.

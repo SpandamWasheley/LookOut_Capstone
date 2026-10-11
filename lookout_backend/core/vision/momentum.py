@@ -29,6 +29,12 @@ class MomentumConfig:
     on: float = 1.5
     off: float = 0.4
     max: float = 3.0
+    # Seconds after the LAST detection during which the momentum is frozen instead
+    # of decaying. 0 = no hold (the spec default). Only the knife class sets it:
+    # a knife is small, flickers in and out as the hand turns or an arm crosses it,
+    # and one missed second should not cost the ~1.5 of momentum it took to turn
+    # the cue ON.
+    hold: float = 0.0
 
 
 def config_from_env(name="LOOKOUT_MOMENTUM", fallback=None):
@@ -49,8 +55,13 @@ def config_from_env(name="LOOKOUT_MOMENTUM", fallback=None):
 DEFAULT_CONFIG = config_from_env()
 
 
+# The knife's hold. Short on purpose: long enough to ride out a blocked frame or
+# two, short enough that a knife put away really does fade.
+KNIFE_HOLD_SECONDS = 1.0
+
+
 class Slot:
-    __slots__ = ("momentum", "cue_on", "last_conf", "peak", "on_since")
+    __slots__ = ("momentum", "cue_on", "last_conf", "peak", "on_since", "held_until")
 
     def __init__(self):
         self.momentum = 0.0
@@ -58,13 +69,21 @@ class Slot:
         self.last_conf = 0.0
         self.peak = 0.0
         self.on_since = None        # when the cue last turned ON (the caller's clock), None while OFF
+        self.held_until = None      # momentum does not decay before this time (see MomentumConfig.hold)
 
 
 def update_momentum(slot, confidence, cfg=DEFAULT_CONFIG, now=None):
     """One step of the spec's algorithm. `confidence` is 0.0 when the class was
     not detected this frame. Returns the slot."""
-    slot.momentum = min(slot.momentum * cfg.decay + float(confidence), cfg.max)
-    slot.last_conf = float(confidence)
+    confidence = float(confidence)
+    if cfg.hold > 0 and now is not None:
+        if confidence > 0:
+            slot.held_until = now + cfg.hold
+        elif slot.held_until is not None and now <= slot.held_until:
+            # Inside the hold window: no detection, but no decay either.
+            return slot
+    slot.momentum = min(slot.momentum * cfg.decay + confidence, cfg.max)
+    slot.last_conf = confidence
     slot.peak = max(slot.peak, slot.momentum)
     if not slot.cue_on and slot.momentum >= cfg.on:
         slot.cue_on = True

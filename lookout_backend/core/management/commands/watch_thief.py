@@ -3,7 +3,8 @@ import json
 import math
 import os
 import time
-from collections import Counter
+from collections import Counter, deque
+from zoneinfo import ZoneInfo
 
 import cv2
 from django.conf import settings
@@ -111,6 +112,18 @@ KNIFE_MAX_HEIGHT_FRAC = 0.25
 # detection pass already costs in this pipeline.
 KNIFE_MAX_WRIST_DIST_FRAC = 0.22
 
+# E14 persistence (holdup scoring v2): the knife must have been detected -- AFTER
+# the head/size/wrist rules above -- in at least KNIFE_PERSIST_HITS of the last
+# KNIFE_PERSIST_WINDOW processed frames for that person. This sits on top of the
+# momentum cue (which has a short hold for the knife class, see
+# momentum.KNIFE_HOLD_SECONDS), not instead of it: momentum decides when the cue
+# is ON, this decides whether the knife is solid enough to be scored as E14.
+KNIFE_PERSIST_HITS = 2
+KNIFE_PERSIST_WINDOW = 5
+# How long a track's E14 sightings are kept, for the E12 "knife during or just
+# before the freeze" rule.
+E14_HISTORY_SECONDS = 30.0
+
 
 def _is_spatially_gated(label):
     return label.lower() in SPATIALLY_GATED_CLASSES
@@ -195,7 +208,7 @@ HOLDUP_MIN_PERSONS = 2
 
 class Command(IncidentMixin, BaseCommand):
     help = (
-        "Detects theft/robbery indicators (gun/knife/robbery activity/stealing) "
+        "Detects theft/robbery indicators (knife/robbery activity/stealing) "
         "using the custom thief model. Use --image PATH to test on a single "
         "still picture, or run with no --image to watch a live source with a "
         "dwell timer."
@@ -217,6 +230,8 @@ class Command(IncidentMixin, BaseCommand):
         self._frame_tracks = []
         self.clock_start = None       # --clock footage start (file sources only)
         self._holdup_cues = {}        # holder track id -> (time, Layer E cues seen recently)
+        self._knife_hits = {}         # track id -> last KNIFE_PERSIST_WINDOW frames: knife detected?
+        self._e14_times = {}          # track id -> times E14 was true (kept E14_HISTORY_SECONDS)
         self.observe_log = None
         self.engine = None
         # Set only for a file source (see _run_stream) — lets _create_alert cut
@@ -313,7 +328,7 @@ class Command(IncidentMixin, BaseCommand):
             "--fast",
             action="store_true",
             help="Near mode ONLY — the single whole-frame pass, no tiling. Faster "
-                 "but won't detect small/distant objects like a gun or knife.",
+                 "but won't detect small/distant objects like a knife.",
         )
         parser.add_argument(
             "--tiles",
@@ -909,11 +924,30 @@ class Command(IncidentMixin, BaseCommand):
         # (and the per-class vote/stale overrides it needed for the flickery knife).
         cue = self._object_cue(track, dets, now_ts)
         self._draw_object_cue(frame, track, dets, cue, color_on=(0, 0, 220))
+        # E14 persistence: was a knife (post wrist rule) detected on this person in
+        # at least KNIFE_PERSIST_HITS of the last KNIFE_PERSIST_WINDOW frames?
+        hits = self._knife_hits.get(track.id)
+        if hits is None:
+            if len(self._knife_hits) > 200:      # drop tracks that are long gone
+                live = {t.id for t in self._frame_tracks}
+                self._knife_hits = {k: v for k, v in self._knife_hits.items() if k in live}
+                self._e14_times = {k: v for k, v in self._e14_times.items() if k in live}
+            hits = self._knife_hits[track.id] = deque(maxlen=KNIFE_PERSIST_WINDOW)
+        hits.append(any(str(d[5]).lower() == "knife" for d in dets))
         if not cue.on:
             if dets:
                 self.stats["held back: momentum below ON"] += 1
             self._debug_note("Holdup", ("knife", track.id), track.id, track.box, None, cue.momentum)
             return
+        if sum(hits) < KNIFE_PERSIST_HITS:
+            self.stats["held back: knife in fewer than 2 of the last 5 frames"] += 1
+            self._debug_note("Holdup", ("knife", track.id), track.id, track.box, None, cue.momentum)
+            return
+        # E14 is true now: remember it, for E12's "knife during or just before the freeze".
+        times = self._e14_times.setdefault(track.id, deque())
+        times.append(now_ts)
+        while times and now_ts - times[0] > E14_HISTORY_SECONDS:
+            times.popleft()
         best_label, best_score = cue.label, cue.conf
         present_for = cue.momentum
 
@@ -959,26 +993,49 @@ class Command(IncidentMixin, BaseCommand):
                 "note": ai_checker.system_note("holdup", people=2 if evidence.people_near else None)}
 
     def _clock_now(self, now_ts):
-        """Time of day for scoring: the --clock footage time for a file, else the wall clock."""
-        return vclock.clock_now(self.clock_start, now_ts, self._source_path is not None)
+        """Time of day for scoring, in Manila time.
+
+        A file with a --clock "Recorded at" uses that footage time (entered as
+        Manila wall-clock time) plus the position in the clip. Everything else
+        uses the wall clock IN Asia/Manila -- explicitly, not whatever zone the
+        laptop happens to be set to.
+        """
+        if self._source_path is not None and self.clock_start is not None:
+            return vclock.clock_now(self.clock_start, now_ts, True)
+        return datetime.datetime.now(ZoneInfo("Asia/Manila"))
 
     def _describe(self, ev, summary, who, present_for):
         return descriptions.holdup(summary, bool(ev.people_near))
 
     def _knife_evidence(self, track, label, present_for, now_ts, box):
-        """Evidence for one knife holder: the knife (E14), any recent Layer E
-        cues for the same holder, and the time-of-day block."""
+        """Evidence for one knife holder (holdup scoring v2).
+
+        Indicators, all judged on the holder at this moment:
+          E14     the knife (already past the wrist rule and the 2-of-5 persistence)
+          E10     the holder was a loiterer within the last 60 s (a stamp, so it is
+                  a memory -- not "moving little over the last 20 s")
+          E12     a pair involving the holder is frozen, AND the knife was seen
+                  during that freeze or up to 3 s before it
+          E11E12  that freeze was preceded by a rapid approach (E11) within 5 s
+          E20     time of day, 4-10 points, added only once E10 or E12 is present
+                  and capped by theft.Evidence so it can never change the band
+        """
         cues = {"E14": theft.WEIGHTS["E14"]}
-        seen = self._holdup_cues.get(track.id)
-        if seen is not None and now_ts - seen[0] <= max(theft.EVIDENCE_WINDOW, self.cue_hold):
-            for rule in seen[1]:
-                cues[rule] = theft.WEIGHTS[rule]
+        engine = self.engine
+        if engine is not None:
+            if "e10" not in self.ablate and engine.loiter_recent(track, now_ts):
+                cues["E10"] = theft.WEIGHTS["E10"]
+            cues.update(engine.holdup_pair_cues(
+                track.id, self._e14_times.get(track.id, ()), now_ts, hold=self.cue_hold))
+        # E20 as added points from the Manila table (Asia/Manila hour). Evidence
+        # decides whether it counts and how much of it fits under the cap.
+        bonus = scoring.manila_time_bonus(self._clock_now(now_ts))
+        if bonus and "e20" not in self.ablate:
+            cues["E20"] = bonus
         mult = {}
-        factor = scoring.manila_time_multiplier(self._clock_now(now_ts))
-        if factor != 1.0 and "e20" not in self.ablate:
-            mult["E20"] = factor
+        near_limit = engine.near_person_heights if engine is not None else theft.NEAR_PERSON_HEIGHTS
         near = any(o is not track and not getattr(o, "is_scene", False)
-                   and theft._person_norm_distance(track.box, o.box) <= theft.NEAR_PERSON_HEIGHTS
+                   and theft._person_norm_distance(track.box, o.box) <= near_limit
                    for o in self._frame_tracks)
         return theft.Evidence(
             "weapon", tuple(box), cues, mult, set(), [track.id],

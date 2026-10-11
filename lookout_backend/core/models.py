@@ -548,7 +548,7 @@ class SystemSettings(models.Model):
     # the raw YOLO scale (~0.3-0.9), so this is calibrated to that, not a
     # "high-confidence percent" intuition.
     thief_confidence = models.PositiveSmallIntegerField(default=30)
-    # Seconds a gun/knife/robbery detection must persist before alerting
+    # Seconds a knife/robbery detection must persist before alerting
     # (filters one-frame false positives). Kept short: unlike parking, an armed
     # robbery should alert fast.
     thief_dwell = models.PositiveSmallIntegerField(default=3)

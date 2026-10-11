@@ -339,7 +339,7 @@ export function SystemConfig() {
         right={
           <Card title="Timings" onReset={() => resetKeys(["holdup_loiter_seconds", "holdup_near_person_heights"])}>
             <Row label="Lingering before the incident"
-              desc="How long someone must hang around nearby before it's considered suspicious."
+              desc="How long someone must hang around before it counts as loitering. They are remembered for 1 minute, so a knife shown shortly afterwards still counts."
               differs={differs("holdup_loiter_seconds")}>
               <DurationBox seconds={form.holdup_loiter_seconds} version={version}
                 onChange={(s) => set("holdup_loiter_seconds", Math.round(s))} />
@@ -354,7 +354,8 @@ export function SystemConfig() {
           </Card>
         }
         below={<InfoBox color="#dc2626">
-          A knife held briefly is flagged for monitoring. It&rsquo;s raised further when another person is close by.
+          A knife alone is flagged for monitoring. It rises to Possible or Likely only when another person is close by
+          and there is a second sign: someone loitering first, or the two people frozen close together.
         </InfoBox>}
       />
     ),

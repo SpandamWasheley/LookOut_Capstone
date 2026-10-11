@@ -173,8 +173,17 @@ class ThiefAndDrinkingTests(TestCase):
         self.thief._frame_tracks = [holder, near]
         ev = self.thief._knife_evidence(holder, "knife", 3.0, 0.0, holder.box)
         self.assertTrue(ev.people_near)
+        # Holdup v2: someone near is not enough -- a knife alone stays Monitoring.
+        self.assertEqual(ev.band, scoring.MONITORING)
+        self.assertAlmostEqual(ev.score, 0.45, places=3)
+        # With loitering remembered (E10) the same scene is Possible: 45 + 10,
+        # then E20 (10 points at 16:00) is capped so the base band is kept.
+        from core.vision import theft
+        self.thief.engine = theft.TheftEngine()
+        holder.loiter_last_seen = 0.0
+        ev = self.thief._knife_evidence(holder, "knife", 3.0, 0.0, holder.box)
         self.assertEqual(ev.band, scoring.WARNING)
-        self.assertAlmostEqual(ev.score, 0.45 * 1.36, places=3)
+        self.assertAlmostEqual(ev.score, 0.65, places=3)
 
     def test_the_knife_row_stores_the_score_not_the_yolo_confidence(self):
         holder = self._knife_track(1, (400, 200, 520, 500))

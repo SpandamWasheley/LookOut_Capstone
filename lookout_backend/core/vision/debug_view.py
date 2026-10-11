@@ -135,10 +135,20 @@ def status_for(score):
     return scoring.label_of(level)
 
 
+# Holdup indicators read as their Layer E code plus a plain name.
+HOLDUP_LABELS = {
+    "E14": "E14 Knife near a hand",
+    "E12": "E12 Pair frozen close together",
+    "E10": "E10 Loitering first",
+    "E11E12": "E11→E12 Approach then freeze",
+    "E20": "E20 Time of day",
+}
+
+
 def indicator_list(score):
     """[{"name", "points"}] for the indicators that fired, biggest first."""
     cues = getattr(score, "cues", None) or {}
-    items = [{"name": _pretty(n), "points": int(round(float(w) * 100))} for n, w in cues.items()]
+    items = [{"name": HOLDUP_LABELS.get(n) or _pretty(n), "points": int(round(float(w) * 100))} for n, w in cues.items()]
     return sorted(items, key=lambda i: -i["points"])
 
 

@@ -50,9 +50,11 @@ class SnapshotUrlTests(TestCase):
         # Forcing http:// at an ngrok host fails outright — its edge only
         # speaks TLS — and reports a bare "Camera unreachable" that says
         # nothing about the scheme.
+        # (the stream address names the main stream, 101; the dashboard snapshot
+        # asks for its sub-stream, 102)
         url, _ = self._fetch("https://admin:pass@abc.ngrok-free.app/Streaming/Channels/101")
         self.assertEqual(
-            url, "https://abc.ngrok-free.app/ISAPI/Streaming/channels/101/picture")
+            url, "https://abc.ngrok-free.app/ISAPI/Streaming/channels/102/picture")
 
     def test_an_explicit_http_tunnel_is_honoured_too(self):
         url, _ = self._fetch("http://admin:pass@abc.ngrok-free.app/Streaming/Channels/102")
@@ -72,8 +74,12 @@ class SnapshotUrlTests(TestCase):
         self.assertEqual(url, "http://10.0.0.5:8080/ISAPI/Streaming/channels/102/picture")
 
     def test_the_channel_comes_from_the_path_and_defaults_to_the_substream(self):
+        # A main-stream address (101) is snapshotted from its sub-stream (102): detection
+        # reads the main stream, the dashboard picture stays small and fast.
         url, _ = self._fetch("rtsp://a:b@10.0.0.5:554/Streaming/Channels/101")
-        self.assertIn("/channels/101/", url)
+        self.assertIn("/channels/102/", url)
+        url, _ = self._fetch("rtsp://a:b@10.0.0.5:554/Streaming/Channels/201")
+        self.assertIn("/channels/202/", url)
         url, _ = self._fetch("rtsp://a:b@10.0.0.5:554/live")
         self.assertIn("/channels/102/", url)
 

@@ -45,7 +45,7 @@ gap differs per violation, and closing it is the rule layer's entire job:
   *motion*: parked means stationary, so the rules measure stillness.
 - **Smoking** — a cigarette detected anywhere on a body is not evidence of
   smoking. The gap is *posture*.
-- **Theft** — `gun` and `knife` translate fairly directly; `robbery activity`
+- **Theft** — `knife` translates fairly directly; `robbery activity`
   and `stealing` are **actions inferred from a single still frame**, a
   structural mismatch for an object detector. The gap is *time*.
 - **Drinking** — the model recognises one beer *brand*. A bottle in a store, in
@@ -102,7 +102,7 @@ Settings are re-read every 5 s, so dashboard edits apply without a restart.
 | Detector | Base floor | Factor 1.0 | Raised |
 |---|---|---|---|
 | Smoking | 0.30 | `cigarette`, `vape`, `smoking` | `smoke` — **x1.5** (0.45) |
-| Theft | 0.30 | `gun`, `knife` | `robbery activity`, `stealing` — **x1.6** (0.48) |
+| Theft | 0.30 | `knife` | `robbery activity`, `stealing` — **x1.6** (0.48) |
 | Drinking | 0.35 | `Red Horse` | — (single class) |
 
 Raised classes are those where the detector is asked something it is
@@ -165,7 +165,7 @@ defeats the system.
 
 **D2.** Taking the highest-confidence box would let one frame of a spurious class
 outrank the class present for the whole dwell — how a sustained `stealing`
-becomes a one-frame `gun`.
+becomes a one-frame `knife`.
 
 **D4.** Tracks are dropped after 2 s unobserved and replacements start with a
 cleared cooldown, so identity churn would bypass D3. Measured: without D4 the
@@ -203,7 +203,7 @@ a vehicle pausing at a corner is not parked, whereas a person holding a knife fo
 
 | Class | Confidence floor | Dwell (on a person) | Dwell (unassociated) |
 |---|---|---|---|
-| `gun`, `knife` | 0.30 | 3 s | 6 s |
+| `knife` | 0.30 | 3 s | 6 s |
 | `robbery activity`, `stealing` | 0.48 | 6 s | 12 s |
 | `cigarette`, `vape`, `smoking` | 0.30 | 3 s | 6 s |
 | `smoke` | 0.45 | 6 s | 12 s |
@@ -314,7 +314,7 @@ instrumentation** — it predates them.
    and D1 as its only defences.
 7. **B4/B6 degrade with distance**, precisely where A5 is most active.
 8. **No severity ranking.** All classes collapse into one `ViolationType` per
-   detector; a dispatcher cannot triage `gun` above `stealing`.
+   detector; a dispatcher cannot triage `knife` above `stealing`.
 9. **Parameters are reasoned defaults, not calibrated values** —
    `FACE_PROXIMITY`, `MOUTH_PROXIMITY`, `VOTE_MIN_RATIO`, the class and posture
    factors, `TOMBSTONE_SECONDS`. Field calibration via `--stats` is pending.

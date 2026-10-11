@@ -311,11 +311,12 @@ class HoldupTests(unittest.TestCase):
         0.30 x 1.36 clears 0.35. The gate is what actually holds it back, not
         the arithmetic. Worth correcting in the document.
         """
+        # Holdup v2: E20 is ADDED points (10 at 15:00-18:00), not a multiplier.
         s = self._run_holdup(now_dt=datetime.datetime(2026, 5, 1, 16, 0))
         ev = s.best("holdup")
         self.assertIsNotNone(ev)
-        self.assertIn("E20", ev.multipliers)
-        self.assertAlmostEqual(ev.score, 0.30 * 1.36, places=6)
+        self.assertIn("E20", ev.cues)
+        self.assertAlmostEqual(ev.score, 0.30 + 0.10, places=6)
         self.assertEqual(ev.band, theft.DISCARD)      # no knife: not shown
         self.assertFalse(theft.alerts_at(ev.band))
 
@@ -323,10 +324,12 @@ class HoldupTests(unittest.TestCase):
         """The flat nocturnal rule could only ever scale UP. The block table
         also scales DOWN: 06:00-09:00 is the quietest block (x0.56), so the
         identical pattern stays well inside Observe."""
+        # Holdup v2: the quiet block no longer scales the score DOWN. It adds 4
+        # points instead of 10, and never subtracts.
         s = self._run_holdup(now_dt=datetime.datetime(2026, 5, 1, 7, 0))
         ev = s.best("holdup")
         self.assertIsNotNone(ev)
-        self.assertAlmostEqual(ev.score, 0.30 * 0.56, places=6)
+        self.assertAlmostEqual(ev.score, 0.30 + 0.04, places=6)
         self.assertFalse(theft.alerts_at(ev.band))
 
 

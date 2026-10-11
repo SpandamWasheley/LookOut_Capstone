@@ -74,7 +74,7 @@ Per the DS-2CD1047G2-LUF datasheet at this lens/mount:
 |---|---|---|
 | **Detect** | 64 m | "something is there" — person-class presence |
 | **Observe** | 25 m | behaviour/posture cues — theft actions, drinking gesture |
-| **Recognize** | 12 m | object cues — bottle, gun/knife |
+| **Recognize** | 12 m | object cues — bottle, knife |
 | **Identify** | 6 m | face/identity — curfew face-match, cigarette |
 
 These are physics caps. No software extends identification past ~6 m or the

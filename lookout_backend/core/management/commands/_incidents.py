@@ -11,6 +11,7 @@ The three watchers (smoking, drinking, thief) mix this in and supply two small
 callables: how to create the row, and how to describe it.
 """
 
+import dataclasses
 import datetime
 import os
 from collections import namedtuple
@@ -283,7 +284,10 @@ class IncidentMixin:
     def _momentum_book(self):
         book = self.__dict__.get("_momentum")
         if book is None:
-            book = self._momentum = momentum.MomentumBook(momentum.DEFAULT_CONFIG)
+            # Only the knife gets a hold: smoking and drinking keep the spec's pure decay.
+            knife_cfg = dataclasses.replace(momentum.DEFAULT_CONFIG, hold=momentum.KNIFE_HOLD_SECONDS)
+            book = self._momentum = momentum.MomentumBook(momentum.DEFAULT_CONFIG,
+                                                           per_class={"knife": knife_cfg})
             self._seen_track_ids = set()
         return book
 

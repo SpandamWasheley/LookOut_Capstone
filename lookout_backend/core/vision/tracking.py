@@ -266,6 +266,7 @@ class Track:
         self.seen_log = deque()           # (t, was_matched) — E27 occlusion fraction
         self.truncated = False            # E25: box touches a frame edge this frame
         self.id_switch_at = None          # E26: last impossible centroid jump
+        self.loiter_last_seen = None      # E10: last time this track qualified as a loiterer (stamped by theft.TheftEngine)
 
     # ---- Layer E geometry (E1-E3, E25-E27) --------------------------------
 
@@ -477,6 +478,7 @@ class Track:
         self.trail = other.trail
         self.seen_log = other.seen_log
         self.id_switch_at = other.id_switch_at
+        self.loiter_last_seen = other.loiter_last_seen
         if other.dwell_held > 0:
             # Carry the dwell progress across the occlusion. The occlusion itself
             # costs nothing extra, because dwell only accrues on confirmed frames.
@@ -593,7 +595,7 @@ class Track:
         Taking the single highest-confidence box instead would let one frame of
         a spurious class outrank the class that was actually present for the
         whole dwell — which is how a sustained `stealing` gets reported as a
-        one-frame `gun`. The box is searched across the whole window, not just
+        one-frame `knife`. The box is searched across the whole window, not just
         the latest frame, because the winning class may not be in the latest
         frame at all.
         """
@@ -732,6 +734,7 @@ class PersonTracker:
     def _update_by_ext_id(self, person_boxes, ids, now):
         """Keys tracks off an external tracker's ids instead of associating."""
         live = {t.ext_id: t for t in self.tracks if t.ext_id is not None}
+        in_frame = {e for e in ids if e is not None}
         for pb, ext in zip(person_boxes, ids):
             box = tuple(int(v) for v in pb[:4])
             if ext is None:
@@ -742,12 +745,39 @@ class PersonTracker:
                 continue
             t = live.get(ext)
             if t is None:
+                # A new id may just be the tracker renaming someone who never
+                # left. If a live track whose id is NOT in this frame sits where
+                # this box is, it is the same person: carry their history over
+                # (loiter age E10, path shape, votes) instead of starting a
+                # stranger from zero -- and instead of leaving the old one to
+                # expire next to the new one.
+                t = self._take_over_lost_id(box, ext, in_frame, now)
+            if t is None:
                 t = self._spawn(box, now, ext_id=ext)
                 self.tracks.append(t)
-                live[ext] = t
+            live[ext] = t
             t.box = box
             t.last_seen = now
             t.note_position(now)
+
+    def _take_over_lost_id(self, box, ext, in_frame, now):
+        """Re-key a live track to `ext` when the external tracker renamed it.
+
+        Only a track whose external id has disappeared from this frame, that was
+        seen within max_gap, and whose box overlaps `box` (IoU) qualifies. The
+        best overlap wins; None when nothing does.
+        """
+        best, best_iou = None, self.iou_match
+        for t in self.tracks:
+            if (t.ext_id is None or t.ext_id == ext or t.ext_id in in_frame
+                    or t.is_scene or now - t.last_seen > self.max_gap):
+                continue
+            overlap = _iou(t.box, box)
+            if overlap >= best_iou:
+                best, best_iou = t, overlap
+        if best is not None:
+            best.ext_id = ext
+        return best
 
     def _match_or_spawn(self, box, now):
         best, best_score = None, 0.0
@@ -832,7 +862,7 @@ class PersonTracker:
         """Groups unattributed detections into position-keyed pseudo-tracks.
 
         A single global scene bucket (the previous design) merged a knife in one
-        corner of the frame with a gun in the other: shared vote window, shared
+        corner of the frame with a knife in the other: shared vote window, shared
         dwell timer and — worst — a shared alert cooldown, so whichever fired
         first silenced the other completely.
         """

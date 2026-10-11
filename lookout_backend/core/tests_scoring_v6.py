@@ -190,12 +190,18 @@ class HoldupExamples(SimpleTestCase):
         self.assertEqual(holdup({"E12", "E10"}, 16).level, NONE)
 
     def test_theft_evidence_follows_the_same_rules(self):
-        solo = theft.Evidence("weapon", (0, 0, 10, 10), {"E14": 0.45}, {"E20": 1.36},
+        solo = theft.Evidence("weapon", (0, 0, 10, 10), {"E14": 0.45}, {},
                               set(), [1], "x", people_near=False)
         self.assertEqual(solo.band, MONITORING)
-        near = theft.Evidence("weapon", (0, 0, 10, 10), {"E14": 0.45}, {"E20": 1.36},
+        # Holdup v2: a knife with someone near is STILL Monitoring until a
+        # behavioural cue (E10 / E12) backs it up.
+        near = theft.Evidence("weapon", (0, 0, 10, 10), {"E14": 0.45, "E20": 0.10}, {},
                               set(), [1], "x", people_near=True)
-        self.assertEqual(near.band, WARNING)
+        self.assertEqual(near.band, MONITORING)
+        corroborated = theft.Evidence("weapon", (0, 0, 10, 10),
+                                      {"E14": 0.45, "E10": 0.10, "E20": 0.10}, {},
+                                      set(), [1], "x", people_near=True)
+        self.assertEqual(corroborated.band, WARNING)
         pair = theft.Evidence("holdup", (0, 0, 10, 10), {"E12": 0.2, "E10": 0.1}, {},
                               set(), [1, 2], "x")
         self.assertEqual(pair.band, NONE)               # no knife

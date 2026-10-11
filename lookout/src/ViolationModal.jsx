@@ -958,11 +958,23 @@ function SuggestedStatusCard({ ai, official }) {
 // TESTING VIEW: how the status was reached, indicator by indicator. Shown only while "Show testing
 // tools" is on (Settings -> System). Plain numbers on purpose: this is for checking the system,
 // not for the tanod.
+// Holdup indicators are shown as their Layer E code plus a plain name. Everything else
+// (smoking, drinking) keeps its own cue name.
+const HOLDUP_INDICATOR_LABELS = {
+  E14: "E14 Knife near a hand",
+  E12: "E12 Two people frozen close together",
+  E10: "E10 Loitering first",
+  E11E12: "E11→E12 Approach then freeze",
+  E20: "E20 Time of day",
+};
+
 function ScoreBreakdown({ alert }) {
   const c = alert.cues || {};
   const indicators = Object.entries(c.cues || {}).sort((a, b) => b[1] - a[1]);
   const multipliers = Object.entries(c.multipliers || {});
   const pts = (v) => Math.round(Number(v) * 100);
+  // What the listed indicators add up to (for a holdup this includes E20 as actually applied).
+  const listedSum = indicators.reduce((acc, [, w]) => acc + Number(w), 0);
   const settings = c.settings ? Object.entries(c.settings) : [];
   const mono = { fontFamily: "'DM Mono', monospace" };
   return (
@@ -971,15 +983,22 @@ function ScoreBreakdown({ alert }) {
         <tbody>
           {indicators.map(([name, w]) => (
             <tr key={name}>
-              <td className="py-0.5">{name.replace(/_/g, " ")}</td>
+              <td className="py-0.5">{HOLDUP_INDICATOR_LABELS[name] || name.replace(/_/g, " ")}</td>
               <td className="py-0.5 text-right">+{pts(w)}</td>
             </tr>
           ))}
           {indicators.length === 0 && <tr><td className="py-0.5" colSpan={2}>no indicators fired</td></tr>}
           <tr style={{ borderTop: "1px solid var(--border)" }}>
             <td className="py-0.5">sum of indicators</td>
-            <td className="py-0.5 text-right">{c.raw_score != null ? pts(c.raw_score) : "—"}</td>
+            <td className="py-0.5 text-right">{indicators.length ? pts(listedSum) : (c.raw_score != null ? pts(c.raw_score) : "—")}</td>
           </tr>
+          {c.e20_capped && (
+            <tr>
+              <td className="py-0.5" colSpan={2} style={{ color: "var(--muted-foreground)" }}>
+                time of day was capped so it cannot change the status
+              </td>
+            </tr>
+          )}
           {multipliers.map(([name, v]) => (
             <tr key={name}>
               <td className="py-0.5">time multiplier ({name})</td>

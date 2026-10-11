@@ -144,6 +144,59 @@ MANILA_HOUR_BLOCKS = (
 
 UNIFORM_BLOCK_PROBABILITY = 0.125
 
+# Holdup time of day (E20) as ADDED points, 1 to 10.
+#
+# Source: Robielos & Duran (2020), IEOM -- the City of Manila block probabilities
+# in MANILA_HOUR_BLOCKS above, one constant for all eight blocks. Points are
+# the block's probability relative to the busiest block:
+#
+#     points = round(10 * p_block / p_max)
+#
+# so the peak block (15:00-18:00, p = 0.170) is 10 and the quietest (06:00-09:00,
+# p = 0.070) is 4. The hour only ever ADDS: no time of day can hide a holdup.
+# theft.Evidence caps what E20 can do to the status (see its docstring), and
+# only counts it once a behavioural cue (E10 / E12) corroborates the weapon.
+E20_MAX_POINTS = 10
+_P_MAX = max(block[2] for block in MANILA_HOUR_BLOCKS)
+
+MANILA_TZ_NAME = "Asia/Manila"
+
+
+def manila_hour(when=None):
+    """Hour of day, in Manila time, for `when`.
+
+    A timezone-aware datetime is converted to Asia/Manila. A naive datetime is
+    taken to already BE Manila wall-clock time (a clip's "Recorded at" is entered
+    that way). Returns None for anything without an hour.
+    """
+    if when is None or getattr(when, "hour", None) is None:
+        return None
+    tz = getattr(when, "tzinfo", None)
+    if tz is not None and hasattr(when, "astimezone"):
+        from zoneinfo import ZoneInfo
+        try:
+            return when.astimezone(ZoneInfo(MANILA_TZ_NAME)).hour
+        except Exception:                                   # noqa: BLE001
+            return when.hour
+    return when.hour
+
+
+def manila_time_points(when=None):
+    """E20 points (1-10) for `when`; 0 when the time cannot be read, so a clock
+    problem adds nothing (and, never being negative, cannot suppress evidence)."""
+    hour = manila_hour(when)
+    if hour is None:
+        return 0
+    for start, end, prob, _multiplier in MANILA_HOUR_BLOCKS:
+        if start <= hour < end:
+            return int(round(E20_MAX_POINTS * prob / _P_MAX))
+    return 0
+
+
+def manila_time_bonus(when=None):
+    """E20 as a score fraction (7 points -> 0.07)."""
+    return manila_time_points(when) / 100.0
+
 
 def manila_time_multiplier(when=None):
     """Holdup time-of-day multiplier for `when` (a datetime or time).
@@ -151,7 +204,7 @@ def manila_time_multiplier(when=None):
     Returns 1.0 for anything unparseable, so a clock problem can never suppress
     evidence.
     """
-    hour = getattr(when, "hour", None)
+    hour = manila_hour(when)
     if hour is None:
         return 1.0
     for start, end, _prob, multiplier in MANILA_HOUR_BLOCKS:
@@ -162,7 +215,7 @@ def manila_time_multiplier(when=None):
 
 def manila_block_label(when=None):
     """Human-readable block name, for the alert description and the audit log."""
-    hour = getattr(when, "hour", None)
+    hour = manila_hour(when)
     if hour is None:
         return ""
     for start, end, _prob, multiplier in MANILA_HOUR_BLOCKS:
@@ -346,9 +399,11 @@ class Score:
         "puff_pattern": "Repeated puffs (3+ within 5 minutes)",
         "near_mouth": "Smoking item at the mouth",
         # holdup (Layer E codes)
-        "E14": "Weapon seen",
+        "E14": "Knife seen near a hand",
         "E12": "Two people frozen close together",
         "E10": "Someone loitering first",
+        "E11E12": "Approach, then freeze (E11→E12)",
+        "E20": "Time of day",
     }
     MULTIPLIER_LABELS = {"E20": "Time of day"}
 

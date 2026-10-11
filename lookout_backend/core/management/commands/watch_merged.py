@@ -64,7 +64,8 @@ from core.vision import debug_view
 from ._incidents import ai_setup
 
 from .watch_smoking import Command as SmokingCommand
-from .watch_thief import Command as ThiefCommand
+from core.vision import theft
+from .watch_thief import Command as ThiefCommand, _is_night
 from .watch_drinking import Command as DrinkingCommand
 
 MERGED_CAMERA_CODE = "CAM-SMOKE-01"
@@ -296,6 +297,15 @@ class Command(BaseCommand):
         # no-ops in _create_alert), which quietly drops evidence video for
         # anything run through it — don't repeat that here.
         cmd.clip = recognition.ClipRecorder(seconds=30, label=self.camera.code)
+        if name == "thief":
+            # watch_thief's own handle() builds the Layer E engine; running inside
+            # this command that never happens, so the holdup pattern cues (E12
+            # frozen pair, E10 loitering) were never computed. A knife could then
+            # only ever be E14 alone -- a lone weapon, held at Monitoring.
+            cmd.layer_e = True
+            cmd.layer_e_only = False
+            cmd.observe_log = None
+            cmd.engine = theft.TheftEngine(ablate=cmd.ablate, stats=cmd.stats)
         if name == "smoking":
             cmd.mouth_check = True
         elif name == "drinking":
@@ -601,6 +611,15 @@ class Command(BaseCommand):
             elif name == "thief":
                 cmd._frame_tracks = tracks
                 per_track = cmd._apply_weapon_region_rule(per_track, frame)
+                # Layer E pattern rules (E12 frozen pair, E10 loitering) over the
+                # same tracks, BEFORE _process_track: the knife path folds the
+                # cues recorded here into its score.
+                if cmd.engine is not None:
+                    wall_now = cmd._clock_now(now)
+                    for ev in cmd.engine.update(tracks, [], [], filtered, now,
+                                                is_night=_is_night(wall_now),
+                                                now_dt=wall_now):
+                        cmd._handle_evidence(ev, frame, now, cfg.alert_cooldown, debug)
 
             if name == "drinking":
                 self._process_drinking_frame(

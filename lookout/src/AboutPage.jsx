@@ -19,7 +19,7 @@ const VIOLATIONS = [
   { icon: Cigarette, color: "#f97316", name: "Smoking", law: "", note: "Smoking in public places." },
   { icon: Beer, color: "#8b5cf6", name: "Drinking", law: "", note: "Drinking in public." },
   { icon: Car, color: "#ef4444", name: "Parking Obstruction", law: "", note: "Vehicles obstructing the road." },
-  { icon: Siren, color: "#dc2626", name: "Holdup", law: "", note: "A person threatening another with a knife." },
+  { icon: Siren, color: "#dc2626", name: "Holdup", law: "", note: "A person holding a knife near another person. Loitering first, or the two people freezing close together, makes it stronger." },
 ];
 
 const STATUSES = [

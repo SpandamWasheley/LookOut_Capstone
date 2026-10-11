@@ -119,6 +119,26 @@ ANCHOR_MATCH_REACH = 2.0
 # HOLDER's heights (spec decision: about 1.5-2, configurable in Settings).
 NEAR_PERSON_HEIGHTS = 1.75
 
+# --- Holdup v2: sequencing and memory ------------------------------------------
+# E12 (the freeze) only counts if the knife was seen DURING it or up to this many
+# seconds BEFORE it began. A freeze that ended before any knife appeared is two
+# people standing close together, not a holdup.
+E12_E14_LEAD_SECONDS = 3.0
+# E11 (rapid approach) followed by E12 (the freeze) within this many seconds is
+# one sequence worth its own points: someone closed in fast and the pair froze.
+E11_E12_WINDOW_SECONDS = 5.0
+# E10 (loitering) is remembered. A track that qualifies as a loiterer is stamped,
+# and at knife time E10 is true if the stamp is this recent -- so someone who
+# loitered, then walked up to a victim, is still counted although their movement
+# over the last 20 s no longer looks like loitering.
+LOITER_MEMORY_SECONDS = 60.0
+# Optional, isolated: if a stamped track vanishes and a new one appears within
+# LOITER_RELINK_SECONDS and LOITER_RELINK_HEIGHTS (in body heights) of where it
+# was last seen, the stamp is copied over. Set LOITER_RELINK = False to disable.
+LOITER_RELINK = True
+LOITER_RELINK_SECONDS = 3.0
+LOITER_RELINK_HEIGHTS = 0.5
+
 # --- E28 recommended initial weights ----------------------------------------
 # Reasoned defaults pending field calibration. The ablation harness supports
 # per-cue removal so each weight can be revised against measured precision.
@@ -135,16 +155,17 @@ LEGACY_CUES = frozenset({
 })
 
 # What §4.3 prices for holdup, and nothing else.
-HOLDUP_CUES = frozenset({"E10", "E12", "E14", "E20"})
+HOLDUP_CUES = frozenset({"E10", "E12", "E11E12", "E14", "E20"})
 
 
 WEIGHTS = {
     # Spec 4.3. Only the cues the spec prices for HOLDUP carry weight by
     # default; the legacy patterns above are gated behind --enable-legacy-theft
     # and contribute nothing unless asked for.
-    "E14": 0.45,   # knife / weapon present  -- GATE. Fernandez-Testa (2024)
-    "E12": 0.20,   # confrontation freeze    -- Ruiz-Santaquiteria (2021)
-    "E10": 0.10,   # loitering               -- citation pending (spec 12.2)
+    "E14": 0.45,   # knife present near a wrist -- GATE. Fernandez-Testa (2024)
+    "E12": 0.20,   # confrontation freeze       -- Ruiz-Santaquiteria (2021)
+    "E10": 0.10,   # loitering (remembered 60 s) -- citation pending (spec 12.2)
+    "E11E12": 0.10,  # rapid approach, then freeze within 5 s (E11 alone is worth 0)
 
     # --- legacy theft patterns (spec 4.3: "disable by default") -------------
     # Retained at their original values so --enable-legacy-theft reproduces the
@@ -235,11 +256,12 @@ class Evidence:
     The cue vector is kept intact even when nothing is shown: that is how the
     thresholds get checked against real footage after the field shoot.
 
-    Status rules (spec v6 section 7): the weapon cue (E14) is the gate. With it
-    the status is Monitoring below 55, Possible from 55, Likely from 75 --
-    but only when a second person is NEAR the knife holder (`people_near`);
-    otherwise it stays Monitoring. Without a weapon nothing is shown, except
-    the disabled-by-default legacy patterns, which keep plain 55 / 75 bands.
+    Status rules (holdup scoring v2, docs/specs/holdup_scoring_v2.md): the knife
+    cue (E14) is the gate. With it the status is Monitoring below 55, Possible
+    from 55, Likely from 75 -- but only when a second person is NEAR the knife
+    holder (`people_near`) AND a behavioural cue (E10 or E12) is present;
+    otherwise it stays Monitoring. Without a knife nothing is shown, except the
+    disabled-by-default legacy patterns, which keep plain 55 / 75 bands.
     """
 
     def __init__(self, kind, box, cues, multipliers, abstained, tracks, detail,
@@ -252,11 +274,44 @@ class Evidence:
         self.abstained = set(abstained)
         self.tracks = list(tracks)
         self.detail = detail
-        self.raw_score = sum(self.cues.values())
-        total = self.raw_score
-        for factor in self.multipliers.values():
-            total *= factor
-        self.score = min(1.0, max(0.0, scoring._r(total)))
+
+        # A knife needs a second SIGN before it can be more than a watchlist
+        # entry: loitering (E10) or a frozen pair (E12). The knife detector alone
+        # is one possibly-wrong detection, and the time of day (E20) is a prior,
+        # not evidence -- so with no behavioural cue E20 is not counted and the
+        # status is held at Monitoring.
+        self.corroborated = bool(self.cues.keys() & {"E10", "E12"})
+        self.e20_table = self.cues.get("E20", 0.0)      # what the hour would add
+        self.e20_capped = False
+        if "E14" in self.cues:
+            # BASE score: everything but E20. The status is decided from it, and
+            # E20 may never lift the score past the band the base is already in:
+            #     base >= 75       -> base + E20
+            #     55 <= base < 75  -> min(base + E20, 74)   (stays Possible)
+            #     base < 55        -> min(base + E20, 54)   (stays Monitoring)
+            base = scoring._r(sum(w for r, w in self.cues.items() if r != "E20"))
+            e20 = self.e20_table if self.corroborated else 0.0
+            if base >= scoring.SCORE_VIOLATION:
+                final = base + e20
+            elif base >= scoring.SCORE_WARNING:
+                final = min(base + e20, scoring.SCORE_VIOLATION - 0.01)
+            else:
+                final = min(base + e20, scoring.SCORE_WARNING - 0.01)
+            final = scoring._r(min(1.0, max(0.0, final)))
+            applied = scoring._r(final - base)
+            self.e20_capped = applied < scoring._r(e20)
+            if applied > 0:
+                self.cues["E20"] = applied     # the points actually added, so the breakdown adds up
+            else:
+                self.cues.pop("E20", None)
+            self.raw_score = base
+            self.score = final
+        else:
+            self.raw_score = sum(self.cues.values())
+            total = self.raw_score
+            for factor in self.multipliers.values():
+                total *= factor
+            self.score = min(1.0, max(0.0, scoring._r(total)))
         # Two tracks in the evidence means the pair pattern (E12): they are, by
         # construction, close together. A lone weapon needs the engine to say so.
         self.people_near = (len(self.tracks) >= 2) if people_near is None else bool(people_near)
@@ -264,7 +319,7 @@ class Evidence:
         self.holdup_capped = False
         if self.object_on:
             level = scoring.level_with_hysteresis(self.score, previous_level, True)
-            if (not self.people_near
+            if ((not self.people_near or not self.corroborated)
                     and scoring.LEVEL_ORDER[level] > scoring.LEVEL_ORDER[scoring.MONITORING]):
                 level = scoring.MONITORING
                 self.holdup_capped = True
@@ -299,6 +354,8 @@ class Evidence:
             "score": round(self.score, 4),
             "object_on": self.object_on,
             "people_near": self.people_near,
+            "corroborated": self.corroborated,
+            "e20_capped": self.e20_capped,
             "holdup_capped": self.holdup_capped,
             "level": self.band,
             "label": scoring.label_of(self.band),
@@ -727,6 +784,9 @@ class PairState:
         self.close_at = None
         self.freeze_since = None
         self.freeze_ok = False
+        self.freeze_start_ok = None   # when the freeze that reached freeze_ok began
+        self.freeze_last = None       # last time the freeze condition held
+        self.seq_ok = False           # E11 -> E12: the approach led into that freeze
         self.post_sep = deque()
         self.pending = None       # snatch awaiting the E24 grace period
         self.emitted = {}
@@ -789,7 +849,17 @@ class PairState:
         if d < FREEZE_REACH * (reach / REACH_NORM) and va < FREEZE_SPEED and vb < FREEZE_SPEED:
             if self.freeze_since is None:
                 self.freeze_since = now
+                # E11 -> E12: did a rapid approach (E11) end no more than
+                # E11_E12_WINDOW_SECONDS before this freeze began? (A second of
+                # slack the other way: the freeze can start as the approach lands.)
+                self._seq_candidate = (self.close_at is not None
+                                       and -1.0 <= now - self.close_at <= E11_E12_WINDOW_SECONDS)
+            self.freeze_last = now
+            was_ok = self.freeze_ok
             self.freeze_ok = now - self.freeze_since >= FREEZE_SECONDS
+            if self.freeze_ok and not was_ok:
+                self.freeze_start_ok = self.freeze_since
+                self.seq_ok = bool(getattr(self, "_seq_candidate", False))
         else:
             self.freeze_since = None
             self.freeze_ok = False
@@ -860,6 +930,8 @@ class TheftEngine:
         self.loiter_seconds = loiter_seconds
         self._converge_log = deque()   # (t, target_id, other_id) for E13
         self._weapon_emitted = {}      # track id -> last E14 emission
+        self._stamped_prev = {}        # track id -> (stamp, box) of stamped tracks last frame
+        self._lost_stamps = []         # (stamp, box, lost_at): stamped tracks that vanished
 
     # ---- helpers ----
 
@@ -924,11 +996,13 @@ class TheftEngine:
 
         usable = [t for t in people if self._usable(t, now)]
         self.anchors.update(vehicles, carriables, usable, now)
+        self._stamp_loiterers(usable, now)
 
         evidence = []
         # E20 is read once per frame, not per evidence item: every incident in
         # a frame shares one wall clock, and the lookup is pure arithmetic.
         self._time_multiplier = scoring.manila_time_multiplier(now_dt)
+        self._time_bonus = scoring.manila_time_bonus(now_dt)
         self._time_label = scoring.manila_block_label(now_dt)
 
         evidence += self._pair_evidence(usable, now, reach, threats, is_night)
@@ -1031,6 +1105,7 @@ class TheftEngine:
         self._apply_multipliers(mult, [ta.id, tb.id], now, is_night)
         if not cues:
             return None
+        self._time_as_bonus(cues, mult)
         state.mark_emitted("holdup", now)
         detail = (f"holdup pattern: person #{ta.id} and #{tb.id} stationary at "
                   f"arm's length for {FREEZE_SECONDS:.0f}s+")
@@ -1089,7 +1164,7 @@ class TheftEngine:
     # ---- E14 standalone ----
 
     def _weapon_on(self, track, threats):
-        """The weapon label on or within WEAPON_REACH of this track, if any.
+        """The knife label on or within WEAPON_REACH of this track, if any.
 
         Also records the detector's own confidence in that box on
         `self.last_weapon_conf`. Returning it would mean changing what every
@@ -1101,7 +1176,7 @@ class TheftEngine:
             return None
         for det in threats:
             label = det[5]
-            if label not in ("gun", "knife"):
+            if label != "knife":
                 continue
             if _person_norm_distance(track.box, det[:4]) <= WEAPON_REACH:
                 self.last_weapon_conf = det[4]
@@ -1128,6 +1203,7 @@ class TheftEngine:
             self._apply_multipliers(mult, [t.id], now, is_night)
             if not cues:
                 continue
+            self._time_as_bonus(cues, mult)
             self._weapon_emitted[t.id] = now
             # Spec v6 section 7: a second person must be NEAR the knife holder
             # (within near_person_heights of the HOLDER's height) to go above
@@ -1177,6 +1253,88 @@ class TheftEngine:
             if factor != 1.0:
                 mult["E20"] = factor
 
+
+    # ---- E10 loiter memory, E12 / E11->E12 for the knife holder ----
+
+    def _stamp_loiterers(self, tracks, now):
+        """Stamp every track that qualifies as a loiterer RIGHT NOW.
+
+        Qualifying = on screen for at least the Lingering setting AND path
+        efficiency under EFF_LOITER over the last 20 s. The stamp (`loiter_last_seen`)
+        is what makes E10 a memory: see loiter_recent().
+        """
+        if self._off("e10"):
+            return
+        for t in tracks:
+            eff = t.path_efficiency(now)
+            if eff is not None and eff < EFF_LOITER and t.age(now) >= self.loiter_seconds:
+                t.loiter_last_seen = now
+        if LOITER_RELINK:
+            self._relink_loiter_stamps(tracks, now)
+
+    def _relink_loiter_stamps(self, tracks, now):
+        """Isolated, optional (LOITER_RELINK): carry a stamp across a track id
+        that vanished and reappeared next to where it was."""
+        live_ids = {t.id for t in tracks}
+        for tid, (stamp, box) in list(self._stamped_prev.items()):
+            if tid not in live_ids:
+                self._lost_stamps.append((stamp, box, now))
+        self._lost_stamps = [x for x in self._lost_stamps if now - x[2] <= LOITER_RELINK_SECONDS]
+        for t in tracks:
+            if t.loiter_last_seen is not None or t.age(now) > LOITER_RELINK_SECONDS:
+                continue
+            for item in self._lost_stamps:
+                stamp, box, _ = item
+                if _person_norm_distance(box, t.box) <= LOITER_RELINK_HEIGHTS:
+                    t.loiter_last_seen = stamp
+                    self._lost_stamps.remove(item)
+                    break
+        self._stamped_prev = {t.id: (t.loiter_last_seen, t.box)
+                              for t in tracks if t.loiter_last_seen is not None}
+
+    @staticmethod
+    def loiter_recent(track, now):
+        """E10: the track was a loiterer within the last LOITER_MEMORY_SECONDS."""
+        stamp = getattr(track, "loiter_last_seen", None)
+        return stamp is not None and 0 <= now - stamp <= LOITER_MEMORY_SECONDS
+
+    def holdup_pair_cues(self, holder_id, e14_times, now, hold=5.0):
+        """E12 and E11->E12 for the knife holder, as {rule: weight}.
+
+        E12 counts when a pair involving the holder is frozen now (or was a
+        moment ago, within `hold` seconds -- a hand at the mouth style hold),
+        AND the knife (`e14_times`: when E14 was true for the holder) was seen
+        during that freeze or up to E12_E14_LEAD_SECONDS before it began.
+        """
+        out = {}
+        if self._off("e12"):
+            return out
+        for (a, b), st in self.pairs.items():
+            if holder_id not in (a, b) or st.freeze_start_ok is None:
+                continue
+            active = st.freeze_ok or (st.freeze_last is not None and now - st.freeze_last <= hold)
+            if not active:
+                continue
+            start, end = st.freeze_start_ok - E12_E14_LEAD_SECONDS, st.freeze_last
+            if not any(start <= t <= end for t in e14_times):
+                continue
+            out["E12"] = WEIGHTS["E12"]
+            if st.seq_ok and not self._off("e11"):
+                out["E11E12"] = WEIGHTS["E11E12"]
+        return out
+
+    def _time_as_bonus(self, cues, mult):
+        """Holdup only: replace the E20 multiplier with its additive bonus.
+
+        The hour can add 1-10 points and never subtracts, so no time of day
+        can hide a holdup. Snatch, carnapping and property keep the legacy
+        multiplier (they are off by default).
+        """
+        mult.pop("E20", None)
+        if not self._off("e20"):
+            bonus = getattr(self, "_time_bonus", 0.0)
+            if bonus:
+                cues["E20"] = bonus
 
     def _prune(self, now):
         while self._converge_log and now - self._converge_log[0][0] > CONVERGE_WINDOW:
