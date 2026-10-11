@@ -59,6 +59,13 @@ DEFAULT_CONFIG = config_from_env()
 # two, short enough that a knife put away really does fade.
 KNIFE_HOLD_SECONDS = 1.0
 
+# How long a knife's cue must stay ON before it counts. Shorter than the spec's
+# ~2 s (object_confirm_seconds) for the knife class ONLY: a holdup is brief and the
+# blade is visible for a second or less as it is drawn, so waiting 2 s meant the
+# cue confirmed after the confrontation was over. The setting itself is untouched,
+# so smoking and drinking still wait their own 2 s.
+KNIFE_CONFIRM_SECONDS = 0.5
+
 
 class Slot:
     __slots__ = ("momentum", "cue_on", "last_conf", "peak", "on_since", "held_until")

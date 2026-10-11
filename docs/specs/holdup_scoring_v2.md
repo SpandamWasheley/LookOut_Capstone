@@ -21,8 +21,8 @@ The detector (`merged_v2`) has no gun class. Only a knife is ever scored.
 
 | Code | Indicator | Points | True when |
 |---|---|---|---|
-| **E14** | Knife near a hand (the gate) | 45 | A knife is detected on the person, **within 0.22 body heights of one of that person's wrist keypoints** (pose), **and** in at least **2 of the last 5** processed frames for that person. The momentum cue must also be ON. A knife with no wrist nearby (on a table or stall) never counts. |
-| **E12** | Pair frozen close together | 20 | Two people within arm's length and nearly still for 3 s or more, **and** E14 was true during the freeze or up to **3 s before** it began. Held for the cue-hold time (5 s) after the freeze breaks. |
+| **E14** | Knife near a hand (the gate) | 45 | A knife is detected on the person, **within 0.22 body heights of one of that person's wrist keypoints** (pose), **and** in at least **2 of the last 5** processed frames for that person (a burst that meets this counts for 3 s). The momentum cue must also be ON for at least **0.5 s** (knife only). A knife with no wrist nearby (on a table or stall) never counts. |
+| **E12** | Pair frozen close together | 20 | Two people within arm's length and nearly still (speed under **0.3**) for **2 s or more**, **and** a knife was seen on the holder during the freeze, up to **3 s before** it began, or up to **3 s after** it ended. Held for the cue-hold time (5 s) after the freeze breaks. |
 | **E11→E12** | Approach, then freeze | +10 | A rapid approach (E11: from over 3 body heights apart to under 1 within 3 s) between the pair, with the freeze (E12) beginning no more than **5 s** after the approach landed. Shown as its own line. **E11 on its own is worth 0.** |
 | **E10** | Loitering (remembered) | 10 | The knife holder qualified as a loiterer **within the last 60 s**. A track qualifies when it has been on screen for at least the *Lingering* setting **and** its path efficiency over the last 20 s is below 0.3. Each qualifying frame stamps the track (`loiter_last_seen`); the stamp is what E10 reads. |
 | **E20** | Time of day | +4 to +10 | Added only once E10 or E12 is present, and capped (section 4). |
@@ -45,10 +45,26 @@ whose external ID is merely renamed keeps its whole history (`PersonTracker._tak
 ### Knife persistence and the momentum hold
 
 The knife's object cue is the existing momentum cue (ON at 1.5, OFF below 0.4, decay 0.9). For the
-knife class only, momentum is **held for 1.0 s** after the last detection instead of decaying
-immediately, so a hand turning or an arm blocking the knife for a moment does not cost the
-momentum it took to turn the cue ON. The 2-of-5 persistence rule sits on top of this: momentum
-decides when the cue is ON, persistence decides whether the knife is solid enough to be scored.
+knife class only:
+
+- momentum is **held for 1.0 s** after the last detection instead of decaying immediately, so a
+  hand turning or an arm blocking the knife for a moment does not cost the momentum it took to
+  turn the cue ON;
+- the cue must stay ON for **0.5 s** (`momentum.KNIFE_CONFIRM_SECONDS`) instead of the 2 s
+  object-confirmation setting. A holdup is brief and the blade can be visible for under a second,
+  so a 2 s wait confirmed the cue after the confrontation was over. The setting itself is
+  untouched: smoking and drinking still wait their own 2 s.
+
+The 2-of-5 persistence rule sits on top of this: momentum decides when the cue is ON, persistence
+decides whether the knife is solid enough to be scored. A burst that satisfies persistence counts
+for 3 s (`KNIFE_PERSIST_MEMORY_SECONDS`), so it is not thrown away at the instant the cue confirms.
+
+### Why the freeze is 2 s and 0.3 (spec 3 s and 0.2)
+
+On a recorded staged holdup the pair stood at arm's length for about five seconds, but small
+movements (hands, sway) pushed one person above 0.2 for a moment, so the strictly-still part lasted
+only 1.7 s. E12 never completed. At 2 s and 0.3 it does, and a knife is still required for any
+alert, so the looser freeze cannot raise one on its own.
 
 ## 3. Rules to leave Monitoring
 

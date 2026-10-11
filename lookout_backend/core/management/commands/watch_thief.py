@@ -120,9 +120,14 @@ KNIFE_MAX_WRIST_DIST_FRAC = 0.22
 # is ON, this decides whether the knife is solid enough to be scored as E14.
 KNIFE_PERSIST_HITS = 2
 KNIFE_PERSIST_WINDOW = 5
+# The 2-of-5 test is satisfied BY A BURST, and the cue then confirms a moment later
+# (momentum.KNIFE_CONFIRM_SECONDS). Checking it only at the instant of confirmation
+# threw away a perfectly good burst once the knife had turned or been covered, so
+# a burst that satisfied it counts for this many seconds.
+KNIFE_PERSIST_MEMORY_SECONDS = 3.0
 # How long a track's E14 sightings are kept, for the E12 "knife during or just
 # before the freeze" rule.
-E14_HISTORY_SECONDS = 30.0
+E14_HISTORY_SECONDS = 30.0   # (also the history kept of raw knife sightings)
 
 
 def _is_spatially_gated(label):
@@ -231,7 +236,8 @@ class Command(IncidentMixin, BaseCommand):
         self.clock_start = None       # --clock footage start (file sources only)
         self._holdup_cues = {}        # holder track id -> (time, Layer E cues seen recently)
         self._knife_hits = {}         # track id -> last KNIFE_PERSIST_WINDOW frames: knife detected?
-        self._e14_times = {}          # track id -> times E14 was true (kept E14_HISTORY_SECONDS)
+        self._e14_times = {}          # track id -> times a knife was SEEN on them (after the wrist rule)
+        self._knife_persist_at = {}   # track id -> last time the 2-of-5 persistence test was met
         self.observe_log = None
         self.engine = None
         # Set only for a file source (see _run_stream) — lets _create_alert cut
@@ -932,22 +938,28 @@ class Command(IncidentMixin, BaseCommand):
                 live = {t.id for t in self._frame_tracks}
                 self._knife_hits = {k: v for k, v in self._knife_hits.items() if k in live}
                 self._e14_times = {k: v for k, v in self._e14_times.items() if k in live}
+                self._knife_persist_at = {k: v for k, v in self._knife_persist_at.items() if k in live}
             hits = self._knife_hits[track.id] = deque(maxlen=KNIFE_PERSIST_WINDOW)
-        hits.append(any(str(d[5]).lower() == "knife" for d in dets))
+        seen_knife = any(str(d[5]).lower() == "knife" for d in dets)
+        hits.append(seen_knife)
+        if seen_knife:
+            # raw sightings (post wrist rule), kept for E12's "knife during or around the freeze"
+            times = self._e14_times.setdefault(track.id, deque())
+            times.append(now_ts)
+            while times and now_ts - times[0] > E14_HISTORY_SECONDS:
+                times.popleft()
+        if sum(hits) >= KNIFE_PERSIST_HITS:
+            self._knife_persist_at[track.id] = now_ts
         if not cue.on:
             if dets:
                 self.stats["held back: momentum below ON"] += 1
             self._debug_note("Holdup", ("knife", track.id), track.id, track.box, None, cue.momentum)
             return
-        if sum(hits) < KNIFE_PERSIST_HITS:
+        persisted = self._knife_persist_at.get(track.id)
+        if persisted is None or now_ts - persisted > KNIFE_PERSIST_MEMORY_SECONDS:
             self.stats["held back: knife in fewer than 2 of the last 5 frames"] += 1
             self._debug_note("Holdup", ("knife", track.id), track.id, track.box, None, cue.momentum)
             return
-        # E14 is true now: remember it, for E12's "knife during or just before the freeze".
-        times = self._e14_times.setdefault(track.id, deque())
-        times.append(now_ts)
-        while times and now_ts - times[0] > E14_HISTORY_SECONDS:
-            times.popleft()
         best_label, best_score = cue.label, cue.conf
         present_for = cue.momentum
 

@@ -319,7 +319,7 @@ class IncidentMixin:
         for cls in slots:
             names.setdefault(cls, cls)
         # ON for at least the object confirmation time (not just a momentum spike).
-        on = [c for c, sl in slots.items() if momentum.confirmed(sl, now_ts, self.confirm_seconds)]
+        on = [c for c, sl in slots.items() if momentum.confirmed(sl, now_ts, self._confirm_seconds_for(c))]
         if not on:
             top = max(slots.values(), key=lambda sl: sl.momentum, default=None)
             return ObjectCue(False, None, None, top.momentum if top else 0.0, None)
@@ -327,6 +327,13 @@ class IncidentMixin:
         conf = confs.get(cls, slots[cls].last_conf) or slots[cls].peak / 3.0
         return ObjectCue(True, names[cls], float(conf), slots[cls].momentum,
                          book.snapshot(track.id, cls))
+
+    def _confirm_seconds_for(self, cls):
+        """The object confirmation time for one class: the setting, except the knife,
+        which confirms sooner (momentum.KNIFE_CONFIRM_SECONDS) -- never longer than the setting."""
+        if str(cls).lower() == "knife":
+            return min(self.confirm_seconds, momentum.KNIFE_CONFIRM_SECONDS)
+        return self.confirm_seconds
 
     def _draw_object_cue(self, frame, track, dets, cue, color_on, color_building=(0, 200, 0)):
         """Draw the violation boxes ALWAYS (green while momentum builds, `color_on`

@@ -59,7 +59,7 @@ STATIC_RATIO = 0.4            # E7 victim stationarity threshold
 DIVERGENCE_DEG = 90           # E8 heading separation
 EFF_LOITER = 0.30             # E3 / E10 path-efficiency ceiling
 LOITER_SECONDS = 20           # E10 minimum presence
-FREEZE_SECONDS = 3.0          # E12 confrontation hold
+FREEZE_SECONDS = 2.0          # E12 confrontation hold (spec 3 s; relaxed after the Holdup clip tests: a real standoff has small movements)
 ANCHOR_STATIC_SECONDS = 60    # E5 parked-vehicle registration
 ABSENCE_SECONDS = 120         # E15 unattended timer
 INTERACT_DWELL = 15.0         # E16 vehicle manipulation
@@ -91,7 +91,7 @@ CLOSE_FROM = 3.0              # E11 starts beyond this
 CLOSE_TO = 1.0                # E11 ends inside this
 CLOSE_SECONDS = 3.0           # E11 time budget for the approach
 FREEZE_REACH = 1.0            # E12 arm's-length
-FREEZE_SPEED = 0.2            # E12 v_norm ceiling for "stationary"
+FREEZE_SPEED = 0.3            # E12 v_norm ceiling for "stationary" (spec 0.2; gestures and sway reach 0.2-0.3)
 CONVERGE_WINDOW = 5.0         # E13 window for counting converging tracks
 CONVERGE_MIN = 2              # E13 tracks needed for the multiplier
 WEAPON_REACH = 0.5            # E14 weapon-to-person distance, in person heights
@@ -124,6 +124,9 @@ NEAR_PERSON_HEIGHTS = 1.75
 # seconds BEFORE it began. A freeze that ended before any knife appeared is two
 # people standing close together, not a holdup.
 E12_E14_LEAD_SECONDS = 3.0
+# ...and, symmetrically, up to this many seconds AFTER it ended: a knife is often
+# drawn once the two are already standing off.
+E12_E14_TRAIL_SECONDS = 3.0
 # E11 (rapid approach) followed by E12 (the freeze) within this many seconds is
 # one sequence worth its own points: someone closed in fast and the pair froze.
 E11_E12_WINDOW_SECONDS = 5.0
@@ -1303,8 +1306,9 @@ class TheftEngine:
 
         E12 counts when a pair involving the holder is frozen now (or was a
         moment ago, within `hold` seconds -- a hand at the mouth style hold),
-        AND the knife (`e14_times`: when E14 was true for the holder) was seen
-        during that freeze or up to E12_E14_LEAD_SECONDS before it began.
+        AND the knife (`e14_times`: when a knife was SEEN on the holder, after the
+        wrist rule) was seen during that freeze, up to E12_E14_LEAD_SECONDS before
+        it began, or up to E12_E14_TRAIL_SECONDS after it ended.
         """
         out = {}
         if self._off("e12"):
@@ -1315,7 +1319,7 @@ class TheftEngine:
             active = st.freeze_ok or (st.freeze_last is not None and now - st.freeze_last <= hold)
             if not active:
                 continue
-            start, end = st.freeze_start_ok - E12_E14_LEAD_SECONDS, st.freeze_last
+            start, end = st.freeze_start_ok - E12_E14_LEAD_SECONDS, st.freeze_last + E12_E14_TRAIL_SECONDS
             if not any(start <= t <= end for t in e14_times):
                 continue
             out["E12"] = WEIGHTS["E12"]

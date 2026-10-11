@@ -256,12 +256,61 @@ class FreezeNeedsKnifeTests(unittest.TestCase):
         s, holder, _ = self._frozen_pair()
         self.assertEqual(s.engine.holdup_pair_cues(holder, [], s.t), {})
 
+    def test_a_knife_shortly_after_the_freeze_counts(self):
+        # a knife is often drawn once the two are already standing off
+        s, holder, state = self._frozen_pair()
+        e14 = [state.freeze_last + 2.0]
+        self.assertIn("E12", s.engine.holdup_pair_cues(holder, e14, s.t))
+
+    def test_a_knife_well_after_the_freeze_does_not(self):
+        s, holder, state = self._frozen_pair()
+        e14 = [state.freeze_last + theft.E12_E14_TRAIL_SECONDS + 2.0]
+        self.assertEqual(s.engine.holdup_pair_cues(holder, e14, s.t), {})
+
+    def test_the_freeze_needs_2_seconds_not_3(self):
+        self.assertEqual(theft.FREEZE_SECONDS, 2.0)
+        s = Scene()
+        s.hold(2.5, persons=[pbox(600, 300), pbox(685, 300)])
+        self.assertTrue(next(iter(s.engine.pairs.values())).freeze_ok)
+
+    def test_the_freeze_speed_limit_is_0_3(self):
+        # speeds of 0.2-0.3 (gestures, sway) used to break the freeze
+        self.assertEqual(theft.FREEZE_SPEED, 0.3)
+
+    def test_a_pair_moving_fast_is_not_frozen(self):
+        # both walking together at about one body height per second: close, but not still
+        s = Scene()
+        for i in range(60):
+            s.step(persons=[pbox(600 + i * 10, 300), pbox(685 + i * 10, 300)])
+        self.assertFalse(next(iter(s.engine.pairs.values())).freeze_ok)
+
     def test_a_knife_after_the_freeze_ended_does_not(self):
         s, holder, state = self._frozen_pair()
         for i in range(120):                                  # the pair breaks up and walks off
             s.step(persons=[pbox(600 - i * 6, 300), pbox(685 + i * 6, 300)])
         e14 = [s.t]                                           # a knife only now
         self.assertEqual(s.engine.holdup_pair_cues(holder, e14, s.t), {})
+
+
+class KnifeConfirmationTests(unittest.TestCase):
+    def test_the_knife_confirms_sooner_than_other_objects(self):
+        from core.management.commands._incidents import IncidentMixin
+        cmd = IncidentMixin()
+        cmd.confirm_seconds = 2.0
+        self.assertEqual(cmd._confirm_seconds_for("knife"), momentum.KNIFE_CONFIRM_SECONDS)
+        self.assertEqual(cmd._confirm_seconds_for("Knife"), momentum.KNIFE_CONFIRM_SECONDS)
+        self.assertEqual(cmd._confirm_seconds_for("cigarette"), 2.0)
+        self.assertEqual(cmd._confirm_seconds_for("bottle"), 2.0)
+
+    def test_it_is_never_longer_than_the_setting(self):
+        from core.management.commands._incidents import IncidentMixin
+        cmd = IncidentMixin()
+        cmd.confirm_seconds = 0.3
+        self.assertEqual(cmd._confirm_seconds_for("knife"), 0.3)
+
+    def test_a_persistence_burst_is_remembered_for_3_seconds(self):
+        self.assertEqual(watch_thief.KNIFE_PERSIST_MEMORY_SECONDS, 3.0)
+        self.assertGreater(watch_thief.KNIFE_PERSIST_MEMORY_SECONDS, momentum.KNIFE_CONFIRM_SECONDS)
 
 
 class ApproachThenFreezeTests(unittest.TestCase):
