@@ -5,7 +5,7 @@ import {
   ChevronDown, Loader2, Search, Info,
   Clock, ListChecks, Check, Minus, MapPin, Sparkles, RotateCcw,
 } from "lucide-react";
-import { violationDisplay } from "./constants/violationTypes";
+import { violationDisplay, resolveViolationType } from "./constants/violationTypes";
 import { levelColor } from "./alertModel";
 import { useTestingTools } from "./useTestingTools";
 import { getViolationTypes, getBarangays, createCitation, searchViolators } from "./api";
@@ -851,6 +851,21 @@ export function ObjectConfidenceCard({ alert }) {
   );
 }
 
+// Status + Object confidence, side by side. Parking shows the Object confidence card alone: its
+// status is only progress toward a dwell timer, so the one useful number is how sure YOLO was
+// that the thing in the zone is a vehicle.
+export function StatusAndConfidenceRow({ alert, testingTools = false }) {
+  if (resolveViolationType({ code: alert.type }).code === "parking") {
+    return <ObjectConfidenceCard alert={alert} />;
+  }
+  return (
+    <div className="grid grid-cols-2 gap-3 items-stretch">
+      <StatusCard alert={alert} testingTools={testingTools} />
+      <ObjectConfidenceCard alert={alert} />
+    </div>
+  );
+}
+
 const AI_BADGE_STYLE = {
   supports:    { color: "#047857", bg: "rgba(16,185,129,0.14)", icon: Check },
   ordinary:    { color: "#b45309", bg: "rgba(245,158,11,0.16)", icon: AlertTriangle },
@@ -1293,10 +1308,7 @@ export function ViolationModal({
 
               <div className="flex flex-col gap-3 min-w-0">
                 <QuietCard label="Camera" value={alert.cameraZone || alert.cameraAddress || "—"} />
-                <div className="grid grid-cols-2 gap-3 items-stretch">
-                  <StatusCard alert={alert} testingTools={testingTools} />
-                  <ObjectConfidenceCard alert={alert} />
-                </div>
+                <StatusAndConfidenceRow alert={alert} testingTools={testingTools} />
                 {/* Null (not merely empty) means this violation has no AI checker
                     at all — parking, whose rule is a measurement with nothing for
                     a vision model to adjudicate. Drawing "AI context unavailable"
@@ -1309,7 +1321,11 @@ export function ViolationModal({
                     <SuggestedStatusCard ai={alert.aiContext} official={alert.levelLabel} />
                   </>
                 )}
-                {testingTools && <ScoreBreakdown alert={alert} />}
+                {/* Parking has no indicators or points (a stopped-time rule), so its breakdown
+                    would only ever say "no indicators fired". */}
+                {testingTools && resolveViolationType({ code: alert.type }).code !== "parking" && (
+                  <ScoreBreakdown alert={alert} />
+                )}
                 <div className="grid grid-cols-2 gap-3">
                   <QuietCard label="Detected object" value={alert.suspect || "—"} />
                   {officersCard}
