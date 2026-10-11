@@ -125,8 +125,8 @@ class Camera(models.Model):
     edges = models.JSONField(default=dict, blank=True)
     edges_width = models.PositiveIntegerField(null=True, blank=True)
     edges_height = models.PositiveIntegerField(null=True, blank=True)
-    obstruction_pct = models.PositiveSmallIntegerField(default=50)
-    obstruction_minutes = models.FloatField(default=5.0)
+    obstruction_pct = models.PositiveSmallIntegerField(default=35)
+    obstruction_minutes = models.FloatField(default=2.0)
 
     class Meta:
         ordering = ["code"]

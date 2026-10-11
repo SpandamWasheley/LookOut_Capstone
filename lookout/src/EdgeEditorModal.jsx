@@ -31,8 +31,8 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
   const [edgeSpec, setEdgeSpec] = useState({});
   const [canSave, setCanSave] = useState(false);
 
-  const [pct, setPct] = useState(camera.obstruction_pct ?? 50);
-  const [minutes, setMinutes] = useState(camera.obstruction_minutes ?? 5);
+  const [pct, setPct] = useState(camera.obstruction_pct ?? 35);
+  const [minutes, setMinutes] = useState(camera.obstruction_minutes ?? 2);
 
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");

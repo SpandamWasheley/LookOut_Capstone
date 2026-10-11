@@ -114,7 +114,7 @@ class Command(BaseCommand):
             "--alert-score", type=float, default=None,
             help="Seconds inside the zone before a vehicle alerts. Omit to use "
                  "the camera's own value (the 'for N minutes' box in the zone "
-                 "editor, x60; default 5 minutes). Time is counted in FOOTAGE "
+                 "editor, x60; default 2 minutes). Time is counted in FOOTAGE "
                  "seconds for a file source, so a 30s clip can never reach a "
                  "300s score.",
         )
@@ -123,7 +123,7 @@ class Command(BaseCommand):
             help="Share of the vehicle's ground footprint that must be inside "
                  "the polygon for it to count as in the area, 5-100. Omit to "
                  "use the camera's own value (the 'Inside the road %%' box in "
-                 "the zone editor; default 50). A share of the VEHICLE, so it "
+                 "the zone editor; default 35). A share of the VEHICLE, so it "
                  "means the same thing on a motorcycle at the kerb and a truck "
                  "down the block.",
         )
@@ -267,7 +267,7 @@ class Command(BaseCommand):
         # rule again instead of being stored and ignored.
         pct = options["inside_pct"]
         if pct is None:
-            pct = self.camera.obstruction_pct or 50
+            pct = self.camera.obstruction_pct or 35
         # ...and how long it must hold it. The editor asks for MINUTES, the
         # zone counts SECONDS, so this is the one conversion between them.
         # Both boxes in that editor now drive the rule; before this the
@@ -276,7 +276,7 @@ class Command(BaseCommand):
         # of 60s no matter what was typed.
         score = options["alert_score"]
         if score is None:
-            score = (self.camera.obstruction_minutes or 5) * 60.0
+            score = (self.camera.obstruction_minutes or 2) * 60.0
         kwargs = {"alert_score": score,
                   "moving_weight": options["moving_weight"],
                   "enter_fraction": pct / 100.0}
@@ -729,6 +729,9 @@ class Command(BaseCommand):
             camera=self.camera,
             timestamp=timezone.now(),
             confidence=score,
+            # `score` here is the YOLO detection confidence of the vehicle, which
+            # is exactly what the alert card's "Object confidence" box shows.
+            object_confidence=score,
             description=description,
             image_url=image_url,
             video_url=video_url,

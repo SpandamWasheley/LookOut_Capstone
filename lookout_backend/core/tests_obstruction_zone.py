@@ -189,3 +189,46 @@ class IdentityChurnTests(SimpleTestCase):
             t += 0.5
         self.assertLess(z.states[9].score, 10, "inherited a neighbour's time")
         self.assertFalse(z.states[9].adopted)
+
+
+class ForgivingGapTests(SimpleTestCase):
+    """A vehicle that is merely NOT DETECTED has not left: it loses time slowly and
+    its seconds can be handed to a new id for 30 s."""
+
+    def test_a_hidden_vehicle_loses_time_slowly(self):
+        from core.vision import obstruction_zone as oz
+        z = zone()
+        t = park(z, seconds=40)
+        banked = z.states[5].score
+        # nothing detected for 12 s (a truck passing, a missed night frame)
+        for i in range(24):
+            z.update([], t + i * 0.5, SHAPE)
+        lost = banked - z.states[5].score
+        # 12 s unseen: 2 s of grace, then 10 s at the slow rate
+        self.assertAlmostEqual(lost, 10 * oz.MISSING_DECAY_PER_SEC, delta=1.0)
+        self.assertLess(lost, 10 * oz.DECAY_PER_SEC / 2)
+
+    def test_a_vehicle_seen_driving_off_still_loses_time_fast(self):
+        from core.vision import obstruction_zone as oz
+        z = zone()
+        t = park(z, seconds=40)
+        banked = z.states[5].score
+        for i in range(10):                      # detected, but now above the zone
+            z.update([(5, ABOVE, "car", 0.9)], t + i * 0.5, SHAPE)
+        self.assertGreater(banked - z.states[5].score, 4 * oz.DECAY_PER_SEC)
+
+    def test_a_lost_vehicles_time_is_kept_for_30_seconds(self):
+        from core.vision import obstruction_zone as oz
+        self.assertEqual(oz.FORGET_AFTER, 30.0)
+        z = zone()
+        t = park(z, seconds=40)
+        banked = z.states[5].score
+        t += 20.0                                # unseen for 20 s, then back under a new id
+        t = park(z, tid=9, seconds=6, start=t)
+        self.assertGreater(z.states[9].score, banked - 20 * oz.MISSING_DECAY_PER_SEC - 5)
+
+    def test_the_new_defaults(self):
+        from core.vision import obstruction_zone as oz
+        self.assertEqual(oz.ALERT_SCORE, 120.0)       # 2 minutes
+        self.assertEqual(oz.ENTER_FRACTION, 0.35)
+

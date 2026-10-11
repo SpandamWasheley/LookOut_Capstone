@@ -22,7 +22,7 @@ import numpy as np
 VEHICLE_CLASSES = {"car", "motorcycle", "bus", "truck"}
 
 # ---- Tunables (camera-specific; tune against Tetuan footage) ----
-ALERT_SCORE = 60.0           # seconds of "inside zone" before alert
+ALERT_SCORE = 120.0          # seconds of "inside zone" before alert (2 minutes; was 5 -- see docs/specs/parking_defaults.md)
 # Share of the vehicle's own ground footprint that must lie inside the polygon
 # for it to count as being in the area: "at least half the vehicle inside".
 #
@@ -36,7 +36,7 @@ ALERT_SCORE = 60.0           # seconds of "inside zone" before alert
 # boundary — a motorcycle parked half on the kerb read as fully out, then
 # fully in, then out again, and banked nothing. The older edge rule in
 # obstruction.py always measured the fraction; the zone module had dropped it.
-ENTER_FRACTION = 0.50
+ENTER_FRACTION = 0.35
 # Hysteresis: engage at ENTER, disengage only this far below it, so box jitter
 # around the threshold cannot chop the dwell into fragments.
 FRACTION_HYSTERESIS = 0.10
@@ -56,10 +56,15 @@ FRACTION_HYSTERESIS = 0.10
 MOVING_WEIGHT = 0.0
 STATIONARY_DIST = 0.15       # max centre drift (in box-widths) over the window to count as stopped
 STATIONARY_WINDOW = 3.0      # seconds of history for the stopped check
-DECAY_PER_SEC = 2.0          # score lost per second while outside the zone / missing
+DECAY_PER_SEC = 2.0          # score lost per second while DETECTED but outside the zone
+# A vehicle that is simply NOT DETECTED -- hidden behind a passing truck, a night
+# frame the detector missed, a tracker that dropped the id -- has not left. It
+# loses its banked seconds far more slowly than one seen driving off, so a short
+# occlusion no longer costs seconds of a 2-minute timer.
+MISSING_DECAY_PER_SEC = 0.5
 PRESENCE_GRACE = 2.0         # seconds a vehicle can go undetected before decay starts
 MAX_DT = 2.0                 # clamp per-frame time step (slow FPS / stalls)
-FORGET_AFTER = 10.0          # drop a vehicle's state after this long unseen
+FORGET_AFTER = 30.0          # drop a vehicle's state after this long unseen (also how long a lost id can hand its seconds to a new one)
 ADOPT_DIST = 1.2             # box-widths; a new track ID this close MAY inherit a lost vehicle's score (ID churn fix)
 # ...but only if it also sits ON the lost box by this much. Centre distance
 # alone is far too loose a test: ADOPT_DIST is over a whole car-width, which a
@@ -285,7 +290,7 @@ class ObstructionZone:
                 del self.states[tid]
                 continue
             if t - st.last_seen > PRESENCE_GRACE:
-                st.score = max(0.0, st.score - (t - st.last_t) * DECAY_PER_SEC)
+                st.score = max(0.0, st.score - (t - st.last_t) * MISSING_DECAY_PER_SEC)
             st.last_t = t
 
         self._alert_log = [(at, b) for at, b in self._alert_log if t - at < COOLDOWN_SECONDS]
