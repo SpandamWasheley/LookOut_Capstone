@@ -10,7 +10,7 @@ const navGroups = [
     label: "Monitor",
     items: [
       { id: "dashboard",  label: "Overview",     icon: LayoutDashboard, roles: ["admin", "dispatcher", "both"] },
-      { id: "cameras",    label: "Live Feeds",   icon: Camera,          roles: ["admin", "dispatcher", "both"] },
+      { id: "cameras",    label: "Feeds",         icon: Camera,          roles: ["admin", "dispatcher", "both"] },
       { id: "alerts",     label: "Violations",   icon: Bell,            roles: ["admin", "dispatcher", "both"] },
       { id: "records",    label: "Records",      icon: Archive,         roles: ["admin", "dispatcher", "both"] },
       { id: "residentlog",label: "Violator Log", icon: TrendingUp,      roles: ["admin", "dispatcher"] },

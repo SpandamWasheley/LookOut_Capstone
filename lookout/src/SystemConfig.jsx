@@ -387,11 +387,11 @@ export function SystemConfig() {
               value={form.evidence_auto_purge} differs={differs("evidence_auto_purge")}
               onChange={(v) => set("evidence_auto_purge", v)} />
             <Toggle label="Start detection automatically when LookOut starts"
-              desc="Off by default. When on, live monitoring of the camera starts by itself a few seconds after LookOut starts. You can still stop it from Live Feeds."
+              desc="Off by default. When on, live monitoring of the camera starts by itself a few seconds after LookOut starts. You can still stop it from Feeds."
               value={form.auto_start_detection} differs={differs("auto_start_detection")}
               onChange={(v) => set("auto_start_detection", v)} />
             <Toggle label="Show testing tools"
-              desc="Shows Run Detection, and Upload Video and History on Live Feeds, for trying the system on recorded footage. Leave off for normal use. Applies right away on this computer only, so there is no need to press Save."
+              desc="Shows Run Detection, and Upload Video and History on Feeds, for trying the system on recorded footage. Leave off for normal use. Applies right away on this computer only, so there is no need to press Save."
               value={testingTools} differs={testingTools}
               onChange={(v) => { writeTestingTools(v); setTestingTools(v); }} />
           </Card>

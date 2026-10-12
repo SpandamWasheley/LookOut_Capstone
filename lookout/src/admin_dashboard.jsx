@@ -173,7 +173,7 @@ function AdminDashboard({ user, onLogout }) {
                 >
                   <div className="flex items-center gap-2">
                     <Camera size={14} style={{ color: "var(--muted-foreground)" }} />
-                    <span className="text-sm font-medium" style={{ color: "var(--foreground)" }}>Live Feeds</span>
+                    <span className="text-sm font-medium" style={{ color: "var(--foreground)" }}>Feeds</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <div className="flex items-center gap-1.5 text-[13px]" style={{ color: "#ef4444" }}>
@@ -185,7 +185,7 @@ function AdminDashboard({ user, onLogout }) {
                       style={{ color: "var(--muted-foreground)" }}
                       onClick={() => setActivePage("cameras")}
                     >
-                      Open Live Feeds <ArrowUpRight size={11} />
+                      Open Feeds <ArrowUpRight size={11} />
                     </button>
                   </div>
                 </div>
@@ -234,7 +234,7 @@ function AdminDashboard({ user, onLogout }) {
               className="flex items-center px-6 h-14 flex-shrink-0"
               style={{ borderBottom: "1px solid var(--border)" }}
             >
-              <h1 className="text-xl font-bold" style={{ color: "var(--foreground)" }}>Live Feeds</h1>
+              <h1 className="text-xl font-bold" style={{ color: "var(--foreground)" }}>Feeds</h1>
             </div>
             <div className="flex-1 overflow-auto p-6">
               {role === "admin" && <LiveMonitor />}

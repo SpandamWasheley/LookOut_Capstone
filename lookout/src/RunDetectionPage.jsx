@@ -382,7 +382,7 @@ export function RunDetectionPage() {
                 </span>
               ) : cameras.length === 0 ? (
                 <span className="text-[14px]" style={{ color: "var(--muted-foreground)" }}>
-                  {camerasError || "No camera has a stream address yet. Add one on Live Feeds first."}
+                  {camerasError || "No camera has a stream address yet. Add one on Feeds first."}
                 </span>
               ) : (
                 <select value={cameraId} onChange={(e) => setCameraId(e.target.value)}
@@ -451,7 +451,7 @@ export function RunDetectionPage() {
             {needsEdges && source === "camera" && cameraId && (
               <div className="text-[13px] px-3 py-2 rounded-xl"
                 style={{ background: "rgba(59,130,246,0.08)", border: "1px solid rgba(59,130,246,0.2)", color: "#60a5fa" }}>
-                {detectorLabel} uses the no-parking area saved on the camera (Live Feeds → Edge Zones).
+                {detectorLabel} uses the no-parking area saved on the camera (Feeds → Edge Zones).
               </div>
             )}
           </>
