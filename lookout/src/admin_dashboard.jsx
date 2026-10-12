@@ -83,12 +83,12 @@ function AdminDashboard({ user, onLogout }) {
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
   const todays = alerts.filter((a) => new Date(a.timestamp) >= startOfToday);
-  const openToday = todays.filter((a) => a.status === "active" || a.status === "dispatched").length;
+  const unassignedToday = todays.filter((a) => a.status === "active").length;
 
   const kpis = [
     { label: "Pending Review", value: alertCount, sub: "Not yet assigned", accent: "#ef4444", icon: AlertTriangle },
     { label: "Assigned", value: dispatchedAlerts.length, sub: `${activeAlerts.length} awaiting assignment`, accent: "#3b82f6", icon: Radio },
-    { label: "Alerts Today", value: todays.length, sub: `${openToday} still open`, accent: "#3b82f6", icon: CalendarDays },
+    { label: "Alerts Today", value: todays.length, sub: `${unassignedToday} unassigned`, accent: "#3b82f6", icon: CalendarDays },
     { label: "Total Alerts", value: alerts.length, sub: `${alerts.filter((a) => a.status === "resolved").length} resolved`, accent: "#a855f7", icon: Zap },
   ];
 
