@@ -1,0 +1,74 @@
+/* Settings-page slider only. Every rule is scoped to .settings-slider, which
+   only SettingsSlider.jsx renders, so sliders elsewhere (e.g. ClipTrimmer)
+   keep their default look.
+
+   The filled/unfilled colours arrive as a linear-gradient in --slider-bg,
+   recomputed from the value on every render (see SettingsSlider.jsx). */
+.settings-slider {
+  --slider-fill: var(--primary);
+  --slider-empty: #cbd5e1; /* slate-300: visible on the beige card */
+  --slider-thumb: #ffffff;
+
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 20px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+/* Dark theme: slate-300 would glare on the dark card (#0f2030). A muted steel
+   blue in the same hue as the accent (#85b7d6) reads clearly against both the
+   card and the light-blue fill. */
+.dark .settings-slider {
+  --slider-empty: #3d607a;
+  --slider-thumb: #e8eef3;
+}
+
+.settings-slider:focus-visible {
+  outline: 2px solid var(--slider-fill);
+  outline-offset: 3px;
+  border-radius: 9999px;
+}
+
+/* ── Chrome / Edge / Safari ── */
+.settings-slider::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 9999px;
+  background: var(--slider-bg);
+}
+.settings-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  margin-top: -7px; /* centre a 20px thumb on the 6px track */
+  border-radius: 9999px;
+  background: var(--slider-thumb);
+  border: 2px solid var(--slider-fill);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+  box-sizing: border-box;
+}
+
+/* ── Firefox ── */
+.settings-slider::-moz-range-track {
+  height: 6px;
+  border-radius: 9999px;
+  background: var(--slider-bg);
+}
+.settings-slider::-moz-range-progress {
+  height: 6px;
+  border-radius: 9999px;
+  background: var(--slider-fill);
+}
+.settings-slider::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border-radius: 9999px;
+  background: var(--slider-thumb);
+  border: 2px solid var(--slider-fill);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+  box-sizing: border-box;
+}

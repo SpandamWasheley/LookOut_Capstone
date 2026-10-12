@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Save, RotateCcw, Car, Cigarette, Siren, Beer, AlertTriangle, Loader2, SlidersHorizontal } from "lucide-react";
 import { getSettings, saveSettings } from "./api";
 import { readTestingTools, writeTestingTools } from "./useTestingTools";
+import { SettingsSlider as Slider } from "./components/settings/SettingsSlider";
 
 // Settings. One form for the whole page and ONE save button (top right). Every panel is two
 // columns on a wide screen: "Detection" on the left, "Timings" on the right; they stack on a
@@ -57,46 +58,9 @@ function defaultsFrom(s) {
 const trimNum = (n) => String(Math.round(n * 10) / 10);
 
 // ── Small controls ───────────────────────────────────────────────────────────
-function Slider({ label, value, min, max, step = 1, unit, desc, onChange, differs }) {
-  const pct = ((value - min) / (max - min)) * 100;
+function Toggle({ label, desc, value, onChange }) {
   return (
-    <div className="space-y-2" style={differs ? { borderLeft: "2px solid #f59e0b88", paddingLeft: 10 } : undefined}>
-      <div className="flex justify-between items-center">
-        <span className="text-[14px] font-medium" style={{ color: "var(--foreground)" }}>{label}</span>
-        <span className="text-xs font-semibold px-2 py-0.5 rounded-md"
-          style={{ color: "var(--primary)", background: "var(--secondary)", fontFamily: "'DM Mono', monospace" }}>
-          {value}{unit}
-        </span>
-      </div>
-      <div className="relative h-5 flex items-center">
-        <div className="absolute inset-x-0 h-1.5 rounded-full" style={{ background: "var(--secondary)" }} />
-        <div className="absolute left-0 h-1.5 rounded-full transition-all"
-          style={{ width: `${pct}%`, background: "var(--primary)" }} />
-        <input
-          type="range" min={min} max={max} step={step} value={value}
-          onChange={(e) => onChange(Number(e.target.value))}
-          className="absolute inset-0 w-full opacity-0 cursor-pointer"
-          style={{ height: "100%" }}
-        />
-        <div
-          className="absolute w-5 h-5 rounded-full pointer-events-none transition-all"
-          style={{
-            left: `calc(${pct}% - ${pct * 0.2}px)`,
-            background: "var(--card)",
-            border: "2px solid var(--primary)",
-            boxShadow: "0 1px 4px rgba(0,0,0,0.18)",
-          }}
-        />
-      </div>
-      {desc && <p className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>{desc}</p>}
-    </div>
-  );
-}
-
-function Toggle({ label, desc, value, onChange, differs }) {
-  return (
-    <div className="flex items-center justify-between py-2.5 gap-3"
-      style={differs ? { borderLeft: "2px solid #f59e0b88", paddingLeft: 10 } : undefined}>
+    <div className="flex items-center justify-between py-2.5 gap-3">
       <div>
         <div className="text-[15px] font-medium" style={{ color: "var(--foreground)" }}>{label}</div>
         <div className="text-[13px] mt-0.5" style={{ color: "var(--muted-foreground)" }}>{desc}</div>
@@ -118,10 +82,9 @@ function Toggle({ label, desc, value, onChange, differs }) {
 const inputStyle = { background: "var(--card)", border: "1px solid var(--border)", color: "var(--foreground)" };
 
 // A labelled row: label + description on the left, the control on the right.
-function Row({ label, desc, differs, children }) {
+function Row({ label, desc, children }) {
   return (
-    <div className="flex items-start justify-between gap-4"
-      style={differs ? { borderLeft: "2px solid #f59e0b88", paddingLeft: 10 } : undefined}>
+    <div className="flex items-start justify-between gap-4">
       <div className="min-w-0">
         <div className="text-[14px] font-medium" style={{ color: "var(--foreground)" }}>{label}</div>
         {desc && <div className="text-[13px] mt-0.5" style={{ color: "var(--muted-foreground)" }}>{desc}</div>}
@@ -428,7 +391,7 @@ export function SystemConfig() {
               value={form.auto_start_detection} differs={differs("auto_start_detection")}
               onChange={(v) => set("auto_start_detection", v)} />
             <Toggle label="Show testing tools"
-              desc="Shows Run Detection, and Upload Video and History on Live Feeds, for trying the system on recorded footage. Leave off for normal use."
+              desc="Shows Run Detection, and Upload Video and History on Live Feeds, for trying the system on recorded footage. Leave off for normal use. Applies right away on this computer only, so there is no need to press Save."
               value={testingTools} differs={testingTools}
               onChange={(v) => { writeTestingTools(v); setTestingTools(v); }} />
           </Card>
