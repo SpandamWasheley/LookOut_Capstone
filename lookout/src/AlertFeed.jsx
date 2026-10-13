@@ -15,6 +15,13 @@ function formatTime(ts) {
   return new Date(ts).toLocaleTimeString("en-PH", { hour: "numeric", minute: "2-digit", hour12: true });
 }
 
+// "Oct 12, 3:58 PM" -- alerts from different days need the date to tell apart.
+function formatDateTime(ts) {
+  const d = new Date(ts);
+  const date = d.toLocaleDateString("en-PH", { month: "short", day: "numeric" });
+  return `${date}, ${formatTime(ts)}`;
+}
+
 // Lightweight fuzzy match: every character of the query must appear in order
 // somewhere in the target (gaps allowed), so a typo or partial ID like
 // "alt42" or "0042" still finds "ALT-0042" without needing an exact
@@ -250,7 +257,7 @@ function AlertCard({ alert, onView, thin = false, extraPad = 0 }) {
                 <span className="font-medium flex-shrink-0" style={{ fontFamily: "'DM Mono', monospace", color: "var(--foreground)" }}>
                   {alert.id}
                 </span>
-                <span className="flex items-center gap-1 flex-shrink-0"><Clock size={11} /> Reported {formatTime(alert.timestamp)}</span>
+                <span className="flex items-center gap-1 flex-shrink-0"><Clock size={11} /> Reported {formatDateTime(alert.timestamp)}</span>
                 {officerCount > 0 && (
                   <span className="flex items-center gap-1 flex-shrink-0" style={{ color: "#3b82f6" }}>
                     · <Radio size={10} /> {officerCount} officer{officerCount !== 1 ? "s" : ""}
@@ -287,7 +294,7 @@ function AlertCard({ alert, onView, thin = false, extraPad = 0 }) {
                 <span className="font-medium" style={{ fontFamily: "'DM Mono', monospace", color: "var(--foreground)" }}>
                   {alert.id}
                 </span>
-                <span className="flex items-center gap-1"><Clock size={9} /> {formatTime(alert.timestamp)}</span>
+                <span className="flex items-center gap-1"><Clock size={9} /> {formatDateTime(alert.timestamp)}</span>
               </div>
             </div>
 
@@ -373,7 +380,7 @@ function RightPanel({ alerts, cameras }) {
     .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
   const lastDetected = alerts.length > 0
-    ? formatTime([...alerts].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0].timestamp)
+    ? formatDateTime([...alerts].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0].timestamp)
     : "--:--";
 
   const sectionLabel = (text) => (
@@ -453,7 +460,7 @@ function RightPanel({ alerts, cameras }) {
                     </span>
                   </div>
                   <div className="flex items-center gap-2 text-[12px]" style={{ color: "var(--muted-foreground)" }}>
-                    <span className="flex items-center gap-1"><Clock size={9} /> {formatTime(a.timestamp)}</span>
+                    <span className="flex items-center gap-1"><Clock size={9} /> {formatDateTime(a.timestamp)}</span>
                     <span className="ml-auto font-medium" style={{ color: a.status === "dispatched" ? "#3b82f6" : "#ef4444" }}>{a.status === "dispatched" ? "Assigned" : "Unassigned"}</span>
                   </div>
                 </div>
