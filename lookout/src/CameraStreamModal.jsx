@@ -20,13 +20,15 @@ export function CameraStreamModal({ camera, onClose, onSaved }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
+  const addressChanged = address.trim() !== (camera.address ?? "").trim();
+  // Either field alone is a valid save. Requiring the URL would mean an
+  // address could never be corrected without also re-typing credentials.
+  const canSave = (!!value.trim() || addressChanged) && !saving;
+
   const handleSave = async () => {
     const url = value.trim();
     const addr = address.trim();
-    const addressChanged = addr !== (camera.address ?? "").trim();
-    // Either field alone is a valid save. Requiring the URL would mean an
-    // address could never be corrected without also re-typing credentials.
-    if ((!url && !addressChanged) || saving) return;
+    if (!canSave) return;
     setSaving(true);
     setError("");
     try {
@@ -136,14 +138,14 @@ export function CameraStreamModal({ camera, onClose, onSaved }) {
             </button>
           )}
           <button
-            disabled={!value.trim() || saving}
+            disabled={!canSave}
             onClick={handleSave}
             className="flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-medium"
             style={{
               background: "#f59e0b",
               color: "#0c0f16",
-              cursor: (!value.trim() || saving) ? "not-allowed" : "pointer",
-              opacity: (!value.trim() || saving) ? 0.5 : 1,
+              cursor: !canSave ? "not-allowed" : "pointer",
+              opacity: !canSave ? 0.5 : 1,
             }}
           >
             {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
