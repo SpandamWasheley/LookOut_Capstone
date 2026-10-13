@@ -398,7 +398,11 @@ function ExpandedCamera({ cam, alert, onClose, isAdmin, onCameraUpdated }) {
       <div
         onClick={(e) => e.stopPropagation()}
         className="relative w-full rounded-xl overflow-hidden"
-        style={{ maxWidth: "min(95vw, 1600px)", border: "1px solid var(--border)", background: "#000" }}
+        // The 16:9 video plus the ~64px footer must fit the window height, or
+        // the footer (Stream / Edge Zones) is pushed off-screen and the page
+        // needs F11 to be usable. Cap the width so height = width * 9/16 + footer
+        // never exceeds the viewport minus the overlay padding.
+        style={{ width: "min(95vw, 1600px, calc((100vh - 3rem - 64px) * 16 / 9))", border: "1px solid var(--border)", background: "#000" }}
       >
         <div className="relative w-full bg-black" style={{ aspectRatio: "16 / 9" }}>
           <FeedImage
