@@ -294,7 +294,7 @@ function AlertCard({ alert, onView, thin = false, extraPad = 0 }) {
                 <span className="font-medium" style={{ fontFamily: "'DM Mono', monospace", color: "var(--foreground)" }}>
                   {alert.id}
                 </span>
-                <span className="flex items-center gap-1"><Clock size={9} /> {formatDateTime(alert.timestamp)}</span>
+                <span className="flex items-center gap-1.5 leading-none"><Clock size={12} className="shrink-0" /><span>{formatDateTime(alert.timestamp)}</span></span>
               </div>
             </div>
 
@@ -460,7 +460,7 @@ function RightPanel({ alerts, cameras }) {
                     </span>
                   </div>
                   <div className="flex items-center gap-2 text-[12px]" style={{ color: "var(--muted-foreground)" }}>
-                    <span className="flex items-center gap-1"><Clock size={9} /> {formatDateTime(a.timestamp)}</span>
+                    <span className="flex items-center gap-1.5 leading-none"><Clock size={11} className="shrink-0" /><span>{formatDateTime(a.timestamp)}</span></span>
                     <span className="ml-auto font-medium" style={{ color: a.status === "dispatched" ? "#3b82f6" : "#ef4444" }}>{a.status === "dispatched" ? "Assigned" : "Unassigned"}</span>
                   </div>
                 </div>

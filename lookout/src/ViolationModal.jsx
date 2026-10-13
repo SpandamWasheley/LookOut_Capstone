@@ -1274,10 +1274,7 @@ export function ViolationModal({
               <div className="text-right min-w-0">
                 <div className="flex items-center justify-end gap-2">
                   <Clock size={17} style={{ color: "var(--muted-foreground)", flexShrink: 0 }} />
-                  {alert.timeSource === "processed" && (
-                    <span className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>processed at</span>
-                  )}
-                  <span className="text-[20px] leading-tight" style={{ color: "var(--foreground)" }}>
+                  <span className="text-[20px] leading-none" style={{ color: "var(--foreground)" }}>
                     <span style={{ fontWeight: 500 }}>{stamp.date}</span>
                     <span style={{ color: "var(--muted-foreground)", margin: "0 7px" }}>·</span>
                     <span style={{ fontWeight: 700 }}>{stamp.time}</span>
@@ -1285,8 +1282,8 @@ export function ViolationModal({
                 </div>
                 {alert.cameraAddress ? (
                   <div className="mt-1 flex items-center justify-end gap-1.5">
-                    <MapPin size={14} style={{ color: "var(--muted-foreground)", flexShrink: 0 }} />
-                    <span className="text-[14px] break-words" style={{ color: "var(--muted-foreground)" }}>{alert.cameraAddress}</span>
+                    <MapPin size={15} style={{ color: "var(--foreground)", flexShrink: 0 }} />
+                    <span className="text-[14px] font-bold leading-none break-words" style={{ color: "var(--foreground)" }}>{alert.cameraAddress}</span>
                   </div>
                 ) : null}
               </div>
