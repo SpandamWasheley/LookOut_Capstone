@@ -575,3 +575,56 @@ EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
 # unverified sender. This must be an address verified in Brevo -> Senders.
 DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='')
 
+
+
+# --- Logging ----------------------------------------------------------------
+#
+# Without this block Django configures a handler for its own `django` logger
+# and nothing else, so `logger.exception(...)` in core/ fell through to
+# logging's "last resort" stderr handler: the message printed, the traceback
+# printed, but no level, no timestamp and no logger name -- and anything below
+# WARNING (every INFO line tracing an email send) was dropped silently.
+#
+# The email path is the reason this exists. A failed verification code is
+# reported to the user as a generic "we couldn't send an email", deliberately,
+# so the terminal is the only place the real cause (bad API key, unverified
+# sender, unauthorised IP, timeout) can be read.
+#
+# EMAIL_LOG_LEVEL=DEBUG also logs the JSON payload Brevo is sent.
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '[{asctime}] {levelname} {name}: {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+        },
+    },
+    'loggers': {
+        'core': {
+            'handlers': ['console'],
+            'level': config('CORE_LOG_LEVEL', default='INFO'),
+            'propagate': False,
+        },
+        # The mail backend and the views that call it, louder than the rest of
+        # core if you want it -- EMAIL_LOG_LEVEL=DEBUG while debugging a send.
+        'core.mail': {
+            'handlers': ['console'],
+            'level': config('EMAIL_LOG_LEVEL', default='INFO'),
+            'propagate': False,
+        },
+        # urllib3 logs the TLS connection to api.brevo.com at DEBUG, which is
+        # what you want when a send hangs rather than fails.
+        'urllib3': {
+            'handlers': ['console'],
+            'level': config('HTTP_LOG_LEVEL', default='WARNING'),
+            'propagate': False,
+        },
+    },
+}

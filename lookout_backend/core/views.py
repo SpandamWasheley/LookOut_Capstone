@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from datetime import timedelta
 
@@ -17,7 +18,6 @@ import psutil
 from django.conf import settings as django_settings
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
-from django.core.mail import send_mail
 import threading
 from django.core.validators import validate_email
 from django.db import transaction
@@ -36,6 +36,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from core.constants import ZAMBOANGA_BARANGAYS
+from core.emails import send_password_reset_code, send_verification_code
 
 from .models import (
     Alert,
@@ -61,8 +62,12 @@ from .throttling import (
     PasswordResetSendThrottle,
 )
 
-def send_mail_async(subject, body, recipient):
-    """Queue an email and return immediately.
+def send_async(send, label, recipient):
+    """Run a send on a background thread and return immediately.
+
+    Takes a zero-argument callable (one of the builders in core/emails.py,
+    bound to its arguments) rather than subject/body strings: the messages are
+    multipart now, and composing them is emails.py's job, not this helper's.
 
     SMTP is slow -- measured at ~6.6s from this machine, on the Gmail relay this
     used to send through -- and it used to run inside the request. React Native's
@@ -80,13 +85,24 @@ def send_mail_async(subject, body, recipient):
     that is four lines. Daemon so a shutdown is not held open by a pending send.
     """
     def _send():
+        started = time.monotonic()
+        mail_logger.info("[%s] sending to %s", label, recipient)
         try:
-            send_mail(subject, body, django_settings.DEFAULT_FROM_EMAIL,
-                      [recipient], fail_silently=False)
+            send()
         except Exception:
             # Logged, never surfaced. A delivery failure must not tell a caller
-            # whether the address belongs to a real account.
-            logger.exception("Failed to send mail to %s", recipient)
+            # whether the address belongs to a real account -- which is exactly
+            # why the terminal is the only place the cause can be read.
+            mail_logger.exception(
+                "[%s] FAILED after %.2fs sending to %s (backend=%s)",
+                label, time.monotonic() - started, recipient,
+                django_settings.EMAIL_BACKEND,
+            )
+        else:
+            mail_logger.info(
+                "[%s] handed to the backend in %.2fs: %s",
+                label, time.monotonic() - started, recipient,
+            )
 
     threading.Thread(target=_send, daemon=True).start()
 
@@ -94,6 +110,9 @@ def send_mail_async(subject, body, recipient):
 
 CODE_EXPIRY_MINUTES = 10
 logger = logging.getLogger(__name__)
+# Separate from `logger` so the email path can be turned up on its own:
+# EMAIL_LOG_LEVEL=DEBUG in lookout_backend/.env. See LOGGING in settings.py.
+mail_logger = logging.getLogger("core.mail")
 from .serializers import (
     AlertSerializer,
     CameraSerializer,
@@ -227,16 +246,15 @@ def send_officer_code(request):
     #
     # The reset path has the opposite shape: it runs on a phone whose HTTP
     # client aborts at 10s, and it must never reveal whether delivery worked.
+    mail_logger.info("[register] sending verification code to %s", email)
+    started = time.monotonic()
     try:
-        send_mail(
-            "Your LookOut verification code",
-            f"Your verification code is {code}. It expires in {CODE_EXPIRY_MINUTES} minutes.",
-            django_settings.DEFAULT_FROM_EMAIL,
-            [email],
-            fail_silently=False,
-        )
+        send_verification_code(email, code, CODE_EXPIRY_MINUTES)
     except Exception:
-        logger.exception("Failed to send verification email to %s", email)
+        mail_logger.exception(
+            "[register] FAILED after %.2fs sending to %s (backend=%s)",
+            time.monotonic() - started, email, django_settings.EMAIL_BACKEND,
+        )
         return Response(
             {"email": "We couldn't send an email to this address. Double-check it and try again."},
             status=400,
@@ -392,11 +410,9 @@ def forgot_password_send_code(request):
         # Writing first costs an unused row when delivery fails, and buys a
         # response that returns in milliseconds instead of seconds.
         EmailVerificationCode.objects.create(email=email, code=code)
-        send_mail_async(
-            "Your LookOut password reset code",
-            f"Your password reset code is {code}. It expires in "
-            f"{CODE_EXPIRY_MINUTES} minutes. If you didn't request this, you "
-            "can ignore this email.",
+        send_async(
+            lambda: send_password_reset_code(email, code, CODE_EXPIRY_MINUTES),
+            "reset",
             email,
         )
     # Same response whether or not the email exists, so this can't be used to enumerate accounts.
