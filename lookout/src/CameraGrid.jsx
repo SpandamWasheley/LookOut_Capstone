@@ -80,6 +80,7 @@ function mapCamera(raw) {
     dbId: raw.id,          // numeric pk, for the snapshot endpoint
     name: raw.name,
     zone: raw.zone,
+    address: raw.address || "",
     status: raw.status,
     imageUrl: raw.image_url,
     isLive: raw.is_live,   // poll the snapshot proxy instead of the static image
@@ -356,7 +357,12 @@ function CameraTile({ cam, alert, isSelected, onSelect, onExpand, fill }) {
       {/* Footer */}
       <div className="px-3 py-2 flex items-center justify-between shrink-0">
         <div className="min-w-0">
-          <div className="text-[14px] font-semibold text-white leading-none truncate">{cam.name}</div>
+          <div className="text-[14px] font-semibold text-white leading-none truncate">
+            {cam.name}
+            {cam.address && (
+              <span className="font-normal" style={{ color: "var(--muted-foreground)" }}> · {cam.address}</span>
+            )}
+          </div>
           <div className="text-[12px] mt-0.5 truncate" style={{ color: "var(--muted-foreground)" }}>{cam.zone}</div>
         </div>
         <div className="text-right shrink-0 ml-2">
@@ -438,7 +444,12 @@ function ExpandedCamera({ cam, alert, onClose, isAdmin, onCameraUpdated }) {
         <div className="flex items-center justify-between px-4 py-3"
           style={{ background: "var(--card)", borderTop: "1px solid var(--border)" }}>
           <div>
-            <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>{cam.name}</div>
+            <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>
+              {cam.name}
+              {cam.address && (
+                <span className="font-normal" style={{ color: "var(--muted-foreground)" }}> · {cam.address}</span>
+              )}
+            </div>
             <div className="text-[13px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
               {cam.id} · {cam.zone || "—"} · {cam.status}
             </div>
