@@ -417,7 +417,7 @@ function RightPanel({ alerts, cameras }) {
 
       {/* Today's Violations */}
       <div className="px-4 py-4 flex-shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
-        {sectionLabel("Today's Violations")}
+        {sectionLabel("Violations")}
         <div className="grid grid-cols-2 gap-2">
           {[
             { label: "All time",        value: allTimeTotal,    color: "#a855f7" },
