@@ -32,15 +32,28 @@ CONF_FULL_AT = 0.6                  # momentum increment x min(1, conf / CONF_FU
 CLASS_FLIP_FRAMES = 5               # same spot seen as a different class within this many frames
 CLASS_FLIP_IOU = 0.3
 
-# smoking puff gate
-PUFF_ARM_HOLD_SECONDS = 3.0         # cigarette seen at a wrist -> the wrist has this long to reach the mouth
-PUFF_MIN_GAP_SECONDS = 1.0          # two puffs closer than this are one
+# smoking puff gate (v6.2.1: a puff = the wrist reaches the mouth AND a cigarette on the same person is
+# seen at that wrist or at the mouth within +/- PUFF_PAIR_WINDOW_SECONDS, in either order)
+PUFF_PAIR_WINDOW_SECONDS = 5.0      # was 3 s one-way in v6.2
+PUFF_CLOSE_SHOULDER_FRAC = 0.7      # "wrist at the mouth" / "cigarette at the mouth" radius x shoulder width (the momentum gate keeps 0.5)
+PUFF_MIN_GAP_SECONDS = 1.0          # two wrist-to-mouth reaches closer than this are one
 POSSIBLE_PUFF_WINDOW_SECONDS = 10.0 # Possible needs >= POSSIBLE_MIN_PUFFS puff in this window (else capped at Monitoring)
 POSSIBLE_MIN_PUFFS = 1
 LIKELY_PUFF_WINDOW_SECONDS = 30.0   # Likely also needs >= LIKELY_MIN_PUFFS puffs in this window
 LIKELY_MIN_PUFFS = 2
 CAP_NO_PUFF_TEXT = "capped: no puff"
 CAP_FEW_PUFFS_TEXT = "capped: needs 2 puffs in 30 s for Likely"
+
+# holdup (v6.2.1)
+KNIFE_CLASS = "knife"
+KNIFE_CONF_FULL_AT = 0.6            # knife momentum increment x min(1, conf / this)
+KNIFE_JUMP_HEIGHT_FRAC = 0.25       # same jump rule as the cigarette (no anchors: any move this big is a jump)
+KNIFE_JUMP_MEMORY_SECONDS = 2.0
+KNIFE_CLASS_FLIP_FRAMES = 5
+KNIFE_PRESENT_SECONDS = 1.0         # a knife counts as present for E14 only if an accepted hit is this recent (no long "last seen" carry)
+FREEZE_SECONDS_V621 = 3.0           # E12: both people close AND slow, continuously, for this long (was 2.0)
+FREEZE_SKIP_IOU = 0.4               # person boxes overlapping more than this: the frame is skipped (neither counts nor resets E12)
+CAP_NO_FROZEN_PAIR_TEXT = "capped: no frozen pair"
 
 # drinking Path B (inuman cluster)
 GROUP_AREA_EXPAND = 1.2             # group area = cluster box scaled by this (20% larger)
@@ -105,12 +118,16 @@ def note_detections(now, dets):
         _RECENT.append((n, tuple(d[:4]), str(d[5]).lower()))
 
 
-def class_flipped(now, box, cls):
+def _class_flipped_within(now, box, cls, frames):
     n = frame_number(now)
     for n2, b2, c2 in _RECENT:
-        if c2 != cls and 0 <= n - n2 <= CLASS_FLIP_FRAMES and _iou(box, b2) > CLASS_FLIP_IOU:
+        if c2 != cls and 0 <= n - n2 <= frames and _iou(box, b2) > CLASS_FLIP_IOU:
             return True
     return False
+
+
+def class_flipped(now, box, cls):
+    return _class_flipped_within(now, box, cls, CLASS_FLIP_FRAMES)
 
 
 def reset():
@@ -147,8 +164,12 @@ class TrackLoc:
         self.kp = None
         self.kp_at = None
         self.last_hit = {}            # class -> (rel_x, rel_y, kinds, t)
-        self.puffs = deque()          # video times of completed puffs
-        self.armed = {}               # wrist id -> time a cigarette was last seen at it (outside the mouth zone)
+        self.puffs = deque()          # video times of confirmed puffs
+        self.cig_at_wrist = {}        # wrist id -> last time a cigarette was seen at that wrist
+        self.cig_at_mouth = None      # last time a cigarette was seen at the mouth
+        self.in_zone = {}             # wrist id -> was the wrist at the mouth last frame (absent = unknown)
+        self.reaches = {}             # wrist id -> time of a wrist-to-mouth reach still waiting for a cigarette sighting
+        self.last_reach = None
 
 
 def loc_of(track):
@@ -206,6 +227,7 @@ def anchors_from_kpts(kpts, person_box):
     ls, rs = kpts[recognition.KP_LSHOULDER], kpts[recognition.KP_RSHOULDER]
     height = max(person_box[3] - person_box[1], 1)
     shoulder_w = _dist(ls[:2], rs[:2]) if (ls[2] >= KP_CONF_MIN and rs[2] >= KP_CONF_MIN) else 0.0
+    out["has_shoulders"] = shoulder_w >= 1
     out["close"] = (CLOSE_SHOULDER_FRAC * shoulder_w if shoulder_w >= 1
                     else CLOSE_HEIGHT_FRAC_NO_SHOULDERS * height)
     return out
@@ -233,7 +255,7 @@ def evaluate_track(cmd, track, dets, now):
     per_class = {}
     for d in dets:
         cls = str(d[5]).lower()
-        if cls in GATED_CLASSES:
+        if cls in GATED_CLASSES or cls == KNIFE_CLASS:
             per_class.setdefault(cls, []).append(d)
     if not per_class:
         return {}, ""
@@ -246,6 +268,13 @@ def evaluate_track(cmd, track, dets, now):
 
     out, why = {}, ""
     for cls, ds in per_class.items():
+        if cls == KNIFE_CLASS:
+            conf_k, reason_k = _evaluate_knife(loc, track, ds, now)
+            out[cls] = conf_k
+            if reason_k:
+                why = why or reason_k
+                _count(cmd, reason_k)
+            continue
         best, best_reason, best_conf = None, "", -1.0
         for d in sorted(ds, key=lambda x: -x[4]):
             box = tuple(d[:4])
@@ -282,6 +311,54 @@ def evaluate_track(cmd, track, dets, now):
     return out, why
 
 
+def _evaluate_knife(loc, track, ds, now):
+    """Holdup (v6.2.1): the knife keeps its near-hand rule (applied before this) and gets confidence
+    weighting, the class-flip check and the jump check, but NO wrist/mouth anchoring. Returns
+    (weighted confidence or 0.0, rejection reason)."""
+    bx1, by1, bx2, by2 = track.box
+    bw, bh = max(bx2 - bx1, 1), max(by2 - by1, 1)
+    best, best_reason, best_conf = None, "", -1.0
+    for d in sorted(ds, key=lambda x: -x[4]):
+        box = tuple(d[:4])
+        c = _center(box)
+        reason = ""
+        if _class_flipped_within(now, box, KNIFE_CLASS, KNIFE_CLASS_FLIP_FRAMES):
+            reason = REASON_FLIP
+        else:
+            last = loc.last_hit.get(KNIFE_CLASS)
+            if last is not None and now - last[3] <= KNIFE_JUMP_MEMORY_SECONDS:
+                moved = math.hypot(((c[0] - bx1) / bw - last[0]) * bw, ((c[1] - by1) / bh - last[1]) * bh)
+                if moved > KNIFE_JUMP_HEIGHT_FRAC * bh:
+                    reason = REASON_JUMP
+        if reason:
+            if best is None and d[4] > best_conf:
+                best_reason, best_conf = reason, d[4]
+            continue
+        if best is None:
+            best = (d, c)
+    if best is None:
+        return 0.0, best_reason
+    d, c = best
+    loc.last_hit[KNIFE_CLASS] = ((c[0] - bx1) / bw, (c[1] - by1) / bh, frozenset(), now)
+    return min(1.0, float(d[4]) / KNIFE_CONF_FULL_AT) * float(d[4]), ""
+
+
+def knife_recent(track, now):
+    """True when an ACCEPTED knife hit on this person is at most KNIFE_PRESENT_SECONDS old."""
+    loc = getattr(track, "loc", None)
+    last = None if loc is None else loc.last_hit.get(KNIFE_CLASS)
+    return last is not None and 0 <= now - last[3] <= KNIFE_PRESENT_SECONDS
+
+
+def freeze_seconds(default):
+    """E12 hold time: FREEZE_SECONDS_V621 with the v6.2 switch on, else the pre-v6.2 value."""
+    return FREEZE_SECONDS_V621 if LOCATION_AWARE_MOMENTUM else default
+
+
+def boxes_overlap_heavily(a, b):
+    return _iou(a, b) > FREEZE_SKIP_IOU
+
+
 def _count(cmd, reason):
     stats = getattr(cmd, "stats", None)
     if stats is not None and reason:
@@ -293,9 +370,10 @@ def _count(cmd, reason):
 def update_puffs(cmd, track, dets, now):
     """Advance the puff detector for one person this frame and return the puff count so far.
 
-    A puff = a cigarette seen at a wrist, then THAT wrist comes within mouth distance. A cigarette held
-    still at the mouth is not a puff (the wrist must have been outside the mouth zone when the cigarette
-    was seen at it)."""
+    v6.2.1 strict puff: the wrist reaches the mouth anchor (within PUFF_CLOSE_SHOULDER_FRAC x shoulder
+    width) AND a cigarette on the same person is seen at that wrist, or at the mouth, within
+    +/- PUFF_PAIR_WINDOW_SECONDS of the reach -- either order. A wrist already at the mouth when the
+    person is first seen is not a reach (it must have been seen away from the mouth first)."""
     loc = loc_of(track)
     cutoff = now - max(LIKELY_PUFF_WINDOW_SECONDS, POSSIBLE_PUFF_WINDOW_SECONDS)
     while loc.puffs and loc.puffs[0] < cutoff:
@@ -303,24 +381,43 @@ def update_puffs(cmd, track, dets, now):
     kp = ensure_keypoints(cmd, track, now)
     anchors = anchors_from_kpts(kp, track.box) if kp is not None else None
     if anchors is None:
+        _expire_reaches(loc, now)
         return len(loc.puffs)
+    close_wrist = anchors["close"]                      # 0.5 x shoulder width (the momentum rule)
+    close_mouth = (anchors["close"] * (PUFF_CLOSE_SHOULDER_FRAC / CLOSE_SHOULDER_FRAC)
+                   if anchors.get("has_shoulders") else anchors["close"])
+    mouth = anchors.get(MOUTH)
     cigs = [tuple(d[:4]) for d in dets if str(d[5]).lower() == "cigarette"
             and not class_flipped(now, tuple(d[:4]), "cigarette")]
-    close, mouth = anchors["close"], anchors.get(MOUTH)
     for w in WRISTS:
         pos = anchors.get(w)
-        if pos is None:
-            continue
-        in_mouth = mouth is not None and _dist(pos, mouth) <= close
-        if not in_mouth and any(_dist(_center(b), pos) <= close for b in cigs):
-            loc.armed[w] = now
-        elif in_mouth and w in loc.armed and now - loc.armed[w] <= PUFF_ARM_HOLD_SECONDS:
-            if not loc.puffs or now - loc.puffs[-1] >= PUFF_MIN_GAP_SECONDS:
-                loc.puffs.append(now)
-            del loc.armed[w]
-        if w in loc.armed and now - loc.armed[w] > PUFF_ARM_HOLD_SECONDS:
-            del loc.armed[w]
+        if pos is not None and any(_dist(_center(b), pos) <= close_wrist for b in cigs):
+            loc.cig_at_wrist[w] = now
+    if mouth is not None and any(_dist(_center(b), mouth) <= close_mouth for b in cigs):
+        loc.cig_at_mouth = now
+    for w in WRISTS:
+        pos = anchors.get(w)
+        if pos is None or mouth is None:
+            continue                                    # unknown this frame: keep the previous zone state
+        in_zone = _dist(pos, mouth) <= close_mouth
+        was = loc.in_zone.get(w)
+        loc.in_zone[w] = in_zone
+        if in_zone and was is False and (loc.last_reach is None or now - loc.last_reach >= PUFF_MIN_GAP_SECONDS):
+            loc.reaches[w] = now
+            loc.last_reach = now
+    for w, t_reach in list(loc.reaches.items()):
+        seen = [t for t in (loc.cig_at_wrist.get(w), loc.cig_at_mouth) if t is not None]
+        if any(abs(t - t_reach) <= PUFF_PAIR_WINDOW_SECONDS for t in seen):
+            loc.puffs.append(now)
+            del loc.reaches[w]
+    _expire_reaches(loc, now)
     return len(loc.puffs)
+
+
+def _expire_reaches(loc, now):
+    for w, t_reach in list(loc.reaches.items()):
+        if now - t_reach > PUFF_PAIR_WINDOW_SECONDS:
+            del loc.reaches[w]
 
 
 def puffs_within(track, now, window):
@@ -328,12 +425,19 @@ def puffs_within(track, now, window):
     return 0 if loc is None else sum(1 for t in loc.puffs if now - t <= window)
 
 
-def puff_cap(track, now):
+def puff_cap(track, now, previous_level=None):
     """(max level name or None, reason text) for a smoking incident WITH an object. Level names are
-    scoring's stored values ('monitoring' / 'warning')."""
+    scoring's stored values ('monitoring' / 'warning').
+
+    Sticky (v6.2.1): the caps only block the FIRST rise. An incident that already reached Possible is
+    never pushed back to Monitoring because the 10 s window ran out, and one that reached Likely keeps it."""
     if puffs_within(track, now, POSSIBLE_PUFF_WINDOW_SECONDS) < POSSIBLE_MIN_PUFFS:
+        if previous_level in ("warning", "violation"):
+            return None, ""
         return "monitoring", CAP_NO_PUFF_TEXT
     if puffs_within(track, now, LIKELY_PUFF_WINDOW_SECONDS) < LIKELY_MIN_PUFFS:
+        if previous_level == "violation":
+            return None, ""
         return "warning", CAP_FEW_PUFFS_TEXT
     return None, ""
 

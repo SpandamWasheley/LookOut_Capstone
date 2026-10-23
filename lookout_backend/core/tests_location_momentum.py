@@ -77,10 +77,42 @@ class LocationGateTests(unittest.TestCase):
         out, why = lm.evaluate_track(self.cmd, t, [cig(60, 160)], 1.0)
         self.assertEqual((out["cigarette"], why), (0.0, "flip"))
 
-    def test_knife_is_untouched(self):
+    def test_knife_needs_no_keypoints_but_is_confidence_weighted(self):
         t = person(None, 1.0)
-        out, why = lm.evaluate_track(self.cmd, t, [cig(60, 160, cls="knife")], 1.0)
-        self.assertEqual(out, {})
+        out, why = lm.evaluate_track(self.cmd, t, [cig(60, 160, cls="knife", conf=0.41)], 1.0)
+        self.assertAlmostEqual(out["knife"], 0.41 * (0.41 / 0.6))       # a 41% hallucination adds ~0.28, not 0.41
+        self.assertEqual(why, "")
+
+    def test_knife_jump_and_flip_are_rejected(self):
+        t = person(None, 1.0)
+        lm.evaluate_track(self.cmd, t, [cig(60, 160, cls="knife", conf=0.8)], 1.0)
+        out, why = lm.evaluate_track(self.cmd, t, [cig(150, 40, cls="knife", conf=0.8)], 1.1)   # far from the last hit
+        self.assertEqual((out["knife"], why), (0.0, "jump"))
+        lm.reset()
+        t = person(None, 1.0)
+        lm.note_detections(1.0, [cig(60, 160, cls="Bottle")])
+        out, why = lm.evaluate_track(self.cmd, t, [cig(60, 160, cls="knife", conf=0.8)], 1.0)
+        self.assertEqual((out["knife"], why), (0.0, "flip"))
+
+    def test_knife_counts_as_present_for_one_second_only(self):
+        t = person(None, 1.0)
+        lm.evaluate_track(self.cmd, t, [cig(60, 160, cls="knife", conf=0.8)], 1.0)
+        self.assertTrue(lm.knife_recent(t, 1.9))
+        self.assertFalse(lm.knife_recent(t, 2.1))
+
+    def test_flickering_low_confidence_knife_stays_below_on(self):
+        from core.vision import momentum
+        book = momentum.MomentumBook()
+        t = person(None, 1.0)
+        for i in range(12):                              # alternating 41% hits and misses (a hallucination on an arm)
+            now = 1.0 + i * 0.1
+            confs = {}
+            if i % 2 == 0:
+                out, _ = lm.evaluate_track(self.cmd, t, [cig(60, 160, cls="knife", conf=0.41)], now)
+                confs = out
+            slots = book.step(1, confs or {"knife": 0.0}, now) if False else book.step(1, confs, now)
+        slot = book.get(1, "knife")
+        self.assertFalse(slot.cue_on, slot.momentum)
 
 
 class PuffTests(unittest.TestCase):
@@ -104,10 +136,41 @@ class PuffTests(unittest.TestCase):
             n = self.frame(t, 1.0 + i * 0.1, (100, 50), [cig(100, 50)])
         self.assertEqual(n, 0)
 
-    def test_arming_expires(self):
+    def test_a_reach_with_no_cigarette_within_5_s_is_not_a_puff(self):
+        t = person(None, 0.0)
+        self.frame(t, 1.0, (60, 160), [])
+        self.frame(t, 2.0, (100, 50), [])                                  # wrist reaches the mouth, no cigarette seen
+        for i in range(60):
+            n = self.frame(t, 2.1 + i * 0.1, (100, 50), [])
+        self.assertEqual(n, 0)
+        self.assertEqual(self.frame(t, 9.0, (100, 50), [cig(100, 55)]), 0)   # a cigarette 7 s later is too late
+
+    def test_cigarette_only_at_the_mouth_with_a_wrist_reach_counts(self):
+        t = person(None, 0.0)
+        self.frame(t, 1.0, (60, 160), [])                                  # hand down, no cigarette in view
+        self.frame(t, 2.0, (100, 50), [])                                  # hand comes up
+        n = self.frame(t, 3.0, (100, 50), [cig(100, 55)])                  # cigarette seen AT THE MOUTH 1 s later
+        self.assertEqual(n, 1)
+
+    def test_cigarette_seen_before_the_reach_counts_either_order(self):
+        t = person(None, 0.0)
+        self.frame(t, 1.0, (60, 160), [cig(60, 160)])                      # at the wrist first
+        n = self.frame(t, 5.5, (100, 50), [])                              # 4.5 s later the wrist reaches the mouth (> old 3 s)
+        self.assertEqual(n, 1)
+
+    def test_a_walker_with_a_false_cigarette_and_no_hand_to_mouth_has_no_puff(self):
+        t = person(None, 0.0)
+        for i in range(40):
+            n = self.frame(t, 1.0 + i * 0.1, (60, 160), [cig(100, 220)])   # chest-level hit, hand stays down
+        self.assertEqual(n, 0)
+
+    def test_puff_radius_is_wider_than_the_momentum_radius(self):
+        # wrist 0.6 shoulder-widths (48 px of 80) from the mouth: outside 0.5, inside 0.7
         t = person(None, 0.0)
         self.frame(t, 1.0, (60, 160), [cig(60, 160)])
-        self.assertEqual(self.frame(t, 6.0, (100, 50), []), 0)
+        mouth = (100, 40 + 0.29 * 20)
+        n = self.frame(t, 2.0, (mouth[0] + 48, mouth[1]), [])
+        self.assertEqual(n, 1)
 
     def test_cap_rules(self):
         t = person(None, 0.0)
@@ -116,6 +179,15 @@ class PuffTests(unittest.TestCase):
         self.assertEqual(lm.puff_cap(t, 20.0), ("warning", lm.CAP_FEW_PUFFS_TEXT))
         t.loc.puffs.extend([18.0])
         self.assertEqual(lm.puff_cap(t, 20.0), (None, ""))
+
+    def test_sticky_possible_never_falls_back_to_monitoring_when_the_window_expires(self):
+        t = person(None, 0.0)                         # no puff in the last 10 s
+        self.assertEqual(lm.puff_cap(t, 60.0, "warning"), (None, ""))
+        self.assertEqual(lm.puff_cap(t, 60.0, "violation"), (None, ""))
+        self.assertEqual(lm.puff_cap(t, 60.0, "monitoring"), ("monitoring", lm.CAP_NO_PUFF_TEXT))
+        t.loc.puffs.extend([55.0])                    # one puff: Likely would need two
+        self.assertEqual(lm.puff_cap(t, 60.0, "violation"), (None, ""))
+        self.assertEqual(lm.puff_cap(t, 60.0, "warning"), ("warning", lm.CAP_FEW_PUFFS_TEXT))
 
 
 class ScoreCapTests(unittest.TestCase):
@@ -128,7 +200,7 @@ class ScoreCapTests(unittest.TestCase):
         self.assertEqual((capped.level, capped.capped), (scoring.MONITORING, "capped: no puff"))
         self.assertEqual(capped.score, free.score)
         self.assertEqual(capped.as_dict()["checklist"]["capped"], "capped: no puff")
-        self.assertEqual(capped.as_dict()["spec"], "v6.2")
+        self.assertEqual(capped.as_dict()["spec"], "v6.2.1")
 
     def test_puff_only_path_is_not_capped(self):
         s = scoring.Score("smoking", scoring.SMOKING_WEIGHTS, {"gesture", "puffs", "puff_pattern"},

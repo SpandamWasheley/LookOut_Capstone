@@ -43,7 +43,7 @@ flagged rather than silently resolved:
 import math
 from collections import deque
 
-from . import scoring
+from . import location_momentum, scoring
 from .recognition import _iou
 from .tracking import SceneBaseline, norm_distance
 
@@ -283,7 +283,10 @@ class Evidence:
         # is one possibly-wrong detection, and the time of day (E20) is a prior,
         # not evidence -- so with no behavioural cue E20 is not counted and the
         # status is held at Monitoring.
-        self.corroborated = bool(self.cues.keys() & {"E10", "E12"})
+        # v6.2.1: with the location switch on, ONLY a frozen pair (E12, held 3 s) corroborates; loitering
+        # (E10) is still scored but no longer lifts a knife above Monitoring on its own.
+        self.corroborated = bool(self.cues.keys() & (
+            {"E12"} if location_momentum.LOCATION_AWARE_MOMENTUM else {"E10", "E12"}))
         self.e20_table = self.cues.get("E20", 0.0)      # what the hour would add
         self.e20_capped = False
         if "E14" in self.cues:
@@ -320,12 +323,18 @@ class Evidence:
         self.people_near = (len(self.tracks) >= 2) if people_near is None else bool(people_near)
         self.object_on = "E14" in self.cues
         self.holdup_capped = False
+        self.capped = ""
         if self.object_on:
             level = scoring.level_with_hysteresis(self.score, previous_level, True)
-            if ((not self.people_near or not self.corroborated)
+            # v6.2.1 sticky: the caps only block the FIRST rise to Possible / Likely.
+            sticky = (location_momentum.LOCATION_AWARE_MOMENTUM
+                      and previous_level in (scoring.WARNING, scoring.VIOLATION))
+            if ((not self.people_near or not self.corroborated) and not sticky
                     and scoring.LEVEL_ORDER[level] > scoring.LEVEL_ORDER[scoring.MONITORING]):
                 level = scoring.MONITORING
                 self.holdup_capped = True
+                if location_momentum.LOCATION_AWARE_MOMENTUM and not self.corroborated:
+                    self.capped = location_momentum.CAP_NO_FROZEN_PAIR_TEXT
         elif any(c in LEGACY_CUES for c in self.cues):
             level = (scoring.VIOLATION if scoring._r(self.score) >= scoring.SCORE_VIOLATION
                      else scoring.WARNING if scoring._r(self.score) >= scoring.SCORE_WARNING
@@ -360,6 +369,8 @@ class Evidence:
             "corroborated": self.corroborated,
             "e20_capped": self.e20_capped,
             "holdup_capped": self.holdup_capped,
+            "capped": self.capped,
+            "spec": scoring.SCORING_SPEC_VERSION,
             "level": self.band,
             "label": scoring.label_of(self.band),
             "tag": "",
@@ -374,12 +385,17 @@ class Evidence:
         found = [scoring.Score.CUE_LABELS.get(n, n) for n in sorted(self.cues)]
         notes = [scoring.Score.MULTIPLIER_LABELS.get(n, n) for n, f in sorted(self.multipliers.items())
                  if f != 1.0]
-        return {"found": found, "adjusted_by": notes, "tag": ""}
+        out = {"found": found, "adjusted_by": notes, "tag": ""}
+        if self.capped:
+            out["capped"] = self.capped
+        return out
 
     def summary(self):
         cues = ", ".join(f"{r}={w:.2f}" for r, w in sorted(self.cues.items()))
         mults = "".join(f" x{f}" for f in self.multipliers.values())
         abst = f" [abstained: {', '.join(sorted(self.abstained))}]" if self.abstained else ""
+        if self.capped:
+            abst += f" [{self.capped}]"
         return f"{self.detail} | {cues}{mults} -> {self.score:.2f} ({self.band}){abst}"
 
     def __repr__(self):
@@ -849,9 +865,20 @@ class PairState:
             self.close_at = now
 
         # E12 — confrontation freeze.
+        # v6.2.1: the pair must be close AND slow continuously for FREEZE_SECONDS_V621 (3 s). Frames in
+        # which the two person boxes overlap heavily (a walk-past, one person hidden by the other) are
+        # skipped: they neither count toward the hold time nor reset it.
+        prev_t = getattr(self, "_freeze_prev_t", None)
+        self._freeze_prev_t = now
+        if (location_momentum.LOCATION_AWARE_MOMENTUM
+                and location_momentum.boxes_overlap_heavily(ta.box, tb.box)):
+            if self.freeze_since is not None and prev_t is not None:
+                self.freeze_skipped = getattr(self, "freeze_skipped", 0.0) + (now - prev_t)
+            return self._after_freeze(va, vb, now)
         if d < FREEZE_REACH * (reach / REACH_NORM) and va < FREEZE_SPEED and vb < FREEZE_SPEED:
             if self.freeze_since is None:
                 self.freeze_since = now
+                self.freeze_skipped = 0.0
                 # E11 -> E12: did a rapid approach (E11) end no more than
                 # E11_E12_WINDOW_SECONDS before this freeze began? (A second of
                 # slack the other way: the freeze can start as the approach lands.)
@@ -859,7 +886,8 @@ class PairState:
                                        and -1.0 <= now - self.close_at <= E11_E12_WINDOW_SECONDS)
             self.freeze_last = now
             was_ok = self.freeze_ok
-            self.freeze_ok = now - self.freeze_since >= FREEZE_SECONDS
+            held = now - self.freeze_since - getattr(self, "freeze_skipped", 0.0)
+            self.freeze_ok = held >= location_momentum.freeze_seconds(FREEZE_SECONDS)
             if self.freeze_ok and not was_ok:
                 self.freeze_start_ok = self.freeze_since
                 self.seq_ok = bool(getattr(self, "_seq_candidate", False))
@@ -867,6 +895,10 @@ class PairState:
             self.freeze_since = None
             self.freeze_ok = False
 
+        return self._after_freeze(va, vb, now)
+
+    def _after_freeze(self, va, vb, now):
+        """The rest of update(): E24 sampling and the snatch candidate (runs even on a skipped E12 frame)."""
         # E24 — sample the post-separation window so a greeting can be told
         # apart from a snatch after the fact.
         if self.contact_end is not None and now - self.contact_end <= GREETING_WINDOW:

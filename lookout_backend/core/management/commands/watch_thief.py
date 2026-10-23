@@ -16,7 +16,7 @@ from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
 from core.vision import trim as trimming
 from core.vision import clock as vclock
-from core.vision import recognition, scoring, theft, tracking, ai_checker
+from core.vision import recognition, scoring, theft, tracking, ai_checker, location_momentum
 from ._incidents import IncidentMixin
 
 THIEF_CAMERA_CODE = "CAM-SMOKE-01"
@@ -953,6 +953,12 @@ class Command(IncidentMixin, BaseCommand):
         if not cue.on:
             if dets:
                 self.stats["held back: momentum below ON"] += 1
+            self._debug_note("Holdup", ("knife", track.id), track.id, track.box, None, cue.momentum)
+            return
+        if (location_momentum.LOCATION_AWARE_MOMENTUM
+                and not location_momentum.knife_recent(track, now_ts)):
+            # v6.2.1: E14 needs an accepted knife sighting in the last 1 s -- no long "last seen" carry.
+            self.stats["held back: knife not seen in the last 1 s"] += 1
             self._debug_note("Holdup", ("knife", track.id), track.id, track.box, None, cue.momentum)
             return
         persisted = self._knife_persist_at.get(track.id)

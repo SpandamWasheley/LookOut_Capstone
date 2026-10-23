@@ -913,7 +913,8 @@ class Command(IncidentMixin, BaseCommand):
         if location_momentum.LOCATION_AWARE_MOMENTUM:
             location_momentum.update_puffs(self, track, dets, now_ts)
             if object_on:
-                cap, cap_reason = location_momentum.puff_cap(track, now_ts)
+                # sticky: the caps only block the FIRST rise to Possible / Likely
+                cap, cap_reason = location_momentum.puff_cap(track, now_ts, self._incident_level(("smoke", track.id)))
 
         key = ("smoke", track.id)
         score = scoring.Score("smoking", scoring.SMOKING_WEIGHTS, cues,

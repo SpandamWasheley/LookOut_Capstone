@@ -28,9 +28,10 @@ without a database.
 
 import datetime
 
-# Scoring spec version. v6.2 = location-aware object momentum + the smoking puff gate
-# (docs/specs/V6_2_LOCATION_MOMENTUM.md); the weights and thresholds are unchanged from v6.
-SCORING_SPEC_VERSION = "v6.2"
+# Scoring spec version. v6.2 = location-aware object momentum + the smoking puff gate; v6.2.1 = looser strict puff,
+# steadier holdup (knife + frozen pair), sticky statuses (docs/specs/V6_2_LOCATION_MOMENTUM.md).
+# The weights and thresholds are unchanged from v6.
+SCORING_SPEC_VERSION = "v6.2.1"
 
 
 # --- statuses ----------------------------------------------------------------

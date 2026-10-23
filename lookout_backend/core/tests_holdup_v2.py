@@ -40,8 +40,15 @@ class BaseScoreTests(unittest.TestCase):
         self.assertEqual((pts(ev), ev.band), (45, MONITORING))
 
     def test_knife_and_loitering_is_possible(self):
+        # pre-v6.2.1 rule (location switch off): loitering corroborated a knife
+        with mock.patch("core.vision.location_momentum.LOCATION_AWARE_MOMENTUM", False):
+            ev = evidence({"E14", "E10"})
+            self.assertEqual((pts(ev), ev.band), (55, WARNING))
+
+    def test_knife_and_loitering_alone_stay_monitoring_in_v621(self):
         ev = evidence({"E14", "E10"})
-        self.assertEqual((pts(ev), ev.band), (55, WARNING))
+        self.assertEqual((pts(ev), ev.band), (55, MONITORING))
+        self.assertEqual(ev.capped, "capped: no frozen pair")
 
     def test_knife_and_freeze_is_possible(self):
         ev = evidence({"E14", "E12"})
@@ -80,8 +87,8 @@ class TimeOfDayCapTests(unittest.TestCase):
         self.assertEqual(round(ev.cues["E20"] * 100), 9)     # the points actually added
 
     def test_e20_adds_in_full_when_it_fits(self):
-        ev = evidence({"E14", "E10"}, e20=10)                 # 55 + 10 = 65
-        self.assertEqual((pts(ev), ev.band), (65, WARNING))
+        ev = evidence({"E14", "E12"}, e20=5)                  # 65 + 5 = 70
+        self.assertEqual((pts(ev), ev.band), (70, WARNING))
         self.assertFalse(ev.e20_capped)
 
     def test_e20_adds_in_full_once_likely(self):
@@ -267,10 +274,18 @@ class FreezeNeedsKnifeTests(unittest.TestCase):
         e14 = [state.freeze_last + theft.E12_E14_TRAIL_SECONDS + 2.0]
         self.assertEqual(s.engine.holdup_pair_cues(holder, e14, s.t), {})
 
-    def test_the_freeze_needs_2_seconds_not_3(self):
+    def test_the_freeze_needs_2_seconds_before_v621(self):
         self.assertEqual(theft.FREEZE_SECONDS, 2.0)
+        with mock.patch("core.vision.location_momentum.LOCATION_AWARE_MOMENTUM", False):
+            s = Scene()
+            s.hold(2.5, persons=[pbox(600, 300), pbox(685, 300)])
+            self.assertTrue(next(iter(s.engine.pairs.values())).freeze_ok)
+
+    def test_the_freeze_needs_3_seconds_in_v621(self):
         s = Scene()
         s.hold(2.5, persons=[pbox(600, 300), pbox(685, 300)])
+        self.assertFalse(next(iter(s.engine.pairs.values())).freeze_ok)
+        s.hold(1.0, persons=[pbox(600, 300), pbox(685, 300)])
         self.assertTrue(next(iter(s.engine.pairs.values())).freeze_ok)
 
     def test_the_freeze_speed_limit_is_0_3(self):
@@ -352,3 +367,69 @@ class ApproachThenFreezeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FrozenPairV621Tests(unittest.TestCase):
+    """v6.2.1: E12 needs the pair close AND slow for 3 s; heavily overlapping frames are skipped."""
+
+    def freeze_ok(self, s):
+        return any(st.freeze_ok for st in s.engine.pairs.values())
+
+    def test_a_walk_past_is_not_a_frozen_pair(self):
+        s = Scene()
+        for i in range(30):                                     # approach from 3 body heights away
+            s.step(persons=[pbox(300 + i * 10, 300), pbox(900 - i * 10, 300)])
+        s.hold(1.0, persons=[pbox(600, 300), pbox(685, 300)])   # about 1 s close and still
+        for i in range(30):                                     # and walk off apart
+            s.step(persons=[pbox(600 - i * 10, 300), pbox(685 + i * 10, 300)])
+        self.assertFalse(self.freeze_ok(s))
+        self.assertEqual(s.of_kind("holdup"), [])
+
+    def test_two_people_close_and_still_for_4_seconds_is_a_frozen_pair(self):
+        s = Scene()
+        s.hold(4.0, persons=[pbox(600, 300), pbox(685, 300)])
+        self.assertTrue(self.freeze_ok(s))
+
+    @staticmethod
+    def _pair_state():
+        class T:
+            def __init__(self, box):
+                self.box = box
+
+            def heading(self, now):
+                return None
+        return theft.PairState((1, 2), 0.0), T
+
+    def _feed(self, st, T, t0, seconds, boxes):
+        n = int(round(seconds / 0.1))
+        for i in range(n):
+            now = t0 + (i + 1) * 0.1
+            st.update(T(boxes[0]), T(boxes[1]), 0.8, 0.0, 0.0, now, theft.REACH_NORM)
+        return t0 + n * 0.1
+
+    def test_overlap_frames_do_not_count_toward_the_3_seconds(self):
+        st, T = self._pair_state()
+        clean = ((570, 250, 630, 350), (655, 250, 715, 350))
+        overlap = ((570, 250, 630, 350), (590, 250, 650, 350))          # IoU 0.5 > 0.4
+        t = self._feed(st, T, 0.0, 1.0, clean)
+        t = self._feed(st, T, t, 3.0, overlap)                           # skipped: not counted
+        t = self._feed(st, T, t, 1.0, clean)
+        self.assertFalse(st.freeze_ok)                                   # ~2 s of clean freezing in 5 s of wall time
+        self._feed(st, T, t, 1.2, clean)
+        self.assertTrue(st.freeze_ok)
+
+    def test_overlap_frames_do_not_reset_it_either(self):
+        st, T = self._pair_state()
+        clean = ((570, 250, 630, 350), (655, 250, 715, 350))
+        overlap = ((570, 250, 630, 350), (590, 250, 650, 350))
+        t = self._feed(st, T, 0.0, 2.0, clean)
+        t = self._feed(st, T, t, 0.5, overlap)
+        self.assertIsNotNone(st.freeze_since)                            # not reset by the skipped frames
+        self._feed(st, T, t, 1.2, clean)
+        self.assertTrue(st.freeze_ok)
+
+    def test_switch_off_restores_the_old_2_second_hold(self):
+        with mock.patch("core.vision.location_momentum.LOCATION_AWARE_MOMENTUM", False):
+            s = Scene()
+            s.hold(2.5, persons=[pbox(600, 300), pbox(685, 300)])
+            self.assertTrue(self.freeze_ok(s))
