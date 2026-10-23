@@ -14,7 +14,7 @@ from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
 from core.vision import trim as trimming
 from core.vision import clock as vclock
-from core.vision import ai_checker, momentum, recognition, scoring, tracking
+from core.vision import ai_checker, location_momentum, momentum, recognition, scoring, tracking
 from ._incidents import IncidentMixin
 
 DRINKING_CAMERA_CODE = "CAM-SMOKE-01"
@@ -959,6 +959,16 @@ class Command(IncidentMixin, BaseCommand):
         x1, y1, x2, y2 = cluster.bbox
         pad = 0.75 * max(y2 - y1, 1)
         found = []
+        # v6.2: hand the members' bottles and the table bottles to _process_cluster, which applies the
+        # Path B location rule (in a member's hand, or stationary inside the group area).
+        members = getattr(cluster, "member_ids", None)
+        if location_momentum.LOCATION_AWARE_MOMENTUM and members is not None:
+            cluster.loc_inputs = (
+                [(t, d) for t, dets in per_track.items()
+                 if not getattr(t, "is_scene", False) and t.id in members for d in dets],
+                [d for t, dets in per_track.items() if getattr(t, "is_scene", False) for d in dets
+                 if x1 - pad <= (d[0] + d[2]) / 2 <= x2 + pad and y1 - pad <= (d[1] + d[3]) / 2 <= y2 + pad],
+            )
         for t, dets in per_track.items():
             if not getattr(t, "is_scene", False):
                 continue
@@ -981,6 +991,7 @@ class Command(IncidentMixin, BaseCommand):
             return
 
         track.vote(dets, now_ts)       # keeps the label history that track.dets draws from
+        self._gate_frame = frame       # v6.2: the location gate may need this frame's keypoints
         # Object cue: momentum per (track, class) -- replaces the vote + dwell gate.
         # A bottle carried past is Monitoring too (spec v6 lists it on the quiet
         # watchlist), so there is no stationary requirement.
@@ -1100,6 +1111,14 @@ class Command(IncidentMixin, BaseCommand):
         self._momentum_book()
         self._seen_track_ids.add(mkey)
         frame_conf = getattr(cluster, "frame_conf", 0.0)
+        why = ""
+        loc_inputs = cluster.__dict__.pop("loc_inputs", None)
+        if location_momentum.LOCATION_AWARE_MOMENTUM and loc_inputs is not None:
+            # v6.2 Path B: a bottle only adds momentum when it is in a member's hand / at the mouth, or
+            # stationary inside the group area (picked up / set down / passed is never a jump).
+            self._gate_frame = frame
+            frame_conf, why = location_momentum.cluster_confidence(
+                self, cluster, loc_inputs[0], loc_inputs[1], now_ts)
         slots = self._momentum_book().step(mkey, {"bottle": frame_conf} if frame_conf > 0 else {}, now_ts)
         slot = slots.get("bottle")
         object_on = momentum.confirmed(slot, now_ts, self.confirm_seconds)
@@ -1129,7 +1148,8 @@ class Command(IncidentMixin, BaseCommand):
         recognition.draw_label(
             frame,
             f"GATHERING {n}p - {ev_label} {ev_score * 100:.0f}% - "
-            f"{cluster.duration_held:.0f}/{group_duration:.0f}s",
+            f"{cluster.duration_held:.0f}/{group_duration:.0f}s"
+            + (f" [{why}]" if why else ""),
             box[0], max(box[1] - 10, 0), GATHERING_ALERT_COLOR,
         )
 

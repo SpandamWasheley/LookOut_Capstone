@@ -12,7 +12,7 @@ from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
 from core.vision import trim as trimming
-from core.vision import recognition, scoring, tracking, ai_checker
+from core.vision import recognition, scoring, tracking, ai_checker, location_momentum
 from ._incidents import IncidentMixin
 
 SMOKING_CAMERA_CODE = "CAM-SMOKE-01"
@@ -537,7 +537,7 @@ class Command(IncidentMixin, BaseCommand):
         if POSE_EVERY_N_FRAMES > 1 and self._pose_tick % POSE_EVERY_N_FRAMES:
             return
         try:
-            poses = recognition.detect_pose(frame)
+            poses = location_momentum.shared_poses(frame, now_ts)   # one pose pass per frame, shared with the v6.2 gate
         except Exception as exc:
             self.stats[f"pose unavailable: {type(exc).__name__}"] += 1
             self.pose = False   # don't retry every frame once it's broken
@@ -885,6 +885,7 @@ class Command(IncidentMixin, BaseCommand):
             return
 
         track.vote(dets, now_ts)       # keeps the label history that track.dets draws from
+        self._gate_frame = frame       # v6.2: the location gate may need this frame's keypoints
         # Object cue: momentum per (track, class) -- replaces the vote + dwell gate.
         cue = self._object_cue(track, dets, now_ts)
         object_on, best_label, best_score = cue.on, cue.label, cue.conf
@@ -906,9 +907,18 @@ class Command(IncidentMixin, BaseCommand):
         if puffs >= self.puff_count:
             cues.add("puff_pattern")
 
+        # v6.2 puff gate: a cigarette (even at the mouth) needs a real puff -- a cigarette seen at a
+        # wrist whose wrist then reaches the mouth -- to rise above Monitoring; Likely needs two.
+        cap, cap_reason = None, ""
+        if location_momentum.LOCATION_AWARE_MOMENTUM:
+            location_momentum.update_puffs(self, track, dets, now_ts)
+            if object_on:
+                cap, cap_reason = location_momentum.puff_cap(track, now_ts)
+
         key = ("smoke", track.id)
         score = scoring.Score("smoking", scoring.SMOKING_WEIGHTS, cues,
-                              previous_level=self._incident_level(key), object_on=object_on)
+                              previous_level=self._incident_level(key), object_on=object_on,
+                              cap=cap, cap_reason=cap_reason)
         self._debug_note("Smoking", key, track.id, track.box, score, cue.momentum)
         if not score.stored:
             if puffs and not object_on:

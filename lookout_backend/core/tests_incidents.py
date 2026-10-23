@@ -10,7 +10,9 @@ from django.test import TestCase
 
 from core.management.commands.watch_smoking import Command as SmokingCommand
 from core.models import Alert, Camera, ViolationType
-from core.vision import scoring, tracking
+from unittest import mock
+
+from core.vision import location_momentum, scoring, tracking
 
 BOX = (400, 200, 520, 500)
 CIG = (440, 230, 450, 245, 0.8, "Cigarette")
@@ -18,6 +20,11 @@ CIG = (440, 230, 450, 245, 0.8, "Cigarette")
 
 class SmokingIncidentTests(TestCase):
     def setUp(self):
+        # These tests feed bare detections (no pose), i.e. the pre-v6.2 incident machinery; the v6.2
+        # location gate (tests_location_momentum.py) would reject every hit as "no keypoints".
+        patcher = mock.patch.object(location_momentum, "LOCATION_AWARE_MOMENTUM", False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.cam = Camera.objects.create(code="CAM-SMOKE-01", name="Hikvision DS-2CD1047G2")
@@ -132,6 +139,9 @@ class SmokingIncidentTests(TestCase):
 
 class ThiefAndDrinkingTests(TestCase):
     def setUp(self):
+        patcher = mock.patch.object(location_momentum, "LOCATION_AWARE_MOMENTUM", False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         from core.management.commands.watch_thief import Command as ThiefCommand
         from core.management.commands.watch_drinking import Command as DrinkingCommand
         self.tmp = tempfile.TemporaryDirectory()

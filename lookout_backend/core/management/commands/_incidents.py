@@ -23,7 +23,7 @@ from django.utils import timezone
 from core.media import violation_media_path
 from core.models import Alert, SystemSettings
 from core import timeline
-from core.vision import ai_checker, debug_view, momentum, recognition, scoring, spec_settings, tracking
+from core.vision import ai_checker, debug_view, location_momentum, momentum, recognition, scoring, spec_settings, tracking
 
 CLIP_REFRESH_SECONDS = 15.0     # while Possible / Likely continues
 ROW_UPDATE_SECONDS = 5.0        # throttle for score / last_seen writes
@@ -103,7 +103,9 @@ def store_ai_result(alert_id, result, trigger_level):
     Alert.objects.filter(pk=alert_id).update(ai=data)
 
 
-ObjectCue = namedtuple("ObjectCue", "on label conf momentum snapshot")
+# `why` (v6.2): short tag for why momentum did not rise this frame ("off-anchor", "jump", "no-kp",
+# "flip"); only drawn on the annotated / testing output.
+ObjectCue = namedtuple("ObjectCue", "on label conf momentum snapshot why", defaults=("",))
 NO_CUE = ObjectCue(False, None, None, 0.0, None)
 
 
@@ -308,7 +310,15 @@ class IncidentMixin:
             if d[4] > confs.get(cls, 0.0):
                 confs[cls] = float(d[4])
             names.setdefault(cls, d[5])
-        slots = book.step(track.id, confs, now_ts)
+        # v6.2: only a detection at a wrist or the mouth adds momentum (Cigarette / Bottle); the rest of
+        # the frame's hits are rejected (slot decays) with a reason tag for the testing view.
+        why = ""
+        step_confs = confs
+        if location_momentum.LOCATION_AWARE_MOMENTUM and dets:
+            located, why = location_momentum.evaluate_track(self, track, dets, now_ts)
+            if located:
+                step_confs = {**confs, **located}
+        slots = book.step(track.id, step_confs, now_ts)
         # Optional run log ($LOOKOUT_MOUTH_LOG): the raw per-frame input of every slot,
         # so momentum settings can be replayed offline without re-running the models.
         if confs or slots:
@@ -322,11 +332,11 @@ class IncidentMixin:
         on = [c for c, sl in slots.items() if momentum.confirmed(sl, now_ts, self._confirm_seconds_for(c))]
         if not on:
             top = max(slots.values(), key=lambda sl: sl.momentum, default=None)
-            return ObjectCue(False, None, None, top.momentum if top else 0.0, None)
+            return ObjectCue(False, None, None, top.momentum if top else 0.0, None, why)
         cls = max(on, key=lambda c: slots[c].momentum)
         conf = confs.get(cls, slots[cls].last_conf) or slots[cls].peak / 3.0
         return ObjectCue(True, names[cls], float(conf), slots[cls].momentum,
-                         book.snapshot(track.id, cls))
+                         book.snapshot(track.id, cls), why)
 
     def _confirm_seconds_for(self, cls):
         """The object confirmation time for one class: the setting, except the knife,
@@ -344,6 +354,8 @@ class IncidentMixin:
         for (x1, y1, x2, y2, score, label) in draw_dets:
             color = color_on if cue.on else color_building
             text = f"{label} {score * 100:.0f}% m={cue.momentum:.1f}{' ON' if cue.on else ''}"
+            if getattr(cue, "why", ""):
+                text += f" [{cue.why}]"
             if is_historical:
                 color = tuple(c // 2 for c in color)
                 recognition.draw_dashed_rect(frame, (x1, y1), (x2, y2), color, 2)
