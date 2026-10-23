@@ -15,7 +15,8 @@ All three read/write the same backend at `http://localhost:8000/api` (or a LAN I
 ## Scope (read first)
 
 - **LookOut is a SINGLE-camera system** (one Hikvision DS-2CD1047G2, `Camera` code `CAM-SMOKE-01`, shown as "Hikvision DS-2CD1047G2"). Never add UI, seed data or defaults that imply multiple cameras. All `watch_*` commands default to `--camera CAM-SMOKE-01`.
-- **Violation types in scope: parking obstruction, smoking, holdup (theft), drinking — nothing else.** Curfew, noise, waste and SMS/Semaphore are permanently out of scope: do not re-add them to the UI, commands or docs. The `curfew_*`/`noise_*`/`waste_*`/`guardian_check`/`unknown_alert`/`sms_alerts`/`email_alerts`/`auto_dispatch` settings columns, the `/sms/send/` endpoint and the household/resident models have been removed; do not re-add them.
+- **Violation types in scope: parking obstruction, smoking, holdup (theft), drinking, improper disposal — nothing else.** Curfew, noise and SMS/Semaphore are permanently out of scope: do not re-add them to the UI, commands or docs. The `curfew_*`/`noise_*`/`waste_*`/`guardian_check`/`unknown_alert`/`sms_alerts`/`email_alerts`/`auto_dispatch` settings columns, the `/sms/send/` endpoint and the household/resident models have been removed; do not re-add them.
+- **Improper disposal** (`disposal`, green `#22c55e`) was added after the original four and supersedes the old blanket "waste is out of scope" rule — but only under its own name and its own columns (`disposal_enabled`/`disposal_confidence`/`disposal_static_seconds`/`disposal_cooldown`). It does **not** revive the removed `waste_*` columns. It is the one detector that runs no trained violation class: `core/vision/disposal.py` finds objects that appear and then STOP MOVING (dual MOG2 background subtraction), then confirms them as a garbage bag with a zero-shot YOLO-World check prompted against both wanted and look-alike classes. Because there is no cited cue table to sum, it carries its own confirmation logic rather than the weighted-sum scoring layer, and writes `confidence`/`object_confidence` with `level` left **blank** — so the alert card shows Object confidence and no score breakdown, exactly like parking. It shares no model forward pass with the merged detectors, so it is deliberately **not** part of `watch_all`/`watch_merged`/`watch_merged_all`; `core/monitor.py` launches it as its own live process, gated on `disposal_enabled` at launch time.
 - **Facial recognition has been removed from LookOut and must not be re-added** — no face detection/matching, embeddings, enrollment, resident-matching or "matched person"/unknown-person features, in any layer (backend, web dashboard, officer app). Detection is object/behaviour-based only.
 - **"-TEST" cameras** (`CAM-<TYPE>-TEST`) are created by the Run Detection upload path to tag alerts from uploaded footage (used for accuracy evaluation). They must keep that suffix; `CameraViewSet` and `dashboard_stats` hide them from every camera list, but their alerts remain visible and filterable.
 - The Live Feeds layout defaults to 1×1 on every visit and is intentionally not persisted.
@@ -29,7 +30,8 @@ pip install -r requirements.txt      # from repo root; a venv/ already exists at
 python manage.py migrate
 python manage.py runserver           # serves http://localhost:8000
 python manage.py seed_demo           # loads demo users/officers/alerts (no cameras — single-camera system)
-python manage.py watch_all --source <rtsp-url>   # all four detectors on the one camera (also: watch_smoking / watch_drinking / watch_parking / watch_thief)
+python manage.py watch_all --source <rtsp-url>   # the four merged-model detectors on the one camera (also: watch_smoking / watch_drinking / watch_parking / watch_thief)
+python manage.py watch_disposal --source <rtsp-url>   # improper disposal; separate pipeline, not part of watch_all
 python manage.py test                # core/tests.py (currently empty/stub)
 ```
 

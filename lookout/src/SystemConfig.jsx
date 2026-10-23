@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Save, RotateCcw, Car, Cigarette, Siren, Beer, AlertTriangle, Loader2, SlidersHorizontal } from "lucide-react";
+import { Save, RotateCcw, Car, Cigarette, Siren, Beer, Trash2, AlertTriangle, Loader2, SlidersHorizontal } from "lucide-react";
 import { getSettings, saveSettings } from "./api";
 import { readTestingTools, writeTestingTools } from "./useTestingTools";
 import { SettingsSlider as Slider } from "./components/settings/SettingsSlider";
@@ -16,6 +16,7 @@ const sections = [
   { id: "smoking", label: "Smoking", icon: Cigarette, color: "#f97316" },
   { id: "thief",   label: "Holdup",   icon: Siren,  color: "#dc2626" },
   { id: "drinking", label: "Drinking", icon: Beer, color: "#8b5cf6" },
+  { id: "disposal", label: "Disposal", icon: Trash2, color: "#22c55e" },
   { id: "system", label: "System", icon: SlidersHorizontal, color: "#3b82f6" },
 ];
 
@@ -27,6 +28,10 @@ const STATIC_DEFAULTS = {
   thief_enabled: true, thief_confidence: 30,
   drinking_enabled: true, drinking_confidence: 35,
   drinking_mouth_proximity: 3.0, drinking_cooldown_center_dist: 1.5,
+  disposal_enabled: true, disposal_confidence: 15, disposal_static_seconds: 5, disposal_cooldown: 120,
+  disposal_cooldown_dist: 60, disposal_min_area: 0.08, disposal_max_area: 8,
+  disposal_ignore_movers: true,
+  disposal_warmup_seconds: 5, disposal_recheck_seconds: 10,
   alert_cooldown: 120, evidence_retention_days: 30, evidence_auto_purge: false, show_testing_tools: false, auto_start_detection: false,
   vlm_enabled: true, vlm_model: "qwen3-vl:2b-instruct", vlm_model_holdup: "qwen3-vl:4b-instruct", vlm_frames: 8,
 };
@@ -368,6 +373,79 @@ export function SystemConfig() {
           The system watches for bottles. A bottle seen briefly is flagged for monitoring. It&rsquo;s raised further
           when people stay together as a group, stay at the spot for a long time, or raise the bottle to their mouth.
         </InfoBox>}
+      />
+    ),
+    disposal: (
+      <TwoCols
+        left={detection("disposal", "Improper disposal detection",
+          "Flag rubbish that is dumped and then left behind.",
+          "How sure the system must be that a left-behind object is a garbage bag. This detector reads low numbers on purpose — it recognises bags by description rather than from trained examples, so even a correct match usually scores around 15-25%.")}
+        right={
+          <Card title="Timings" onReset={() => resetKeys(["disposal_static_seconds", "disposal_cooldown"])}>
+            <Row label="Time before it counts as left behind"
+              desc="How long something must sit completely still before the system checks whether it is garbage. Rubbish being carried past the camera never stops, so it never reaches this."
+              differs={differs("disposal_static_seconds")}>
+              <DurationBox seconds={form.disposal_static_seconds} version={version}
+                onChange={(s) => set("disposal_static_seconds", Math.round(s))} />
+            </Row>
+            <Row label="Wait before reporting the same spot again"
+              desc="How long the system waits before it will report rubbish at the same place a second time."
+              differs={differs("disposal_cooldown")}>
+              <DurationBox seconds={form.disposal_cooldown} version={version}
+                onChange={(s) => set("disposal_cooldown", Math.round(s))} />
+            </Row>
+            <Row label="Wait before checking a rejected object again"
+              desc="If the check decides an object is not rubbish, how long before it looks again. A bag half-hidden by a passer-by deserves a second look, but every recheck costs processing."
+              differs={differs("disposal_recheck_seconds")}>
+              <DurationBox seconds={form.disposal_recheck_seconds} version={version}
+                onChange={(s) => set("disposal_recheck_seconds", Math.round(s))} />
+            </Row>
+            <Row label="Learn the empty scene for"
+              desc="How long the camera studies the view before it starts detecting. Longer is steadier on a busy or windy view. Anything already lying there when it starts is treated as part of the scene."
+              differs={differs("disposal_warmup_seconds")}>
+              <DurationBox seconds={form.disposal_warmup_seconds} version={version}
+                onChange={(s) => set("disposal_warmup_seconds", Math.round(s))} />
+            </Row>
+            <Row label="Same-spot radius"
+              desc="How close a second piece of rubbish must be to count as the same place for the wait above."
+              differs={differs("disposal_cooldown_dist")}>
+              <NumberBox value={form.disposal_cooldown_dist} min={10} max={300} step={10} unit="px"
+                onChange={(v) => set("disposal_cooldown_dist", v)} />
+            </Row>
+            <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>{TIMINGS_FOOTER}</div>
+          </Card>
+        }
+        below={<>
+        <Card title="What to ignore"
+          onReset={() => resetKeys(["disposal_ignore_movers"])}>
+          <Toggle label="Ignore people and vehicles"
+            desc="Skip anything sitting inside a detected person, car, motorbike or bicycle. Someone standing still looks exactly like an object that arrived and stopped, so without this they are the most common thing reported. Leave on unless the view has no people or traffic."
+            value={form.disposal_ignore_movers}
+            onChange={(v) => set("disposal_ignore_movers", v)} />
+        </Card>
+        <Card title="Object size"
+          note="How big something must be to be considered at all. These decide how much the detector looks at in the first place — raise the smallest if it reports a lot of things that are not rubbish."
+          onReset={() => resetKeys(["disposal_min_area", "disposal_max_area"])}>
+          <Row label="Smallest object to consider"
+            desc="As a share of the whole view. Too low and camera grain, shadows and compression specks are picked up as objects; on a 4MP camera at night that can be hundreds an hour."
+            differs={differs("disposal_min_area")}>
+            <NumberBox value={form.disposal_min_area} min={0.01} max={5} step={0.01} unit="% of view"
+              width="w-24" onChange={(v) => set("disposal_min_area", v)} />
+          </Row>
+          <Row label="Largest object to consider"
+            desc="Anything bigger is ignored. This is what stops a cloud crossing the sun — which re-lights the whole view at once — from being read as one enormous object."
+            differs={differs("disposal_max_area")}>
+            <NumberBox value={form.disposal_max_area} min={1} max={100} step={1} unit="% of view"
+              width="w-24" onChange={(v) => set("disposal_max_area", v)} />
+          </Row>
+        </Card>
+        <InfoBox color="#22c55e">
+          The system watches for something that appears, stops moving, and is then confirmed to be a
+          garbage or plastic bag. People and vehicles passing through are ignored because they never
+          stop. Note that rubbish already lying there when the camera starts is treated as part of
+          the scene and is not flagged.
+        </InfoBox>
+        </>}
       />
     ),
     system: (

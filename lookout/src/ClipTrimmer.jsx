@@ -137,7 +137,10 @@ export function ClipTrimmer({ file, onChange }) {
 
       <video
         ref={videoRef}
-        src={url}
+        // `undefined`, not "", before the effect below mints the object URL:
+        // React omits the attribute entirely for undefined, whereas src=""
+        // resolves to the page's own URL and re-downloads the document.
+        src={url || undefined}
         onLoadedMetadata={onLoaded}
         onTimeUpdate={onTimeUpdate}
         onPlay={() => setPlaying(true)}

@@ -56,6 +56,20 @@ def parking(obj=None, seconds=0):
     return f"{thing.capitalize()} stopped in a no-parking area for {round(seconds)} s."
 
 
+def disposal(obj=None, seconds=0):
+    """Improper disposal. The wording leads with LEFT BEHIND, not "bag seen" --
+    that is the thing the ordinance is about, and the thing the static-object
+    rule actually established."""
+    thing = _object(obj, "garbage")
+    if seconds >= 60:
+        return (f"{thing.capitalize()} left behind and unattended for about "
+                f"{round(seconds / 60)} min.")
+    if seconds > 0:
+        return (f"{thing.capitalize()} left behind and unattended for "
+                f"{round(seconds)} s.")
+    return f"{thing.capitalize()} left behind and unattended."
+
+
 def road_edge(side, fraction, minutes):
     return (f"Vehicle blocking the {side} edge of the road, {round(fraction * 100)}% over the line, "
             f"for about {minutes:.1f} min.")

@@ -4,7 +4,8 @@ import {
   startStagedDetectionJob, startLiveDetectionJob, getCameras, getJobState, cancelDetectionJob,
 } from "./api";
 import { discardUpload, listPendingUploads, uploadClipInChunks } from "./chunkedUpload";
-import { DETECTION_TYPES, TYPES_WITH_EDGES } from "./constants/detectionTypes";
+import { DETECTION_TYPES, TYPES_WITH_EDGES, TYPES_WITH_OPTIONAL_EDGES,
+         edgeHeading, edgeCameraNote } from "./constants/detectionTypes";
 import { ClipTrimmer } from "./ClipTrimmer";
 import { EdgeCanvas } from "./EdgeCanvas";
 import { ProcessingView } from "./ProcessingView";
@@ -49,6 +50,8 @@ export function RunDetectionPage() {
   const testingTools = useTestingTools(true);
   const [violationType, setViolationType] = useState(DETECTION_TYPES[0].key);
   const needsEdges = TYPES_WITH_EDGES.has(violationType);
+  // Offered, but never a precondition — see TYPES_WITH_OPTIONAL_EDGES.
+  const edgesOptional = TYPES_WITH_OPTIONAL_EDGES.has(violationType);
   const [source, setSource] = useState("file"); // "file" | "camera"
 
   const [file, setFile] = useState(null);
@@ -192,7 +195,7 @@ export function RunDetectionPage() {
   const usesClock = source === "file" && ["thief", "drinking", "merged", "merged4"].includes(violationType);
   const canStart = source === "camera"
     ? !!cameraId
-    : staged && (!needsEdges || canSaveEdges);
+    : staged && (!needsEdges || edgesOptional || canSaveEdges);
 
   const handleStart = async () => {
     if (!canStart || starting) return;
@@ -208,12 +211,17 @@ export function RunDetectionPage() {
             recordedAt: usesClock ? recordedAt : "",
             trimStart: trim.start,
             trimEnd: trim.end,
-            ...(needsEdges ? {
+            // Only when one was actually drawn: disposal may legitimately
+            // start with none, and the thresholds below are parking's rule,
+            // which disposal's containment test does not use.
+            ...(needsEdges && canSaveEdges ? {
               edges: edgeSpec,
               edgesWidth: staged.frame.width,
               edgesHeight: staged.frame.height,
-              obstructionPct: Number(pct),
-              obstructionMinutes: Number(minutes),
+              ...(edgesOptional ? {} : {
+                obstructionPct: Number(pct),
+                obstructionMinutes: Number(minutes),
+              }),
             } : {}),
           });
       setJob(started);
@@ -442,16 +450,17 @@ export function RunDetectionPage() {
               <div className="rounded-xl p-4 space-y-3" style={barStyle}>
                 <div className="text-[13px] font-semibold uppercase tracking-wide"
                   style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
-                  Draw the no-parking area for {detectorLabel}
+                  {edgeHeading(violationType, detectorLabel)}
                 </div>
                 <EdgeCanvas frame={staged.frame} pct={pct} onPctChange={setPct} minutes={minutes}
-                  onMinutesChange={setMinutes} onChange={(spec, can) => { setEdgeSpec(spec); setCanSaveEdges(can); }} />
+                  onMinutesChange={setMinutes} showThresholds={!edgesOptional}
+                  onChange={(spec, can) => { setEdgeSpec(spec); setCanSaveEdges(can); }} />
               </div>
             )}
             {needsEdges && source === "camera" && cameraId && (
               <div className="text-[13px] px-3 py-2 rounded-xl"
                 style={{ background: "rgba(59,130,246,0.08)", border: "1px solid rgba(59,130,246,0.2)", color: "#60a5fa" }}>
-                {detectorLabel} uses the no-parking area saved on the camera (Feeds → Edge Zones).
+                {edgeCameraNote(violationType, detectorLabel)}
               </div>
             )}
           </>

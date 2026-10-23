@@ -523,8 +523,16 @@ export const startStagedDetectionJob = (
     formData.append("edges", JSON.stringify(edges));
     formData.append("edges_width", edgesWidth);
     formData.append("edges_height", edgesHeight);
-    formData.append("obstruction_pct", obstructionPct);
-    formData.append("obstruction_minutes", obstructionMinutes);
+    // Only when they exist. FormData.append stringifies undefined to the
+    // literal "undefined", which the server then reads as a present value and
+    // tries to parse as a number — disposal draws an area but has no
+    // thresholds, so appending these unconditionally sent it "undefined".
+    if (obstructionPct !== undefined && obstructionPct !== null) {
+      formData.append("obstruction_pct", obstructionPct);
+    }
+    if (obstructionMinutes !== undefined && obstructionMinutes !== null) {
+      formData.append("obstruction_minutes", obstructionMinutes);
+    }
   }
   return apiUpload("/detection-jobs/", formData);
 };

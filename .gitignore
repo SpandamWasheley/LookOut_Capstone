@@ -52,6 +52,16 @@ yolov8n.pt
 yolov8n-pose.pt
 lookout_backend/yolov8n.pt
 lookout_backend/yolov8n-pose.pt
+yolov8s-worldv2.pt
+lookout_backend/yolov8s-worldv2.pt
+
+# YOLO-World's CLIP text encoder (354 MB, re-downloaded on demand) and the
+# disposal prompt cache — base weights with the prompt embeddings baked in, so
+# a launch skips the CLIP pass. Both are regenerated artifacts, not source: the
+# cache filename is keyed on a hash of PROMPTS + REJECT, so it rebuilds itself
+# whenever those change.
+lookout_backend/weights/
+lookout_backend/core/vision/world_cache/
 
 # Continuous CCTV recordings and recorder runtime state
 cctv records/

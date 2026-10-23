@@ -1075,6 +1075,10 @@ DETECTION_COMMANDS = {
     # four ViolationTypes. Obstruction only — it refuses to start without a
     # marked no-parking area, which is why it is in EDGE_REQUIRED below.
     "merged4": "watch_merged_all",
+    # Improper disposal. Not part of any merged pass: it runs no trained
+    # violation class at all (dual background subtraction + a zero-shot bag
+    # check), so it has nothing to share a model forward pass with.
+    "disposal": "watch_disposal",
 }
 # Detectors that judge vehicles against a marked no-parking area. Two tiers,
 # because the two mean different things to a caller:
@@ -1086,8 +1090,26 @@ DETECTION_COMMANDS = {
 #                  fallback on purpose, so rejecting it here turns what would
 #                  be a FAILED job with the reason buried in a subprocess log
 #                  into an immediate, visible error on the page.
+def _opt_number(raw, cast):
+    """`raw` as a number, or None if it is absent or unparseable.
+
+    A browser FormData carrying an undefined value sends the STRING
+    "undefined", which is truthy and blew up int() with a 500. Anything that
+    is not a usable number reads as "not supplied".
+    """
+    if raw in (None, "", "undefined", "null"):
+        return None
+    try:
+        return cast(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 EDGE_REQUIRED = frozenset({"merged4"})
-EDGE_CAPABLE = frozenset({"parking"}) | EDGE_REQUIRED
+# "disposal" is capable but never required: an area narrows WHERE rubbish is
+# watched for (on a 4MP frame the whole-frame rule raises a flood of noise
+# blobs), but with none drawn it still watches everywhere, exactly as before.
+EDGE_CAPABLE = frozenset({"parking", "disposal"}) | EDGE_REQUIRED
 DETECTION_UPLOAD_EXTENSIONS = {".mp4", ".mkv", ".avi"}
 DETECTION_MAX_UPLOAD_BYTES = 1024 * 1024 * 1024  # 1GB
 
@@ -1723,12 +1745,16 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
                     test_camera.edges_width = int(edges_width)
                 if edges_height:
                     test_camera.edges_height = int(edges_height)
-                obstruction_pct = request.data.get("obstruction_pct")
-                obstruction_minutes = request.data.get("obstruction_minutes")
-                if obstruction_pct:
-                    test_camera.obstruction_pct = int(obstruction_pct)
-                if obstruction_minutes:
-                    test_camera.obstruction_minutes = float(obstruction_minutes)
+                # Parsed defensively: these are parking's thresholds and a
+                # detector that draws an area without them (disposal) legitimately
+                # sends neither. An unparseable value is the caller's problem, not
+                # a reason to 500 — keep the stored default and run.
+                obstruction_pct = _opt_number(request.data.get("obstruction_pct"), int)
+                obstruction_minutes = _opt_number(request.data.get("obstruction_minutes"), float)
+                if obstruction_pct is not None:
+                    test_camera.obstruction_pct = obstruction_pct
+                if obstruction_minutes is not None:
+                    test_camera.obstruction_minutes = obstruction_minutes
                 test_camera.save(update_fields=[
                     "edges", "edges_width", "edges_height",
                     "obstruction_pct", "obstruction_minutes",

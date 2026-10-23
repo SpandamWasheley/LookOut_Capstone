@@ -620,6 +620,62 @@ class SystemSettings(models.Model):
     # can churn.
     drinking_cooldown_center_dist = models.FloatField(default=1.5)
 
+    disposal_enabled = models.BooleanField(default=True)
+    # Zero-shot confirmation confidence as a 0-100 percent (watch_disposal
+    # divides by 100). Much lower than the other detectors' floors on purpose:
+    # the bag check is OPEN-VOCABULARY (YOLO-World), which spreads probability
+    # across the whole prompt set, so a correct "sack" commonly scores ~0.2.
+    # The real filter is that garbage must outscore every reject class, not
+    # that it clears a high bar -- see core/vision/disposal.confirm.
+    disposal_confidence = models.PositiveSmallIntegerField(default=15)
+    # Seconds an object must sit STILL before the bag check runs at all. This
+    # is the rule that makes it "disposal" rather than "a bag exists": rubbish
+    # being carried past the camera never stops, so it never qualifies.
+    disposal_static_seconds = models.PositiveSmallIntegerField(default=5)
+    # Seconds before the same SPOT may alert again. Place-keyed rather than
+    # track-keyed, because a static-blob candidate is dropped after a couple of
+    # unseen seconds and its replacement starts with a clean timer -- the same
+    # identity-churn hole that D4 closes for the shared rule layer.
+    disposal_cooldown = models.PositiveSmallIntegerField(default=120)
+    # Radius in pixels (at the 960-wide processing frame) that counts as "the
+    # same spot" for the cooldown above. The companion to
+    # drinking_cooldown_center_dist: the seconds were already tunable while the
+    # distance they applied over was not, so a camera looking down a long
+    # street could not widen it.
+    disposal_cooldown_dist = models.PositiveSmallIntegerField(default=60)
+    # --- what counts as an object at all (stage 1) -------------------------
+    # Size bounds as a PERCENT of the frame. These are the two that decide how
+    # much stage 1 raises in the first place, and on a 4MP frame the defaults
+    # are generous: 0.08% of a 960x540 processing frame is about a 20x20px
+    # blob, which is well inside compression-artifact and sensor-noise
+    # territory at night. Raising the floor is the cheapest way to quiet a
+    # camera that reports hundreds of candidates an hour.
+    #
+    # The ceiling earns its place too: without it a cloud crossing the sun
+    # re-lights the whole scene and arrives as one frame-sized "object".
+    #
+    # Stored as percent because that is what the dashboard shows;
+    # watch_disposal divides by 100 for the fractions core/vision/disposal.py
+    # works in.
+    # Ignore anything sitting inside a detected person or vehicle. ON by
+    # default: measured on real footage, people and cars were 62% of
+    # everything the bag check had to reject, because stage 1 asks "did it
+    # arrive and stop moving?" and a person who stands still answers yes.
+    # Costs one extra stock-yolov8n pass a second (no new weights). Turn it
+    # off only on a view with no people or traffic, where it is pure cost.
+    disposal_ignore_movers = models.BooleanField(default=True)
+    disposal_min_area = models.FloatField(default=0.08)
+    disposal_max_area = models.FloatField(default=8.0)
+    # Seconds of empty scene learned before anything is detected. Longer is
+    # steadier on a busy or windy view; anything already lying there when the
+    # run starts is learned as background and never alerts, so this is also
+    # how long that blind window lasts.
+    disposal_warmup_seconds = models.PositiveSmallIntegerField(default=5)
+    # Seconds before a REJECTED candidate is offered to the bag check again.
+    # Stage 2 sees one crop at one instant, so a bag half-occluded by a
+    # passer-by deserves another look -- but every recheck costs a model pass.
+    disposal_recheck_seconds = models.PositiveSmallIntegerField(default=10)
+
     # --- VLM verification ---------------------------------------------------
     # Second-stage vision-language check on the evidence crop at alert time
     # (core/vision/ai_checker.py).

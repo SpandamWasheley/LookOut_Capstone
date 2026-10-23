@@ -85,6 +85,10 @@ export function EdgeCanvas({
   minutes,
   onMinutesChange,
   onChange,
+  // Parking's two thresholds. Hidden for a detector whose area is a plain
+  // containment test — showing "Inside the road %" next to a garbage area
+  // would offer a dial that changes nothing.
+  showThresholds = true,
 }) {
   const [points, setPoints] = useState(() => initialPoints ?? []);
 
@@ -173,6 +177,7 @@ export function EdgeCanvas({
         </button>
       </div>
 
+      {showThresholds && (
       <div className="flex items-center gap-5 pt-1">
         <label className="flex items-center gap-2 text-[14px]" style={{ color: "var(--muted-foreground)" }}>
           Inside the road
@@ -191,6 +196,7 @@ export function EdgeCanvas({
           minutes
         </label>
       </div>
+      )}
     </>
   );
 }

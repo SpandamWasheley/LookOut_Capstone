@@ -35,6 +35,7 @@ VIOLATION_TYPES = [
     ("drinking", "Public Drinking",        "#8b5cf6", "beer"),
     ("theft",    "Holdup in Public Area",  "#ef4444", "siren"),
     ("parking",  "Illegal Parking",        "#ef4444", "car"),
+    ("disposal", "Improper Disposal",      "#22c55e", "trash"),
 ]
 
 # LookOut is a single-camera system (see CLAUDE.md). This is the one real

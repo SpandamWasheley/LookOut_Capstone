@@ -101,3 +101,45 @@ class LiveMonitorGateTests(TestCase):
         ok, message = monitor.start()
         self.assertFalse(ok)
         self.assertIn("not found", message)
+
+
+class OptionalNumberTests(TestCase):
+    """`_opt_number`, which exists because a 500 was shipped without it.
+
+    The browser sends parking's thresholds alongside any drawn area. Disposal
+    draws an area but has no thresholds, so FormData carried the literal
+    string "undefined" — truthy, and `int("undefined")` is a ValueError, which
+    DRF turns into a 500 on POST /api/detection-jobs/.
+
+    The rule: anything that is not a usable number means "not supplied", and a
+    caller sending nonsense gets the stored default, never a server error.
+    """
+
+    def test_a_real_number_is_parsed(self):
+        from core.views import _opt_number
+        self.assertEqual(_opt_number("35", int), 35)
+        self.assertEqual(_opt_number("2.5", float), 2.5)
+        self.assertEqual(_opt_number(35, int), 35)
+
+    def test_the_javascript_undefined_string_reads_as_not_supplied(self):
+        """The exact value that caused the 500."""
+        from core.views import _opt_number
+        self.assertIsNone(_opt_number("undefined", int))
+        self.assertIsNone(_opt_number("undefined", float))
+
+    def test_absent_and_empty_read_as_not_supplied(self):
+        from core.views import _opt_number
+        for raw in (None, "", "null"):
+            self.assertIsNone(_opt_number(raw, int), raw)
+
+    def test_nonsense_never_raises(self):
+        """A bad number is the caller's problem, not a 500."""
+        from core.views import _opt_number
+        for raw in ("abc", "1,2", [], {}, object()):
+            self.assertIsNone(_opt_number(raw, int), raw)
+
+    def test_zero_is_a_real_value_not_an_absence(self):
+        """Guards the obvious regression if this is ever rewritten as `if raw:`."""
+        from core.views import _opt_number
+        self.assertEqual(_opt_number("0", int), 0)
+        self.assertEqual(_opt_number(0, int), 0)
