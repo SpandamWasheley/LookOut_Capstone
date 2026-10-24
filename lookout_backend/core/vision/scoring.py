@@ -29,10 +29,10 @@ without a database.
 import datetime
 
 # Scoring spec version. v6.2 = location-aware object momentum + the smoking puff gate; v6.2.1 = looser strict puff,
-# steadier holdup (knife + frozen pair), sticky statuses; v6.2.4 = holdup pairs need two real people (no shadows),
-# and the holdup AI checker is asked unprimed (docs/specs/V6_2_LOCATION_MOMENTUM.md).
+# steadier holdup (knife + frozen pair), sticky statuses; v6.2.4 = no shadow pairs, the holdup AI checker is asked unprimed;
+# v6.2.5 = holdup E12 is "stayed close" with pass-through rejection (docs/specs/V6_2_LOCATION_MOMENTUM.md).
 # The weights and thresholds are unchanged from v6.
-SCORING_SPEC_VERSION = "v6.2.4"
+SCORING_SPEC_VERSION = "v6.2.5"
 
 
 # --- statuses ----------------------------------------------------------------

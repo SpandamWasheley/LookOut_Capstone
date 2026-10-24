@@ -22,6 +22,8 @@ GATED_CLASSES = ("cigarette", "bottle")   # lower-case class names that need a l
 KP_CONF_MIN = 0.3                   # a keypoint below this confidence is "missing"
 KP_MAX_AGE_SECONDS = 0.05           # keypoints must belong to THIS frame (pose runs every processed frame)
 POSE_MATCH_IOU = 0.3                # pose box <-> person track box
+ZOOM_POSE = True                    # v6.2.6: far people get keypoints from a pose pass on their own (upscaled) crop
+ZOOM_POSE_BELOW_FRAC = 0.4          # ... when the person box is shorter than this x the frame height (or the whole-frame pass missed them)
 
 CLOSE_SHOULDER_FRAC = 0.5           # "close" = within this x shoulder width of an anchor
 CLOSE_HEIGHT_FRAC_NO_SHOULDERS = 0.15   # ... or this x person box height when a shoulder is missing
@@ -36,7 +38,9 @@ CLASS_FLIP_IOU = 0.3
 # seen at that wrist or at the mouth within +/- PUFF_PAIR_WINDOW_SECONDS, in either order)
 PUFF_PAIR_WINDOW_SECONDS = 5.0      # was 3 s one-way in v6.2
 PUFF_CLOSE_SHOULDER_FRAC = 0.7      # "wrist at the mouth" / "cigarette at the mouth" radius x shoulder width (the momentum gate keeps 0.5)
-PUFF_MIN_GAP_SECONDS = 1.0          # two wrist-to-mouth reaches closer than this are one
+ELBOW_FALLBACK = True               # v6.2.6: a missing wrist keypoint falls back to its elbow for the wrist-at-mouth test
+PUFF_ELBOW_SHOULDER_FRAC = 1.1      # elbow-to-mouth radius x shoulder width (measured: ~0.9-1.1 with the hand at the mouth, median 1.5 hanging)
+PUFF_MIN_GAP_SECONDS = 1.0         # two wrist-to-mouth reaches closer than this are one
 POSSIBLE_PUFF_WINDOW_SECONDS = 10.0 # Possible needs >= POSSIBLE_MIN_PUFFS puff in this window (else capped at Monitoring)
 POSSIBLE_MIN_PUFFS = 1
 LIKELY_PUFF_WINDOW_SECONDS = 30.0   # Likely also needs >= LIKELY_MIN_PUFFS puffs in this window
@@ -44,29 +48,37 @@ LIKELY_MIN_PUFFS = 2
 CAP_NO_PUFF_TEXT = "capped: no puff"
 CAP_FEW_PUFFS_TEXT = "capped: needs 2 puffs in 30 s for Likely"
 
-# holdup (v6.2.1). OFF by default: the knife / holdup rules are the pre-v6.2 (v6) rules. Set True to enable the
-# knife stability rules, the 3 s frozen pair with overlap skipping, the "knife + frozen pair" gate and the sticky holdup status.
-HOLDUP_V621_RULES = False
+# holdup (v6.2.1, reworked in v6.2.5). True = knife stability rules, E12 as "stayed close" with pass-through rejection, the
+# "knife + E12" gate (capped at Monitoring without it) and the sticky holdup status. False = the pre-v6.2 (v6) holdup rules.
+HOLDUP_V621_RULES = True
 KNIFE_CLASS = "knife"
 KNIFE_CONF_FULL_AT = 0.6            # knife momentum increment x min(1, conf / this)
 KNIFE_JUMP_HEIGHT_FRAC = 0.25       # same jump rule as the cigarette (no anchors: any move this big is a jump)
 KNIFE_JUMP_MEMORY_SECONDS = 2.0
 KNIFE_CLASS_FLIP_FRAMES = 5
-KNIFE_PRESENT_SECONDS = 1.0         # a knife counts as present for E14 only if an accepted hit is this recent (no long "last seen" carry)
-FREEZE_SECONDS_V621 = 3.0           # E12: both people close AND slow, continuously, for this long (was 2.0)
-FREEZE_SKIP_IOU = 0.4               # person boxes overlapping more than this: the frame is skipped (neither counts nor resets E12)
+KNIFE_PRESENT_SECONDS = 2.0         # a knife counts as present for E14 if an accepted hit is at most this old (v6.2.4: 1.0)
+# E12 = "stayed close" (v6.2.5): the two people within the close distance for CLOSE_STAY_SECONDS of video time. No speed
+# requirement, and overlapping boxes count as close. A walk-past is rejected (see PASS_*).
+CLOSE_DISTANCE = 1.0                # "close" for E12, in person heights, NOT widened in a crowd (the legacy E23 gate widening made
+                                    # two scooters / walkers 1.0-1.3 heights apart count as close in the Kabilang clip)
+CO_WALKERS_REJECTED = True          # two people who BOTH keep walking (median speed > PASS_MOVING_SPEED over the last CLOSE_STAY_SECONDS) are
+                                    # walking together, not a standoff: no E12. One of them must be slow. (Kabilang: two pedestrians
+                                    # walking side by side got E12 + a knife hallucination = a false Possible.)
+CLOSE_STAY_SECONDS = 2.0
+CLOSE_GAP_TOLERANCE_SECONDS = 0.3   # a break shorter than this (tracker jitter on the close-distance line) does not end the stay
+PASS_MOVING_SPEED = 0.3             # normalised speed above which a person is "moving" (same number as theft.FREEZE_SPEED)
+PASS_BEFORE_WINDOW_SECONDS = 1.0    # speed is judged over this long before the closest approach, and from it to now
+PASS_SEPARATE_SECONDS = 2.0         # pass-through = someone moving before AND after the closest approach, and the pair is back
+                                    # outside the close distance within this long of it. E12 waits this long to be sure.
 CAP_NO_FROZEN_PAIR_TEXT = "capped: no frozen pair"
 
-# holdup pairs: fake-person filter (v6.2.4). A person track only counts toward E12 / a holdup pair when its skeleton was
-# seen in the recent frames; a shadow or a reflection that the person detector boxed has no skeleton. Fails OPEN
-# (the track counts) when no pose information exists at all (pose unavailable, unit tests).
+# holdup pairs: shadow filter (v6.2.4; the skeleton / keypoint requirement was removed in v6.2.5 because it blocked real holdups).
+# A pair is ignored when it is a person and their own shadow.
 FAKE_PERSON_FILTER = True
-FAKE_PERSON_WINDOW_SECONDS = 3.0    # "recent frames"
-FAKE_PERSON_MIN_KEYPOINTS = 6       # keypoints with conf >= KP_CONF_MIN in the same frame ...
-FAKE_PERSON_FACE_KEYPOINTS = (0, 1, 2)   # ... and at least one of nose / left eye / right eye
-FAKE_PERSON_MIN_GOOD_FRAMES = 3     # good frames needed in the window (one stray pose match must not make a shadow real)
 SHADOW_FEET_TOUCH_FRAC = 0.15       # bottom edges within this x the taller box height, and the boxes touching sideways
 SHADOW_BRIGHTNESS_RATIO = 0.6       # person + own shadow: one box's mean brightness below this x the other's
+SHADOW_HEIGHT_RATIO = 0.65          # ... OR (v6.2.5 addition, 0 = off): the shorter box is below this x the taller one's height. On the
+                                    # ALT-0152 footage the shadow was only 58-90 % as bright (never < 60 %) but 50-63 % as tall.
 
 # drinking Path B (inuman cluster)
 GROUP_AREA_EXPAND = 1.2             # group area = cluster box scaled by this (20% larger)
@@ -81,6 +93,7 @@ REASON_FLIP = "flip"
 
 LEFT_WRIST, RIGHT_WRIST = "lw", "rw"
 WRISTS = (LEFT_WRIST, RIGHT_WRIST)
+ELBOWS = {LEFT_WRIST: 7, RIGHT_WRIST: 8}            # COCO keypoint index of the elbow on the same arm
 MOUTH = "mouth"
 
 
@@ -176,6 +189,7 @@ class TrackLoc:
     def __init__(self):
         self.kp = None
         self.kp_at = None
+        self.kp_source = None         # "full" (whole-frame pose) or "zoom" (pose on the person's crop)
         self.last_hit = {}            # class -> (rel_x, rel_y, kinds, t)
         self.puffs = deque()          # video times of confirmed puffs
         self.cig_at_wrist = {}        # wrist id -> last time a cigarette was seen at that wrist
@@ -183,7 +197,6 @@ class TrackLoc:
         self.in_zone = {}             # wrist id -> was the wrist at the mouth last frame (absent = unknown)
         self.reaches = {}             # wrist id -> time of a wrist-to-mouth reach still waiting for a cigarette sighting
         self.last_reach = None
-        self.real_hist = deque()      # (video time, skeleton seen this frame) for the fake-person filter
 
 
 def loc_of(track):
@@ -212,9 +225,22 @@ def ensure_keypoints(cmd, track, now):
         if iou > best_iou:
             best, best_iou = kpts, iou
     if best is not None and best_iou >= POSE_MATCH_IOU:
-        loc.kp, loc.kp_at = best, now
-        return best
-    return None
+        loc.kp_source = "full"
+    else:
+        best = None
+    # v6.2.6 zoomed pose: a far person is only ~35 px across the shoulders in the whole frame, where pose puts the hands
+    # in the wrong place (or loses the person). Re-run pose on that person's crop, scaled up, and use it instead.
+    if ZOOM_POSE and (best is None or frame.shape[0] * ZOOM_POSE_BELOW_FRAC > track.box[3] - track.box[1]):
+        try:
+            zoomed = recognition.pose_on_box(frame, track.box)
+        except Exception:                               # noqa: BLE001 - pose is optional evidence
+            zoomed = None
+        if zoomed is not None:
+            best, loc.kp_source = zoomed, "zoom"
+    if best is None:
+        return None
+    loc.kp, loc.kp_at = best, now
+    return best
 
 
 def anchors_from_kpts(kpts, person_box):
@@ -359,63 +385,11 @@ def _evaluate_knife(loc, track, ds, now):
 
 # ---- holdup pairs: fake-person filter ----------------------------------------------------------
 
-CURRENT_FRAME = {"frame": None}      # set by the thief engine's per-frame hook; used to run / read the shared pose pass
+CURRENT_FRAME = {"frame": None}      # set by the thief engine's per-frame hook; the shadow test reads brightness from it
 
 
 def fake_person_filter_on():
     return LOCATION_AWARE_MOMENTUM and FAKE_PERSON_FILTER
-
-
-def _frame_poses(now):
-    """Poses of the current frame, or None when they cannot be had (no frame, pose model failing)."""
-    if _POSE["now"] == now and _POSE["poses"] is not None:
-        return _POSE["poses"]
-    frame = CURRENT_FRAME["frame"]
-    if frame is None or _POSE["fails"] >= POSE_MAX_FAILS:
-        return None
-    try:
-        return shared_poses(frame, now)
-    except Exception:                                   # noqa: BLE001
-        _POSE["fails"] += 1
-        return None
-
-
-def skeleton_ok(kpts):
-    """A real person's skeleton: >= FAKE_PERSON_MIN_KEYPOINTS keypoints and >= 1 face keypoint, all conf >= KP_CONF_MIN."""
-    conf = kpts[:, 2]
-    return (int((conf >= KP_CONF_MIN).sum()) >= FAKE_PERSON_MIN_KEYPOINTS
-            and any(conf[i] >= KP_CONF_MIN for i in FAKE_PERSON_FACE_KEYPOINTS))
-
-
-def update_person_evidence(tracks, now, poses=None):
-    """Record, for each person track, whether a real skeleton was seen on it this frame. Returns False (and records
-    nothing) when no pose information is available."""
-    if poses is None:
-        poses = _frame_poses(now)
-    if poses is None:
-        return False
-    for t in tracks:
-        if t.box is None:
-            continue
-        loc = loc_of(t)
-        best, best_iou = None, 0.0
-        for box, kpts in poses:
-            i = _iou(t.box, box)
-            if i > best_iou:
-                best, best_iou = kpts, i
-        loc.real_hist.append((now, best is not None and best_iou >= POSE_MATCH_IOU and skeleton_ok(best)))
-        while loc.real_hist and now - loc.real_hist[0][0] > FAKE_PERSON_WINDOW_SECONDS:
-            loc.real_hist.popleft()
-    return True
-
-
-def is_real_person(track, now):
-    """False only when the track has been watched (pose available) and had too few skeleton frames recently."""
-    loc = getattr(track, "loc", None)
-    if loc is None or not loc.real_hist:
-        return True
-    good = sum(1 for t, ok in loc.real_hist if ok and now - t <= FAKE_PERSON_WINDOW_SECONDS)
-    return good >= FAKE_PERSON_MIN_GOOD_FRAMES
 
 
 def _mean_brightness(frame, box):
@@ -429,12 +403,16 @@ def _mean_brightness(frame, box):
 
 def is_shadow_pair(ta_box, tb_box, frame=None):
     """Person + own shadow: the two boxes touch at the feet (bottom edges within SHADOW_FEET_TOUCH_FRAC of the taller
-    box, boxes touching sideways) AND one box is much darker than the other (mean brightness < SHADOW_BRIGHTNESS_RATIO x)."""
+    box, boxes touching sideways) AND either one box is much darker than the other (mean brightness <
+    SHADOW_BRIGHTNESS_RATIO x) or one is much shorter (height < SHADOW_HEIGHT_RATIO x)."""
     hmax = max(ta_box[3] - ta_box[1], tb_box[3] - tb_box[1], 1)
     feet = abs(ta_box[3] - tb_box[3]) <= SHADOW_FEET_TOUCH_FRAC * hmax
     side = max(ta_box[0], tb_box[0]) <= min(ta_box[2], tb_box[2])
     if not (feet and side):
         return False
+    hmin = min(ta_box[3] - ta_box[1], tb_box[3] - tb_box[1])
+    if SHADOW_HEIGHT_RATIO and hmin < SHADOW_HEIGHT_RATIO * hmax:
+        return True                                    # same foot line, much shorter: a shadow on the wall, not a person
     frame = CURRENT_FRAME["frame"] if frame is None else frame
     if frame is None:
         return False
@@ -454,15 +432,6 @@ def knife_recent(track, now):
     loc = getattr(track, "loc", None)
     last = None if loc is None else loc.last_hit.get(KNIFE_CLASS)
     return last is not None and 0 <= now - last[3] <= KNIFE_PRESENT_SECONDS
-
-
-def freeze_seconds(default):
-    """E12 hold time: FREEZE_SECONDS_V621 with the v6.2 switch on, else the pre-v6.2 value."""
-    return FREEZE_SECONDS_V621 if holdup_rules_on() else default
-
-
-def boxes_overlap_heavily(a, b):
-    return holdup_rules_on() and _iou(a, b) > FREEZE_SKIP_IOU
 
 
 def _count(cmd, reason):
@@ -501,11 +470,20 @@ def update_puffs(cmd, track, dets, now):
             loc.cig_at_wrist[w] = now
     if mouth is not None and any(_dist(_center(b), mouth) <= close_mouth for b in cigs):
         loc.cig_at_mouth = now
+    shoulder_w = anchors["close"] / CLOSE_SHOULDER_FRAC if anchors.get("has_shoulders") else 0.0
     for w in WRISTS:
         pos = anchors.get(w)
-        if pos is None or mouth is None:
-            continue                                    # unknown this frame: keep the previous zone state
-        in_zone = _dist(pos, mouth) <= close_mouth
+        if mouth is None:
+            continue
+        if pos is not None:
+            in_zone = _dist(pos, mouth) <= close_mouth
+        else:
+            # v6.2.6 elbow fallback: this wrist's keypoint is missing, but its elbow is visible -- an elbow within
+            # PUFF_ELBOW_SHOULDER_FRAC x shoulder width of the mouth means the forearm is folded up to the face.
+            elbow = kp[ELBOWS[w]] if (ELBOW_FALLBACK and shoulder_w >= 1) else None
+            if elbow is None or elbow[2] < KP_CONF_MIN:
+                continue                                # unknown this frame: keep the previous zone state
+            in_zone = _dist((float(elbow[0]), float(elbow[1])), mouth) <= PUFF_ELBOW_SHOULDER_FRAC * shoulder_w
         was = loc.in_zone.get(w)
         loc.in_zone[w] = in_zone
         if in_zone and was is False and (loc.last_reach is None or now - loc.last_reach >= PUFF_MIN_GAP_SECONDS):

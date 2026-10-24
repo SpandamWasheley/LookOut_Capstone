@@ -51,10 +51,10 @@ class BaseScoreTests(unittest.TestCase):
             self.assertEqual((pts(ev), ev.band), (55, MONITORING))
             self.assertEqual(ev.capped, "capped: no frozen pair")
 
-    def test_knife_and_loitering_is_possible_by_default(self):
-        # HOLDUP_V621_RULES is off by default: holdup keeps its pre-v6.2 rules
-        ev = evidence({"E14", "E10"})
-        self.assertEqual((pts(ev), ev.band), (55, WARNING))
+    def test_knife_and_loitering_is_possible_with_the_v6_holdup_rules(self):
+        with mock.patch("core.vision.location_momentum.HOLDUP_V621_RULES", False):
+            ev = evidence({"E14", "E10"})
+            self.assertEqual((pts(ev), ev.band), (55, WARNING))
 
     def test_knife_and_freeze_is_possible(self):
         ev = evidence({"E14", "E12"})
@@ -287,17 +287,11 @@ class FreezeNeedsKnifeTests(unittest.TestCase):
             s.hold(2.5, persons=[pbox(600, 300), pbox(685, 300)])
             self.assertTrue(next(iter(s.engine.pairs.values())).freeze_ok)
 
-    def test_the_freeze_needs_3_seconds_in_v621(self):
-        with mock.patch("core.vision.location_momentum.HOLDUP_V621_RULES", True):
-            s = Scene()
-            s.hold(2.5, persons=[pbox(600, 300), pbox(685, 300)])
-            self.assertFalse(next(iter(s.engine.pairs.values())).freeze_ok)
-            s.hold(1.0, persons=[pbox(600, 300), pbox(685, 300)])
-            self.assertTrue(next(iter(s.engine.pairs.values())).freeze_ok)
-
-    def test_the_freeze_is_2_seconds_by_default(self):
+    def test_staying_close_needs_2_seconds_in_v625(self):
         s = Scene()
-        s.hold(2.5, persons=[pbox(600, 300), pbox(685, 300)])
+        s.hold(1.5, persons=[pbox(600, 300), pbox(685, 300)])
+        self.assertFalse(next(iter(s.engine.pairs.values())).freeze_ok)
+        s.hold(1.0, persons=[pbox(600, 300), pbox(685, 300)])
         self.assertTrue(next(iter(s.engine.pairs.values())).freeze_ok)
 
     def test_the_freeze_speed_limit_is_0_3(self):
@@ -305,11 +299,12 @@ class FreezeNeedsKnifeTests(unittest.TestCase):
         self.assertEqual(theft.FREEZE_SPEED, 0.3)
 
     def test_a_pair_moving_fast_is_not_frozen(self):
-        # both walking together at about one body height per second: close, but not still
-        s = Scene()
-        for i in range(60):
-            s.step(persons=[pbox(600 + i * 10, 300), pbox(685 + i * 10, 300)])
-        self.assertFalse(next(iter(s.engine.pairs.values())).freeze_ok)
+        # both walking together at about one body height per second: close, but not still (the v6 rule)
+        with mock.patch("core.vision.location_momentum.HOLDUP_V621_RULES", False):
+            s = Scene()
+            for i in range(60):
+                s.step(persons=[pbox(600 + i * 10, 300), pbox(685 + i * 10, 300)])
+            self.assertFalse(next(iter(s.engine.pairs.values())).freeze_ok)
 
     def test_a_knife_after_the_freeze_ended_does_not(self):
         s, holder, state = self._frozen_pair()
@@ -365,9 +360,10 @@ class ApproachThenFreezeTests(unittest.TestCase):
         self.assertEqual(set(cues), {"E12", "E11E12"})
 
     def test_a_freeze_long_after_the_approach_is_not(self):
-        s = self._scene(wait_before_freeze=8.0)
-        state = next(iter(s.engine.pairs.values()))
-        self.assertFalse(state.seq_ok)
+        with mock.patch("core.vision.location_momentum.HOLDUP_V621_RULES", False):                       # v6: the freeze only starts once they are still
+            s = self._scene(wait_before_freeze=8.0)
+            state = next(iter(s.engine.pairs.values()))
+            self.assertFalse(state.seq_ok)
 
     def test_no_approach_means_no_sequence(self):
         s = Scene()
@@ -377,77 +373,87 @@ class ApproachThenFreezeTests(unittest.TestCase):
         self.assertFalse(state.seq_ok)
 
 
-if __name__ == "__main__":
-    unittest.main()
 
+class CloseStayV625Tests(unittest.TestCase):
+    """v6.2.5: E12 = the pair stayed within the close distance for 2 s (no speed requirement, overlap counts); a walk-past is rejected."""
 
-class FrozenPairV621Tests(unittest.TestCase):
-    """v6.2.1: E12 needs the pair close AND slow for 3 s; heavily overlapping frames are skipped.
-    (These rules are behind HOLDUP_V621_RULES, off by default, so each test switches them on.)"""
-
-    def setUp(self):
-        patcher = mock.patch("core.vision.location_momentum.HOLDUP_V621_RULES", True)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
-    def freeze_ok(self, s):
+    def e12(self, s):
         return any(st.freeze_ok for st in s.engine.pairs.values())
 
-    def test_a_walk_past_is_not_a_frozen_pair(self):
+    def test_a_walk_past_is_not_e12_even_with_a_knife_hallucination_on_the_still_man(self):
         s = Scene()
-        for i in range(30):                                     # approach from 3 body heights away
-            s.step(persons=[pbox(300 + i * 10, 300), pbox(900 - i * 10, 300)])
-        s.hold(1.0, persons=[pbox(600, 300), pbox(685, 300)])   # about 1 s close and still
-        for i in range(30):                                     # and walk off apart
-            s.step(persons=[pbox(600 - i * 10, 300), pbox(685 + i * 10, 300)])
-        self.assertFalse(self.freeze_ok(s))
+        s.hold(1.0, persons=[pbox(600, 300), pbox(100, 300)])           # the holder stands; the other is far away
+        for i in range(90):                                              # the other walks past him at one height per second
+            s.step(persons=[pbox(600, 300), pbox(100 + i * 10, 300)])
+        s.hold(1.0, persons=[pbox(600, 300), pbox(1000, 300)])
+        self.assertFalse(self.e12(s))
         self.assertEqual(s.of_kind("holdup"), [])
 
-    def test_two_people_close_and_still_for_4_seconds_is_a_frozen_pair(self):
+    def test_a_slow_pass_that_never_separates_is_not_a_pass_through(self):
         s = Scene()
-        s.hold(4.0, persons=[pbox(600, 300), pbox(685, 300)])
-        self.assertTrue(self.freeze_ok(s))
+        s.hold(1.0, persons=[pbox(600, 300), pbox(400, 300)])
+        for i in range(30):
+            s.step(persons=[pbox(600, 300), pbox(400 + i * 5, 300)])
+        s.hold(4.0, persons=[pbox(600, 300), pbox(550, 300)])            # ... and then stays
+        self.assertTrue(self.e12(s))
 
-    @staticmethod
-    def _pair_state():
+    def test_approach_and_stay_close_3_seconds_with_overlapping_boxes_and_some_movement_is_e12(self):
+        s = Scene()
+        s.hold(1.0, persons=[pbox(600, 300), pbox(900, 300)])
+        x = 900
+        while x > 630:                                                   # walks up to him
+            x -= 10
+            s.step(persons=[pbox(600, 300), pbox(x, 300)])
+        for i in range(30):                                              # 3 s close, boxes overlap (IoU > 0.4), fidgeting
+            s.step(persons=[pbox(600 + (2 if i % 2 else -2), 300), pbox(x + (2 if i % 3 else -2), 300)])
+        self.assertTrue(self.e12(s))
+
+    def test_two_pedestrians_walking_side_by_side_are_not_e12(self):
+        s = Scene()
+        for i in range(80):                                              # both walk at one height per second, 0.6 heights apart
+            s.step(persons=[pbox(300 + i * 10, 300), pbox(360 + i * 10, 300)])
+        self.assertFalse(self.e12(s))
+        with mock.patch("core.vision.location_momentum.CO_WALKERS_REJECTED", False):
+            s = Scene()
+            for i in range(80):
+                s.step(persons=[pbox(300 + i * 10, 300), pbox(360 + i * 10, 300)])
+            self.assertTrue(self.e12(s))                                 # the switch restores "no speed requirement"
+
+    def test_a_standoff_where_one_person_stays_still_is_e12_even_if_the_other_fidgets(self):
+        s = Scene()
+        for i in range(40):                                              # the other walks around the still holder at a steady 0.5 heights/s
+            s.step(persons=[pbox(600, 300), pbox(660 + 20 * ((i // 10) % 2), 300)])
+        s.hold(2.0, persons=[pbox(600, 300), pbox(660, 300)])
+        self.assertTrue(self.e12(s))
+
+    def test_1_5_seconds_close_is_not_enough(self):
+        s = Scene()
+        s.hold(1.5, persons=[pbox(600, 300), pbox(660, 300)])
+        for i in range(40):                                              # walks away smoothly
+            s.step(persons=[pbox(600, 300), pbox(660 + i * 10, 300)])
+        self.assertFalse(self.e12(s))
+
+    def test_a_short_break_on_the_close_line_does_not_end_the_stay(self):
+        st = theft.PairState((1, 2), 0.0)
+
         class T:
-            def __init__(self, box):
-                self.box = box
+            box = (0, 0, 60, 100)
 
             def heading(self, now):
                 return None
-        return theft.PairState((1, 2), 0.0), T
-
-    def _feed(self, st, T, t0, seconds, boxes):
-        n = int(round(seconds / 0.1))
-        for i in range(n):
-            now = t0 + (i + 1) * 0.1
-            st.update(T(boxes[0]), T(boxes[1]), 0.8, 0.0, 0.0, now, theft.REACH_NORM)
-        return t0 + n * 0.1
-
-    def test_overlap_frames_do_not_count_toward_the_3_seconds(self):
-        st, T = self._pair_state()
-        clean = ((570, 250, 630, 350), (655, 250, 715, 350))
-        overlap = ((570, 250, 630, 350), (590, 250, 650, 350))          # IoU 0.5 > 0.4
-        t = self._feed(st, T, 0.0, 1.0, clean)
-        t = self._feed(st, T, t, 3.0, overlap)                           # skipped: not counted
-        t = self._feed(st, T, t, 1.0, clean)
-        self.assertFalse(st.freeze_ok)                                   # ~2 s of clean freezing in 5 s of wall time
-        self._feed(st, T, t, 1.2, clean)
+        now = 0.0
+        for d in [0.5] * 10 + [1.2] * 2 + [0.5] * 14:                     # 0.2 s jitter outside the close distance
+            now += 0.1
+            st.update(T(), T(), d, 0.0, 0.0, now, theft.REACH_NORM)
         self.assertTrue(st.freeze_ok)
 
-    def test_overlap_frames_do_not_reset_it_either(self):
-        st, T = self._pair_state()
-        clean = ((570, 250, 630, 350), (655, 250, 715, 350))
-        overlap = ((570, 250, 630, 350), (590, 250, 650, 350))
-        t = self._feed(st, T, 0.0, 2.0, clean)
-        t = self._feed(st, T, t, 0.5, overlap)
-        self.assertIsNotNone(st.freeze_since)                            # not reset by the skipped frames
-        self._feed(st, T, t, 1.2, clean)
-        self.assertTrue(st.freeze_ok)
-
-    def test_switch_off_restores_the_old_2_second_hold(self):
-        with mock.patch("core.vision.location_momentum.LOCATION_AWARE_MOMENTUM", False):
+    def test_switch_off_restores_the_v6_speed_rule(self):
+        with mock.patch("core.vision.location_momentum.HOLDUP_V621_RULES", False):
             s = Scene()
-            s.hold(2.5, persons=[pbox(600, 300), pbox(685, 300)])
-            self.assertTrue(self.freeze_ok(s))
+            for i in range(60):
+                s.step(persons=[pbox(600 + i * 10, 300), pbox(685 + i * 10, 300)])
+            self.assertFalse(self.e12(s))
+
+
+if __name__ == "__main__":
+    unittest.main()

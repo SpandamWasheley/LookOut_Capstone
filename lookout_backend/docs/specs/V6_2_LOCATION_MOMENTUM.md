@@ -209,3 +209,51 @@ Post-processing in `ai_status`: `people_count < 2` -> badge "may be ordinary" an
 ## Caveats
 * The filter needs a visible skeleton, so a REAL second person who is far, small or turned away (no face keypoint) is not counted, and a real holdup between distant people can be missed. The thresholds are in the constants block.
 * The smoking and drinking engines are unchanged by this version.
+
+# v6.2.5 — holdup recall restored, pass-through only
+
+Goal: stop false holdups from people walking past or walking together with a knife hallucination, without blocking real holdups. `SCORING_SPEC_VERSION = "v6.2.5"`.
+Holdup rules are switched on again (`HOLDUP_V621_RULES = True`; with `LOCATION_AWARE_MOMENTUM = False` everything is v6).
+
+## Diagnosis (dry runs of 3 real holdups + the ALT-0152 clip, `v62_test_results/v625/`)
+Clips: `yo/Holdup/Aug24_16 - TrimHoldupBldg` (the only file in that folder), and two staged holdups from `Desktop/Demo` (`Holdup.mp4`, `Holdup 2.mp4`), plus ALT-0152 (`Aug18_18 - TrimCigaretteNightFar1`, to 32 s).
+For every frame of a pair that contains a knife holder the raw facts of each rule were logged (`logs/*_result.json`, summary by `_analyze.py`).
+* **What blocked real holdups.** The speed requirement of the old E12 ("both people slower than 0.3"): in the real holdup the two people stayed within the close distance for 7.5 s, but both were slow for at most 0.4 s
+  (54 of 76 close frames failed the speed test), so E12 never fired and the alert only reached Possible through loitering (E10). The v6.2.1 changes then made it worse: a 3 s hold, an IoU > 0.4 skip (frames where boxes overlap neither counted nor reset), E10 no longer
+  corroborating (cap "no frozen pair"), and a 1 s knife presence window (knife seen > 1 s ago in 22 of 44 close frames of one clip). The keypoint filter of v6.2.4 never bit on these real pairs (their skeletons were seen), but it would have removed
+  any real person that is small or far. In the version that was running (v6.2.4 with `HOLDUP_V621_RULES = False`) the real holdups still reached Possible, but only through E10 and with no E12.
+* **`Demo/Holdup.mp4` never alerts in any version** (only 9 knife detections, the momentum cue never reaches ON), so it is not a regression and was not used as a pass/fail case.
+* **ALT-0152:** the "second person" was the man's shadow, tracked as #7 and carrying the knife detection. Its brightness is 58-90 % of the man's (never below 60 %), but its box is only 50-63 % as tall with the bottom edge on the same line.
+
+## Changes (all behind `LOCATION_AWARE_MOMENTUM`; named constants in the marked block)
+1. **E12 = "stayed close".** Both people within `CLOSE_DISTANCE` (1.0 person heights, not widened in crowds) for `CLOSE_STAY_SECONDS` (2.0 s of video time). No speed requirement for both, overlapping boxes count as close (the IoU skip is gone),
+   a break shorter than `CLOSE_GAP_TOLERANCE_SECONDS` (0.3 s) does not end the stay.
+2. **Pass-through rejection.** If a person was moving (speed > `PASS_MOVING_SPEED` 0.3) over `PASS_BEFORE_WINDOW_SECONDS` before the closest approach AND after it, E12 waits `PASS_SEPARATE_SECONDS` (2.0 s) after the closest approach;
+   if the pair separates past the close distance in that time it is a pass-through and the encounter never gets E12. A pair that stays close longer is not a pass-through.
+3. **Additions I made beyond the brief, because the clips needed them** (each has a switch / constant):
+   * `CLOSE_DISTANCE` is not widened by the legacy crowd rule (E23 widens every gate by 1.3 above 6 people; a scooter passing a pedestrian counted as close in `drk_KabilangRoad1`).
+   * `CO_WALKERS_REJECTED = True`: two people who BOTH keep walking (median speed > 0.3 over the last 2 s) are not a standoff; E12 is withdrawn while that holds and its 5 s hold is counted from the last frame that was not co-walking. One of the two must be slow.
+     Without this, two pedestrians walking side by side plus a knife hallucination gave a false Possible in `drk_KabilangRoad1` (the brief's "no speed requirement for both" does not distinguish them). Real holdups in the clips had at least one slow person (medians 0.12-0.33).
+   * `SHADOW_HEIGHT_RATIO = 0.65`: a pair on the same foot line (bottom edges within 15 %, boxes touching sideways) is also a shadow when the shorter box is under 65 % of the taller's height. The brightness rule alone (< 60 %) never fired on ALT-0152.
+     In the real holdups the pair height ratios were 0.79+ and 0.89+. A child standing next to an adult at the same depth could be mistaken for a shadow.
+4. **Fake-person filter:** the face-keypoint / 6-keypoint requirement is removed (functions and constants deleted). Only the shadow rule remains (`FAKE_PERSON_FILTER`, `SHADOW_FEET_TOUCH_FRAC` 0.15, `SHADOW_BRIGHTNESS_RATIO` 0.6, `SHADOW_HEIGHT_RATIO` 0.65).
+5. **Knife:** confidence weighting and the jump / flip checks stay; a knife counts as present for E14 if an accepted hit is at most `KNIFE_PRESENT_SECONDS` (2.0 s, was 1.0 s) old.
+6. **Kept:** knife without E12 caps at Monitoring (`capped: no frozen pair`), sticky status, the v6.2.4 Qwen holdup changes (no system note, `people_count`).
+
+## Results (dry runs; highest status per knife event)
+| clip | event | v6.2 original | v6.2.4 | v6.2.5 |
+|---|---|---|---|---|
+| Aug24_16 real holdup | #2 (21.7 s) | Possible | Possible | Likely (first 19 frames capped at Monitoring until E12 held) |
+| | #1 (24.8 s) | Possible | Possible | Likely |
+| Demo Holdup 2 (real) | #1 (38 s) | Possible | Possible | Likely |
+| | #2 (45 s) | Likely | Possible | Possible |
+| Demo Holdup (real) | - | no event | no event | no event |
+| ALT-0152 (shadow) | #4 (23.6 s) | Possible | Monitoring | Monitoring |
+| Trim2 (walk-past) | #8 | Monitoring | Monitoring | no event |
+| Kabilang (walk-pasts) | #61 / #91 / #102 | Monitoring | Monitoring | no event / Monitoring / Monitoring |
+Real holdups reach Possible or Likely; ALT-0152 and the walk-pasts stay at Monitoring or below. Note the real holdups now often reach Likely (E10 + E12 + E14), higher than before, because E12 now fires on them.
+
+## Limits
+* The close-stay rule fires on anyone who stands near a knife holder for 2 s, including friends standing together; the knife cue and the cap are then the only protection.
+* The shadow height rule is a heuristic tuned on one footage set (ALT-0152).
+* Three real holdup clips (one never detected) and two walk-past clips are a small sample; thresholds are in the constants block.

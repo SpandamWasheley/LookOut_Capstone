@@ -10,81 +10,37 @@ from core.vision import location_momentum as lm
 from core.vision import scoring
 
 
-def skeleton(n_good=15, face=True):
-    k = np.zeros((17, 3), dtype=float)
-    for i in range(n_good):
-        k[i] = (100 + i, 100 + i, 0.9)
-    if not face:
-        k[0:3, 2] = 0.1
-    return k
+def dark_shadow_frame():
+    f = np.zeros((720, 1280, 3), dtype=np.uint8)
+    f[250:350, 570:630] = 200                                              # the man
+    f[250:350, 630:680] = 60                                               # his shadow on the shutter
+    return f
 
 
-class Tr:
-    def __init__(self, tid, box):
-        self.id, self.box = tid, box
+class ShadowEngineTests(unittest.TestCase):
+    """The engine ignores a person + own shadow, and (v6.2.5) no longer needs skeletons."""
 
+    def tearDown(self):
+        lm.CURRENT_FRAME["frame"] = None
 
-class FakePersonFilterTests(unittest.TestCase):
-    def setUp(self):
-        lm.reset()
+    def test_a_person_and_own_shadow_never_form_a_pair(self):
+        lm.CURRENT_FRAME["frame"] = dark_shadow_frame()
+        s = Scene()
+        s.hold(6.0, persons=[pbox(600, 300), pbox(650, 300)])
+        self.assertEqual(s.engine.pairs, {})
 
-    def test_skeleton_needs_6_keypoints_and_a_face_keypoint(self):
-        self.assertTrue(lm.skeleton_ok(skeleton(15)))
-        self.assertFalse(lm.skeleton_ok(skeleton(5, face=True)))          # too few keypoints
-        self.assertFalse(lm.skeleton_ok(skeleton(15, face=False)))        # body only, no nose / eye (a shadow's blob)
-        k = skeleton(15, face=False)
-        k[1] = (50, 50, 0.31)                                              # one eye is enough
-        self.assertTrue(lm.skeleton_ok(k))
-
-    def test_a_person_with_a_skeleton_is_real_and_a_shadow_is_not(self):
-        man, shade = Tr(1, (2038, 597, 2158, 868)), Tr(7, (1986, 691, 2064, 842))
-        for i in range(10):
-            lm.update_person_evidence([man, shade], 1.0 + i * 0.1, poses=[(man.box, skeleton())])
-        self.assertTrue(lm.is_real_person(man, 2.0))
-        self.assertFalse(lm.is_real_person(shade, 2.0))
-
-    def test_one_stray_pose_match_does_not_make_a_shadow_real(self):
-        shade = Tr(7, (1986, 691, 2064, 842))
-        for i in range(10):
-            poses = [(shade.box, skeleton())] if i == 4 else []
-            lm.update_person_evidence([shade], 1.0 + i * 0.1, poses=poses)
-        self.assertFalse(lm.is_real_person(shade, 2.0))
-
-    def test_no_pose_information_fails_open(self):
-        t = Tr(3, (0, 0, 60, 100))
-        self.assertTrue(lm.is_real_person(t, 5.0))                         # never watched
-        self.assertFalse(lm.update_person_evidence([t], 5.0, poses=None) and False)
-        with mock.patch.object(lm, "_frame_poses", return_value=None):
-            self.assertFalse(lm.update_person_evidence([t], 5.0))
-        self.assertTrue(lm.is_real_person(t, 5.0))
-
-    def test_the_skeleton_must_be_recent(self):
-        t = Tr(3, (0, 0, 60, 100))
-        for i in range(5):
-            lm.update_person_evidence([t], 1.0 + i * 0.1, poses=[(t.box, skeleton())])
-        self.assertTrue(lm.is_real_person(t, 1.5))
-        self.assertFalse(lm.is_real_person(t, 9.0))                        # the evidence is older than the window
-
-    def test_a_pair_with_a_shadow_never_forms_a_frozen_pair(self):
-        man_box, shade_box = pbox(600, 300), pbox(685, 300)
-        both = [(man_box, skeleton()), (shade_box, skeleton())]
-        only_man = [(man_box, skeleton())]
-        with mock.patch.object(lm, "_frame_poses", return_value=only_man):
-            s = Scene()
-            s.hold(6.0, persons=[man_box, shade_box])
-            self.assertFalse(any(st.freeze_ok for st in s.engine.pairs.values()))
-        with mock.patch.object(lm, "_frame_poses", return_value=both):
-            s = Scene()
-            s.hold(6.0, persons=[man_box, shade_box])
-            self.assertTrue(any(st.freeze_ok for st in s.engine.pairs.values()))
+    def test_two_real_people_standing_close_do_form_a_pair_without_any_pose_data(self):
+        lm.CURRENT_FRAME["frame"] = np.full((720, 1280, 3), 150, dtype=np.uint8)   # equally lit
+        s = Scene()
+        s.hold(6.0, persons=[pbox(600, 300), pbox(650, 300)])
+        self.assertTrue(any(st.freeze_ok for st in s.engine.pairs.values()))
 
     def test_switch_off_restores_the_old_pairing(self):
-        man_box, shade_box = pbox(600, 300), pbox(685, 300)
-        with mock.patch.object(lm, "_frame_poses", return_value=[(man_box, skeleton())]), \
-                mock.patch.object(lm, "LOCATION_AWARE_MOMENTUM", False):
+        lm.CURRENT_FRAME["frame"] = dark_shadow_frame()
+        with mock.patch.object(lm, "FAKE_PERSON_FILTER", False):
             s = Scene()
-            s.hold(6.0, persons=[man_box, shade_box])
-            self.assertTrue(any(st.freeze_ok for st in s.engine.pairs.values()))
+            s.hold(6.0, persons=[pbox(600, 300), pbox(650, 300)])
+            self.assertTrue(s.engine.pairs)
 
 
 class ShadowPairTests(unittest.TestCase):
@@ -100,6 +56,13 @@ class ShadowPairTests(unittest.TestCase):
         self.assertTrue(lm.is_shadow_pair(a, b, frame=frame))
         frame = self.frame(190, 150)                                       # 79 %: a second person in the dark, not a shadow
         self.assertFalse(lm.is_shadow_pair(a, b, frame=frame))
+
+    def test_a_much_shorter_box_on_the_same_foot_line_is_a_shadow_even_if_not_dark(self):
+        man, shade = (100, 100, 190, 400), (190, 215, 270, 395)            # 300 vs 180 px tall: ratio 0.6
+        self.assertTrue(lm.is_shadow_pair(man, shade, frame=self.frame(150, 140)))
+        self.assertFalse(lm.is_shadow_pair(man, (190, 160, 270, 395), frame=self.frame(150, 140)))   # 235 px: ratio 0.78, a real person
+        with mock.patch.object(lm, "SHADOW_HEIGHT_RATIO", 0):
+            self.assertFalse(lm.is_shadow_pair(man, shade, frame=self.frame(150, 140)))
 
     def test_feet_apart_or_boxes_apart_is_not_a_shadow_pair(self):
         a = (100, 100, 190, 300)
@@ -161,7 +124,7 @@ class HoldupQwenTests(unittest.TestCase):
         self.assertIn({"field": "people_count", "label": "Distinct real people seen", "value": 2}, ctx["checklist"])
 
     def test_spec_version(self):
-        self.assertEqual(scoring.SCORING_SPEC_VERSION, "v6.2.4")
+        self.assertEqual(scoring.SCORING_SPEC_VERSION, "v6.2.5")
 
 
 if __name__ == "__main__":

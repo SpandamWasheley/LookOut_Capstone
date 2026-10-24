@@ -865,19 +865,15 @@ class PairState:
             self.close_at = now
 
         # E12 — confrontation freeze.
-        # v6.2.1: the pair must be close AND slow continuously for FREEZE_SECONDS_V621 (3 s). Frames in
-        # which the two person boxes overlap heavily (a walk-past, one person hidden by the other) are
-        # skipped: they neither count toward the hold time nor reset it.
-        prev_t = getattr(self, "_freeze_prev_t", None)
-        self._freeze_prev_t = now
-        if location_momentum.boxes_overlap_heavily(ta.box, tb.box):
-            if self.freeze_since is not None and prev_t is not None:
-                self.freeze_skipped = getattr(self, "freeze_skipped", 0.0) + (now - prev_t)
+        if location_momentum.holdup_rules_on():
+            # v6.2.5: E12 = the pair STAYED CLOSE for CLOSE_STAY_SECONDS (no speed requirement, overlapping boxes
+            # count as close), unless it was a pass-through (someone moving before AND after the closest approach
+            # who is back outside the close distance within PASS_SEPARATE_SECONDS).
+            self._update_close_stay(d, va, vb, now, reach)
             return self._after_freeze(va, vb, now)
         if d < FREEZE_REACH * (reach / REACH_NORM) and va < FREEZE_SPEED and vb < FREEZE_SPEED:
             if self.freeze_since is None:
                 self.freeze_since = now
-                self.freeze_skipped = 0.0
                 # E11 -> E12: did a rapid approach (E11) end no more than
                 # E11_E12_WINDOW_SECONDS before this freeze began? (A second of
                 # slack the other way: the freeze can start as the approach lands.)
@@ -885,8 +881,7 @@ class PairState:
                                        and -1.0 <= now - self.close_at <= E11_E12_WINDOW_SECONDS)
             self.freeze_last = now
             was_ok = self.freeze_ok
-            held = now - self.freeze_since - getattr(self, "freeze_skipped", 0.0)
-            self.freeze_ok = held >= location_momentum.freeze_seconds(FREEZE_SECONDS)
+            self.freeze_ok = now - self.freeze_since >= FREEZE_SECONDS
             if self.freeze_ok and not was_ok:
                 self.freeze_start_ok = self.freeze_since
                 self.seq_ok = bool(getattr(self, "_seq_candidate", False))
@@ -895,6 +890,70 @@ class PairState:
             self.freeze_ok = False
 
         return self._after_freeze(va, vb, now)
+
+    def _update_close_stay(self, d, va, vb, now, reach):
+        """v6.2.5 E12 state machine (see the comment at the call). `freeze_since` is the start of the current close
+        run, `freeze_ok` latches once the run has lasted CLOSE_STAY_SECONDS and is not a pass-through."""
+        hist = self.__dict__.setdefault("_spd_hist", deque())
+        hist.append((now, va, vb))
+        while hist and now - hist[0][0] > 8.0:
+            hist.popleft()
+        if d < location_momentum.CLOSE_DISTANCE:
+            self._close_last = now
+            if self.freeze_since is None:                      # a new close run begins
+                self.freeze_since = now
+                self._run_dmin, self._run_tc = d, now
+                self._run_samples = []
+                self._seq_candidate = (self.close_at is not None
+                                       and -1.0 <= now - self.close_at <= E11_E12_WINDOW_SECONDS)
+            elif d < self._run_dmin:
+                self._run_dmin, self._run_tc = d, now
+            self._run_samples.append((now, va, vb))
+            walking = self._co_walking(now)
+            if walking:
+                self.freeze_ok = False                         # two people walking side by side are not a standoff (re-checked every frame)
+            else:
+                self.freeze_last = now                         # the hold (cue_hold) is counted from the last frame that was not co-walking
+                if (not self.freeze_ok
+                        and now - self.freeze_since >= location_momentum.CLOSE_STAY_SECONDS
+                        and not self._pass_through_possible(now)):
+                    self.freeze_ok = True
+                    self.freeze_start_ok = self.freeze_since
+                    self.seq_ok = bool(getattr(self, "_seq_candidate", False))
+            return
+        last = getattr(self, "_close_last", None)
+        if self.freeze_since is not None and last is not None and now - last <= location_momentum.CLOSE_GAP_TOLERANCE_SECONDS:
+            return                                             # jitter on the close-distance line: the stay goes on
+        self.freeze_since = None                               # the run ended (a pass-through never got E12)
+        self.freeze_ok = False
+
+    def _co_walking(self, now):
+        """True when BOTH people were walking over the last CLOSE_STAY_SECONDS of this close run (pedestrians side by side)."""
+        if not location_momentum.CO_WALKERS_REJECTED:
+            return False
+        recent = [(va, vb) for t, va, vb in self._run_samples if now - t <= location_momentum.CLOSE_STAY_SECONDS]
+        if len(recent) < 3:
+            return False
+        med = lambda xs: sorted(xs)[len(xs) // 2]                      # noqa: E731
+        return (med([x[0] for x in recent]) > location_momentum.PASS_MOVING_SPEED
+                and med([x[1] for x in recent]) > location_momentum.PASS_MOVING_SPEED)
+
+    def _pass_through_possible(self, now):
+        """True while this close run still looks like a walk-past that has not yet had time to separate: a person was moving
+        both before and after the closest approach, and fewer than PASS_SEPARATE_SECONDS have passed since it."""
+        tc = self._run_tc
+        before = [(va, vb) for t, va, vb in self._spd_hist
+                  if tc - location_momentum.PASS_BEFORE_WINDOW_SECONDS <= t <= tc]
+        after = [(va, vb) for t, va, vb in self._spd_hist if tc < t <= now]
+        if not before or len(after) < 2:
+            return False
+
+        def moving(xs):
+            xs = sorted(xs)
+            return xs[len(xs) // 2] > location_momentum.PASS_MOVING_SPEED
+
+        walker = any(moving([x[i] for x in before]) and moving([x[i] for x in after]) for i in (0, 1))
+        return walker and now - tc <= location_momentum.PASS_SEPARATE_SECONDS
 
     def _after_freeze(self, va, vb, now):
         """The rest of update(): E24 sampling and the snatch candidate (runs even on a skipped E12 frame)."""
@@ -1031,15 +1090,6 @@ class TheftEngine:
         usable = [t for t in people if self._usable(t, now)]
         self.anchors.update(vehicles, carriables, usable, now)
         self._stamp_loiterers(usable, now)
-        # v6.2.4: a pair needs two REAL people. A shadow or reflection the person detector boxed has no skeleton.
-        pair_tracks = usable
-        self._not_real = set()
-        if location_momentum.fake_person_filter_on():
-            if location_momentum.update_person_evidence(usable, now):
-                self._not_real = {t.id for t in usable if not location_momentum.is_real_person(t, now)}
-                if self._not_real:
-                    self._bump("holdup pair: track without a skeleton ignored")
-                    pair_tracks = [t for t in usable if t.id not in self._not_real]
 
         evidence = []
         # E20 is read once per frame, not per evidence item: every incident in
@@ -1048,7 +1098,7 @@ class TheftEngine:
         self._time_bonus = scoring.manila_time_bonus(now_dt)
         self._time_label = scoring.manila_block_label(now_dt)
 
-        evidence += self._pair_evidence(pair_tracks, now, reach, threats, is_night)
+        evidence += self._pair_evidence(usable, now, reach, threats, is_night)
         evidence += self._carnapping_evidence(usable, now, is_night)
         evidence += self._property_evidence(usable, now, is_night)
         evidence += self._weapon_evidence(usable, threats, now, is_night)
@@ -1358,12 +1408,9 @@ class TheftEngine:
         out = {}
         if self._off("e12"):
             return out
-        not_real = getattr(self, "_not_real", ())
         for (a, b), st in self.pairs.items():
             if holder_id not in (a, b) or st.freeze_start_ok is None:
                 continue
-            if a in not_real or b in not_real:
-                continue                                  # v6.2.4: one of the two has no skeleton
             active = st.freeze_ok or (st.freeze_last is not None and now - st.freeze_last <= hold)
             if not active:
                 continue

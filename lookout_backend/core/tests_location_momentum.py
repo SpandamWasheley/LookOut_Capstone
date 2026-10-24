@@ -98,11 +98,17 @@ class LocationGateTests(unittest.TestCase):
         out, why = lm.evaluate_track(self.cmd, t, [cig(60, 160, cls="knife", conf=0.8)], 1.0)
         self.assertEqual((out["knife"], why), (0.0, "flip"))
 
-    def test_knife_counts_as_present_for_one_second_only(self):
+    def test_knife_counts_as_present_for_two_seconds(self):
         t = person(None, 1.0)
         lm.evaluate_track(self.cmd, t, [cig(60, 160, cls="knife", conf=0.8)], 1.0)
-        self.assertTrue(lm.knife_recent(t, 1.9))
-        self.assertFalse(lm.knife_recent(t, 2.1))
+        self.assertTrue(lm.knife_recent(t, 2.9))
+        self.assertFalse(lm.knife_recent(t, 3.1))
+
+    def test_a_knife_flickering_with_1_5_second_gaps_is_still_present(self):
+        t = person(None, 1.0)
+        for now in (1.0, 2.5, 4.0, 5.5):                                  # one accepted hit every 1.5 s
+            lm.evaluate_track(self.cmd, t, [cig(60, 160, cls="knife", conf=0.8)], now)
+            self.assertTrue(lm.knife_recent(t, now + 1.4), now)
 
     def test_flickering_low_confidence_knife_stays_below_on(self):
         from core.vision import momentum
@@ -176,6 +182,51 @@ class PuffTests(unittest.TestCase):
         n = self.frame(t, 2.0, (mouth[0] + 48, mouth[1]), [])
         self.assertEqual(n, 1)
 
+    def elbow_frame(self, t, now, elbow, dets):
+        k = kpts()                                                          # both wrists unknown (confidence 0)
+        k[7] = (*elbow, 0.9)
+        t.loc.kp, t.loc.kp_at = k, now
+        return lm.update_puffs(self.cmd, t, dets, now)
+
+    def test_elbow_fallback_counts_a_reach_when_the_wrist_is_missing(self):
+        # shoulders 80 px apart: elbow within 1.1 x 80 = 88 px of the mouth (100, 45.8) is "folded up to the face"
+        t = person(None, 0.0)
+        self.elbow_frame(t, 1.0, (60, 160), [cig(100, 50)])                # elbow hanging, cigarette seen at the mouth
+        n = self.elbow_frame(t, 2.0, (100, 45.8 + 80), [])                  # elbow 80 px below the mouth
+        self.assertEqual(n, 1)
+
+    def test_elbow_fallback_ignores_a_hanging_elbow(self):
+        t = person(None, 0.0)
+        self.elbow_frame(t, 1.0, (60, 160), [cig(100, 50)])
+        n = self.elbow_frame(t, 2.0, (70, 45.8 + 120), [])                  # 1.5 shoulder widths from the mouth
+        self.assertEqual(n, 0)
+
+    def test_elbow_fallback_can_be_switched_off(self):
+        from unittest import mock
+        t = person(None, 0.0)
+        with mock.patch.object(lm, "ELBOW_FALLBACK", False):
+            self.elbow_frame(t, 1.0, (60, 160), [cig(100, 50)])
+            self.assertEqual(self.elbow_frame(t, 2.0, (100, 45.8 + 80), []), 0)
+
+    def test_zoomed_pose_replaces_the_whole_frame_pose_for_a_far_person(self):
+        from unittest import mock
+        frame = np.zeros((1000, 1000, 3), dtype=np.uint8)
+        cmd = SimpleNamespace(stats=None, _gate_frame=frame)
+        t = SimpleNamespace(id=1, box=(40, 0, 160, 300))                    # 300 px tall in a 1000 px frame: far
+        zoomed = kpts(lw=(100, 50))
+        with mock.patch.object(lm, "shared_poses", return_value=[((40, 0, 160, 300), kpts())]), \
+                mock.patch.object(lm.recognition, "pose_on_box", return_value=zoomed) as zoom:
+            self.assertIs(lm.ensure_keypoints(cmd, t, 1.0), zoomed)
+            self.assertEqual(t.loc.kp_source, "zoom")
+            zoom.assert_called_once()
+        t = SimpleNamespace(id=2, box=(40, 0, 160, 600))                    # close up: the whole-frame pose is good enough
+        whole = kpts()
+        with mock.patch.object(lm, "shared_poses", return_value=[((40, 0, 160, 600), whole)]), \
+                mock.patch.object(lm.recognition, "pose_on_box") as zoom:
+            self.assertIs(lm.ensure_keypoints(cmd, t, 2.0), whole)
+            self.assertEqual(t.loc.kp_source, "full")
+            zoom.assert_not_called()
+
     def test_cap_rules(self):
         t = person(None, 0.0)
         self.assertEqual(lm.puff_cap(t, 20.0), ("monitoring", lm.CAP_NO_PUFF_TEXT))
@@ -204,7 +255,7 @@ class ScoreCapTests(unittest.TestCase):
         self.assertEqual((capped.level, capped.capped), (scoring.MONITORING, "capped: no puff"))
         self.assertEqual(capped.score, free.score)
         self.assertEqual(capped.as_dict()["checklist"]["capped"], "capped: no puff")
-        self.assertEqual(capped.as_dict()["spec"], "v6.2.4")
+        self.assertEqual(capped.as_dict()["spec"], "v6.2.5")
 
     def test_puff_only_path_is_not_capped(self):
         s = scoring.Score("smoking", scoring.SMOKING_WEIGHTS, {"gesture", "puffs", "puff_pattern"},
