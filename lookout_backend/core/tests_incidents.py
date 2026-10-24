@@ -12,7 +12,7 @@ from core.management.commands.watch_smoking import Command as SmokingCommand
 from core.models import Alert, Camera, ViolationType
 from unittest import mock
 
-from core.vision import location_momentum, scoring, tracking
+from core.vision import ai_checker, location_momentum, scoring, tracking
 
 BOX = (400, 200, 520, 500)
 CIG = (440, 230, 450, 245, 0.8, "Cigarette")
@@ -354,8 +354,10 @@ class AICheckerWiringTests(SmokingIncidentTests):
         sent = sorted(float(t) for t, _jpg, _boxes in
                       self.cmd.ai_ring.window(9.75))
         self.assertTrue(sent, "nothing was in the ring around the trigger")
-        self.assertGreater(min(sent), 5.0,
-                           "frames from the start of the event were sent")
+        self.assertGreaterEqual(min(sent), 9.75 - ai_checker.FRAMES_BEFORE - 1e-9,
+                                "frames from before the window were sent")
+        self.assertLess(self.cmd.ai_ring._items[0][0], min(sent),
+                        "the ring held nothing older than the window, so this proves nothing")
 
     def test_an_event_opening_straight_at_possible_is_checked_at_that_moment(self):
         # Puff-only smoking: the row is CREATED at Possible rather than rising

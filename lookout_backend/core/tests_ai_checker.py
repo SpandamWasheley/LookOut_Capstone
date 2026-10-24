@@ -52,13 +52,80 @@ class PromptTests(SimpleTestCase):
 
 
 class FramesTests(SimpleTestCase):
-    def test_selection_is_bunched_around_trigger_and_in_time_order(self):
-        items = [(t / 10, b"", {}) for t in range(0, 100)]
-        picked = A.select_frames(items, 5.0, n=10)
+    def _window(self, step=0.2, span=6.0, objects=None):
+        """Ring-like items every `step` s over `span` s; `objects` maps time -> object confidence."""
+        out = []
+        for i in range(int(span / step)):
+            t = round(i * step, 3)
+            note = {("obj", ("track", 1)): objects[t]} if objects and t in objects else {}
+            out.append((t, b"", note))
+        return out
+
+    def test_selection_covers_whole_window_and_includes_trigger_frame(self):
+        items = self._window()
+        picked = A.select_frames(items, 5.0, n=8, keys=[("track", 1)])
         times = [p[0] for p in picked]
         self.assertEqual(times, sorted(times))
-        self.assertEqual(len(times), 10)
-        self.assertTrue(all(abs(t - 5.0) <= 0.5 for t in times))
+        self.assertEqual(len(times), 8)
+        self.assertIn(5.0, times)
+        self.assertGreater(times[-1] - times[0], 4.0)               # not bunched around t0
+        gaps = [b - a for a, b in zip(times, times[1:])]
+        self.assertLess(max(gaps), 2.5)                              # and no big hole
+
+    def test_object_frames_preferred_by_confidence_and_spaced(self):
+        # cigarette seen 1.0-1.6 (dense, 0.2 s apart) and at 3.0; 1.2 is the most confident
+        objs = {1.0: 0.4, 1.2: 0.9, 1.4: 0.5, 1.6: 0.45, 3.0: 0.6}
+        picked = A.select_frames(self._window(objects=objs), 5.0, n=8, keys=[("track", 1)])
+        times = [p[0] for p in picked]
+        object_times = [t for t in times if t in objs]
+        self.assertIn(1.2, times)
+        self.assertIn(3.0, times)
+        self.assertLessEqual(len(object_times), 4)                   # at most n/2
+        for a, b in zip(object_times, object_times[1:]):
+            self.assertGreaterEqual(b - a, A.OBJECT_FRAME_GAP - 1e-9)
+        self.assertIn(5.0, times)
+
+    def test_object_frames_of_other_subjects_do_not_count(self):
+        items = [(t, b"", {("obj", ("track", 2)): 0.9} if 1.0 <= t <= 1.4 else {}) for t, _, _ in self._window()]
+        times = [p[0] for p in A.select_frames(items, 5.0, n=8, keys=[("track", 1)])]
+        self.assertEqual(times, [p[0] for p in A.select_frames(self._window(), 5.0, n=8, keys=[("track", 1)])])
+
+    def test_few_frames_are_all_sent(self):
+        items = self._window(step=0.5, span=2.0)                     # 4 frames
+        self.assertEqual([p[0] for p in A.select_frames(items, 1.0, n=8)], [0.0, 0.5, 1.0, 1.5])
+        self.assertEqual(A.select_frames([], 1.0), [])
+
+    def test_fewer_object_frames_than_quota_fills_with_spread(self):
+        picked = A.select_frames(self._window(objects={2.0: 0.7}), 5.0, n=8, keys=[("track", 1)])
+        times = [p[0] for p in picked]
+        self.assertEqual(len(times), 8)
+        self.assertIn(2.0, times)
+        self.assertIn(5.0, times)
+
+    def test_switch_off_restores_nearest_to_trigger(self):
+        old = A.AI_SPREAD_FRAMES
+        A.AI_SPREAD_FRAMES = False
+        try:
+            times = [p[0] for p in A.select_frames(self._window(), 3.0, n=8)]
+        finally:
+            A.AI_SPREAD_FRAMES = old
+        self.assertEqual(len(times), 8)
+        self.assertTrue(all(abs(t - 3.0) <= 0.8 for t in times))
+
+    def test_ring_records_object_confidence_per_frame(self):
+        ring = A.FrameRing(seconds=7.0, min_gap=0.0)
+        frame = np.zeros((300, 400, 3), np.uint8)
+        ring.note_object(("track", 1), 0.62)
+        ring.add(frame, 1.0)
+        ring.note_object(("track", 1), 0.0)                          # not detected: nothing recorded
+        ring.add(frame, 2.0)
+        self.assertEqual(A.object_conf(ring._items[0][2], [("track", 1)]), 0.62)
+        self.assertEqual(A.object_conf(ring._items[1][2], [("track", 1)]), 0.0)
+        self.assertEqual(A.object_conf(ring._items[0][2], [("track", 9)]), 0.0)
+
+    def test_window_covers_five_seconds_before_and_one_after(self):
+        self.assertEqual((A.FRAMES_BEFORE, A.FRAMES_AFTER), (5.0, 1.0))
+        self.assertGreater(A.RING_SECONDS, A.FRAMES_BEFORE + A.FRAMES_AFTER)
 
     def test_ring_stores_boxes_and_expires_old_frames(self):
         ring = A.FrameRing(seconds=2.0, min_gap=0.0)

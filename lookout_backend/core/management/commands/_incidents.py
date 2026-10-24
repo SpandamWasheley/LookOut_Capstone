@@ -234,6 +234,12 @@ class IncidentMixin:
         if self.ai_ring is not None and box is not None:
             self.ai_ring.note_box(key, box)
 
+    def _ai_note_object(self, key, conf):
+        """Remember that the event's object was detected on `key` in THIS frame (and how
+        sure the detector was), so the AI checker can prefer those frames."""
+        if self.ai_ring is not None and conf:
+            self.ai_ring.note_object(key, conf)
+
     def _ai_trigger(self, alert, ai, key, now, level):
         """Start the check for a NEW incident row (entering Monitoring, or a puff-only
         incident reaching Possible -- both are the moment the row is created)."""
@@ -318,6 +324,9 @@ class IncidentMixin:
             located, why = location_momentum.evaluate_track(self, track, dets, now_ts)
             if located:
                 step_confs = {**confs, **located}
+        seen = [c for c in confs if c in ai_checker.OBJECT_CLASSES and step_confs.get(c, 0.0) > 0]
+        if seen:
+            self._ai_note_object(("track", track.id), max(confs[c] for c in seen))
         slots = book.step(track.id, step_confs, now_ts)
         # Optional run log ($LOOKOUT_MOUTH_LOG): the raw per-frame input of every slot,
         # so momentum settings can be replayed offline without re-running the models.

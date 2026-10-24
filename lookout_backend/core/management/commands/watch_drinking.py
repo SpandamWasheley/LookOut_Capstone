@@ -1119,6 +1119,7 @@ class Command(IncidentMixin, BaseCommand):
             self._gate_frame = frame
             frame_conf, why = location_momentum.cluster_confidence(
                 self, cluster, loc_inputs[0], loc_inputs[1], now_ts)
+        self._ai_note_object(mkey, frame_conf)
         slots = self._momentum_book().step(mkey, {"bottle": frame_conf} if frame_conf > 0 else {}, now_ts)
         slot = slots.get("bottle")
         object_on = momentum.confirmed(slot, now_ts, self.confirm_seconds)
