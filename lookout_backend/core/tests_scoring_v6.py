@@ -162,7 +162,7 @@ class HoldupExamples(SimpleTestCase):
         full = holdup({"E14", "E12", "E10"}, 22)
         self.assertEqual(round(full.score * 100), 65)
         self.assertEqual(full.level, WARNING)
-        reply = {"observations": "x", "object_pointed_at_a_person": True,
+        reply = {"observations": "x", "people_count": 2, "object_pointed_at_a_person": True,
                  "victim_response_visible": True, "holdup_likelihood": "likely",
                  "scene_type": "confrontation", "confidence": "high"}
         sug = ai_status.suggest_status(full.level, "holdup", reply)

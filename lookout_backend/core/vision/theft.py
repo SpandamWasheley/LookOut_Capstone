@@ -1031,6 +1031,15 @@ class TheftEngine:
         usable = [t for t in people if self._usable(t, now)]
         self.anchors.update(vehicles, carriables, usable, now)
         self._stamp_loiterers(usable, now)
+        # v6.2.4: a pair needs two REAL people. A shadow or reflection the person detector boxed has no skeleton.
+        pair_tracks = usable
+        self._not_real = set()
+        if location_momentum.fake_person_filter_on():
+            if location_momentum.update_person_evidence(usable, now):
+                self._not_real = {t.id for t in usable if not location_momentum.is_real_person(t, now)}
+                if self._not_real:
+                    self._bump("holdup pair: track without a skeleton ignored")
+                    pair_tracks = [t for t in usable if t.id not in self._not_real]
 
         evidence = []
         # E20 is read once per frame, not per evidence item: every incident in
@@ -1039,7 +1048,7 @@ class TheftEngine:
         self._time_bonus = scoring.manila_time_bonus(now_dt)
         self._time_label = scoring.manila_block_label(now_dt)
 
-        evidence += self._pair_evidence(usable, now, reach, threats, is_night)
+        evidence += self._pair_evidence(pair_tracks, now, reach, threats, is_night)
         evidence += self._carnapping_evidence(usable, now, is_night)
         evidence += self._property_evidence(usable, now, is_night)
         evidence += self._weapon_evidence(usable, threats, now, is_night)
@@ -1055,6 +1064,11 @@ class TheftEngine:
         for i, ta in enumerate(tracks):
             for tb in tracks[i + 1:]:
                 key = (min(ta.id, tb.id), max(ta.id, tb.id))
+                if (location_momentum.fake_person_filter_on()
+                        and location_momentum.is_shadow_pair(ta.box, tb.box)):
+                    self.pairs.pop(key, None)            # person + own shadow: not a pair
+                    self._bump("holdup pair: person and own shadow ignored")
+                    continue
                 state = self.pairs.get(key)
                 if state is None:
                     state = self.pairs[key] = PairState(key, now)
@@ -1344,9 +1358,12 @@ class TheftEngine:
         out = {}
         if self._off("e12"):
             return out
+        not_real = getattr(self, "_not_real", ())
         for (a, b), st in self.pairs.items():
             if holder_id not in (a, b) or st.freeze_start_ok is None:
                 continue
+            if a in not_real or b in not_real:
+                continue                                  # v6.2.4: one of the two has no skeleton
             active = st.freeze_ok or (st.freeze_last is not None and now - st.freeze_last <= hold)
             if not active:
                 continue

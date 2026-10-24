@@ -57,6 +57,17 @@ FREEZE_SECONDS_V621 = 3.0           # E12: both people close AND slow, continuou
 FREEZE_SKIP_IOU = 0.4               # person boxes overlapping more than this: the frame is skipped (neither counts nor resets E12)
 CAP_NO_FROZEN_PAIR_TEXT = "capped: no frozen pair"
 
+# holdup pairs: fake-person filter (v6.2.4). A person track only counts toward E12 / a holdup pair when its skeleton was
+# seen in the recent frames; a shadow or a reflection that the person detector boxed has no skeleton. Fails OPEN
+# (the track counts) when no pose information exists at all (pose unavailable, unit tests).
+FAKE_PERSON_FILTER = True
+FAKE_PERSON_WINDOW_SECONDS = 3.0    # "recent frames"
+FAKE_PERSON_MIN_KEYPOINTS = 6       # keypoints with conf >= KP_CONF_MIN in the same frame ...
+FAKE_PERSON_FACE_KEYPOINTS = (0, 1, 2)   # ... and at least one of nose / left eye / right eye
+FAKE_PERSON_MIN_GOOD_FRAMES = 3     # good frames needed in the window (one stray pose match must not make a shadow real)
+SHADOW_FEET_TOUCH_FRAC = 0.15       # bottom edges within this x the taller box height, and the boxes touching sideways
+SHADOW_BRIGHTNESS_RATIO = 0.6       # person + own shadow: one box's mean brightness below this x the other's
+
 # drinking Path B (inuman cluster)
 GROUP_AREA_EXPAND = 1.2             # group area = cluster box scaled by this (20% larger)
 STATIONARY_HEIGHT_FRAC = 0.10       # stationary = moved less than this x median member box height since its last hit
@@ -172,6 +183,7 @@ class TrackLoc:
         self.in_zone = {}             # wrist id -> was the wrist at the mouth last frame (absent = unknown)
         self.reaches = {}             # wrist id -> time of a wrist-to-mouth reach still waiting for a cigarette sighting
         self.last_reach = None
+        self.real_hist = deque()      # (video time, skeleton seen this frame) for the fake-person filter
 
 
 def loc_of(track):
@@ -343,6 +355,93 @@ def _evaluate_knife(loc, track, ds, now):
     d, c = best
     loc.last_hit[KNIFE_CLASS] = ((c[0] - bx1) / bw, (c[1] - by1) / bh, frozenset(), now)
     return min(1.0, float(d[4]) / KNIFE_CONF_FULL_AT) * float(d[4]), ""
+
+
+# ---- holdup pairs: fake-person filter ----------------------------------------------------------
+
+CURRENT_FRAME = {"frame": None}      # set by the thief engine's per-frame hook; used to run / read the shared pose pass
+
+
+def fake_person_filter_on():
+    return LOCATION_AWARE_MOMENTUM and FAKE_PERSON_FILTER
+
+
+def _frame_poses(now):
+    """Poses of the current frame, or None when they cannot be had (no frame, pose model failing)."""
+    if _POSE["now"] == now and _POSE["poses"] is not None:
+        return _POSE["poses"]
+    frame = CURRENT_FRAME["frame"]
+    if frame is None or _POSE["fails"] >= POSE_MAX_FAILS:
+        return None
+    try:
+        return shared_poses(frame, now)
+    except Exception:                                   # noqa: BLE001
+        _POSE["fails"] += 1
+        return None
+
+
+def skeleton_ok(kpts):
+    """A real person's skeleton: >= FAKE_PERSON_MIN_KEYPOINTS keypoints and >= 1 face keypoint, all conf >= KP_CONF_MIN."""
+    conf = kpts[:, 2]
+    return (int((conf >= KP_CONF_MIN).sum()) >= FAKE_PERSON_MIN_KEYPOINTS
+            and any(conf[i] >= KP_CONF_MIN for i in FAKE_PERSON_FACE_KEYPOINTS))
+
+
+def update_person_evidence(tracks, now, poses=None):
+    """Record, for each person track, whether a real skeleton was seen on it this frame. Returns False (and records
+    nothing) when no pose information is available."""
+    if poses is None:
+        poses = _frame_poses(now)
+    if poses is None:
+        return False
+    for t in tracks:
+        if t.box is None:
+            continue
+        loc = loc_of(t)
+        best, best_iou = None, 0.0
+        for box, kpts in poses:
+            i = _iou(t.box, box)
+            if i > best_iou:
+                best, best_iou = kpts, i
+        loc.real_hist.append((now, best is not None and best_iou >= POSE_MATCH_IOU and skeleton_ok(best)))
+        while loc.real_hist and now - loc.real_hist[0][0] > FAKE_PERSON_WINDOW_SECONDS:
+            loc.real_hist.popleft()
+    return True
+
+
+def is_real_person(track, now):
+    """False only when the track has been watched (pose available) and had too few skeleton frames recently."""
+    loc = getattr(track, "loc", None)
+    if loc is None or not loc.real_hist:
+        return True
+    good = sum(1 for t, ok in loc.real_hist if ok and now - t <= FAKE_PERSON_WINDOW_SECONDS)
+    return good >= FAKE_PERSON_MIN_GOOD_FRAMES
+
+
+def _mean_brightness(frame, box):
+    x1, y1, x2, y2 = (max(int(v), 0) for v in box)
+    roi = frame[y1:max(y2, y1 + 1), x1:max(x2, x1 + 1)]
+    if roi.size == 0:
+        return None
+    import cv2
+    return float(cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY).mean()) if roi.ndim == 3 else float(roi.mean())
+
+
+def is_shadow_pair(ta_box, tb_box, frame=None):
+    """Person + own shadow: the two boxes touch at the feet (bottom edges within SHADOW_FEET_TOUCH_FRAC of the taller
+    box, boxes touching sideways) AND one box is much darker than the other (mean brightness < SHADOW_BRIGHTNESS_RATIO x)."""
+    hmax = max(ta_box[3] - ta_box[1], tb_box[3] - tb_box[1], 1)
+    feet = abs(ta_box[3] - tb_box[3]) <= SHADOW_FEET_TOUCH_FRAC * hmax
+    side = max(ta_box[0], tb_box[0]) <= min(ta_box[2], tb_box[2])
+    if not (feet and side):
+        return False
+    frame = CURRENT_FRAME["frame"] if frame is None else frame
+    if frame is None:
+        return False
+    ba, bb = _mean_brightness(frame, ta_box), _mean_brightness(frame, tb_box)
+    if not ba or not bb:
+        return False
+    return min(ba, bb) < SHADOW_BRIGHTNESS_RATIO * max(ba, bb)
 
 
 def holdup_rules_on():

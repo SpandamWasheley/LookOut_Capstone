@@ -116,6 +116,7 @@ using a phone, or wiping the face;
 "unclear" = you cannot tell.""",
     "holdup": """{
 "observations": "one sentence, under 20 words, only what you see",
+"people_count": integer,
 "object_pointed_at_a_person": true/false,
 "victim_response_visible": true/false,
 "holdup_likelihood": "likely" | "possible" | "unlikely",
@@ -124,6 +125,9 @@ using a phone, or wiping the face;
 }
 Definitions:
 - observations: the people, the object, and how they act toward each other. No conclusions.
+- people_count: the number of distinct real people you can see in the frames, as a whole number.
+Shadows, reflections, posters and mannequins are not people. Count a person once even if they
+appear in several frames.
 - object_pointed_at_a_person: a knife or sharp object is pointed or held toward another person.
 - victim_response_visible: a person raising their hands, handing over items, or backing away.
 - holdup_likelihood: how likely it is that one person is robbing or threatening another.
@@ -161,8 +165,11 @@ def response_schema(kind):
     use a value outside the spec's options. observations is first so the model
     describes before it judges."""
     props = {"observations": {"type": "string"}}
-    for field in ai_status.REQUIRED_FIELDS[kind]:
+    for field in ai_status.schema_fields(kind):
         if field == "observations":
+            continue
+        if field == "people_count":
+            props[field] = {"type": "integer", "minimum": 0}
             continue
         if field in ("drinking_likelihood", "holdup_likelihood", "hand_to_mouth_activity", "confidence"):
             props[field] = {"type": "string", "enum": _ENUMS[field]}
@@ -171,7 +178,7 @@ def response_schema(kind):
         else:
             props[field] = {"type": "boolean"}
     return {"type": "object", "properties": props,
-            "required": list(ai_status.REQUIRED_FIELDS[kind])}
+            "required": list(ai_status.schema_fields(kind))}
 
 
 def system_note(kind, *, puff_only=False, people=None, minutes=None, puffs=None, stationary=False, extra=""):
@@ -190,12 +197,23 @@ def system_note(kind, *, puff_only=False, people=None, minutes=None, puffs=None,
         note = (f"hand reached the mouth {times}; no smoking item detected" if puff_only
                 else "smoking item detected" + (f"; hand reached the mouth {times}" if n else ""))
     else:
+        # Holdup is asked UNPRIMED (v6.2.4): build_messages() does not send this note to the model, so a false
+        # "two people" from the detectors cannot be echoed back. It is still stored with the alert for the record.
         note = "knife detected" + ("; two people standing still close together" if people else "")
     return note + (f"; {extra}" if extra else "")
 
 
+# Holdup gets the same instructions WITHOUT the "System detections" line: the model must count the people itself.
+UNPRIMED_KINDS = ("holdup",)
+UNPRIMED_INSTRUCTIONS = "\n".join(line for line in SHARED_INSTRUCTIONS.splitlines()
+                                  if not line.startswith("System detections"))
+
+
 def build_messages(kind, note, images_b64):
-    prompt = SHARED_INSTRUCTIONS.format(system_note=note) + "\n\n" + BLOCKS[kind]
+    if kind in UNPRIMED_KINDS:
+        prompt = UNPRIMED_INSTRUCTIONS + "\n\n" + BLOCKS[kind]
+    else:
+        prompt = SHARED_INSTRUCTIONS.format(system_note=note) + "\n\n" + BLOCKS[kind]
     return [{"role": "user", "content": prompt, "images": list(images_b64)}]
 
 

@@ -510,6 +510,8 @@ class Command(IncidentMixin, BaseCommand):
         that person's own box to plausibly be that object, or isn't actually
         near a HAND (see KNIFE_MAX_WRIST_DIST_FRAC).
 
+        (v6.2.4: also hands this frame to location_momentum, which the holdup pair filter uses to check skeletons.)
+
         Mirrors watch_smoking._apply_mouth_rule's placement exactly: this runs
         on `per_track` right after tracker.assign(), so a rejected detection
         never reaches track.vote()/tick() at all — it can't build dwell, not
@@ -519,6 +521,7 @@ class Command(IncidentMixin, BaseCommand):
         waved through — an unresolvable case is exactly the kind of thing
         that turned into a floating false positive before this rule existed.
         """
+        location_momentum.CURRENT_FRAME["frame"] = frame     # v6.2.4: lets the pair filter read this frame's skeletons
         if "spatial" in self.ablate:
             return per_track
 

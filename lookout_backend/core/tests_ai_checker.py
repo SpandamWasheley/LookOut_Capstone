@@ -31,7 +31,11 @@ class PromptTests(SimpleTestCase):
     def test_schema_requires_exactly_the_validated_fields(self):
         from core.vision import ai_status
         for kind in A.KINDS:
-            self.assertEqual(set(A.response_schema(kind)["required"]), set(ai_status.REQUIRED_FIELDS[kind]))
+            self.assertEqual(set(A.response_schema(kind)["required"]), set(ai_status.schema_fields(kind)))
+        # v6.2.4: holdup is also asked for people_count (an integer), optional in a STORED reply so old alerts stay valid
+        props = A.response_schema("holdup")["properties"]
+        self.assertEqual(props["people_count"]["type"], "integer")
+        self.assertNotIn("people_count", ai_status.REQUIRED_FIELDS["holdup"])
 
     def test_parse_reply_rejects_invalid(self):
         good = {"observations": "a man stands", "smoking_item_visible": False,

@@ -161,3 +161,51 @@ holdup cap and the holdup status all follow the v6 rules again: no knife confide
 without the overlap skip, loitering (E10) corroborates a knife, no "capped: no frozen pair", no sticky holdup status. The clip is back to Possible (0.64).
 Everything else of v6.2 / v6.2.1 (smoking and drinking location gate, strict puff, sticky smoking status, Path B) is unchanged and still governed by
 `LOCATION_AWARE_MOMENTUM`. To use the stricter holdup rules again set `HOLDUP_V621_RULES = True` (both switches must be True); the tests that cover them switch it on explicitly.
+
+# v6.2.4 — holdup shadow filter + unprimed holdup Qwen
+
+## Diagnosis of ALT-0152 (Holdup, Possible, knife 52 %)
+* ALT-0152 came from DetectionJob 55, `Aug18_18 - TrimCigaretteNightFar1.mp4` (merged), knife event at about 23.6 s. The uploaded copy had already been purged, so the
+  diagnosis re-ran the identical file (same size) as a dry run (no DB writes, media redirected) with instrumentation: `v62_test_results/v624/logs/diag_alt0152.json`.
+* The "frozen pair" was tracks **#4 and #7** (freeze held 19.7-30.4 s, `freeze_ok` true, distance 0.37 person heights).
+  * **#4, the real man:** box 120 x 271 px, person confidence 0.56-0.84, pose matched in 71 of 73 frames, 17 keypoints >= 0.3 with 5 face keypoints (best 0.94).
+  * **#7, the second "person":** box 78 x 159 px (about 59 % of his height), person confidence only **0.50-0.65** (the detector floor is 0.5), pose matched in just **4 of 56 frames**
+    (no skeleton the rest of the time), brightness 58-90 % of the man's (median 73 %), bottom edge within 12 % of the man's height and the boxes touching sideways.
+    That is his shadow on the shutter.
+* So the filter that matters is the skeleton test. The brightness test alone would have caught only a few frames (the ratio was mostly 0.6-0.8, above the 0.6 limit), so it is a
+  secondary guard, as specified.
+* Qwen was told "knife detected; two people standing still close together", looked at 8 frames of him with his shadow and confirmed it ("Two people near a closed shutter; one holds a
+  knife", likely / confrontation / high), which fed the Possible -> Likely suggestion.
+
+## Changes
+**Fake-person filter (holdup pairs; behind `LOCATION_AWARE_MOMENTUM` and `FAKE_PERSON_FILTER`).** `location_momentum.update_person_evidence` runs the shared whole-frame pose pass on the current frame
+(handed over by `watch_thief._apply_weapon_region_rule`) and records, per person track, whether a real skeleton was seen: >= `FAKE_PERSON_MIN_KEYPOINTS` (6) keypoints with conf >= 0.3 and
+>= 1 of nose / left eye / right eye with conf >= 0.3. A track is real when it had >= `FAKE_PERSON_MIN_GOOD_FRAMES` such frames in the last `FAKE_PERSON_WINDOW_SECONDS` (3.0 s).
+`TheftEngine.update` leaves non-real tracks out of the pair evidence and `holdup_pair_cues` ignores any pair containing one, so they cannot form E12 or the holdup pair. It **fails open**:
+a track never watched (no pose information at all: pose model failing, no frame, unit tests) still counts. Deliberate deviation from "at least one frame": the minimum is 3 good frames, because the shadow had
+4 stray pose matches in 56 frames and one match must not make it real.
+**Shadow pair:** `is_shadow_pair` ignores a pair (and drops its state) when the bottom edges are within `SHADOW_FEET_TOUCH_FRAC` (0.15) of the taller box and the boxes touch sideways AND one box's mean brightness is
+below `SHADOW_BRIGHTNESS_RATIO` (0.6) of the other's.
+
+**Qwen holdup prompt.** For holdup only, `build_messages` no longer sends the "System detections ..." line (the note is still stored with the alert). The reply gains `people_count` (integer, distinct real
+people; shadows, reflections, posters and mannequins do not count). It is optional in a STORED reply (`ai_status.OPTIONAL_FIELDS`) so alerts checked before this stay valid, but it is in the schema sent to Ollama.
+Post-processing in `ai_status`: `people_count < 2` -> badge "may be ordinary" and no upgrade (status "No change - ... AI sees fewer than 2 people"); `object_pointed_at_a_person` true with `people_count < 2`
+-> badge "unclear", no suggestion; an upgrade needs `people_count >= 2` AND `scene_type = confrontation` AND confidence high (and the existing `holdup_likelihood = likely`); a reply without people_count never upgrades.
+`people_count` is in the alert's `ai_context` (top level and as a checklist row "Distinct real people seen"), which the existing serializer already returns. No frontend file was touched.
+
+**Version:** `SCORING_SPEC_VERSION = "v6.2.4"`.
+
+## New constants (in the marked block of `core/vision/location_momentum.py`)
+`FAKE_PERSON_FILTER = True`, `FAKE_PERSON_WINDOW_SECONDS = 3.0`, `FAKE_PERSON_MIN_KEYPOINTS = 6`, `FAKE_PERSON_FACE_KEYPOINTS = (0, 1, 2)`, `FAKE_PERSON_MIN_GOOD_FRAMES = 3`,
+`SHADOW_FEET_TOUCH_FRAC = 0.15`, `SHADOW_BRIGHTNESS_RATIO = 0.6`. Turn the filter off with `FAKE_PERSON_FILTER = False` (or `LOCATION_AWARE_MOMENTUM = False`). The Qwen prompt change is not behind a switch.
+
+## Re-run of the ALT-0152 clip (v6.2.4)
+* Knife event at 23.6 s: before Possible (0.71-0.74, E14 + E12 + time bonus), **after Monitoring** (0.45, E14 only, no E12).
+* The pair no longer forms: 0 frames with a frozen pair (before: 73 frames, pair (4, 7) frozen 19.7-30.4 s); 290 frames logged "track without a skeleton ignored".
+* Qwen (qwen3-vl:4b-instruct) on the same 8 frames of ALT-0152, new unprimed prompt, run twice with identical output: "Two people stand near a closed shutter; one appears to be holding an object.",
+  `people_count: 2`, pointed false, likelihood **unlikely**, scene other_activity, confidence medium -> badge "may be ordinary", suggestion "No change". So Qwen still counts the shadow as a second person
+  (people_count 2), but without the hint it no longer calls it a confrontation. The people_count rule would not have caught this one; the skeleton filter did.
+
+## Caveats
+* The filter needs a visible skeleton, so a REAL second person who is far, small or turned away (no face keypoint) is not counted, and a real holdup between distant people can be missed. The thresholds are in the constants block.
+* The smoking and drinking engines are unchanged by this version.
