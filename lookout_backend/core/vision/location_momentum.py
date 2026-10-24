@@ -44,7 +44,9 @@ LIKELY_MIN_PUFFS = 2
 CAP_NO_PUFF_TEXT = "capped: no puff"
 CAP_FEW_PUFFS_TEXT = "capped: needs 2 puffs in 30 s for Likely"
 
-# holdup (v6.2.1)
+# holdup (v6.2.1). OFF by default: the knife / holdup rules are the pre-v6.2 (v6) rules. Set True to enable the
+# knife stability rules, the 3 s frozen pair with overlap skipping, the "knife + frozen pair" gate and the sticky holdup status.
+HOLDUP_V621_RULES = False
 KNIFE_CLASS = "knife"
 KNIFE_CONF_FULL_AT = 0.6            # knife momentum increment x min(1, conf / this)
 KNIFE_JUMP_HEIGHT_FRAC = 0.25       # same jump rule as the cigarette (no anchors: any move this big is a jump)
@@ -255,7 +257,7 @@ def evaluate_track(cmd, track, dets, now):
     per_class = {}
     for d in dets:
         cls = str(d[5]).lower()
-        if cls in GATED_CLASSES or cls == KNIFE_CLASS:
+        if cls in GATED_CLASSES or (cls == KNIFE_CLASS and holdup_rules_on()):
             per_class.setdefault(cls, []).append(d)
     if not per_class:
         return {}, ""
@@ -343,6 +345,11 @@ def _evaluate_knife(loc, track, ds, now):
     return min(1.0, float(d[4]) / KNIFE_CONF_FULL_AT) * float(d[4]), ""
 
 
+def holdup_rules_on():
+    """True when the v6.2.1 holdup rules apply (needs both switches)."""
+    return LOCATION_AWARE_MOMENTUM and HOLDUP_V621_RULES
+
+
 def knife_recent(track, now):
     """True when an ACCEPTED knife hit on this person is at most KNIFE_PRESENT_SECONDS old."""
     loc = getattr(track, "loc", None)
@@ -352,11 +359,11 @@ def knife_recent(track, now):
 
 def freeze_seconds(default):
     """E12 hold time: FREEZE_SECONDS_V621 with the v6.2 switch on, else the pre-v6.2 value."""
-    return FREEZE_SECONDS_V621 if LOCATION_AWARE_MOMENTUM else default
+    return FREEZE_SECONDS_V621 if holdup_rules_on() else default
 
 
 def boxes_overlap_heavily(a, b):
-    return _iou(a, b) > FREEZE_SKIP_IOU
+    return holdup_rules_on() and _iou(a, b) > FREEZE_SKIP_IOU
 
 
 def _count(cmd, reason):

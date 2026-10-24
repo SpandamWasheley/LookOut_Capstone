@@ -286,7 +286,7 @@ class Evidence:
         # v6.2.1: with the location switch on, ONLY a frozen pair (E12, held 3 s) corroborates; loitering
         # (E10) is still scored but no longer lifts a knife above Monitoring on its own.
         self.corroborated = bool(self.cues.keys() & (
-            {"E12"} if location_momentum.LOCATION_AWARE_MOMENTUM else {"E10", "E12"}))
+            {"E12"} if location_momentum.holdup_rules_on() else {"E10", "E12"}))
         self.e20_table = self.cues.get("E20", 0.0)      # what the hour would add
         self.e20_capped = False
         if "E14" in self.cues:
@@ -327,13 +327,13 @@ class Evidence:
         if self.object_on:
             level = scoring.level_with_hysteresis(self.score, previous_level, True)
             # v6.2.1 sticky: the caps only block the FIRST rise to Possible / Likely.
-            sticky = (location_momentum.LOCATION_AWARE_MOMENTUM
+            sticky = (location_momentum.holdup_rules_on()
                       and previous_level in (scoring.WARNING, scoring.VIOLATION))
             if ((not self.people_near or not self.corroborated) and not sticky
                     and scoring.LEVEL_ORDER[level] > scoring.LEVEL_ORDER[scoring.MONITORING]):
                 level = scoring.MONITORING
                 self.holdup_capped = True
-                if location_momentum.LOCATION_AWARE_MOMENTUM and not self.corroborated:
+                if location_momentum.holdup_rules_on() and not self.corroborated:
                     self.capped = location_momentum.CAP_NO_FROZEN_PAIR_TEXT
         elif any(c in LEGACY_CUES for c in self.cues):
             level = (scoring.VIOLATION if scoring._r(self.score) >= scoring.SCORE_VIOLATION
@@ -870,8 +870,7 @@ class PairState:
         # skipped: they neither count toward the hold time nor reset it.
         prev_t = getattr(self, "_freeze_prev_t", None)
         self._freeze_prev_t = now
-        if (location_momentum.LOCATION_AWARE_MOMENTUM
-                and location_momentum.boxes_overlap_heavily(ta.box, tb.box)):
+        if location_momentum.boxes_overlap_heavily(ta.box, tb.box):
             if self.freeze_since is not None and prev_t is not None:
                 self.freeze_skipped = getattr(self, "freeze_skipped", 0.0) + (now - prev_t)
             return self._after_freeze(va, vb, now)

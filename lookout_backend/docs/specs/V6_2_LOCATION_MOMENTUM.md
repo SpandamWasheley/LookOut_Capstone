@@ -153,3 +153,11 @@ holdup corroboration, people-near) expires; an incident at Likely is not capped 
   rule working as specified, but it means this one real holdup no longer alerts; even the old 2 s hold would not be reached in this clip, so it was reaching Possible
   through loitering (E10), which v6.2.1 no longer accepts on its own.
 * The overlap-skip rule can only count frames the tracker keeps as the same two ids.
+
+# v6.2.1 follow-up: holdup / knife rules reverted to v6 (default)
+The knife and holdup changes of v6.2.1 made a real holdup clip (`Aug24_16 - TrimHoldupBldg`) stop alerting, so they are now behind their own switch,
+`HOLDUP_V621_RULES = False` (in the `# --- v6.2 location-aware momentum` block of `core/vision/location_momentum.py`). With it False the knife, E12, the
+holdup cap and the holdup status all follow the v6 rules again: no knife confidence weighting / jump / flip check, no 1 s knife presence limit, E12 held 2 s
+without the overlap skip, loitering (E10) corroborates a knife, no "capped: no frozen pair", no sticky holdup status. The clip is back to Possible (0.64).
+Everything else of v6.2 / v6.2.1 (smoking and drinking location gate, strict puff, sticky smoking status, Path B) is unchanged and still governed by
+`LOCATION_AWARE_MOMENTUM`. To use the stricter holdup rules again set `HOLDUP_V621_RULES = True` (both switches must be True); the tests that cover them switch it on explicitly.

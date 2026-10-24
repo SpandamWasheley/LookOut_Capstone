@@ -34,6 +34,10 @@ def cig(cx, cy, conf=0.8, cls="Cigarette", half=6):
 
 class LocationGateTests(unittest.TestCase):
     def setUp(self):
+        from unittest import mock
+        patcher = mock.patch.object(lm, "HOLDUP_V621_RULES", True)     # the knife tests exercise the v6.2.1 holdup rules
+        patcher.start()
+        self.addCleanup(patcher.stop)
         lm.reset()
         self.cmd = SimpleNamespace(stats=__import__("collections").Counter())
 

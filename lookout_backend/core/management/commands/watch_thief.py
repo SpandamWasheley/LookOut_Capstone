@@ -955,8 +955,7 @@ class Command(IncidentMixin, BaseCommand):
                 self.stats["held back: momentum below ON"] += 1
             self._debug_note("Holdup", ("knife", track.id), track.id, track.box, None, cue.momentum)
             return
-        if (location_momentum.LOCATION_AWARE_MOMENTUM
-                and not location_momentum.knife_recent(track, now_ts)):
+        if location_momentum.holdup_rules_on() and not location_momentum.knife_recent(track, now_ts):
             # v6.2.1: E14 needs an accepted knife sighting in the last 1 s -- no long "last seen" carry.
             self.stats["held back: knife not seen in the last 1 s"] += 1
             self._debug_note("Holdup", ("knife", track.id), track.id, track.box, None, cue.momentum)

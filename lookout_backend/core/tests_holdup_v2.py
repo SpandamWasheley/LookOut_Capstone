@@ -46,9 +46,15 @@ class BaseScoreTests(unittest.TestCase):
             self.assertEqual((pts(ev), ev.band), (55, WARNING))
 
     def test_knife_and_loitering_alone_stay_monitoring_in_v621(self):
+        with mock.patch("core.vision.location_momentum.HOLDUP_V621_RULES", True):
+            ev = evidence({"E14", "E10"})
+            self.assertEqual((pts(ev), ev.band), (55, MONITORING))
+            self.assertEqual(ev.capped, "capped: no frozen pair")
+
+    def test_knife_and_loitering_is_possible_by_default(self):
+        # HOLDUP_V621_RULES is off by default: holdup keeps its pre-v6.2 rules
         ev = evidence({"E14", "E10"})
-        self.assertEqual((pts(ev), ev.band), (55, MONITORING))
-        self.assertEqual(ev.capped, "capped: no frozen pair")
+        self.assertEqual((pts(ev), ev.band), (55, WARNING))
 
     def test_knife_and_freeze_is_possible(self):
         ev = evidence({"E14", "E12"})
@@ -282,10 +288,16 @@ class FreezeNeedsKnifeTests(unittest.TestCase):
             self.assertTrue(next(iter(s.engine.pairs.values())).freeze_ok)
 
     def test_the_freeze_needs_3_seconds_in_v621(self):
+        with mock.patch("core.vision.location_momentum.HOLDUP_V621_RULES", True):
+            s = Scene()
+            s.hold(2.5, persons=[pbox(600, 300), pbox(685, 300)])
+            self.assertFalse(next(iter(s.engine.pairs.values())).freeze_ok)
+            s.hold(1.0, persons=[pbox(600, 300), pbox(685, 300)])
+            self.assertTrue(next(iter(s.engine.pairs.values())).freeze_ok)
+
+    def test_the_freeze_is_2_seconds_by_default(self):
         s = Scene()
         s.hold(2.5, persons=[pbox(600, 300), pbox(685, 300)])
-        self.assertFalse(next(iter(s.engine.pairs.values())).freeze_ok)
-        s.hold(1.0, persons=[pbox(600, 300), pbox(685, 300)])
         self.assertTrue(next(iter(s.engine.pairs.values())).freeze_ok)
 
     def test_the_freeze_speed_limit_is_0_3(self):
@@ -370,7 +382,13 @@ if __name__ == "__main__":
 
 
 class FrozenPairV621Tests(unittest.TestCase):
-    """v6.2.1: E12 needs the pair close AND slow for 3 s; heavily overlapping frames are skipped."""
+    """v6.2.1: E12 needs the pair close AND slow for 3 s; heavily overlapping frames are skipped.
+    (These rules are behind HOLDUP_V621_RULES, off by default, so each test switches them on.)"""
+
+    def setUp(self):
+        patcher = mock.patch("core.vision.location_momentum.HOLDUP_V621_RULES", True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def freeze_ok(self, s):
         return any(st.freeze_ok for st in s.engine.pairs.values())

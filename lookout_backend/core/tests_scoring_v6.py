@@ -198,11 +198,13 @@ class HoldupExamples(SimpleTestCase):
         near = theft.Evidence("weapon", (0, 0, 10, 10), {"E14": 0.45, "E20": 0.10}, {},
                               set(), [1], "x", people_near=True)
         self.assertEqual(near.band, MONITORING)
-        loiter_only = theft.Evidence("weapon", (0, 0, 10, 10),
-                                     {"E14": 0.45, "E10": 0.10, "E20": 0.10}, {},
-                                     set(), [1], "x", people_near=True)
-        self.assertEqual(loiter_only.band, MONITORING)        # v6.2.1: loitering no longer corroborates
-        self.assertEqual(loiter_only.capped, "capped: no frozen pair")
+        from unittest import mock
+        with mock.patch("core.vision.location_momentum.HOLDUP_V621_RULES", True):
+            loiter_only = theft.Evidence("weapon", (0, 0, 10, 10),
+                                         {"E14": 0.45, "E10": 0.10, "E20": 0.10}, {},
+                                         set(), [1], "x", people_near=True)
+            self.assertEqual(loiter_only.band, MONITORING)    # v6.2.1 holdup rules: loitering no longer corroborates
+            self.assertEqual(loiter_only.capped, "capped: no frozen pair")
         corroborated = theft.Evidence("weapon", (0, 0, 10, 10),
                                       {"E14": 0.45, "E12": 0.20, "E20": 0.05}, {},
                                       set(), [1], "x", people_near=True)
