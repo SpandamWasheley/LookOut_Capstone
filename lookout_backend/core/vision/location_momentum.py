@@ -41,6 +41,19 @@ PUFF_CLOSE_SHOULDER_FRAC = 0.7      # "wrist at the mouth" / "cigarette at the m
 ELBOW_FALLBACK = True               # v6.2.6: a missing wrist keypoint falls back to its elbow for the wrist-at-mouth test
 PUFF_ELBOW_SHOULDER_FRAC = 1.1      # elbow-to-mouth radius x shoulder width (measured: ~0.9-1.1 with the hand at the mouth, median 1.5 hanging)
 PUFF_MIN_GAP_SECONDS = 1.0         # two wrist-to-mouth reaches closer than this are one
+# far-range puff from the cigarette's own movement (v6.2.8). When pose cannot resolve the wrist / mouth (the person is small, or the
+# nose / wrists are under KP_CONF_MIN), a puff is counted from where the CIGARETTE is inside the person box: seen in the head zone and,
+# within FAR_PUFF_PAIR_SECONDS before or after, seen lower in the chest / hand zone. It feeds the same puff gate and nothing else.
+FAR_PUFF_FROM_OBJECT = True
+FAR_PUFF_BELOW_FRAC = 0.25          # person box shorter than this x frame height -> use the fallback
+FAR_PUFF_HEAD_ZONE = 0.22           # head zone = top this fraction of the person box (0 = top, 1 = bottom)
+FAR_PUFF_BODY_ZONE = (0.30, 0.70)   # chest / hand zone
+FAR_PUFF_PAIR_SECONDS = 4.0         # head and body sightings must be this close in time (either order)
+FAR_PUFF_MIN_GAP_SECONDS = 2.0      # at most one object puff per track per this long
+# near_mouth is "held for cue_hold seconds after it last fired", but it was only evaluated while the object cue was ON, so a cigarette
+# seen at the mouth BEFORE the cue finished confirming (ON for object_confirm_seconds) was never remembered, and the status came up
+# without it (Monitoring 0.40 instead of Possible 0.55) just as the cigarette left view. True = evaluate it every frame so the hold works.
+NEAR_MOUTH_HELD_BEFORE_CONFIRM = True
 POSSIBLE_PUFF_WINDOW_SECONDS = 10.0 # Possible needs >= POSSIBLE_MIN_PUFFS puff in this window (else capped at Monitoring)
 POSSIBLE_MIN_PUFFS = 1
 LIKELY_PUFF_WINDOW_SECONDS = 30.0   # Likely also needs >= LIKELY_MIN_PUFFS puffs in this window
@@ -197,6 +210,11 @@ class TrackLoc:
         self.in_zone = {}             # wrist id -> was the wrist at the mouth last frame (absent = unknown)
         self.reaches = {}             # wrist id -> time of a wrist-to-mouth reach still waiting for a cigarette sighting
         self.last_reach = None
+        self.head_seen = None         # last time a cigarette was in the head zone (far-range object puff)
+        self.body_seen = None         # last time a cigarette was in the chest / hand zone
+        self.last_object_puff = None
+        self.n_object_puffs = 0
+        self.n_pose_puffs = 0
 
 
 def loc_of(track):
@@ -454,6 +472,9 @@ def update_puffs(cmd, track, dets, now):
     while loc.puffs and loc.puffs[0] < cutoff:
         loc.puffs.popleft()
     kp = ensure_keypoints(cmd, track, now)
+    # v6.2.8: far / unresolvable person -> count a puff from where the cigarette sits inside the person box
+    if FAR_PUFF_FROM_OBJECT and _object_puff_applies(cmd, track, kp):
+        _update_object_puff(loc, track, dets, now)
     anchors = anchors_from_kpts(kp, track.box) if kp is not None else None
     if anchors is None:
         _expire_reaches(loc, now)
@@ -493,9 +514,54 @@ def update_puffs(cmd, track, dets, now):
         seen = [t for t in (loc.cig_at_wrist.get(w), loc.cig_at_mouth) if t is not None]
         if any(abs(t - t_reach) <= PUFF_PAIR_WINDOW_SECONDS for t in seen):
             loc.puffs.append(now)
+            loc.n_pose_puffs += 1
             del loc.reaches[w]
     _expire_reaches(loc, now)
     return len(loc.puffs)
+
+
+def _frame_height(cmd):
+    frame = getattr(cmd, "_gate_frame", None)
+    if frame is not None:
+        return frame.shape[0]
+    return getattr(cmd, "_frame_height", None)
+
+
+def _object_puff_applies(cmd, track, kp):
+    """The object-based puff is used only when pose cannot be trusted for this person: the box is shorter than
+    FAR_PUFF_BELOW_FRAC of the frame, or the nose / both wrists are under KP_CONF_MIN (or there are no keypoints)."""
+    h = _frame_height(cmd)
+    if h and track.box is not None and (track.box[3] - track.box[1]) < FAR_PUFF_BELOW_FRAC * h:
+        return True
+    if kp is None:
+        return True
+    return kp[recognition.KP_NOSE][2] < KP_CONF_MIN or all(
+        kp[i][2] < KP_CONF_MIN for i in (recognition.KP_LWRIST, recognition.KP_RWRIST))
+
+
+def _update_object_puff(loc, track, dets, now):
+    """One puff = the cigarette on this track seen in the head zone and, within FAR_PUFF_PAIR_SECONDS before or after, seen in the
+    chest / hand zone. Both sightings are consumed by a puff; at most one per FAR_PUFF_MIN_GAP_SECONDS."""
+    bx1, by1, bx2, by2 = track.box
+    bh = max(by2 - by1, 1)
+    for d in dets:
+        if str(d[5]).lower() != "cigarette" or class_flipped(now, tuple(d[:4]), "cigarette"):
+            continue
+        rel_y = (_center(tuple(d[:4]))[1] - by1) / bh
+        if rel_y <= FAR_PUFF_HEAD_ZONE:
+            loc.head_seen = now
+        elif FAR_PUFF_BODY_ZONE[0] <= rel_y <= FAR_PUFF_BODY_ZONE[1]:
+            loc.body_seen = now
+    if loc.head_seen is None or loc.body_seen is None:
+        return
+    if abs(loc.head_seen - loc.body_seen) > FAR_PUFF_PAIR_SECONDS or now - max(loc.head_seen, loc.body_seen) > FAR_PUFF_PAIR_SECONDS:
+        return
+    if loc.last_object_puff is not None and now - loc.last_object_puff < FAR_PUFF_MIN_GAP_SECONDS:
+        return
+    loc.puffs.append(now)
+    loc.n_object_puffs += 1
+    loc.last_object_puff = now
+    loc.head_seen = loc.body_seen = None                 # consumed: the next puff needs fresh sightings of both
 
 
 def _expire_reaches(loc, now):

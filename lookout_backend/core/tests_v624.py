@@ -124,7 +124,7 @@ class HoldupQwenTests(unittest.TestCase):
         self.assertIn({"field": "people_count", "label": "Distinct real people seen", "value": 2}, ctx["checklist"])
 
     def test_spec_version(self):
-        self.assertEqual(scoring.SCORING_SPEC_VERSION, "v6.2.5")
+        self.assertEqual(scoring.SCORING_SPEC_VERSION, "v6.2.8")
 
 
 if __name__ == "__main__":

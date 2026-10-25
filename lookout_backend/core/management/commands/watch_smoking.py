@@ -896,6 +896,9 @@ class Command(IncidentMixin, BaseCommand):
         # --- the cues (spec v6 section 6) ---
         puffs = track.gesture_count(now_ts, self.puff_window)   # pose counter (Settings window)
         cues = set()
+        if (location_momentum.LOCATION_AWARE_MOMENTUM and location_momentum.NEAR_MOUTH_HELD_BEFORE_CONFIRM
+                and not object_on):
+            self._near_mouth(track, now_ts)      # v6.2.8: keep the near_mouth hold warm while the object cue is still confirming
         if object_on:
             cues.add("cigarette")
             if self._near_mouth(track, now_ts):

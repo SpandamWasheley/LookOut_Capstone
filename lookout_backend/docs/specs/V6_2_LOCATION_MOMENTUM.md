@@ -257,3 +257,34 @@ Real holdups reach Possible or Likely; ALT-0152 and the walk-pasts stay at Monit
 * The close-stay rule fires on anyone who stands near a knife holder for 2 s, including friends standing together; the knife cue and the cap are then the only protection.
 * The shadow height rule is a heuristic tuned on one footage set (ALT-0152).
 * Three real holdup clips (one never detected) and two walk-past clips are a small sample; thresholds are in the constants block.
+
+# v6.2.8 — far-range puff from the cigarette's own movement (`FAR_PUFF_FROM_OBJECT`)
+`SCORING_SPEC_VERSION = "v6.2.8"`. Switches: `FAR_PUFF_FROM_OBJECT` and `NEAR_MOUTH_HELD_BEFORE_CONFIRM` (both in the marked block of `core/vision/location_momentum.py`; `LOCATION_AWARE_MOMENTUM = False` turns everything off).
+
+## Diagnosis (uploaded clip `Sep19_2 - TrimSmoking.mp4`, ALT-0164's clip; dry run with `watch_smoking --cascade`, logs in `v62_test_results/far_puff/logs/`)
+* ALT-0164 itself (Likely 0.75) is the near smoker, track #1 (15-24 % of the frame tall, 25 pose puffs). The far smoker is track **#23** (box 5-16 % of the frame, 68-225 px; present 32.7-61.2 s) - Monitoring for 5 frames (43.6-44.0 s, score 0.40) and never Possible. Track #8 (21-31 %, back turned) also only reached Monitoring (5 frames).
+* **The hypothesis "no puff because pose cannot resolve the person" is wrong for track 23.** On this build (v6.2.6 zoomed pose) its keypoints were fine: nose 0.98, wrists 0.9, anchors found in 187 of 281 frames. Pose puffs WERE counted (4 in total: puffs in 10 s = 1 from 37.3 s and 2 from 42.0 s), so the gate read "capped: needs 2 puffs in 30 s for Likely" from 37.3 s and no cap from 42.0 s: Possible was allowed.
+* **What actually kept it at Monitoring:** (1) the cigarette is detected in only 54 of 281 frames, in short bursts (41.3-42.2 s: 9 frames, 'near mouth', head zone rel_y 0.10); the object cue turned ON at ~41.6 s but must stay ON 2.0 s (`object_confirm_seconds`) before it counts, so it only confirmed at 43.6 s, when the cigarette had already left view and momentum faded below 0.4 by 44.0 s. (2) `near_mouth` (+0.15, "held for cue_hold") was only evaluated while the cue was ON, so the mouth sighting at 41-42 s was never remembered: at 43.6 s the score was cigarette 0.40 only (Monitoring) instead of 0.55 (Possible).
+* Track 8: nose confidence 0.09-0.37 (back turned) so no mouth anchor and no reach; the cigarette was only ever at chest height (rel_y 0.38-0.52), so the object fallback cannot help it either.
+
+## Changes
+1. **Object-based puff** (`update_puffs` -> `_update_object_puff`): used only when the person box is shorter than `FAR_PUFF_BELOW_FRAC` (0.25) of the frame height, or the nose / both wrists are under conf 0.3 (or there are no keypoints). A puff = the track's cigarette seen in the head zone (top `FAR_PUFF_HEAD_ZONE` 22 % of the box) and, within `FAR_PUFF_PAIR_SECONDS` (4.0 s) before or after, in the chest / hand zone (`FAR_PUFF_BODY_ZONE` 30-70 %); both sightings are consumed; at most one per `FAR_PUFF_MIN_GAP_SECONDS` (2.0 s). It appends to the same puff list, so it lifts the "no puff" cap and counts towards the 2 puffs for Likely; nothing else changes. Per-track counters `n_object_puffs` / `n_pose_puffs`.
+2. **`NEAR_MOUTH_HELD_BEFORE_CONFIRM = True` (not asked for; needed for the far smoker):** `near_mouth` is now evaluated every frame (also while the object cue is still confirming), so its 5 s hold works. This is what lifts track 23 from Monitoring 0.40 to Possible 0.55.
+
+## Results (dry runs, `watch_smoking --cascade`; before = commit 718a7d2, after = this change; highest status)
+| clip | track | before | after | puffs pose / object (after) |
+|---|---|---|---|---|
+| Sep19_2 (ALT-0164) | #1 near smoker | Likely | Likely | 24 / 7 |
+| | **#23 far smoker** | Monitoring | **Possible** (43.6 s) | 3 / 6 |
+| | #8 | Monitoring | Monitoring | 3 / 0 |
+| S2 FarVape (smoker) | #32 | Monitoring | Monitoring | 1 / 0 |
+| S VapeNightNear (smoker) | #3 | Possible | Possible | 1 / 0 |
+| Vape Far Night (to 40 s) | - | no event | no event | 2 / 0 |
+| Aug14_12 TrimNull (no smoker) | - | no event | no event | 0 / 3 |
+| Kabilang (walkers, to 70 s) | - | no event | no event | 4 / 1 |
+| **Trim2** (the clip behind the earlier false Likely) | #1 | Monitoring (capped: no puff) | **Possible** | 1 / 11 |
+
+## Caveats
+* The object puff alone did not change any status on the far clip; the near_mouth change did. The object puff makes object-visible smoking count as puffs, which also lifts the cap on **Trim2**: track 1 (19-22 % of the frame, so under the 25 % size rule although its keypoints are good) shows the cigarette cycling head (rel_y 0.1-0.15) <-> chest (0.35-0.6) 11 times in 40 s, which looks like genuine puffing but has no ground truth. Someone should watch that clip before trusting it. If it is a false positive the size rule (`FAR_PUFF_BELOW_FRAC`) should only apply when keypoints are also unreliable.
+* The walking / no-smoker clips stay without any event. Jittering cigarette detections inside a box can fabricate object puffs (3 on the null clip, 1 on Kabilang) but they only matter when the cigarette cue is ON.
+* `FAR_PUFF_*` thresholds were not tuned beyond the specified starting values.
