@@ -28,10 +28,14 @@ export const DETECTION_TYPES = [
 //   TYPES_REQUIRING_EDGES cannot start until something is drawn.
 //   TYPES_WITH_OPTIONAL_EDGES  offer the step, but start happily without it.
 //
-// Parking is capable but not required — with nothing drawn, watch_parking
-// falls back to its plain dwell rule and the run is still valid. Merged (All 4)
-// has no such fallback and refuses to start without an area, so it is also
-// hidden from entry points that have no drawing step at all.
+// Parking no longer needs anything drawn: with no area saved, watch_parking
+// works one out from the footage itself — it watches where traffic drives and
+// hulls those ground contacts into the no-parking area (--no-auto-zone turns
+// that off). The canvas is still offered, because a traced area is a reading of
+// the footage and an operator who knows the street may want to correct it, but
+// it is an override now rather than a prerequisite. Merged (All 4) has no such
+// fallback and refuses to start without an area, so it is also hidden from
+// entry points that have no drawing step at all.
 //
 // Disposal is the one that must stay genuinely optional in the UI as well as
 // the API. It is not a vehicle rule at all: the area only narrows WHERE
@@ -40,7 +44,17 @@ export const DETECTION_TYPES = [
 // precondition for starting a run that worked fine without one before.
 export const TYPES_WITH_EDGES = new Set(["parking", "merged4", "disposal"]);
 export const TYPES_REQUIRING_EDGES = new Set(["merged4"]);
-export const TYPES_WITH_OPTIONAL_EDGES = new Set(["disposal"]);
+export const TYPES_WITH_OPTIONAL_EDGES = new Set(["disposal", "parking"]);
+
+// Which detectors own the "inside the road %" and "for N minutes" boxes.
+//
+// Deliberately NOT the inverse of TYPES_WITH_OPTIONAL_EDGES, which it used to
+// be read as. The two questions came apart when parking's area became
+// optional: parking's thresholds ARE its rule and apply to an auto-traced area
+// exactly as to a drawn one, while disposal draws an area and has no
+// thresholds at all. Tying them together hid parking's only real controls the
+// moment its polygon stopped being compulsory.
+export const TYPES_WITH_AREA_THRESHOLDS = new Set(["parking", "merged4"]);
 
 // What the polygon MEANS, which is not the same sentence for every detector:
 // parking judges vehicles against a no-parking area, disposal just confines
@@ -49,12 +63,12 @@ export const TYPES_WITH_OPTIONAL_EDGES = new Set(["disposal"]);
 export const edgeHeading = (key, label) =>
   key === "disposal"
     ? "Draw the area to watch for dumped rubbish (optional)"
-    : `Draw the no-parking area for ${label}`;
+    : `No-parking area for ${label} (optional — worked out from the footage if you skip it)`;
 
 export const edgeCameraNote = (key, label) =>
   key === "disposal"
     ? `${label} uses the area saved on the camera (Feeds → Edge Zones). Without one it watches the whole frame.`
-    : `${label} uses the no-parking area saved on the camera (Feeds → Edge Zones).`;
+    : `${label} uses the no-parking area saved on the camera (Feeds → Edge Zones). Without one it works the road out from the first half-minute of footage and saves what it finds.`;
 
 // A job row carries the raw DETECTION_COMMANDS key ("thief", "merged4"), which
 // is not what the operator picked it by. Falls back to the key itself so an

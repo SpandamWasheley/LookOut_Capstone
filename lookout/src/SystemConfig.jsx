@@ -28,10 +28,12 @@ const STATIC_DEFAULTS = {
   thief_enabled: true, thief_confidence: 30,
   drinking_enabled: true, drinking_confidence: 35,
   drinking_mouth_proximity: 3.0, drinking_cooldown_center_dist: 1.5,
-  disposal_enabled: true, disposal_confidence: 15, disposal_static_seconds: 5, disposal_cooldown: 120,
+  disposal_enabled: true, disposal_confidence: 15, disposal_static_seconds: 2, disposal_cooldown: 120,
   disposal_cooldown_dist: 60, disposal_min_area: 0.08, disposal_max_area: 8,
   disposal_ignore_movers: true,
   disposal_warmup_seconds: 5, disposal_recheck_seconds: 10,
+  disposal_owner_radius: 80, disposal_owner_away_seconds: 3,
+  disposal_owner_max_hold: 3, disposal_suspect_confidence: 25,
   alert_cooldown: 120, evidence_retention_days: 30, evidence_auto_purge: false, show_testing_tools: false, auto_start_detection: false,
   vlm_enabled: true, vlm_model: "qwen3-vl:2b-instruct", vlm_model_holdup: "qwen3-vl:4b-instruct", vlm_frames: 8,
 };
@@ -379,7 +381,7 @@ export function SystemConfig() {
       <TwoCols
         left={detection("disposal", "Improper disposal detection",
           "Flag rubbish that is dumped and then left behind.",
-          "How sure the system must be that a left-behind object is a garbage bag. This detector reads low numbers on purpose — it recognises bags by description rather than from trained examples, so even a correct match usually scores around 15-25%.")}
+          "Where the line between Possible and Likely falls. A left-behind object that looks more like a garbage bag than like anything else is reported either way: under this number it is filed as Possible, for somebody to settle from the clip, and at or above it as Likely. Raise this to send more to Possible and keep Likely for the clear-cut ones. This detector reads low numbers on purpose — it recognises bags by description rather than from trained examples, so a correct match usually scores 15-25%, and one far down the street can score as little as 10%.")}
         right={
           <Card title="Timings" onReset={() => resetKeys(["disposal_static_seconds", "disposal_cooldown"])}>
             <Row label="Time before it counts as left behind"
@@ -388,8 +390,8 @@ export function SystemConfig() {
               <DurationBox seconds={form.disposal_static_seconds} version={version}
                 onChange={(s) => set("disposal_static_seconds", Math.round(s))} />
             </Row>
-            <Row label="Wait before reporting the same spot again"
-              desc="How long the system waits before it will report rubbish at the same place a second time."
+            <Row label="Keep a spot claimed for"
+              desc="Rubbish on one spot is one violation for as long as it stays there, however many times the system re-checks it. This is how long after it stops being seen the spot is released, so that anything dumped there afterwards counts as a new violation. Rubbish somewhere else is always its own violation."
               differs={differs("disposal_cooldown")}>
               <DurationBox seconds={form.disposal_cooldown} version={version}
                 onChange={(s) => set("disposal_cooldown", Math.round(s))} />
@@ -407,7 +409,7 @@ export function SystemConfig() {
                 onChange={(s) => set("disposal_warmup_seconds", Math.round(s))} />
             </Row>
             <Row label="Same-spot radius"
-              desc="How close a second piece of rubbish must be to count as the same place for the wait above."
+              desc="How close a second piece of rubbish must be to count as the same place, and so the same violation. Anything further away is reported separately — rubbish on the left and rubbish on the right are two things to go and clear."
               differs={differs("disposal_cooldown_dist")}>
               <NumberBox value={form.disposal_cooldown_dist} min={10} max={300} step={10} unit="px"
                 onChange={(v) => set("disposal_cooldown_dist", v)} />
@@ -422,6 +424,39 @@ export function SystemConfig() {
             desc="Skip anything sitting inside a detected person, car, motorbike or bicycle. Someone standing still looks exactly like an object that arrived and stopped, so without this they are the most common thing reported. Leave on unless the view has no people or traffic."
             value={form.disposal_ignore_movers}
             onChange={(v) => set("disposal_ignore_movers", v)} />
+        </Card>
+        <Card title="Waiting for the owner to leave"
+          note="Rubbish is only dumped once the person who put it there walks away. Whoever is standing beside something as it appears is treated as its owner, and the report is held until they go. Anyone who walks past afterwards is just a passer-by and does not hold it."
+          onReset={() => resetKeys(["disposal_owner_radius", "disposal_owner_away_seconds",
+                                    "disposal_owner_max_hold"])}>
+          <Row label="How close counts as standing over it"
+            desc="A person within this distance of something as it appears is treated as its owner. Too wide and everyone on the pavement holds the report; too narrow and the real owner is missed."
+            differs={differs("disposal_owner_radius")}>
+            <NumberBox value={form.disposal_owner_radius} min={20} max={400} step={10} unit="px"
+              onChange={(v) => set("disposal_owner_radius", v)} />
+          </Row>
+          <Row label="Owner must be away for"
+            desc="How long the owner has to have left before the object is reported. This is the difference between a vendor standing over their own goods and rubbish that has been abandoned."
+            differs={differs("disposal_owner_away_seconds")}>
+            <DurationBox seconds={form.disposal_owner_away_seconds} version={version}
+              onChange={(s) => set("disposal_owner_away_seconds", Math.round(s))} />
+          </Row>
+          <Row label="Report anyway after"
+            desc="The longest the system will wait for an owner to leave. Someone who never leaves the pavement would otherwise hold the report all shift, and at that point the rubbish is still dumped rubbish. Counted from when the object appeared."
+            differs={differs("disposal_owner_max_hold")}>
+            <DurationBox seconds={form.disposal_owner_max_hold} version={version}
+              onChange={(s) => set("disposal_owner_max_hold", Math.round(s))} />
+          </Row>
+        </Card>
+        <Card title="Suspect photo"
+          note="When something is reported, the system also saves a photo of whoever was beside it as it appeared — taken from the moment of the drop, not the moment of the report, which can be a minute later with the street empty."
+          onReset={() => resetKeys(["disposal_suspect_confidence"])}>
+          <Row label="How sure it must be that it found a person"
+            desc="Deliberately lower than the setting above. Missing a suspect costs a photo; a doubtful one costs nothing a reviewer cannot judge for themselves, because the photo is only ever shown for identification."
+            differs={differs("disposal_suspect_confidence")}>
+            <NumberBox value={form.disposal_suspect_confidence} min={5} max={90} step={5} unit="%"
+              onChange={(v) => set("disposal_suspect_confidence", v)} />
+          </Row>
         </Card>
         <Card title="Object size"
           note="How big something must be to be considered at all. These decide how much the detector looks at in the first place — raise the smallest if it reports a lot of things that are not rubbish."

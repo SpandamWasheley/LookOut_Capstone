@@ -75,16 +75,29 @@ class DebugPublisher:
         if frame is not None and time.monotonic() - self._last_pub >= self.interval:
             self._clean = frame.copy()
 
-    def note(self, key, violation, ident, box, status, score_pct, indicators, multipliers, momentum, kind="track"):
-        """Record the latest state of one subject. Called on every processed frame; cheap."""
+    def note(self, key, violation, ident, box, status, score_pct, indicators, multipliers, momentum,
+             kind="track", detail=""):
+        """Record the latest state of one subject. Called on every processed frame; cheap.
+
+        `detail` is an optional sub-label shown beside the status. One status can
+        mean several different things — disposal's Possible covers waiting for an
+        owner to leave, waiting for the bag check, and a bag the check scored too
+        low to act on — and those call for different responses from whoever is
+        watching. Carried as its own field rather than folded into `status` so the
+        status stays one of the system's four, and so the page keeps colouring by
+        status alone.
+        """
         now = time.time()
         old = self._entries.get(key)
+        # Keyed on status only: a sub-label changing (Checking -> Weak match) is
+        # not a change of status, and restarting the "changed" clock for it would
+        # misreport how long a subject has held its status.
         changed = old["changed"] if old and old["status"] == status else now
         self._entries[key] = {
             "key": "%s:%s" % (key[0], key[1]) if isinstance(key, tuple) else str(key),
             "id": ident, "violation": violation, "kind": kind,
             "box": [int(v) for v in box] if box is not None else None,
-            "status": status, "score": score_pct,
+            "status": status, "detail": detail, "score": score_pct,
             "indicators": indicators, "multipliers": multipliers,
             "momentum": round(float(momentum), 2),
             "seen": now, "changed": changed,

@@ -55,8 +55,28 @@ export function RecordingPlayer({ alert, timeline = false }) {
   // copy, so neither is guaranteed to be 16:9 for every camera/upload. 16:9
   // is just the pre-metadata default so the box doesn't jump from 0 height.
   const [aspectRatio, setAspectRatio] = useState(16 / 9);
+  // Dragging the scrub bar. While true, `elapsed` follows the POINTER rather
+  // than the video's own timeupdate events — otherwise the thumb fights the
+  // playhead and stutters backwards under the finger on every seek.
+  const [scrubbing, setScrubbing] = useState(false);
+  const barRef = useRef(null);
 
-  const src = useRaw && hasRaw ? alert.rawVideoUrl : (hasAnnotated ? alert.videoUrl : alert.rawVideoUrl);
+  const showingRaw = useRaw && hasRaw;
+  const src = showingRaw ? alert.rawVideoUrl : (hasAnnotated ? alert.videoUrl : alert.rawVideoUrl);
+
+  // Where in THIS clip the detector actually fired, in seconds, or null.
+  //
+  // Not the same place in the two clips, which is why it cannot be one number:
+  //   RAW        cut with a lead-in, so the moment sits inside it —
+  //              `clipOffset`, measured and stored when the clip was written.
+  //   ANNOTATED  a rolling buffer of the frames BEFORE the alert, so the
+  //              moment is the last frame by construction. Marking "the end"
+  //              adds nothing a viewer cannot see, so it is left unmarked.
+  // Null on alerts written before the field existed, and on live-source raw
+  // clips (also pre-roll buffers) — no marker rather than a guessed one.
+  const detectedAt = showingRaw && alert.clipOffset != null && alert.clipOffset >= 0
+    ? alert.clipOffset
+    : null;
 
   useEffect(() => {
     setPlaying(false);
@@ -67,6 +87,25 @@ export function RecordingPlayer({ alert, timeline = false }) {
 
   const fmtSec = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
   const pct = duration > 0 ? (elapsed / duration) * 100 : 0;
+  const markPct = detectedAt != null && duration > 0
+    ? Math.min(100, (detectedAt / duration) * 100)
+    : null;
+
+  // Seconds under a pointer x, clamped to the clip.
+  const timeAt = (clientX) => {
+    const bar = barRef.current;
+    if (!bar || !duration) return null;
+    const r = bar.getBoundingClientRect();
+    const ratio = (clientX - r.left) / r.width;
+    return Math.max(0, Math.min(ratio * duration, duration));
+  };
+
+  const seekTo = (seconds) => {
+    const v = videoRef.current;
+    if (!v || seconds == null) return;
+    v.currentTime = seconds;
+    setElapsed(seconds);     // immediate, so the thumb tracks the finger
+  };
 
   const togglePlay = () => {
     const v = videoRef.current;
@@ -103,7 +142,10 @@ export function RecordingPlayer({ alert, timeline = false }) {
             setDuration(v.duration || 0);
             if (v.videoWidth && v.videoHeight) setAspectRatio(v.videoWidth / v.videoHeight);
           }}
-          onTimeUpdate={(e) => setElapsed(e.currentTarget.currentTime)}
+          // Ignored mid-drag: the pointer owns `elapsed` then, and letting
+          // the video's own events through makes the thumb jump backwards
+          // under the finger on every seek.
+          onTimeUpdate={(e) => { if (!scrubbing) setElapsed(e.currentTarget.currentTime); }}
           onEnded={() => setPlaying(false)}
           onClick={togglePlay}
         />
@@ -157,19 +199,77 @@ export function RecordingPlayer({ alert, timeline = false }) {
             </button>
           </div>
         )}
+        {/* Scrub bar. The visible track is thin, but the POINTER TARGET is the
+            padded wrapper around it — a 4px-tall hit area is a coin toss with a
+            mouse and unusable with a thumb on a phone. */}
         <div
-          className="relative h-1 rounded-full mb-3 cursor-pointer"
-          style={{ background: "var(--border)" }}
-          onClick={(e) => {
-            const v = videoRef.current;
-            if (!v || !duration) return;
-            const r = e.currentTarget.getBoundingClientRect();
-            const t = ((e.clientX - r.left) / r.width) * duration;
-            v.currentTime = Math.max(0, Math.min(t, duration));
+          className="relative mb-2 py-2 cursor-pointer touch-none select-none group"
+          role="slider"
+          tabIndex={0}
+          aria-label="Seek"
+          aria-valuemin={0}
+          aria-valuemax={Math.round(duration) || 0}
+          aria-valuenow={Math.round(elapsed) || 0}
+          aria-valuetext={`${fmtSec(elapsed)} of ${fmtSec(duration)}`}
+          onPointerDown={(e) => {
+            if (!duration) return;
+            // Capture, so a drag that leaves the bar (or the window) still
+            // tracks and still ends — without this, releasing outside leaves
+            // the player stuck in scrubbing state.
+            e.currentTarget.setPointerCapture(e.pointerId);
+            setScrubbing(true);
+            seekTo(timeAt(e.clientX));
+          }}
+          onPointerMove={(e) => { if (scrubbing) seekTo(timeAt(e.clientX)); }}
+          onPointerUp={(e) => {
+            if (!scrubbing) return;
+            e.currentTarget.releasePointerCapture?.(e.pointerId);
+            setScrubbing(false);
+          }}
+          onPointerCancel={() => setScrubbing(false)}
+          onKeyDown={(e) => {
+            if (!duration) return;
+            const step = e.shiftKey ? 10 : 1;
+            if (e.key === "ArrowRight") { e.preventDefault(); seekTo(Math.min(elapsed + step, duration)); }
+            else if (e.key === "ArrowLeft") { e.preventDefault(); seekTo(Math.max(elapsed - step, 0)); }
+            else if (e.key === "Home") { e.preventDefault(); seekTo(0); }
+            else if (e.key === "End") { e.preventDefault(); seekTo(duration); }
+            else if (e.key.toLowerCase() === "d" && detectedAt != null) { e.preventDefault(); seekTo(detectedAt); }
           }}
         >
-          <div className="absolute left-0 top-0 h-full rounded-full transition-all"
-            style={{ width: `${pct}%`, background: "var(--primary)" }} />
+          <div ref={barRef} className="relative h-1.5 rounded-full transition-all group-hover:h-2"
+            style={{ background: "var(--border)" }}>
+            <div className="absolute left-0 top-0 h-full rounded-full"
+              style={{ width: `${pct}%`, background: "var(--primary)",
+                       transition: scrubbing ? "none" : "width 120ms linear" }} />
+
+            {/* Where the detector fired. A reviewer opening a clip wants that
+                moment, not the beginning — and on a raw clip with a lead-in,
+                hunting for it is most of the time spent on an alert. */}
+            {markPct != null && (
+              <button
+                type="button"
+                title={`Detected at ${fmtSec(detectedAt)} — click to jump here`}
+                aria-label={`Jump to the detection at ${fmtSec(detectedAt)}`}
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => { e.stopPropagation(); seekTo(detectedAt); }}
+                className="absolute -top-1 w-[3px] h-[14px] rounded-sm cursor-pointer"
+                style={{ left: `calc(${markPct}% - 1.5px)`,
+                         background: violationDisplay(alert.type).color,
+                         boxShadow: "0 0 0 1px rgba(0,0,0,0.45)" }}
+              />
+            )}
+
+            {/* The handle. Its presence is what says "this is draggable" —
+                a bare filled bar reads as a progress indicator. */}
+            <div className="absolute rounded-full pointer-events-none"
+              style={{ left: `calc(${pct}% - 6px)`, top: "50%",
+                       width: 12, height: 12, transform: "translateY(-50%)",
+                       background: "var(--primary)",
+                       boxShadow: "0 1px 3px rgba(0,0,0,0.5)",
+                       opacity: duration ? 1 : 0,
+                       transition: scrubbing ? "none" : "left 120ms linear" }} />
+          </div>
         </div>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2.5">
@@ -195,6 +295,23 @@ export function RecordingPlayer({ alert, timeline = false }) {
               style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
               {fmtSec(elapsed)} / {fmtSec(duration)}
             </span>
+            {/* Names the tick on the bar, and jumps to it. Without the label
+                the marker is an unexplained coloured line. */}
+            {detectedAt != null && (
+              <button
+                type="button"
+                onClick={() => seekTo(detectedAt)}
+                title="Jump to the moment the detector fired"
+                className="flex items-center gap-1.5 text-[12px] px-2 py-1 rounded-md"
+                style={{ color: "var(--muted-foreground)", border: "1px solid var(--border)" }}
+                onMouseEnter={(e) => (e.currentTarget.style.color = "var(--foreground)")}
+                onMouseLeave={(e) => (e.currentTarget.style.color = "var(--muted-foreground)")}
+              >
+                <span className="inline-block w-[3px] h-[10px] rounded-sm"
+                  style={{ background: violationDisplay(alert.type).color }} />
+                Detected {fmtSec(detectedAt)}
+              </button>
+            )}
           </div>
           <a
             href={src}
@@ -851,6 +968,52 @@ export function ObjectConfidenceCard({ alert }) {
   );
 }
 
+// "Likely dropped by" — improper disposal's suspect crop, beside the bag itself.
+//
+// Shown for disposal and nothing else, because no other detector captures one. The three
+// `suspect_status` values are all rendered: "none" is a real outcome (the window around the drop
+// had nobody in it) and saying so is what stops a reviewer assuming the photo failed to load and
+// going looking for a bug instead of watching the clip.
+export function SuspectCard({ alert }) {
+  if (resolveViolationType({ code: alert.type }).code !== "disposal") return null;
+  if (!alert.suspectStatus) return null;
+
+  const captured = alert.suspectStatus !== "none" && alert.suspectImageUrl;
+  const note = alert.suspectStatus === "carrier"
+    ? "No face captured — this is the moving shape that was there as it was dropped."
+    : null;
+
+  return (
+    <InfoCard label="Likely dropped by" tooltip={SUSPECT_TOOLTIP}>
+      {captured ? (
+        <div className="mt-1.5 flex gap-3 items-start">
+          <a href={alert.suspectImageUrl} target="_blank" rel="noreferrer" className="shrink-0">
+            <img src={alert.suspectImageUrl} alt="Person beside the rubbish as it appeared"
+              loading="lazy" className="w-24 h-24 object-cover rounded-lg"
+              style={{ border: "1px solid var(--border)" }} />
+          </a>
+          <div className="min-w-0 text-[13px]" style={{ color: "var(--muted-foreground)" }}>
+            {note ?? "Captured from the moment the rubbish appeared, not when it was reported."}
+            {alert.ownerLeftAt && (
+              <div className="mt-1" style={{ color: "var(--foreground)" }}>
+                Walked away at {formatFull(alert.ownerLeftAt)}
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="mt-1 text-[13px]" style={{ color: "var(--muted-foreground)" }}>
+          No suspect captured — review video.
+        </div>
+      )}
+    </InfoCard>
+  );
+}
+
+const SUSPECT_TOOLTIP = "Whoever was beside the rubbish at the moment it appeared — not when the "
+  + "alert was raised, which can be a minute later with the street empty. It is a lead for the "
+  + "reviewer, never an identification the system has made.";
+
 // Status + Object confidence, side by side. Parking shows the Object confidence card alone: its
 // status is only progress toward a dwell timer, so the one useful number is how sure YOLO was
 // that the thing in the zone is a vehicle.
@@ -1306,6 +1469,7 @@ export function ViolationModal({
               <div className="flex flex-col gap-3 min-w-0">
                 <QuietCard label="Camera" value={alert.cameraZone || alert.cameraAddress || "—"} />
                 <StatusAndConfidenceRow alert={alert} testingTools={testingTools} />
+                <SuspectCard alert={alert} />
                 {/* Null (not merely empty) means this violation has no AI checker
                     at all — parking, whose rule is a measurement with nothing for
                     a vision model to adjudicate. Drawing "AI context unavailable"
@@ -1319,8 +1483,11 @@ export function ViolationModal({
                   </>
                 )}
                 {/* Parking has no indicators or points (a stopped-time rule), so its breakdown
-                    would only ever say "no indicators fired". */}
-                {testingTools && resolveViolationType({ code: alert.type }).code !== "parking" && (
+                    would only ever say "no indicators fired". Disposal is the same: its
+                    Possible/Likely comes from a zero-shot bag check, not from a cue table, so a
+                    breakdown would print a status with nothing under it — which reads as a
+                    detector whose indicators all failed rather than one that has none. */}
+                {testingTools && !["parking", "disposal"].includes(resolveViolationType({ code: alert.type }).code) && (
                   <ScoreBreakdown alert={alert} />
                 )}
                 <div className="grid grid-cols-2 gap-3">

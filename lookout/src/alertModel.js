@@ -21,6 +21,22 @@ export function mapAlert(raw) {
     imageUrl: raw.image_url,
     videoUrl: raw.video_url,
     rawVideoUrl: raw.raw_video_url,
+    // Improper disposal only: who was beside the rubbish as it appeared.
+    // `suspectStatus` is "person" | "carrier" | "none" — "none" is recorded
+    // deliberately, so the card can say nothing was captured instead of
+    // leaving a gap that reads as a broken image.
+    suspectImageUrl: raw.suspect_image_url || "",
+    suspectStatus: raw.suspect_status || "",
+    // When the owner walked off, and where this sits in an uploaded clip
+    // (`timestamp` is wall clock, which on a clip is not the same thing).
+    ownerLeftAt: raw.owner_left_at ?? null,
+    footageOffset: raw.footage_offset ?? null,
+    // Seconds into the RAW evidence clip where the detector fired — what the
+    // player's marker points at. Distinct from footageOffset, which is a
+    // position in the original uploaded video, not in the clip cut out of it.
+    // Null where there is nothing to mark: a live source's raw clip (and the
+    // annotated clip) are pre-roll buffers whose last frame IS the detection.
+    clipOffset: raw.clip_offset ?? null,
     officersAssignedIds: raw.officers_assigned ?? [],
     officersAssignedNames: raw.officers_assigned_names ?? [],
     suspect: raw.suspect,

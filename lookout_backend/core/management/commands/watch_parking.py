@@ -27,6 +27,7 @@ with Spinner("Loading PyTorch", tty_only=True):
     from core.vision import debug_view                      # noqa: E402
     from core.vision import recognition                     # noqa: E402
     from core.vision import scoring                         # noqa: E402
+    from core.vision import zone_autodetect as autodetect   # noqa: E402
     from core.vision.obstruction_zone import ObstructionZone  # noqa: E402
 
 # Where draw_zone writes the polygon by default.
@@ -37,6 +38,13 @@ SETTINGS_REFRESH_SECONDS = 5  # re-poll SystemSettings this often, not every fra
 
 
 class Command(BaseCommand):
+    # None means "save the annotated clip immediately" -- the old, synchronous
+    # behaviour. Declared on the CLASS because watch_merged_all builds this
+    # Command by hand and never runs handle(), so an instance attribute set
+    # there would leave _schedule_clip reaching for a name that is not present.
+    # _run_stream, which drains the queue, switches it on.
+    pending = None
+
     help = (
         "Detects vehicles (car/motorcycle/bus/truck) for illegal-parking / "
         "obstruction monitoring. A vehicle is judged by how much of its ground "
@@ -119,6 +127,13 @@ class Command(BaseCommand):
                  "300s score.",
         )
         parser.add_argument(
+            "--no-auto-zone", action="store_true",
+            help="Do not work the no-parking area out from the footage when "
+                 "none is saved. Without this flag, a run with no area traces "
+                 "one from where traffic drives (core/vision/zone_autodetect.py) "
+                 "instead of refusing to start.",
+        )
+        parser.add_argument(
             "--inside-pct", type=int, default=None,
             help="Share of the vehicle's ground footprint that must be inside "
                  "the polygon for it to count as in the area, 5-100. Omit to "
@@ -191,6 +206,14 @@ class Command(BaseCommand):
         # Zones editor writes, so an operator who traces the road in the
         # browser gets the detector they just configured. The JSON file is the
         # fallback for a terminal-only setup (draw_zone), and --zone forces it.
+        # Opt IN to working the area out from the footage, explicitly and
+        # here. _load_zone is also called by watch_merged_all, which is
+        # documented to REFUSE without an area rather than fall back to
+        # anything — so the default (see _auto_zone) is off, and inheriting
+        # this method cannot quietly hand a caller a fallback it never asked
+        # for. That is not hypothetical: it is what happened when the flag was
+        # read from the options dict instead.
+        self.auto_zone = not options.get("no_auto_zone")
         self.zone, where = self._load_zone(options)
         if self.zone is None:
             return
@@ -294,10 +317,18 @@ class Command(BaseCommand):
 
         zone_path = Path(requested or DEFAULT_ZONE_PATH)
         if not zone_path.is_file():
+            # Nothing saved and nothing drawn — so work it out from the
+            # footage rather than refusing. This is the ordinary path now, not
+            # an emergency one: an operator who just wants parking watched
+            # should not have to trace a polygon first, and the road is
+            # something the footage can answer for itself.
+            auto, note = self._auto_zone(options, kwargs)
+            if auto is not None:
+                return auto, note
             self.stdout.write(self.style.ERROR(
-                f"No no-parking area for {self.camera.code}, and no zone file at "
-                f"{zone_path}.\n"
-                "Trace the road either way:\n"
+                f"No no-parking area for {self.camera.code}, none could be traced "
+                f"from the footage, and no zone file at {zone_path}.\n"
+                "Trace the road by hand either way:\n"
                 "  * in the dashboard — Live Feeds -> Edge Zones (saved on the camera), or\n"
                 f"  * on this machine — python manage.py draw_zone --source <rtsp-url-or-clip.mp4>\n"
                 "(LEFT click adds a point, S saves, Q quits.) Then re-run this command."
@@ -310,6 +341,97 @@ class Command(BaseCommand):
                 f"{zone_path} is not a usable zone ({exc}). Redraw it with "
                 "`python manage.py draw_zone`."))
             return None, ""
+
+    def _auto_zone(self, options, kwargs):
+        """(ObstructionZone, description) traced from the source, or (None, "").
+
+        Watches where traffic actually drives and hulls those ground contacts
+        into the no-parking area — the same rule the dashboard and
+        `manage.py trace_zone` use, so an auto-started run and a hand-checked
+        one are judged by a polygon built the same way.
+
+        Works on a clip and on a live camera alike: a clip is sampled by
+        seeking, a stream by watching it for a while before enforcement begins.
+        On a stream that costs real time up front, and the log says so, because
+        a detector that appears to do nothing for half a minute is otherwise
+        indistinguishable from one that has hung.
+
+        Never fatal. Everything here degrades to "no zone traced" and lets the
+        caller print the draw-it-by-hand instructions, because an unusable
+        automatic answer must not take the manual route away with it.
+        """
+        # OFF unless the caller explicitly switched it on (watch_parking.handle).
+        # watch_merged_all shares this method and must keep refusing without an
+        # area, so the default cannot be "trace one".
+        if not getattr(self, "auto_zone", False):
+            return None, ""
+        source = options.get("source")
+        if not source:
+            return None, ""
+        self.stdout.write(
+            f"No no-parking area saved for {self.camera.code} — working it out "
+            f"from the footage (watching where traffic drives)...")
+
+        try:
+            points, report, frame = autodetect.trace_clip(
+                source,
+                # TRACE_IMGSZ, not the detection run's 1280: see its comment.
+                lambda f: recognition.detect_vehicles(
+                    f, imgsz=autodetect.TRACE_IMGSZ),
+                max_samples=autodetect.MAX_SAMPLES,
+            )
+        except Exception as exc:                                # noqa: BLE001
+            self.stdout.write(self.style.WARNING(
+                f"Could not trace an area from the footage ({exc})."))
+            return None, ""
+
+        self.stdout.write(
+            f"  {report['samples']} frame(s) sampled, "
+            f"{report['detections']} vehicle detection(s), "
+            f"{report['moving_tracks']} of {report['tracks']} track(s) moving.")
+
+        if points is None:
+            self.stdout.write(self.style.WARNING(f"  {report['reason']}"))
+            return None, ""
+
+        height, width = frame.shape[:2]
+        norm = [[x / width, y / height] for x, y in points]
+        try:
+            zone = ObstructionZone(norm, **kwargs)
+        except ValueError as exc:
+            self.stdout.write(self.style.WARNING(
+                f"  The traced area is unusable ({exc})."))
+            return None, ""
+
+        # Saved onto the camera so the NEXT run does not pay for this again,
+        # and so the operator can see and adjust what the detector decided
+        # rather than having to guess at it.
+        #
+        # Two conditions, and both matter. Nothing stored: a traced area must
+        # never overwrite one somebody drew on purpose. And not a "-TEST"
+        # camera: those are per-RUN scratch for uploaded clips, so persisting
+        # there would hand the next clip — a different street — this clip's
+        # road, which is exactly the silent wrongness auto-tracing is supposed
+        # to remove.
+        saved = ""
+        if not (self.camera.edges or {}) and not self.camera.code.endswith("-TEST"):
+            try:
+                self.camera.edges = autodetect.to_spec(points)
+                self.camera.edges_width = width
+                self.camera.edges_height = height
+                self.camera.save(update_fields=["edges", "edges_width", "edges_height"])
+                saved = f", saved onto {self.camera.code}"
+            except Exception as exc:                            # noqa: BLE001
+                # A zone that works for this run but could not be stored is
+                # still a working run.
+                self.stdout.write(self.style.WARNING(
+                    f"  Traced the area but could not save it ({exc})."))
+
+        self.stdout.write(self.style.SUCCESS(
+            f"  Traced a {len(points)}-point area from "
+            f"{report['ground_points']} sighting(s) of moving vehicles{saved}. "
+            "Check it in Live Feeds -> Edge Zones."))
+        return zone, "the footage (auto-traced)"
 
     def _zone_points_from_camera(self):
         """The camera's road polygon as normalised (0-1) points, or None.
@@ -443,6 +565,9 @@ class Command(BaseCommand):
         # obstruction mode, the edge line) building up to the violation,
         # not just a single still. Same pattern as watch_drinking/watch_smoking.
         self.clip = recognition.ClipRecorder(seconds=30, label=self.camera.code)
+        # This loop drains, so it may defer: the clip is saved late and the
+        # detection lands in the middle of it rather than on its last frame.
+        self.pending = recognition.PendingClips()
 
         self.stdout.write(self.style.SUCCESS(
             f"Watching {source} [zone: {len(self.zone.points_norm)} points, "
@@ -529,6 +654,8 @@ class Command(BaseCommand):
                 # boxes are already drawn on it by _run_zone) for the evidence
                 # clip.
                 self.clip.add(frame, now_ts)
+                # ...and write out any clip whose post-roll has now played.
+                self._drain_pending(now_ts)
 
                 if debug:
                     cv2.imshow("LookOut - watch_parking (debug)", frame)
@@ -537,10 +664,49 @@ class Command(BaseCommand):
         except KeyboardInterrupt:
             pass
         finally:
+            if not self.dry_run:
+                self._drain_pending(self._video_pos_sec or time.time(), final=True)
             reader.stop() if is_live else cap.release()
             if debug:
                 cv2.destroyAllWindows()
             self.stdout.write(self.style.SUCCESS("Stopped."))
+
+    def _schedule_clip(self, alert, video_name, now):
+        """Defer the annotated clip if this run drains; otherwise save it now.
+
+        The immediate path is the OLD behaviour, pre-roll only — correct for a
+        caller that never drains, and far better than scheduling a clip nobody
+        will ever write.
+        """
+        path = self.violations_dir / video_name
+        when = now if now is not None else time.time()
+        if self.pending is None:
+            if self.clip.save(path):
+                Alert.objects.filter(pk=alert.pk).update(
+                    video_url=violation_media_path(video_name))
+            return
+        self.pending.schedule(alert.pk, self.clip, path, when,
+                              recognition.RAW_CLIP_POST_SECONDS)
+
+    def _drain_pending(self, now, final=False):
+        """Write any annotated clips whose post-roll has played, onto their rows.
+
+        `final` empties the queue regardless: a run that reaches the end of its
+        footage still owes every clip it scheduled, and an alert whose evidence
+        was never written because the video ended two seconds later is a lost
+        alert.
+        """
+        if self.pending is None:
+            return
+        for alert_pk, path, offset in (
+                self.pending.flush(now) if final else self.pending.due(now)):
+            fields = {"video_url": violation_media_path(path.name)}
+            # Only for a LIVE run. On a file the raw clip is cut from the source
+            # and carries the truer offset; overwriting it with the annotated
+            # clip's would mark the wrong clip's moment.
+            if offset is not None and self._source_path is None:
+                fields["clip_offset"] = offset
+            Alert.objects.filter(pk=alert_pk).update(**fields)
 
     # ---- the zone rule -----------------------------------------------------
 
@@ -691,12 +857,15 @@ class Command(BaseCommand):
         # alert) — same pattern as watch_drinking/watch_smoking/watch_thief.
         # self.clip stays None for --image test mode, which never runs
         # _run_stream's setup and has no timeline of frames to buffer anyway.
+        # NOT saved here: ClipRecorder holds the frames BEFORE now, so saving
+        # at this moment yields a clip that ends on the detection -- the
+        # approach, then nothing. Scheduled below once the row exists.
+        video_name = f"{ts_label}_parking_{tag}.mp4"
+        # Empty on the row at first: _drain_pending fills it in once the
+        # post-roll has played and the clip actually exists.
         video_url = ""
         if self.clip is not None:
             self.clip.add(frame, now if now is not None else time.time())
-            video_name = f"{ts_label}_parking_{tag}.mp4"
-            if self.clip.save(self.violations_dir / video_name):
-                video_url = violation_media_path(video_name)
 
         # RAW (unannotated, full source frame rate/resolution) clip. File
         # sources cut straight from the source file (best quality, real fps);
@@ -704,10 +873,17 @@ class Command(BaseCommand):
         raw_video_url = ""
         raw_name = f"{ts_label}_parking_{tag}_raw.mp4"
         raw_path = self.violations_dir / raw_name
+        # Where the detection sits INSIDE the clip about to be cut, for the
+        # player's marker. Only the file path can answer: a live source's raw
+        # clip is a rolling pre-roll buffer whose last frame is the detection,
+        # which needs no marker.
+        clip_offset = None
         if self._source_path is not None and self._video_pos_sec is not None:
             start = max(0.0, self._video_pos_sec - recognition.RAW_CLIP_PRE_SECONDS)
             duration = recognition.RAW_CLIP_PRE_SECONDS + recognition.RAW_CLIP_POST_SECONDS
             cut_ok = recognition.cut_raw_clip(self._source_path, start, duration, raw_path)
+            if cut_ok:
+                clip_offset = self._video_pos_sec - start
         elif self._raw_buffer is not None:
             cut_ok = self._raw_buffer.save(raw_path)
         else:
@@ -723,7 +899,7 @@ class Command(BaseCommand):
         if self.dry_run:
             return None
 
-        return Alert.objects.create(
+        alert = Alert.objects.create(
             type=self.parking_type,
             status=Alert.Status.ACTIVE,
             camera=self.camera,
@@ -736,5 +912,12 @@ class Command(BaseCommand):
             image_url=image_url,
             video_url=video_url,
             raw_video_url=raw_video_url,
+            clip_offset=clip_offset,
             suspect=label,
         )
+        # Filled in by _drain_pending once the post-roll has played. A raw clip
+        # cut from a FILE already spans both sides of the detection, so only the
+        # annotated one waits.
+        if self.clip is not None:
+            self._schedule_clip(alert, video_name, now)
+        return alert

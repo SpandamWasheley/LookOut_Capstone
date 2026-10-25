@@ -21,6 +21,8 @@ const STATUS_COLOR = {
   "Below Monitoring": "#64748b",
 };
 const BELOW = "Below Monitoring";
+// Statuses whose pill is light enough to need dark text on it.
+const DARK_LABEL = new Set(["Monitoring", BELOW]);
 const POLL_MS = 500;
 
 const clock = (epochSeconds) =>
@@ -36,7 +38,7 @@ function testingLabel(e) {
   const parts = [
     `ID ${e.id}`,
     e.violation,
-    `${e.status} (${e.score})`,
+    `${e.status}${e.detail ? ` — ${e.detail}` : ""} (${e.score})`,
   ];
   if (e.indicators?.length) parts.push(e.indicators.map((i) => `${i.name} ${i.points}`).join(", "));
   parts.push(`momentum ${e.momentum}`);
@@ -151,8 +153,9 @@ export function ProcessingView({ fetchState, testingTools = false, title = "Proc
                   opacity: e.status === BELOW ? 0.7 : 1,
                 }}>
                 <span className="absolute left-0 whitespace-nowrap px-1.5 py-0.5 rounded text-[12px] font-semibold"
-                  style={{ bottom: "100%", marginBottom: 2, background: STATUS_COLOR[e.status], color: e.status === "Monitoring" || e.status === BELOW ? "#0b1220" : "#fff", maxWidth: "none" }}>
-                  {view === "testing" ? testingLabel(e) : `${e.violation} · ${e.status}`}
+                  style={{ bottom: "100%", marginBottom: 2, background: STATUS_COLOR[e.status], color: DARK_LABEL.has(e.status) ? "#0b1220" : "#fff", maxWidth: "none" }}>
+                  {view === "testing" ? testingLabel(e)
+                    : `${e.violation} · ${e.status}${e.detail ? ` · ${e.detail}` : ""}`}
                 </span>
               </div>
             ))}

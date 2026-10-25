@@ -997,10 +997,17 @@ class Command(IncidentMixin, BaseCommand):
         raw_video_url = ""
         raw_name = f"{base}_raw.mp4"
         raw_path = self.violations_dir / raw_name
+        # Where the detection sits INSIDE the clip about to be cut, for the
+        # player's marker. Only the file path can answer: a live source's raw
+        # clip is a rolling pre-roll buffer whose last frame is the detection,
+        # which needs no marker.
+        clip_offset = None
         if self._source_path is not None and self._video_pos_sec is not None:
             start = max(0.0, self._video_pos_sec - recognition.RAW_CLIP_PRE_SECONDS)
             duration = recognition.RAW_CLIP_PRE_SECONDS + recognition.RAW_CLIP_POST_SECONDS
             cut_ok = recognition.cut_raw_clip(self._source_path, start, duration, raw_path)
+            if cut_ok:
+                clip_offset = self._video_pos_sec - start
         elif self._raw_buffer is not None:
             cut_ok = self._raw_buffer.save(raw_path)
         else:
@@ -1012,7 +1019,7 @@ class Command(IncidentMixin, BaseCommand):
             self.stdout.write(self.style.WARNING(
                 "  raw clip not produced (see ffmpeg log above if one was attempted)"
             ))
-        return video_url, raw_video_url
+        return video_url, raw_video_url, clip_offset
 
     def _create_alert(self, score, label, frame, description, box=None,
                       now=None, score_obj=None, object_confidence=None, with_clip=True):
@@ -1026,8 +1033,12 @@ class Command(IncidentMixin, BaseCommand):
         # A Monitoring event gets ONE image and no clip; the clip is written when
         # the event reaches Possible / Likely (and refreshed while it continues).
         video_url = raw_video_url = ""
+        # Initialised HERE, not only inside the branch below: a Monitoring
+        # event is written with_clip=False, and a name bound only on the clip
+        # path is unbound on the path that writes no clip.
+        clip_offset = None
         if with_clip:
-            video_url, raw_video_url = self._save_clips(base, frame, now)
+            video_url, raw_video_url, clip_offset = self._save_clips(base, frame, now)
 
         # Optional run log ($LOOKOUT_MOUTH_LOG): what fired and with which cues,
         # even in --dry-run, so before/after comparisons need no database rows.
@@ -1048,6 +1059,7 @@ class Command(IncidentMixin, BaseCommand):
             image_url=image_url,
             video_url=video_url,
             raw_video_url=raw_video_url,
+            clip_offset=clip_offset,
             last_seen_at=self._event_time(now),
             suspect=label,
             level=score_obj.level if score_obj is not None else "",

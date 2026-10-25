@@ -1607,6 +1607,123 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
         "alerts appear here automatically."
     )
 
+    @action(detail=False, methods=["post"], url_path="trace-zone",
+            parser_classes=[MultiPartParser, FormParser])
+    def trace_zone(self, request):
+        """Proposes the no-parking polygon by watching where traffic drives.
+
+        Operates on a clip ALREADY STAGED for a run (`staged_token`), because
+        by the time edges are being drawn the file is on the server and is
+        routinely 200 MB — re-uploading it to look at it a second time would be
+        the most expensive possible way to ask. A direct `file` is accepted too,
+        on the same reasoning as create()'s dual path: it is the simplest way to
+        drive this from a script or a test.
+
+        Returns `points` in the STAGED FRAME's own pixels. That needs no
+        scaling: _staged_frame_response reads frame 0 at native resolution and
+        trace_clip's first sample is that same frame, so the page can hand the
+        points straight to the EdgeCanvas it is already drawing on.
+
+        Nothing is saved. The shape arrives in the canvas as an ordinary
+        editable polygon and the operator still starts the run themselves — a
+        zone nobody has looked at should not become the rule a vehicle is
+        reported under.
+
+        Synchronous, and that is a real cost: a sample is about a third of a
+        second of inference, so this holds the connection for the better part of
+        half a minute (see zone_autodetect.WEB_MAX_SAMPLES). It buys not having
+        a second job table, a second poller and a second status UI for something
+        done once per camera angle. `manage.py trace_zone` is the way to spend
+        longer on a difficult view.
+        """
+        if not getattr(django_settings, "DETECTION_ENABLED", True):
+            return Response({"detail": self.DETECTION_DISABLED}, status=503)
+
+        staged_token = request.data.get("staged_token", "")
+        upload = request.FILES.get("file")
+        scratch = None
+
+        if staged_token:
+            if not self._STAGED_TOKEN_RE.match(staged_token):
+                return Response({"detail": "Invalid staged_token."}, status=400)
+            source = django_settings.MEDIA_ROOT / "uploads" / staged_token
+            if not source.is_file():
+                return Response(
+                    {"detail": "Staged upload expired — upload the clip again."},
+                    status=400)
+        elif upload is not None:
+            ext = os.path.splitext(upload.name)[1].lower()
+            if ext not in DETECTION_UPLOAD_EXTENSIONS:
+                return Response(
+                    {"detail": f"Unsupported file type {ext!r}. Allowed: "
+                               f"{', '.join(sorted(DETECTION_UPLOAD_EXTENSIONS))}."},
+                    status=400)
+            if upload.size > DETECTION_MAX_UPLOAD_BYTES:
+                limit_mb = DETECTION_MAX_UPLOAD_BYTES // (1024 * 1024)
+                return Response(
+                    {"detail": f"File too large — limit is {limit_mb}MB."},
+                    status=400)
+            upload_dir = django_settings.MEDIA_ROOT / "uploads"
+            os.makedirs(upload_dir, exist_ok=True)
+            # Only THIS path owns a scratch file to delete. A staged clip
+            # belongs to the run that staged it and must survive being looked
+            # at — deleting it here would pull the clip out from under the
+            # detection the operator is about to start.
+            scratch = upload_dir / f"{uuid.uuid4().hex}_{get_valid_filename(upload.name)}"
+            with open(scratch, "wb") as dest:
+                for chunk in upload.chunks():
+                    dest.write(chunk)
+            source = scratch
+        else:
+            return Response({"detail": "No staged_token or file supplied."},
+                            status=400)
+
+        # Imported here, not at module scope: core.vision.recognition pulls in
+        # torch, and every other request in this process would pay for it.
+        # recognition is deferred further still, into the callable, so it loads
+        # only when a frame is actually about to be looked at.
+        from core.vision import zone_autodetect as autodetect
+
+        def detect(frame):
+            from core.vision import recognition
+            # TRACE_IMGSZ, not the detection run's 1280 — see its comment:
+            # near-identical polygon for well under half the time.
+            return recognition.detect_vehicles(
+                frame, imgsz=autodetect.TRACE_IMGSZ)
+
+        try:
+            points, report, preview = autodetect.trace_clip(
+                source, detect, max_samples=autodetect.WEB_MAX_SAMPLES)
+        except Exception as exc:                                # noqa: BLE001
+            logger.exception("Zone auto-trace failed")
+            return Response({"detail": f"Could not trace a zone: {exc}"}, status=500)
+        finally:
+            if scratch is not None:
+                try:
+                    os.remove(scratch)
+                except OSError:
+                    pass
+
+        # `cloud` is every ground point that fed the hull — a diagnostic for the
+        # CLI's preview image, and as long as the traffic was busy. The browser
+        # gets the counts, not the point list.
+        report.pop("cloud", None)
+
+        if points is None:
+            return Response({"detail": report.get("reason", "No zone could be traced."),
+                             "report": report}, status=422)
+
+        height, width = preview.shape[:2]
+        return Response({
+            "points": [[round(x, 1), round(y, 1)] for x, y in points],
+            # The resolution the points are in, so a caller drawing them over a
+            # frame it obtained separately can check the two agree rather than
+            # silently misplacing the zone.
+            "width": width,
+            "height": height,
+            "report": report,
+        })
+
     def create(self, request, *args, **kwargs):
         if not getattr(django_settings, "DETECTION_ENABLED", True):
             return Response({"detail": self.DETECTION_DISABLED}, status=503)
@@ -1728,37 +1845,62 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
                                "there is nothing to judge them against."},
                     status=400,
                 )
-            if violation_type in EDGE_CAPABLE and edges_raw:
-                try:
-                    edges = json.loads(edges_raw) if isinstance(edges_raw, str) else edges_raw
-                except ValueError:
-                    return Response({"detail": "Invalid edges JSON."}, status=400)
-                test_camera, _ = Camera.objects.get_or_create(
-                    code=camera_code,
-                    defaults={"name": f"{violation_type.capitalize()} Monitor",
-                              "status": Camera.Status.ONLINE},
-                )
-                test_camera.edges = edges
-                edges_width = request.data.get("edges_width")
-                edges_height = request.data.get("edges_height")
-                if edges_width:
-                    test_camera.edges_width = int(edges_width)
-                if edges_height:
-                    test_camera.edges_height = int(edges_height)
+            if violation_type in EDGE_CAPABLE:
+                edges = None
+                if edges_raw:
+                    try:
+                        edges = json.loads(edges_raw) if isinstance(edges_raw, str) else edges_raw
+                    except ValueError:
+                        return Response({"detail": "Invalid edges JSON."}, status=400)
                 # Parsed defensively: these are parking's thresholds and a
                 # detector that draws an area without them (disposal) legitimately
                 # sends neither. An unparseable value is the caller's problem, not
                 # a reason to 500 — keep the stored default and run.
                 obstruction_pct = _opt_number(request.data.get("obstruction_pct"), int)
                 obstruction_minutes = _opt_number(request.data.get("obstruction_minutes"), float)
-                if obstruction_pct is not None:
-                    test_camera.obstruction_pct = obstruction_pct
-                if obstruction_minutes is not None:
-                    test_camera.obstruction_minutes = obstruction_minutes
-                test_camera.save(update_fields=[
-                    "edges", "edges_width", "edges_height",
-                    "obstruction_pct", "obstruction_minutes",
-                ])
+
+                # Thresholds are staged INDEPENDENTLY of the area now. Parking
+                # no longer needs an area drawn — watch_parking traces one from
+                # the footage — but "how much of the vehicle" and "for how
+                # long" still belong to the operator either way, and gating
+                # them on a polygon meant an auto-traced run silently ran on
+                # whatever was stored last.
+                if edges is not None or obstruction_pct is not None \
+                        or obstruction_minutes is not None:
+                    test_camera, _ = Camera.objects.get_or_create(
+                        code=camera_code,
+                        defaults={"name": f"{violation_type.capitalize()} Monitor",
+                                  "status": Camera.Status.ONLINE},
+                    )
+                    fields = []
+                    # A "-TEST" camera is per-RUN scratch, not a fixed view: the
+                    # next run is a different clip of a different street. So an
+                    # area left over from the last one is cleared rather than
+                    # inherited, which is what lets "start it without drawing"
+                    # mean "work THIS clip out" instead of "quietly reuse
+                    # whatever the previous operator traced".
+                    test_camera.edges = edges or {}
+                    fields.append("edges")
+                    edges_width = request.data.get("edges_width")
+                    edges_height = request.data.get("edges_height")
+                    if edges is None:
+                        test_camera.edges_width = None
+                        test_camera.edges_height = None
+                        fields += ["edges_width", "edges_height"]
+                    else:
+                        if edges_width:
+                            test_camera.edges_width = int(edges_width)
+                            fields.append("edges_width")
+                        if edges_height:
+                            test_camera.edges_height = int(edges_height)
+                            fields.append("edges_height")
+                    if obstruction_pct is not None:
+                        test_camera.obstruction_pct = obstruction_pct
+                        fields.append("obstruction_pct")
+                    if obstruction_minutes is not None:
+                        test_camera.obstruction_minutes = obstruction_minutes
+                        fields.append("obstruction_minutes")
+                    test_camera.save(update_fields=fields)
 
         log_dir = django_settings.MEDIA_ROOT / "uploads"
         os.makedirs(log_dir, exist_ok=True)
@@ -1823,8 +1965,23 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
                 recorded_at=recorded_at,
             )
             # Where the detector publishes its live processing view (Run Detection page).
+            #
+            # Emptied first, and that is load-bearing. These directories are
+            # named after the job id and never swept, while the id sequence
+            # restarts whenever the database is recreated — so a fresh job
+            # routinely inherits a dead job's frame.jpg and state.json. The
+            # page then polls /state/ during the ten-odd seconds the detector
+            # spends loading its model and renders the PREVIOUS run: another
+            # detector's subjects, labelled with another violation, over a
+            # frame from another clip entirely. It looks like the detector has
+            # gone haywire rather than that it has not started yet.
+            #
+            # With the directory empty, read_state finds nothing and the page
+            # correctly shows "waiting for the detector to start" until this
+            # run publishes its own first frame.
             from core import monitor as live_monitor
             view_dir = live_monitor.job_dir(job.id)
+            shutil.rmtree(view_dir, ignore_errors=True)
             os.makedirs(view_dir, exist_ok=True)
             env["LOOKOUT_DEBUG_DIR"] = str(view_dir)
             try:

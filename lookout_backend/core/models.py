@@ -221,6 +221,50 @@ class Alert(models.Model):
     officers_assigned = models.ManyToManyField(Officer, blank=True, related_name="alerts")
     suspect = models.CharField(max_length=150, blank=True)
     notes = models.TextField(blank=True)
+    # --- "likely dropped by" (improper disposal) ---------------------------
+    # A bag on the pavement identifies nobody, so disposal also saves a crop of
+    # whoever was beside it as it appeared -- taken from the window around the
+    # DROP, not the alert, which can be a minute later with the street empty.
+    # Blank for every other detector and for alerts predating this.
+    suspect_image_url = models.URLField(blank=True)
+
+    class SuspectStatus(models.TextChoices):
+        PERSON = "person", "Person identified"
+        # Person detection found nobody, but something was still moving where
+        # the object landed. A shape beside the bag beats nothing at all.
+        CARRIER = "carrier", "Moving carrier only"
+        # Explicitly recorded rather than left blank, so the card can say "no
+        # suspect captured -- review video" instead of silently showing a gap
+        # that reads as a bug.
+        NONE = "none", "No suspect captured"
+
+    suspect_status = models.CharField(
+        max_length=10, blank=True, choices=SuspectStatus.choices)
+    # When the owner was last seen beside the object, for alerts held by the
+    # abandoned-object rule. Null when nobody was ever detected there.
+    owner_left_at = models.DateTimeField(null=True, blank=True)
+    # Position IN THE FOOTAGE, in seconds, for a run over an uploaded clip.
+    # `timestamp` above is wall clock -- the moment the detector reached this
+    # point, which on a clip processed at half speed is nowhere near where the
+    # violation sits in the video. Null for live-camera alerts, where the two
+    # are the same thing.
+    footage_offset = models.FloatField(null=True, blank=True)
+    # Seconds INTO THE RAW EVIDENCE CLIP at which the detector fired, so the
+    # player can mark it and jump there. `footage_offset` above is a position
+    # in the ORIGINAL uploaded video; this one is a position in the short clip
+    # cut out of it, which is a different number and the only one the <video>
+    # element can seek to.
+    #
+    # Null means "not markable", and both cases are real rather than missing
+    # data: a LIVE source has no seekable file to cut from, so its raw clip is
+    # a rolling pre-roll buffer whose last frame IS the detection; and the
+    # ANNOTATED clip is a pre-roll buffer for the same reason. A marker at the
+    # end of a clip tells a viewer nothing they cannot see.
+    #
+    # Accurate to keyframe granularity: cut_raw_clip seeks with -ss before -i,
+    # which snaps to the preceding keyframe, so the real moment can sit a
+    # little later in the file than this says.
+    clip_offset = models.FloatField(null=True, blank=True)
     # --- weighted-sum scoring (core/vision/scoring.py) ----------------------
     # `confidence` above is now the FINAL score for detectors that have been
     # ported to the scoring model — an estimate of "how likely is this a
@@ -627,11 +671,21 @@ class SystemSettings(models.Model):
     # across the whole prompt set, so a correct "sack" commonly scores ~0.2.
     # The real filter is that garbage must outscore every reject class, not
     # that it clears a high bar -- see core/vision/disposal.confirm.
+    #
+    # It DOES gate the Alert: garbage under this scores Possible / "Weak
+    # match" and writes no row. That is deliberate -- it is the one control
+    # that trades recall for precision, and an operator drowning in false
+    # positives has nothing else to turn. The cost is real and worth stating:
+    # an open-vocab head spreads probability across 20 prompts, so a correct
+    # bag across the street lands near 0.10 and will NOT alert at 15. Raising
+    # this buys precision by losing distant objects; lowering it does the
+    # reverse. Below core/vision/disposal.WEAK_PREDICT_CONF nothing can alert
+    # at all -- the model's own NMS discards the box first.
     disposal_confidence = models.PositiveSmallIntegerField(default=15)
     # Seconds an object must sit STILL before the bag check runs at all. This
     # is the rule that makes it "disposal" rather than "a bag exists": rubbish
     # being carried past the camera never stops, so it never qualifies.
-    disposal_static_seconds = models.PositiveSmallIntegerField(default=5)
+    disposal_static_seconds = models.PositiveSmallIntegerField(default=2)
     # Seconds before the same SPOT may alert again. Place-keyed rather than
     # track-keyed, because a static-blob candidate is dropped after a couple of
     # unseen seconds and its replacement starts with a clean timer -- the same
@@ -675,6 +729,27 @@ class SystemSettings(models.Model):
     # Stage 2 sees one crop at one instant, so a bag half-occluded by a
     # passer-by deserves another look -- but every recheck costs a model pass.
     disposal_recheck_seconds = models.PositiveSmallIntegerField(default=10)
+    # --- owner proximity (the abandoned-object rule) -----------------------
+    # Radius in pixels (at the 960-wide processing frame) within which a person
+    # counts as standing OVER a newly appeared object, and so as its owner.
+    # Only people detected at the moment it appeared are ever owners; anyone
+    # who walks past later is a passer-by and does not hold the alert.
+    disposal_owner_radius = models.PositiveSmallIntegerField(default=80)
+    # Seconds the owner must have been away before the bag check runs at all.
+    # This is what separates "a sack is on the pavement" from "a sack was LEFT
+    # on the pavement" -- a vendor standing over their own goods is not
+    # dumping, and alerting on them is the complaint this rule answers.
+    disposal_owner_away_seconds = models.PositiveSmallIntegerField(default=3)
+    # ... but never wait longer than this in total. A vendor who never leaves
+    # the pavement would otherwise suppress the alert for a whole shift, and at
+    # that point the rubbish is still dumped rubbish. Measured from when the
+    # object appeared, not from when the owner was last seen.
+    disposal_owner_max_hold = models.PositiveSmallIntegerField(default=3)
+    # Person-detection floor for the suspect crop, as a 0-100 percent. LOWER
+    # than the mover filter's on purpose: a missed suspect costs an evidence
+    # photo, while a wrong one costs nothing the reviewer cannot see for
+    # themselves -- the crop is shown for identification, never acted on.
+    disposal_suspect_confidence = models.PositiveSmallIntegerField(default=25)
 
     # --- VLM verification ---------------------------------------------------
     # Second-stage vision-language check on the evidence crop at alert time
