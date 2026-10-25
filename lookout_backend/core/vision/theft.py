@@ -810,7 +810,7 @@ class PairState:
         self.pending = None       # snatch awaiting the E24 grace period
         self.emitted = {}
 
-    def update(self, ta, tb, d, va, vb, now, reach):
+    def update(self, ta, tb, d, va, vb, now, reach, sa=None, sb=None):
         self.last_update = now
 
         # E6 — monotonic approach and contact.
@@ -869,7 +869,10 @@ class PairState:
             # v6.2.5: E12 = the pair STAYED CLOSE for CLOSE_STAY_SECONDS (no speed requirement, overlapping boxes
             # count as close), unless it was a pass-through (someone moving before AND after the closest approach
             # who is back outside the close distance within PASS_SEPARATE_SECONDS).
-            self._update_close_stay(d, va, vb, now, reach)
+            if location_momentum.HOLDUP_ABSOLUTE_SPEEDS and sa is not None and sb is not None:
+                self._update_close_stay(d, sa, sb, now, reach)      # v6.2.10: box-heights/s, not baseline-relative
+            else:
+                self._update_close_stay(d, va, vb, now, reach)
             return self._after_freeze(va, vb, now)
         if d < FREEZE_REACH * (reach / REACH_NORM) and va < FREEZE_SPEED and vb < FREEZE_SPEED:
             if self.freeze_since is None:
@@ -935,8 +938,8 @@ class PairState:
         if len(recent) < 3:
             return False
         med = lambda xs: sorted(xs)[len(xs) // 2]                      # noqa: E731
-        return (med([x[0] for x in recent]) > location_momentum.PASS_MOVING_SPEED
-                and med([x[1] for x in recent]) > location_momentum.PASS_MOVING_SPEED)
+        limit = location_momentum.moving_speed()
+        return (med([x[0] for x in recent]) > limit and med([x[1] for x in recent]) > limit)
 
     def _pass_through_possible(self, now):
         """True while this close run still looks like a walk-past that has not yet had time to separate: a person was moving
@@ -948,9 +951,11 @@ class PairState:
         if not before or len(after) < 2:
             return False
 
+        limit = location_momentum.moving_speed()
+
         def moving(xs):
             xs = sorted(xs)
-            return xs[len(xs) // 2] > location_momentum.PASS_MOVING_SPEED
+            return xs[len(xs) // 2] > limit
 
         walker = any(moving([x[i] for x in before]) and moving([x[i] for x in after]) for i in (0, 1))
         return walker and now - tc <= location_momentum.PASS_SEPARATE_SECONDS
@@ -1126,7 +1131,7 @@ class TheftEngine:
                 va = self.baseline.norm(ta, now)
                 vb = self.baseline.norm(tb, now)
                 was_closing = state.close_at
-                state.update(ta, tb, d, va, vb, now, reach)
+                state.update(ta, tb, d, va, vb, now, reach, sa=ta.speed(now), sb=tb.speed(now))
                 if state.close_at is not None and state.close_at != was_closing:
                     self._converge_log.append((now, ta.id, tb.id))
                     self._converge_log.append((now, tb.id, ta.id))

@@ -173,6 +173,21 @@ SCENE_VELOCITY_WINDOW = 60.0
 # 1.4 m/s covers ~0.8 of their own height per second).
 MIN_SCENE_SPEED = 0.1
 
+# --- v6.2.10 ---------------------------------------------------------------------------------
+# The baseline used to be seeded by whatever the first frame said. On a file the first two trail points of a new track can be
+# 0.001 s apart, which read as 13 heights/s; the 60 s EMA then forgot it slowly and every normalised speed in the clip was
+# divided by ~9 (two kids walking at 0.7 heights/s read 0.08, so the co-walker / pass-through rejections never fired).
+SCENE_BASELINE_MIN_TRAIL_S = 0.5    # a track feeds the baseline only once its trail spans this much video time (0 = old behaviour)
+SPEED_MIN_DT = 0.05                 # Track.speed() is 0 when its two samples are closer in time than this (0 = old behaviour)
+# Pose hand-to-mouth counter (smoking). Two counted gestures must be at least this far apart: a dip and a re-dip of the ratio
+# within a second is one raise of the hand, not two puffs.
+GESTURE_MIN_GAP_SECONDS = 1.0       # 0 = off
+# "Mostly stationary" at the moment a gesture completes, for PUFF_ONLY_REQUIRE_STATIONARY (switch lives in location_momentum).
+STILL_WINDOW_SECONDS = 2.0
+STILL_MIN_SPAN_SECONDS = 1.0        # a trail shorter than this cannot show the person is still (counts as moving)
+STILL_MAX_EXCURSION = 0.25          # max distance from the window's mean position, in box heights
+# ---------------------------------------------------------------------------------------------
+
 # E25: a box within this many pixels of any frame edge is treated as truncated —
 # its centroid and height are wrong, which corrupts every normalized quantity.
 EDGE_MARGIN_PX = 2
@@ -256,6 +271,7 @@ class Track:
         # Pose hand-to-mouth gesture state (long-range smoking).
         self.hand_zone = None             # 'atface' | 'down' | None
         self.gestures = deque()           # timestamps of completed hand-to-mouth cycles
+        self.gestures_still = deque()     # the subset completed while the person was mostly stationary (PUFF_ONLY_REQUIRE_STATIONARY)
         # Rolling (timestamp, box) history for stationarity checks (watch_drinking's
         # solo path). Populated in PersonTracker wherever a track's box is set.
         self.position_history = deque()
@@ -340,7 +356,7 @@ class Track:
         if ref is None or ref[0] >= t1:
             ref = self.trail[-2]
         dt = t1 - ref[0]
-        if dt <= 0:
+        if dt <= 0 or dt < SPEED_MIN_DT:
             return 0.0
         return math.hypot(x1 - ref[1], y1 - ref[2]) / dt / self.height
 
@@ -413,27 +429,47 @@ class Track:
             self.puffs.popleft()
         return len(self.puffs)
 
-    def update_gesture(self, ratio, now, window=GESTURE_WINDOW_SECONDS):
+    def update_gesture(self, ratio, now, window=GESTURE_WINDOW_SECONDS, still=None):
         """Feeds the wrist->nose distance (in SHOULDER-WIDTHS) into the pose
         hand-to-mouth state machine. Returns the count of completed hand-to-mouth
         cycles in the window. A cycle = hand clearly at the face then clearly
-        down; hysteresis prevents jitter from counting."""
+        down; hysteresis prevents jitter from counting. Two cycles closer than
+        GESTURE_MIN_GAP_SECONDS are one (the hand dipped and re-dipped).
+        `still` (None = unknown) says whether the person was mostly stationary
+        when the cycle completed; it only matters to gesture_count(still_only=True)."""
         if ratio <= HAND_RAISED_RATIO:
             self.hand_zone = "atface"
         elif ratio >= HAND_LOWERED_RATIO:
             if self.hand_zone == "atface":
-                self.gestures.append(now)   # reached the face then dropped = one cycle
+                if not (GESTURE_MIN_GAP_SECONDS > 0 and self.gestures and now - self.gestures[-1] < GESTURE_MIN_GAP_SECONDS):
+                    self.gestures.append(now)   # reached the face then dropped = one cycle
+                    if still is None or still:
+                        self.gestures_still.append(now)
             self.hand_zone = "down"
         cutoff = now - window
         while self.gestures and self.gestures[0] < cutoff:
             self.gestures.popleft()
+        while self.gestures_still and self.gestures_still[0] < cutoff:
+            self.gestures_still.popleft()
         return len(self.gestures)
 
-    def gesture_count(self, now, window=GESTURE_WINDOW_SECONDS):
+    def gesture_count(self, now, window=GESTURE_WINDOW_SECONDS, still_only=False):
         cutoff = now - window
         while self.gestures and self.gestures[0] < cutoff:
             self.gestures.popleft()
-        return len(self.gestures)
+        while self.gestures_still and self.gestures_still[0] < cutoff:
+            self.gestures_still.popleft()
+        return len(self.gestures_still if still_only else self.gestures)
+
+    def mostly_stationary(self, now, window=STILL_WINDOW_SECONDS):
+        """True when this person barely moved over the last `window` seconds: every trail point within STILL_MAX_EXCURSION box
+        heights of the window's mean position. A trail that does not span STILL_MIN_SPAN_SECONDS says nothing, so it is False."""
+        pts = [p for p in self.trail if now - p[0] <= window]
+        if len(pts) < 2 or pts[-1][0] - pts[0][0] < STILL_MIN_SPAN_SECONDS:
+            return False
+        mx = sum(p[1] for p in pts) / len(pts)
+        my = sum(p[2] for p in pts) / len(pts)
+        return max(math.hypot(p[1] - mx, p[2] - my) for p in pts) / max(self.height, 1) <= STILL_MAX_EXCURSION
 
     @property
     def display(self):
@@ -639,7 +675,8 @@ class SceneBaseline:
         self._last_update = None
 
     def update(self, tracks, now):
-        speeds = [t.speed(now) for t in tracks if not t.is_scene and len(t.trail) >= 2]
+        speeds = [t.speed(now) for t in tracks if not t.is_scene and len(t.trail) >= 2
+                  and t.trail[-1][0] - t.trail[0][0] >= SCENE_BASELINE_MIN_TRAIL_S]
         if not speeds:
             self._last_update = now
             return self.reference

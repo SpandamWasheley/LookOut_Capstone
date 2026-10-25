@@ -45,6 +45,14 @@ PUFF_MIN_GAP_SECONDS = 1.0         # two wrist-to-mouth reaches closer than this
 # nose / wrists are under KP_CONF_MIN), a puff is counted from where the CIGARETTE is inside the person box: seen in the head zone and,
 # within FAR_PUFF_PAIR_SECONDS before or after, seen lower in the chest / hand zone. It feeds the same puff gate and nothing else.
 FAR_PUFF_FROM_OBJECT = True
+# walking person (v6.2.9). A smoker stands or sits still while smoking; someone walking past with a phone in hand (false "cigarette")
+# raises it to the face and satisfied the puff test. While the person's box centre moves faster than WALK_SPEED_HEIGHTS_PER_SEC box
+# heights per second (measured over the last WALK_WINDOW_SECONDS, at least WALK_MIN_SPAN_SECONDS of it), no puff is counted
+# (reaches / object sightings are simply not turned into puffs). Measured on Sep19_2: walker 0.3-0.5, seated / standing smoker ~0.
+WALKING_NO_PUFF = True
+WALK_WINDOW_SECONDS = 2.0
+WALK_MIN_SPAN_SECONDS = 0.4
+WALK_SPEED_HEIGHTS_PER_SEC = 0.3
 FAR_PUFF_BELOW_FRAC = 0.25          # person box shorter than this x frame height -> use the fallback
 FAR_PUFF_HEAD_ZONE = 0.22           # head zone = top this fraction of the person box (0 = top, 1 = bottom)
 FAR_PUFF_BODY_ZONE = (0.30, 0.70)   # chest / hand zone
@@ -54,6 +62,25 @@ FAR_PUFF_MIN_GAP_SECONDS = 2.0      # at most one object puff per track per this
 # seen at the mouth BEFORE the cue finished confirming (ON for object_confirm_seconds) was never remembered, and the status came up
 # without it (Monitoring 0.40 instead of Possible 0.55) just as the cigarette left view. True = evaluate it every frame so the hold works.
 NEAR_MOUTH_HELD_BEFORE_CONFIRM = True
+# --- v6.2.10 ----------------------------------------------------------------------------------
+# A far person (a vaper ~75 px tall in the pose model's input) is invisible to the whole-frame pose pass, so the hand-to-mouth
+# counter that feeds the puff-only path never saw him (0 gestures in 820 frames while he raised his hand 5+ times). The zoomed
+# pose (a crop of the full-resolution frame) does see him; with this on it feeds the same counter whenever the whole-frame pass
+# found no pose for a track.
+GESTURE_FROM_ZOOM = True
+# When True, a puff-only Possible (no cigarette seen) counts only the gestures made while the person was mostly stationary
+# (tracking.STILL_*): someone walking while touching their face is not a smoker at a spot. Off: any gesture counts.
+PUFF_ONLY_REQUIRE_STATIONARY = False
+# E12's "is anyone walking?" tests (co-walker rejection, pass-through rejection) used the baseline-normalised speed. In a scene with
+# only the pair in it the baseline sits at its 0.1 floor, so a victim swaying at 0.1-0.2 box-heights/s read as 1-2 "moving" and a real
+# holdup's E12 was blocked until the knife incident had closed (Demo Holdup 2, once the seed bug was fixed). With this on those tests use
+# the raw speed in box-heights/s against HOLDUP_MOVING_SPEED. False = the old normalised speed against PASS_MOVING_SPEED.
+HOLDUP_ABSOLUTE_SPEEDS = True
+HOLDUP_MOVING_SPEED = 0.25          # box-heights/s: walking is 0.5-1.4, standing sway reaches ~0.2
+# E20 (time of day) on a FILE source needs the footage start (--clock). Without it the hour is unknown: E20 is off for the run
+# (never the wall clock or processing time). Live streams keep the wall clock. False = the old behaviour (wall clock for files).
+E20_REQUIRES_CLIP_TIME = True
+# ------------------------------------------------------------------------------------------------
 POSSIBLE_PUFF_WINDOW_SECONDS = 10.0 # Possible needs >= POSSIBLE_MIN_PUFFS puff in this window (else capped at Monitoring)
 POSSIBLE_MIN_PUFFS = 1
 LIKELY_PUFF_WINDOW_SECONDS = 30.0   # Likely also needs >= LIKELY_MIN_PUFFS puffs in this window
@@ -215,6 +242,7 @@ class TrackLoc:
         self.last_object_puff = None
         self.n_object_puffs = 0
         self.n_pose_puffs = 0
+        self.trail = deque()          # (video time, box centre x, y, box height) for the walking check
 
 
 def loc_of(track):
@@ -440,6 +468,11 @@ def is_shadow_pair(ta_box, tb_box, frame=None):
     return min(ba, bb) < SHADOW_BRIGHTNESS_RATIO * max(ba, bb)
 
 
+def moving_speed():
+    """The speed above which a person counts as walking in E12's co-walker / pass-through tests (units follow HOLDUP_ABSOLUTE_SPEEDS)."""
+    return HOLDUP_MOVING_SPEED if HOLDUP_ABSOLUTE_SPEEDS else PASS_MOVING_SPEED
+
+
 def holdup_rules_on():
     """True when the v6.2.1 holdup rules apply (needs both switches)."""
     return LOCATION_AWARE_MOMENTUM and HOLDUP_V621_RULES
@@ -460,6 +493,25 @@ def _count(cmd, reason):
 
 # ---- smoking: the puff ---------------------------------------------------------------------------
 
+def is_walking(track, now):
+    """True when the person's box centre is moving faster than WALK_SPEED_HEIGHTS_PER_SEC box heights per second."""
+    loc = loc_of(track)
+    box = getattr(track, "box", None)
+    if box is None:
+        return False
+    h = max(float(box[3] - box[1]), 1.0)
+    loc.trail.append((now, (box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0, h))
+    while loc.trail and now - loc.trail[0][0] > WALK_WINDOW_SECONDS:
+        loc.trail.popleft()
+    if not WALKING_NO_PUFF:
+        return False
+    t0, x0, y0, _h0 = loc.trail[0]
+    span = now - t0
+    if span < WALK_MIN_SPAN_SECONDS:
+        return False
+    return _dist((x0, y0), (loc.trail[-1][1], loc.trail[-1][2])) / span > WALK_SPEED_HEIGHTS_PER_SEC * h
+
+
 def update_puffs(cmd, track, dets, now):
     """Advance the puff detector for one person this frame and return the puff count so far.
 
@@ -471,9 +523,10 @@ def update_puffs(cmd, track, dets, now):
     cutoff = now - max(LIKELY_PUFF_WINDOW_SECONDS, POSSIBLE_PUFF_WINDOW_SECONDS)
     while loc.puffs and loc.puffs[0] < cutoff:
         loc.puffs.popleft()
+    walking = is_walking(track, now)
     kp = ensure_keypoints(cmd, track, now)
     # v6.2.8: far / unresolvable person -> count a puff from where the cigarette sits inside the person box
-    if FAR_PUFF_FROM_OBJECT and _object_puff_applies(cmd, track, kp):
+    if FAR_PUFF_FROM_OBJECT and not walking and _object_puff_applies(cmd, track, kp):
         _update_object_puff(loc, track, dets, now)
     anchors = anchors_from_kpts(kp, track.box) if kp is not None else None
     if anchors is None:
@@ -512,7 +565,7 @@ def update_puffs(cmd, track, dets, now):
             loc.last_reach = now
     for w, t_reach in list(loc.reaches.items()):
         seen = [t for t in (loc.cig_at_wrist.get(w), loc.cig_at_mouth) if t is not None]
-        if any(abs(t - t_reach) <= PUFF_PAIR_WINDOW_SECONDS for t in seen):
+        if not walking and any(abs(t - t_reach) <= PUFF_PAIR_WINDOW_SECONDS for t in seen):
             loc.puffs.append(now)
             loc.n_pose_puffs += 1
             del loc.reaches[w]

@@ -288,3 +288,39 @@ Real holdups reach Possible or Likely; ALT-0152 and the walk-pasts stay at Monit
 * The object puff alone did not change any status on the far clip; the near_mouth change did. The object puff makes object-visible smoking count as puffs, which also lifts the cap on **Trim2**: track 1 (19-22 % of the frame, so under the 25 % size rule although its keypoints are good) shows the cigarette cycling head (rel_y 0.1-0.15) <-> chest (0.35-0.6) 11 times in 40 s, which looks like genuine puffing but has no ground truth. Someone should watch that clip before trusting it. If it is a false positive the size rule (`FAR_PUFF_BELOW_FRAC`) should only apply when keypoints are also unreliable.
 * The walking / no-smoker clips stay without any event. Jittering cigarette detections inside a box can fabricate object puffs (3 on the null clip, 1 on Kabilang) but they only matter when the cigarette cue is ON.
 * `FAR_PUFF_*` thresholds were not tuned beyond the specified starting values.
+
+# v6.2.10 - scene-baseline seed, zoomed pose -> gesture counter, E20 only with a clip time (`SCORING_SPEC_VERSION = "v6.2.10"`)
+
+## Diagnosis (`Vape Far Night.mkv`, dry run, `v62_test_results/vape_far/SUMMARY.md`)
+* **The vaper scored nothing.** The pose hand-to-mouth counter (`watch_smoking._feed_pose`) only read the whole-frame pose pass (imgsz 960, so a 195 px person is ~73 px tall): it found a pose overlapping him in 2 of 820 frames, so 0 gestures in 78 s. The zoomed pose (a crop of the full-resolution frame) saw him in 763 frames and the same 0.7 / 1.3 hysteresis fed with it gives 8 gestures; the 5 standing ones were checked by eye.
+* **The kids got a holdup Possible** (knife on a white phone-shaped object, E14 .45 + E12 .20 + E20 .09). `SceneBaseline` was seeded by the first sample: a new track whose first two trail points were 0.001 s apart read 13 box-heights/s, and the 60 s EMA forgot it slowly, so every normalised speed was divided by 9 (kids walking at 0.7 heights/s read 0.08). The co-walker and pass-through rejections (threshold 0.3) never saw anyone moving.
+* **E20 +9** was the wall clock at *processing* time (no `--clock` was given), trimmed by the band cap.
+
+## Changes (named constants in the v6.2.10 blocks of `tracking.py` / `location_momentum.py`; each has a switch that restores the old behaviour)
+1. `SCENE_BASELINE_MIN_TRAIL_S = 0.5`: a track feeds the baseline only once its trail spans 0.5 s of video time. `SPEED_MIN_DT = 0.05`: `Track.speed()` is 0 when its samples are closer than that.
+2. `GESTURE_FROM_ZOOM = True`: in `_feed_pose`, a track with no whole-frame pose match gets its keypoints from `location_momentum.ensure_keypoints` (the zoomed pose) and feeds `update_gesture`. `GESTURE_MIN_GAP_SECONDS = 1.0`: two cycles closer than that are one gesture. `PUFF_ONLY_REQUIRE_STATIONARY = False`: when True a puff-only Possible counts only gestures completed while the person was mostly stationary (`Track.mostly_stationary`: within 0.25 box heights of their mean position over 2 s, trail >= 1 s). Implemented and tested, left off.
+3. `E20_REQUIRES_CLIP_TIME = True`: `watch_thief._clock_now` returns the clip time (`--clock` + position) for a file, `None` for a file without one (E20 off, "E20 disabled: no clip time" logged once, `_is_night(None)` is False), and the Manila wall clock for live sources. `watch_merged.py` is unchanged: `None` reads as "hour unknown" in every consumer (0 points, multiplier 1.0).
+4. **Not asked for, needed for item 1:** `HOLDUP_ABSOLUTE_SPEEDS = True`, `HOLDUP_MOVING_SPEED = 0.25`. With the baseline fixed, a two-person scene sits at the 0.1 floor, so a victim swaying at 0.1-0.2 box-heights/s read as 1-2 "moving", the co-walker rule blocked E12 for ~1 s and Demo Holdup 2's knife incident closed first (Likely 0.91 -> Monitoring 0.55). E12's co-walker and pass-through tests now use the raw speed in box-heights/s (`PairState.update(..., sa, sb)`, passed by `TheftEngine._pair_evidence`).
+
+## Results (dry runs, `watch_merged`, no `--clock`; before = every v6.2.10 switch off = v6.2.8 behaviour; highest status per event)
+| clip | track/event | type | before | after | notes |
+|---|---|---|---|---|---|
+| Vape Far Night (78 s) | #3 the vaper | smoking | no event | **Possible 0.55 @46.4 s, puff-only, tagged** | 5-6 zoom gestures; with `PUFF_ONLY_REQUIRE_STATIONARY` Possible @56.7 s |
+| | #11 + #13 the kids | holdup | **Possible 0.71** (E14+E12+E20) | **Monitoring 0.45** (E14 only) | no E12 for the pair; baseline max 13.2 -> 0.76 |
+| | #11 the kid | smoking | Possible 0.55 (puff-only, 3 gestures) | no event | with or without `PUFF_ONLY_REQUIRE_STATIONARY` (kid is walking: 0 still gestures) |
+| Sep19_2 | #23 far smoker | smoking | Possible 0.55 | Likely 1.00 | zoom gestures on top of the cigarette |
+| | #8 | smoking | Possible 0.55 | Monitoring | |
+| smk_Trim2 | #1 | smoking | Possible | Possible | unchanged (still needs a human look, see v6.2.8) |
+| Aug14_12 null | - | - | no event | no event | |
+| Kabilang (to 70 s) | cluster #2 | drinking | Possible | Possible | unchanged |
+| | **#27 seated man** | smoking | no event | **Possible 0.55 (puff-only)** | **FALSE ALARM, see caveats** |
+| Aug24_16 (real holdup) | #1 / #2 | holdup | Likely 0.81 | Likely 0.75 | E20 gone (-0.06) |
+| Demo Holdup 2 (real holdup) | #1 / #2 | holdup | Likely 0.91 / Possible 0.71 | Likely 0.85 / Possible 0.65 | E12 at 41.7 s both runs (needs item 4) |
+| ALT-0152 (false holdup) | knife #4 | holdup | Monitoring | Monitoring | unchanged |
+| Trim2 walk-past | #1 | smoking | Possible | Possible | unchanged from v6.2.8 |
+
+## Caveats
+* **Kabilang #27 is a new false puff-only Possible.** A seated man, stationary for 40 s, talks with his hands and holds a cup to his mouth (12 zoom gestures, all "still"), so `PUFF_ONLY_REQUIRE_STATIONARY` cannot help, and by count he is not separable from the vaper (5-6 gestures). Feeding the zoomed pose to the counter is the cost of seeing far smokers at all; `GESTURE_FROM_ZOOM = False` restores v6.2.8 (the vaper is then invisible again). Not tuned further.
+* The 1 s gap is also what stops the walking kid (3 -> 2 gestures) from reaching Possible; it merges the vaper's 14.5 / 15.0 / 15.3 s dips into one.
+* Aug24_16 sits exactly on the Likely line (0.75) without E20.
+* ALT-0152's smoke #4 and Trim2's smoke #1 stay Possible exactly as before; not judged here.

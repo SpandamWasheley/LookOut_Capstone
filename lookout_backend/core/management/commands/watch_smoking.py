@@ -546,6 +546,7 @@ class Command(IncidentMixin, BaseCommand):
             ))
             return
 
+        matched = set()
         for box, kpts in poses:
             ratio = recognition.hand_to_mouth_ratio(kpts)
             if ratio is None:
@@ -561,13 +562,33 @@ class Command(IncidentMixin, BaseCommand):
                 if iou > best_iou:
                     best, best_iou = track, iou
             if best is not None and best_iou >= POSE_MATCH_IOU:
-                n = best.update_gesture(ratio, now_ts, self.puff_window)
-                if n:
-                    self.stats[f"hand-to-mouth gestures (person #{best.id})"] = n
-                # A NEW puff starts the high-resolution cigarette check (path 2).
-                if n > getattr(best, "gestures_seen", 0):
-                    best.hires_until = now_ts + HIRES_SECONDS
-                best.gestures_seen = n
+                matched.add(best.id)
+                self._count_gesture(best, ratio, now_ts)
+
+        # v6.2.10: a track the whole-frame pass found no usable pose for (far people) gets its zoomed pose instead.
+        if location_momentum.GESTURE_FROM_ZOOM and location_momentum.LOCATION_AWARE_MOMENTUM:
+            self._gate_frame = frame        # ensure_keypoints reads this frame's pixels from here
+            for track in tracks:
+                if track.is_scene or track.box is None or track.id in matched:
+                    continue
+                kp = location_momentum.ensure_keypoints(self, track, now_ts)
+                if kp is None:
+                    continue
+                ratio = recognition.hand_to_mouth_ratio(kp)
+                if ratio is not None:
+                    self.stats["gesture counter fed by zoomed pose"] += 1
+                    self._count_gesture(track, ratio, now_ts)
+
+    def _count_gesture(self, track, ratio, now_ts):
+        """One person's wrist->nose ratio into their gesture counter (and the hi-res cigarette check on a new puff)."""
+        still = track.mostly_stationary(now_ts)
+        n = track.update_gesture(ratio, now_ts, self.puff_window, still=still)
+        if n:
+            self.stats[f"hand-to-mouth gestures (person #{track.id})"] = n
+        # A NEW puff starts the high-resolution cigarette check (path 2).
+        if n > getattr(track, "gestures_seen", 0):
+            track.hires_until = now_ts + HIRES_SECONDS
+        track.gestures_seen = n
 
     def _detect_persons(self, frame):
         """Person boxes + (optionally) external track ids for the chosen tracker."""
@@ -894,7 +915,9 @@ class Command(IncidentMixin, BaseCommand):
             self.stats["held back: momentum below ON"] += 1
 
         # --- the cues (spec v6 section 6) ---
-        puffs = track.gesture_count(now_ts, self.puff_window)   # pose counter (Settings window)
+        # pose counter (Settings window); v6.2.10: with PUFF_ONLY_REQUIRE_STATIONARY, a puff-only Possible counts only still gestures
+        puffs = track.gesture_count(now_ts, self.puff_window,
+                                    still_only=location_momentum.PUFF_ONLY_REQUIRE_STATIONARY and not object_on)
         cues = set()
         if (location_momentum.LOCATION_AWARE_MOMENTUM and location_momentum.NEAR_MOUTH_HELD_BEFORE_CONFIRM
                 and not object_on):

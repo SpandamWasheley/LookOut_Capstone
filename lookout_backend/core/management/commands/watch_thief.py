@@ -199,7 +199,9 @@ NIGHT_START, NIGHT_END = datetime.time(22, 0), datetime.time(5, 0)
 
 
 def _is_night(now_dt):
-    """22:00 to 05:00 local time — E16 dwell only."""
+    """22:00 to 05:00 local time — E16 dwell only. No clock (a file with no clip time) is never night."""
+    if now_dt is None:
+        return False
     t = now_dt.time()
     return t >= NIGHT_START or t < NIGHT_END
 
@@ -1016,12 +1018,20 @@ class Command(IncidentMixin, BaseCommand):
         """Time of day for scoring, in Manila time.
 
         A file with a --clock "Recorded at" uses that footage time (entered as
-        Manila wall-clock time) plus the position in the clip. Everything else
-        uses the wall clock IN Asia/Manila -- explicitly, not whatever zone the
+        Manila wall-clock time) plus the position in the clip. A file WITHOUT one
+        returns None (v6.2.10: E20 off). A live source uses the wall clock IN Asia/Manila -- explicitly, not whatever zone the
         laptop happens to be set to.
         """
         if self._source_path is not None and self.clock_start is not None:
             return vclock.clock_now(self.clock_start, now_ts, True)
+        if self._source_path is not None and location_momentum.E20_REQUIRES_CLIP_TIME:
+            # v6.2.10: a file with no "Recorded at" has no time of day. The wall clock is when it was PROCESSED, not filmed, so
+            # E20 is switched off for the run (None reads as hour-unknown everywhere: 0 points, multiplier 1.0, never night).
+            if not getattr(self, "_e20_off_logged", False):
+                self._e20_off_logged = True
+                self.stats["E20 disabled: no clip time"] += 1
+                self.stdout.write(self.style.WARNING("E20 disabled: no clip time (pass --clock to score the time of day)."))
+            return None
         return datetime.datetime.now(ZoneInfo("Asia/Manila"))
 
     def _describe(self, ev, summary, who, present_for):
