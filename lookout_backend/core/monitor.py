@@ -257,6 +257,19 @@ class LiveMonitor:
         commands = {"merged": ["watch_merged", "--source", stream_url, "--camera", camera.code]}
         if has_road_edge(camera):
             commands["parking"] = ["watch_parking", "--source", stream_url, "--camera", camera.code]
+        # Improper disposal runs as its OWN process rather than joining the
+        # merged pass: it shares no model forward pass with the others (dual
+        # background subtraction plus a zero-shot bag check, not the merged
+        # Bottle/Cigarette/knife model), so there is nothing to fold in.
+        #
+        # Gated on the setting at LAUNCH time, not just inside the detector,
+        # because the cost being avoided is loading a second model at all —
+        # the in-detector `disposal_enabled` check would still have paid it.
+        # The same reason has_road_edge gates parking above.
+        from core.models import SystemSettings
+        if SystemSettings.load().disposal_enabled:
+            commands["disposal"] = ["watch_disposal", "--source", stream_url,
+                                    "--camera", camera.code]
         procs, job_ids = {}, []
         for name, args in commands.items():
             child_env = dict(env)

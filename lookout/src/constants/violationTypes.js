@@ -1,9 +1,9 @@
-import { Cigarette, Beer, Car, ShieldAlert, AlertTriangle } from "lucide-react";
+import { Cigarette, Beer, Car, ShieldAlert, Trash2, AlertTriangle } from "lucide-react";
 import { getViolationTypes } from "../api.js";
 
-// Scope is fixed to these four types. Curfew/waste/noise are explicitly out —
-// an unmapped backend row (curfew or anything else) falls through to
-// UNKNOWN_VIOLATION_TYPE below rather than being added here.
+// Scope is these five types. Curfew/noise remain explicitly out — an unmapped
+// backend row falls through to UNKNOWN_VIOLATION_TYPE below rather than being
+// added here.
 //
 // Icons are reused from data/mockData.js's VIOLATION_CONFIG (same lucide
 // imports) so the visual language doesn't fork. The API's own `color` and
@@ -57,10 +57,23 @@ export const VIOLATION_TYPES = {
       "holdup in public area", "holdup",
     ],
   },
+  disposal: {
+    code: "disposal",
+    label: "Improper Disposal",
+    short: "Disposal",
+    icon: Trash2,
+    aliases: [
+      "disposal",
+      "improper disposal",
+      "improper waste disposal",
+      "illegal dumping",
+      "garbage",
+    ],
+  },
 };
 
 // Safe, non-crashing fallback for anything that doesn't resolve — including
-// curfew rows, which are deliberately not mapped above.
+// curfew/noise rows, which are deliberately not mapped above.
 export const UNKNOWN_VIOLATION_TYPE = {
   code: "unknown",
   label: "Unknown",
@@ -153,7 +166,7 @@ export function resolveViolationType({ id, code, label } = {}) {
 }
 
 // Capitalizes a raw backend code/slug for display when nothing in
-// VIOLATION_TYPES claims it (curfew/waste/noise — deliberately out of scope,
+// VIOLATION_TYPES claims it (curfew/noise — deliberately out of scope,
 // see the top of this file — or a future type this map hasn't been taught
 // yet), so a user sees "Curfew", never the raw "curfew", and never something
 // as opaque as "thief". Pure string helper — does not change what

@@ -607,12 +607,16 @@ class IncidentMixin:
         alert = inc.alert
         if inc.clip_base is None:
             return
-        video_url, raw_video_url = self._save_clips(inc.clip_base, frame, now)
+        video_url, raw_video_url, clip_offset = self._save_clips(inc.clip_base, frame, now)
         update = {}
         if video_url:
             update["video_url"] = video_url
         if raw_video_url:
             update["raw_video_url"] = raw_video_url
+            # The clip was re-cut, so the detection sits somewhere new inside
+            # it. Updated together with the URL or the player would mark the
+            # old moment on the new clip.
+            update["clip_offset"] = clip_offset
         if update:
             Alert.objects.filter(pk=alert.pk).update(**update)
             for name, value in update.items():

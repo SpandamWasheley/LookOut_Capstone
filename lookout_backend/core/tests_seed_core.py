@@ -24,7 +24,7 @@ class SeedCoreTests(TestCase):
         self.seed()
         self.assertEqual(
             set(ViolationType.objects.values_list("code", flat=True)),
-            {"smoking", "drinking", "theft", "parking"},
+            {"smoking", "drinking", "theft", "parking", "disposal"},
         )
 
     def test_holdup_is_stored_as_theft_not_thief(self):
@@ -57,7 +57,7 @@ class SeedCoreTests(TestCase):
     def test_no_camera_skips_it(self):
         self.seed("--no-camera")
         self.assertFalse(Camera.objects.exists())
-        self.assertEqual(ViolationType.objects.count(), 4)
+        self.assertEqual(ViolationType.objects.count(), 5)
 
     def test_the_settings_singleton_exists_afterwards(self):
         self.seed()

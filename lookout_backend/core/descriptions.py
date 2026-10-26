@@ -56,6 +56,31 @@ def parking(obj=None, seconds=0):
     return f"{thing.capitalize()} stopped in a no-parking area for {round(seconds)} s."
 
 
+def disposal(obj=None, seconds=0, away_seconds=None):
+    """Improper disposal. The wording leads with LEFT BEHIND, not "bag seen" --
+    that is the thing the ordinance is about, and the thing the static-object
+    rule actually established.
+
+    `away_seconds` is how long the owner has been gone, when the
+    abandoned-object rule had an owner to watch. Said out loud because it is
+    the strongest fact the detector holds: somebody was standing over this and
+    then walked away from it, which is dumping described exactly. None means
+    nobody was ever detected beside it, and the wording falls back to what the
+    static rule alone can honestly claim."""
+    thing = _object(obj, "garbage")
+    if away_seconds is not None:
+        return (f"{thing.capitalize()} left behind; person walked away "
+                f"{round(away_seconds)} s ago, unattended for "
+                f"{round(seconds)} s.")
+    if seconds >= 60:
+        return (f"{thing.capitalize()} left behind and unattended for about "
+                f"{round(seconds / 60)} min.")
+    if seconds > 0:
+        return (f"{thing.capitalize()} left behind and unattended for "
+                f"{round(seconds)} s.")
+    return f"{thing.capitalize()} left behind and unattended."
+
+
 def road_edge(side, fraction, minutes):
     return (f"Vehicle blocking the {side} edge of the road, {round(fraction * 100)}% over the line, "
             f"for about {minutes:.1f} min.")

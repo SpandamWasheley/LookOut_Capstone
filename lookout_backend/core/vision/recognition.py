@@ -161,6 +161,12 @@ class ClipRecorder:
         cv2.putText(frame, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale,
                     (0, 255, 0), 2, cv2.LINE_AA)
 
+    def span(self):
+        """Seconds of footage currently buffered, or 0.0 if fewer than two."""
+        if len(self._buf) < 2:
+            return 0.0
+        return max(0.0, self._buf[-1][0] - self._buf[0][0])
+
     def save(self, path):
         """Writes the buffered clip to `path` (MP4). Returns True on success."""
         if len(self._buf) < 2:
@@ -212,8 +218,16 @@ class ClipRecorder:
 # Kept short of the annotated buffer's window on purpose — this is cut from the
 # original source at full frame rate/resolution, so it doesn't need to be long
 # to be useful, and shorter keeps the -c copy cut fast.
+# How much footage an evidence clip carries either side of the detection.
+#
+# POST was 2s, which put the moment at 15s of a 17s clip -- the thing the alert
+# is ABOUT arrived just as the clip ended, so a reviewer saw the approach and
+# then nothing. What they actually need to judge it is what happened NEXT: did
+# the vehicle pull away, did the person put the bottle down, was the bag picked
+# up again. Symmetric puts the detection in the middle, which is also where a
+# viewer's instinct looks for it on a scrub bar.
 RAW_CLIP_PRE_SECONDS = 15
-RAW_CLIP_POST_SECONDS = 2
+RAW_CLIP_POST_SECONDS = 15
 
 
 def _run_ffmpeg(args, timeout=300):
@@ -258,6 +272,86 @@ def cut_raw_clip(source_path, start_sec, duration_sec, out_path):
     ], timeout=60)
 
 
+class PendingClips:
+    """Clips whose save is WAITING for footage that has not happened yet.
+
+    Both evidence recorders are rolling buffers of the frames BEFORE now
+    (ClipRecorder for the annotated clip, RawFrameRecorder for a live source's
+    raw one). Saving either at the moment a violation fires therefore produces
+    a clip that ENDS on the detection: a reviewer sees the approach and then
+    nothing, when what settles most alerts is what happened next -- did the
+    vehicle pull away, did the bag get picked up again.
+
+    A rolling buffer cannot be asked for the future, so the save is deferred
+    instead. Register the clip when the alert fires; keep feeding the recorder
+    as normal; `due()` hands it back once `post_seconds` of footage have
+    elapsed, by which point the buffer holds the detection with that much
+    footage after it. Nothing here copies frames -- the recorder goes on
+    filling itself, and only the SAVE moves.
+
+    Time is the caller's clock, so this works unchanged on footage position
+    (a file, where "15 seconds later" is 15 seconds of video) and on wall
+    clock (a live camera).
+
+    No Django: this hands back tokens and paths, and the caller owns whatever
+    the token means and whatever row it updates.
+    """
+
+    def __init__(self):
+        self._waiting = []      # (due_at, token, recorder, path, fired_at)
+
+    def __len__(self):
+        return len(self._waiting)
+
+    def schedule(self, token, recorder, path, now, post_seconds):
+        """Save `recorder` to `path` once `post_seconds` have gone by."""
+        self._waiting.append((now + float(post_seconds), token, recorder,
+                              path, now))
+
+    def due(self, now):
+        """Yield (token, path, offset) for every clip whose wait is over.
+
+        `offset` is where the detection sits INSIDE the saved clip, which is
+        what the player marks: the buffer ends at `now`, so the moment is
+        `post_seconds` back from the end -- unless the recorder holds less
+        than that, in which case the clip is shorter and the detection sits
+        proportionally later. Measured from the clip actually written rather
+        than assumed from the constant, because a run that ends early saves a
+        truncated clip and a marker past its end points at nothing.
+        """
+        ready = [w for w in self._waiting if w[0] <= now]
+        if not ready:
+            return []
+        self._waiting = [w for w in self._waiting if w[0] > now]
+        return self._flush(ready, now)
+
+    def flush(self, now):
+        """Save everything still waiting, due or not.
+
+        For shutdown: a run that reaches the end of its footage (or is
+        interrupted) must still write the clips it owes, with however much
+        post-roll it managed. An alert whose evidence was never written
+        because the clip ended two seconds later is a lost alert.
+        """
+        ready, self._waiting = self._waiting, []
+        return self._flush(ready, now)
+
+    @staticmethod
+    def _flush(ready, now):
+        out = []
+        for _due, token, recorder, path, fired_at in ready:
+            if not recorder.save(path):
+                continue
+            span = recorder.span() if hasattr(recorder, "span") else None
+            if span:
+                start = now - span
+                offset = max(0.0, min(fired_at - start, span))
+            else:
+                offset = None
+            out.append((token, path, offset))
+        return out
+
+
 class RawFrameRecorder:
     """Rolling buffer of RAW (unannotated) frames for a LIVE source, for cutting
     a raw evidence clip when there's no seekable file to pull from instead (see
@@ -293,6 +387,12 @@ class RawFrameRecorder:
         cutoff = now - self.seconds
         while self._buf and self._buf[0][0] < cutoff:
             self._buf.popleft()
+
+    def span(self):
+        """Seconds of footage currently buffered, or 0.0 if fewer than two."""
+        if len(self._buf) < 2:
+            return 0.0
+        return max(0.0, self._buf[-1][0] - self._buf[0][0])
 
     def save(self, path):
         """Writes the buffered clip to `path` (MP4). Returns True on success."""

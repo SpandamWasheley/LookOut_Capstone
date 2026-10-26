@@ -231,6 +231,7 @@ class AlertSerializer(serializers.ModelSerializer):
     image_url = serializers.SerializerMethodField()
     video_url = serializers.SerializerMethodField()
     raw_video_url = serializers.SerializerMethodField()
+    suspect_image_url = serializers.SerializerMethodField()
 
     # Spec 2: "watch/warning/violation" reads as three severities of the same
     # claim; Monitoring/Possible/Confirmed reads as three degrees of certainty,
@@ -310,6 +311,11 @@ class AlertSerializer(serializers.ModelSerializer):
             "camera_address", "timestamp",
             "confidence", "description", "image_url", "video_url", "raw_video_url",
             "officers_assigned", "officers_assigned_names", "suspect", "notes",
+            # Improper disposal only: the "likely dropped by" crop, why it
+            # is (or is not) there, when the owner walked off, and where in
+            # an uploaded clip this sits -- `timestamp` is wall clock.
+            "suspect_image_url", "suspect_status", "owner_left_at", "footage_offset",
+            "clip_offset",
             # Weighted-sum scoring (core/vision/scoring.py). `level` is what the
             # dashboard should badge on -- `confidence` is now a violation
             # likelihood, so a bare percentage badge reads differently than it
@@ -328,6 +334,7 @@ class AlertSerializer(serializers.ModelSerializer):
             # training data after the fact.
             "level", "level_label", "peak_level", "peak_level_label", "last_seen_at",
             "object_confidence", "cues", "ai_context", "timeline",
+            "suspect_status", "owner_left_at", "footage_offset", "clip_offset",
             # Who reviewed it is recorded FROM the authenticated request, so a
             # client cannot name somebody else as the reviewer.
             "reviewed_by", "reviewed_by_name", "reviewed_at",
@@ -370,6 +377,9 @@ class AlertSerializer(serializers.ModelSerializer):
     def get_raw_video_url(self, obj):
         return self._resolve_media_url(obj.raw_video_url)
 
+    def get_suspect_image_url(self, obj):
+        return self._resolve_media_url(obj.suspect_image_url)
+
 
 class SystemSettingsSerializer(serializers.ModelSerializer):
     # The spec value of every adjustable timing, so the UI can show 'default' and reset.
@@ -392,6 +402,13 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
             "drinking_mouth_proximity", "drinking_cooldown_center_dist",
             "drinking_hours_enabled", "drinking_start", "drinking_end",
             "drinking_min_group", "drinking_group_duration",
+            "disposal_enabled", "disposal_confidence",
+            "disposal_static_seconds", "disposal_cooldown",
+            "disposal_cooldown_dist", "disposal_min_area", "disposal_max_area",
+            "disposal_ignore_movers",
+            "disposal_warmup_seconds", "disposal_recheck_seconds",
+            "disposal_owner_radius", "disposal_owner_away_seconds",
+            "disposal_owner_max_hold", "disposal_suspect_confidence",
             "vlm_enabled", "vlm_model", "vlm_model_holdup", "vlm_endpoint",
             "vlm_timeout",
             "object_confirm_seconds", "cue_hold_seconds", "monitoring_min_seconds", "smoking_puff_count", "smoking_puff_window_minutes",

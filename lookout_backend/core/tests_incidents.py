@@ -40,7 +40,10 @@ class SmokingIncidentTests(TestCase):
 
         def fake_save_clips(base, frame, now):
             self.clip_calls.append(now)
-            return f"/media/violations/{base}.mp4", f"/media/violations/{base}_raw.mp4"
+            # Three values: _save_clips also reports where the detection sits
+            # inside the raw clip, for the player's marker.
+            return (f"/media/violations/{base}.mp4",
+                    f"/media/violations/{base}_raw.mp4", 15.0)
 
         cmd._save_clips = fake_save_clips
         self.cmd = cmd
@@ -154,7 +157,8 @@ class ThiefAndDrinkingTests(TestCase):
         self.thief.violations_dir = Path(self.tmp.name)
         self.thief.clip = None
         self.thief.ablate = set()
-        self.thief._save_clips = lambda base, frame, now: ("/media/x.mp4", "/media/x_raw.mp4")
+        self.thief._save_clips = lambda base, frame, now: (
+            "/media/x.mp4", "/media/x_raw.mp4", 15.0)
         self.frame = np.zeros((720, 1280, 3), np.uint8)
         self.drink = DrinkingCommand()
 

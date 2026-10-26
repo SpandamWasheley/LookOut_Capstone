@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Upload, FileVideo, Loader2, AlertTriangle, RotateCcw, Play, Radio, Square, CheckCircle2, X, History } from "lucide-react";
+import { Upload, FileVideo, Loader2, AlertTriangle, RotateCcw, Play, Radio, Square, CheckCircle2, X, History, Wand2, Info } from "lucide-react";
 import {
   startStagedDetectionJob, startLiveDetectionJob, getCameras, getJobState, cancelDetectionJob,
+  traceZoneFromStaged,
 } from "./api";
 import { discardUpload, listPendingUploads, uploadClipInChunks } from "./chunkedUpload";
-import { DETECTION_TYPES, TYPES_WITH_EDGES } from "./constants/detectionTypes";
+import { DETECTION_TYPES, TYPES_WITH_EDGES, TYPES_WITH_OPTIONAL_EDGES, TYPES_WITH_AREA_THRESHOLDS,
+         edgeHeading, edgeCameraNote } from "./constants/detectionTypes";
 import { ClipTrimmer } from "./ClipTrimmer";
 import { EdgeCanvas } from "./EdgeCanvas";
 import { ProcessingView } from "./ProcessingView";
@@ -49,6 +51,13 @@ export function RunDetectionPage() {
   const testingTools = useTestingTools(true);
   const [violationType, setViolationType] = useState(DETECTION_TYPES[0].key);
   const needsEdges = TYPES_WITH_EDGES.has(violationType);
+  // Offered, but never a precondition — see TYPES_WITH_OPTIONAL_EDGES.
+  const edgesOptional = TYPES_WITH_OPTIONAL_EDGES.has(violationType);
+  // Whether the "inside the road %" / "for N minutes" boxes belong to this
+  // detector. NOT the same question as whether the area is optional: parking's
+  // area is optional now but its thresholds are its entire rule, while
+  // disposal draws an area and has no thresholds at all.
+  const hasAreaThresholds = TYPES_WITH_AREA_THRESHOLDS.has(violationType);
   const [source, setSource] = useState("file"); // "file" | "camera"
 
   const [file, setFile] = useState(null);
@@ -72,6 +81,10 @@ export function RunDetectionPage() {
   // Cancels the chunks in flight. Deliberately does NOT throw away the chunks
   // already stored — that is what makes stopping cheap to undo.
   const abortRef = useRef(null);
+  // Which clip pick is the current one; see pickFile. Only the newest pick may
+  // write `staged`, so an older upload finishing late cannot decide which clip
+  // the run uses.
+  const pickSeqRef = useRef(0);
 
   const [cameras, setCameras] = useState([]);
   const [camerasLoading, setCamerasLoading] = useState(false);
@@ -84,6 +97,19 @@ export function RunDetectionPage() {
   const [canSaveEdges, setCanSaveEdges] = useState(false);
   const [pct, setPct] = useState(50);
   const [minutes, setMinutes] = useState(5);
+
+  // Auto-trace: the server watches where traffic drives in the clip that is
+  // ALREADY STAGED and proposes the polygon, so the usual dozen clicks become
+  // "check this". `canvasKey` is how the result reaches the canvas — EdgeCanvas
+  // seeds its points from `initialPoints` at MOUNT, so remounting it under a
+  // new key is what re-seeds it. Cheaper than teaching it to accept points
+  // after the fact, and it keeps one seeding path rather than two that can
+  // drift.
+  const [tracing, setTracing] = useState(false);
+  const [traceError, setTraceError] = useState("");
+  const [traced, setTraced] = useState(null);     // the report, once one lands
+  const [tracedPoints, setTracedPoints] = useState([]);
+  const [canvasKey, setCanvasKey] = useState(0);
 
   // When the clip was recorded (datetime-local). Optional; becomes --clock for the detector.
   const [recordedAt, setRecordedAt] = useState("");
@@ -136,6 +162,20 @@ export function RunDetectionPage() {
     if (!f) return;
     const problem = validateFile(f);
     if (problem) { setFileError(problem); setFile(null); return; }
+    // Picking a second clip while the first is still going up used to leave
+    // BOTH uploads running: this only overwrote abortRef, so the old
+    // controller was dropped without being aborted and whichever upload
+    // finished LAST won `staged`. Completion order is by size, not by click
+    // order, so a 1GB clip picked first lands minutes after a small one picked
+    // second and silently replaces it — Start then runs the clip the user had
+    // already moved on from, while the drop-zone chip still shows the one they
+    // chose. Stop the old upload (its chunks stay on the server, which is what
+    // makes stopping cheap to undo) and stamp this pick, so a straggler that
+    // resolves anyway cannot write over the newest one.
+    pickSeqRef.current += 1;
+    const seq = pickSeqRef.current;
+    const isCurrent = () => pickSeqRef.current === seq;
+    abortRef.current?.abort();
     setFileError("");
     setFile(f);
     setStaged(null);
@@ -145,7 +185,11 @@ export function RunDetectionPage() {
     const controller = new AbortController();
     abortRef.current = controller;
     try {
-      const res = await uploadClipInChunks(f, { onProgress: setProgress, signal: controller.signal });
+      const res = await uploadClipInChunks(f, {
+        onProgress: (p) => { if (isCurrent()) setProgress(p); },
+        signal: controller.signal,
+      });
+      if (!isCurrent()) return;
       setStaged({
         stagedToken: res.staged_token,
         sourceFilename: res.source_filename,
@@ -153,6 +197,9 @@ export function RunDetectionPage() {
       });
       setPending((list) => list.filter((s) => s.id !== res.session_id));
     } catch (err) {
+      // A superseded upload reports nothing: it was aborted on purpose, and its
+      // "Upload stopped" notice would land on the clip that replaced it.
+      if (!isCurrent()) return;
       if (err?.aborted) {
         setStageError("Upload stopped. What already went up is kept — pick the same clip again to carry on.");
       } else {
@@ -162,9 +209,12 @@ export function RunDetectionPage() {
       // for, so the banner needs to hear about it.
       refreshPending();
     } finally {
-      setStaging(false);
-      setProgress(null);
-      abortRef.current = null;
+      // Never clear the newer pick's controller or its progress bar.
+      if (isCurrent()) {
+        setStaging(false);
+        setProgress(null);
+        abortRef.current = null;
+      }
     }
   };
 
@@ -192,7 +242,37 @@ export function RunDetectionPage() {
   const usesClock = source === "file" && ["thief", "drinking", "merged", "merged4"].includes(violationType);
   const canStart = source === "camera"
     ? !!cameraId
-    : staged && (!needsEdges || canSaveEdges);
+    : staged && (!needsEdges || edgesOptional || canSaveEdges);
+
+  // Nothing is saved and nothing is started here: the shape lands in the
+  // canvas as an ordinary editable polygon, and the operator still presses
+  // Start themselves.
+  const runTrace = async () => {
+    if (!staged || tracing) return;
+    setTracing(true);
+    setTraceError("");
+    setTraced(null);
+    try {
+      const res = await traceZoneFromStaged(staged.stagedToken);
+      // Both read frame 0 of the same clip at native resolution, so the points
+      // are already in the canvas's coordinates. Checked rather than assumed:
+      // a silent mismatch would put the zone somewhere plausible and wrong.
+      if (res.width !== staged.frame.width || res.height !== staged.frame.height) {
+        setTraceError("The traced zone does not match the staged frame's size "
+          + "— draw the area by hand for this clip.");
+        return;
+      }
+      setTracedPoints(res.points.map(([x, y]) => ({ x, y })));
+      setCanvasKey((k) => k + 1);
+      setTraced(res.report || {});
+    } catch (err) {
+      // 422 is "the clip was fine, it just had no traffic in it" — the server
+      // says which, in a sentence meant for the operator.
+      setTraceError(err.data?.detail || err.message || "Could not trace a zone.");
+    } finally {
+      setTracing(false);
+    }
+  };
 
   const handleStart = async () => {
     if (!canStart || starting) return;
@@ -208,10 +288,22 @@ export function RunDetectionPage() {
             recordedAt: usesClock ? recordedAt : "",
             trimStart: trim.start,
             trimEnd: trim.end,
-            ...(needsEdges ? {
+            // Only when one was actually drawn: disposal may legitimately
+            // start with none, and the thresholds below are parking's rule,
+            // which disposal's containment test does not use.
+            // The area, only when one was actually drawn: parking works it
+            // out from the footage otherwise, and disposal may legitimately
+            // start with none.
+            ...(needsEdges && canSaveEdges ? {
               edges: edgeSpec,
               edgesWidth: staged.frame.width,
               edgesHeight: staged.frame.height,
+            } : {}),
+            // The thresholds, whether or not an area was drawn — they are
+            // parking's rule ("how much of the vehicle", "for how long"), not
+            // a property of the polygon, and an auto-traced run has to be
+            // judged by the numbers the operator typed.
+            ...(hasAreaThresholds ? {
               obstructionPct: Number(pct),
               obstructionMinutes: Number(minutes),
             } : {}),
@@ -230,6 +322,8 @@ export function RunDetectionPage() {
     setFile(null); setFileError(""); setStaged(null); setStageError("");
     setCameraId(""); setRecordedAt(""); setEdgeSpec({}); setCanSaveEdges(false); setTrim({ start: 0, end: 0 });
     setPct(50); setMinutes(5); setStartError(""); setJob(null); setStopping(false);
+    setTracing(false); setTraceError(""); setTraced(null); setTracedPoints([]);
+    setCanvasKey((k) => k + 1);
   };
 
   const stop = async () => {
@@ -440,18 +534,67 @@ export function RunDetectionPage() {
 
             {needsEdges && source === "file" && staged && (
               <div className="rounded-xl p-4 space-y-3" style={barStyle}>
-                <div className="text-[13px] font-semibold uppercase tracking-wide"
-                  style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
-                  Draw the no-parking area for {detectorLabel}
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <div className="text-[13px] font-semibold uppercase tracking-wide"
+                    style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+                    {edgeHeading(violationType, detectorLabel)}
+                  </div>
+                  {/* The clip is already on the server, so this costs no
+                      upload — it just asks the detector to look at it. */}
+                  <button onClick={runTrace} disabled={tracing}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[13px] font-medium flex-shrink-0"
+                    style={{
+                      background: "#f59e0b", color: "#0c0f16",
+                      opacity: tracing ? 0.5 : 1,
+                      cursor: tracing ? "not-allowed" : "pointer",
+                    }}>
+                    {tracing ? <Loader2 size={12} className="animate-spin" /> : <Wand2 size={12} />}
+                    {tracing ? "Watching the traffic…" : "Trace it for me"}
+                  </button>
                 </div>
-                <EdgeCanvas frame={staged.frame} pct={pct} onPctChange={setPct} minutes={minutes}
-                  onMinutesChange={setMinutes} onChange={(spec, can) => { setEdgeSpec(spec); setCanSaveEdges(can); }} />
+
+                {/* The wait is tens of seconds of real inference, so it is
+                    named rather than left as a spinner that looks like a hang. */}
+                {tracing && (
+                  <div className="text-[13px] px-3 py-2.5 rounded-xl"
+                    style={{ background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.2)", color: "#f59e0b" }}>
+                    Running the vehicle detector over this clip — this takes up to a minute.
+                  </div>
+                )}
+
+                {traceError && (
+                  <div className="flex items-start gap-2 text-[13px] px-3 py-2.5 rounded-xl"
+                    style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", color: "#ef4444" }}>
+                    <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
+                    <span>{traceError}</span>
+                  </div>
+                )}
+
+                {traced && !tracing && (
+                  <div className="flex items-start gap-2 text-[13px] px-3 py-2.5 rounded-xl"
+                    style={{ background: "rgba(59,130,246,0.08)", border: "1px solid rgba(59,130,246,0.25)", color: "var(--foreground)" }}>
+                    <Info size={13} className="flex-shrink-0 mt-0.5" style={{ color: "#3b82f6" }} />
+                    <span>
+                      <span className="font-medium">Suggested — check it before you start.</span>{" "}
+                      Traced from {traced.moving_tracks ?? "?"} moving vehicle
+                      {traced.moving_tracks === 1 ? "" : "s"} across {traced.samples ?? "?"} sampled
+                      frames. Vehicles that stayed parked were ignored on purpose: the rule cannot
+                      tell a car parked on the road from one parked in a yard, so only moving
+                      traffic shapes the area.
+                    </span>
+                  </div>
+                )}
+
+                <EdgeCanvas key={canvasKey} frame={staged.frame} initialPoints={tracedPoints}
+                  pct={pct} onPctChange={setPct} minutes={minutes}
+                  onMinutesChange={setMinutes} showThresholds={hasAreaThresholds}
+                  onChange={(spec, can) => { setEdgeSpec(spec); setCanSaveEdges(can); }} />
               </div>
             )}
             {needsEdges && source === "camera" && cameraId && (
               <div className="text-[13px] px-3 py-2 rounded-xl"
                 style={{ background: "rgba(59,130,246,0.08)", border: "1px solid rgba(59,130,246,0.2)", color: "#60a5fa" }}>
-                {detectorLabel} uses the no-parking area saved on the camera (Feeds → Edge Zones).
+                {edgeCameraNote(violationType, detectorLabel)}
               </div>
             )}
           </>

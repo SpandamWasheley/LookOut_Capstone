@@ -429,6 +429,25 @@ export const uploadCameraEdgeFrame = (id, file) => {
   return apiUpload(`/cameras/${id}/edge-frame/`, formData);
 };
 
+// Proposes parking's no-parking polygon from a clip ALREADY STAGED for a run,
+// by watching where traffic drives in it. Returns `points` (the suggested
+// shape, in the staged frame's own pixels) plus the counts behind it.
+//
+// Takes the staged_token rather than the file: the clip is routinely 200 MB and
+// is already on the server by the time edges are being drawn, so re-uploading
+// it to look at it again would be the most expensive possible way to ask.
+//
+// SLOW on purpose — the server runs the vehicle detector over a few dozen
+// frames before it answers, so this holds for the better part of half a minute,
+// and the caller owns showing that. A 422 means the clip was readable but had
+// no traffic to trace from; err.data.detail is a sentence to show the operator,
+// not a status code to translate.
+export const traceZoneFromStaged = (stagedToken) => {
+  const formData = new FormData();
+  formData.append("staged_token", stagedToken);
+  return apiUpload("/detection-jobs/trace-zone/", formData);
+};
+
 // Admin test harness: run an existing detector against an uploaded clip
 // instead of the terminal. Launches a subprocess server-side; this call
 // returns as soon as the job row is created, not when detection finishes.
@@ -523,8 +542,16 @@ export const startStagedDetectionJob = (
     formData.append("edges", JSON.stringify(edges));
     formData.append("edges_width", edgesWidth);
     formData.append("edges_height", edgesHeight);
-    formData.append("obstruction_pct", obstructionPct);
-    formData.append("obstruction_minutes", obstructionMinutes);
+    // Only when they exist. FormData.append stringifies undefined to the
+    // literal "undefined", which the server then reads as a present value and
+    // tries to parse as a number — disposal draws an area but has no
+    // thresholds, so appending these unconditionally sent it "undefined".
+    if (obstructionPct !== undefined && obstructionPct !== null) {
+      formData.append("obstruction_pct", obstructionPct);
+    }
+    if (obstructionMinutes !== undefined && obstructionMinutes !== null) {
+      formData.append("obstruction_minutes", obstructionMinutes);
+    }
   }
   return apiUpload("/detection-jobs/", formData);
 };

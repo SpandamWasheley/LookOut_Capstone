@@ -85,6 +85,13 @@
   --violation-theft-border: #B7410E40;
   --violation-theft-dot: #B7410E;
 
+  /* green-500, matching the 500-weight the sibling violations use. Text is
+     green-700 so the chip label still clears contrast on the pale tint. */
+  --violation-disposal-bg: #22c55e1f;
+  --violation-disposal-text: #15803d;
+  --violation-disposal-border: #22c55e40;
+  --violation-disposal-dot: #22c55e;
+
   --violation-unknown-bg: #7979821f;
   --violation-unknown-text: #797c82;
   --violation-unknown-border: #79798240;
@@ -174,6 +181,13 @@
   --violation-theft-text: #E6A688;
   --violation-theft-border: #B7410E59;
   --violation-theft-dot: #DD8452;
+
+  /* On the dark ground the text lifts to green-200 and the dot to green-400,
+     the same way smoking/parking lift theirs — green-700 would vanish here. */
+  --violation-disposal-bg: #22c55e33;
+  --violation-disposal-text: #bbf7d0;
+  --violation-disposal-border: #22c55e59;
+  --violation-disposal-dot: #4ade80;
 
   --violation-unknown-bg: #79798233;
   --violation-unknown-text: #b8bcc2;

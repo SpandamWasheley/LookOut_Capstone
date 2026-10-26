@@ -84,6 +84,7 @@ class BrevoBackendTests(SimpleTestCase):
         # The whole point of preferring the API: a 535 says nothing, this says
         # exactly what is wrong.
         bad = mock.Mock(status_code=401,
+                        text='{"message": "unrecognised IP address 1.2.3.4"}',
                         json=lambda: {"message": "unrecognised IP address 1.2.3.4"})
         with mock.patch("requests.Session.post", return_value=bad):
             with self.assertRaises(BrevoAPIError) as caught:
@@ -92,7 +93,8 @@ class BrevoBackendTests(SimpleTestCase):
         self.assertIn("401", str(caught.exception))
 
     def test_fail_silently_swallows_a_rejection(self):
-        bad = mock.Mock(status_code=400, json=lambda: {"message": "nope"})
+        bad = mock.Mock(status_code=400, text='{"message": "nope"}',
+                        json=lambda: {"message": "nope"})
         with mock.patch("requests.Session.post", return_value=bad):
             sent = send_mail("s", "b", "noreply@example.com", ["a@example.com"],
                              fail_silently=True)
