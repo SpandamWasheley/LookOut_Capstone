@@ -324,3 +324,54 @@ Real holdups reach Possible or Likely; ALT-0152 and the walk-pasts stay at Monit
 * The 1 s gap is also what stops the walking kid (3 -> 2 gestures) from reaching Possible; it merges the vaper's 14.5 / 15.0 / 15.3 s dips into one.
 * Aug24_16 sits exactly on the Likely line (0.75) without E20.
 * ALT-0152's smoke #4 and Trim2's smoke #1 stay Possible exactly as before; not judged here.
+
+
+# v6.2.11 - zoomed-pose puff needs a completed hand-to-mouth cycle (`PUFF_ZOOM_NEEDS_GESTURE_CYCLE`, `SCORING_SPEC_VERSION = "v6.2.11"`)
+
+## Diagnosis (`Sep19_2 - TrimSmoking.mp4`, dry run `watch_merged --only smoking`, logs in `v62_test_results/beanie_bisect/`)
+The beanie man (track 8, walking, a phone read as "Cigarette") reached Possible at 25 s with no cap. History: present in v6, blocked by the strict puff in v6.2,
+**back in v6.2.1** (puff loosened to a cigarette at the wrist OR mouth, +/-5 s either order, 0.7 x shoulder width; setting the radius back to 0.5 alone blocked
+him in v6.2.1), and still there in v6.2.5 / v6.2.8 / v6.2.10. In v6.2.10 every one of his 3 counted puffs came from the **zoomed pose** (`puff_log`):
+
+| puff | cigarette | where | conf | width / shoulder |
+|---|---|---|---|---|
+| 21.7 s | at the mouth | | 0.50 | 0.09 |
+| 23.5 s | at the wrist (10 frames) | | 0.59 | 0.30 |
+| 24.9 s | at the wrist | | 0.32 | 0.15 |
+
+The false cigarette was really inside his mouth zone with a plausible size, so position, size and confidence cannot separate it from a smoker's
+(pole smoker 0.28-0.41, conf 0.38-0.77). Tried and rejected: "cigarette must be at the mouth" and a minimum size (his later puffs were mouth-zone and 0.14-0.25),
+and radius 0.5 (one puff remained). What differs is the hand: he holds it up and never completes a hand-to-mouth cycle (0 gestures in 273 frames; pole smoker 164, woman 273).
+
+## Changes (`location_momentum.py`)
+* `PUFF_ZOOM_NEEDS_GESTURE_CYCLE = True`: a reach measured on the zoomed pose (`loc.reach_src`) becomes a puff only when `track.gestures` (the pose counter) holds a
+  cycle completed at or after the reach (`PUFF_GESTURE_SLACK_SECONDS = 0.5`). The reach waits as before (`PUFF_PAIR_WINDOW_SECONDS`) and expires if no cycle completes.
+  Whole-frame-pose reaches are unchanged. Object-based puffs are unchanged.
+* The object-based puff (v6.2.8) now applies only when pose cannot measure the person (no keypoints, nose < `KP_CONF_MIN`, or both wrists < `KP_CONF_MIN`). Box size alone
+  (`FAR_PUFF_BELOW_FRAC`) is no longer a trigger (constant kept, unused).
+* `WALKING_NO_PUFF = False`. The walking check stays in the code (switch on = no puff while the box moves faster than 0.3 box heights/s) but is **not** a block.
+* Diagnosis only: `TrackLoc.puff_log` (one dict per counted puff: time, source `pose-zoom|pose-full|+elbow|object`, wrist, reach time, where the cigarette was, dt, conf,
+  width / shoulder, keypoint confidences, sightings around the reach).
+
+## Results (dry runs, current tree; before = gate off, after = this change; highest status)
+| clip | person | before | after | puffs pose / object (after) |
+|---|---|---|---|---|
+| Sep19_2 | beanie man #8 | Possible 25.0 s | **Monitoring** | 0 / 0 |
+| Sep19_2 | pole smoker #23 | Likely 43.6 s | Likely 43.6 s | 4 / 3 |
+| Sep19_2 | near smoker / woman #1 | Likely 34.7 s | Likely 34.7 s | 10 / 1 |
+| smk_Trim2 | #1 | Possible 24.1 s | Possible 24.1 s | 0 / 1 (still needs a human look) |
+| smk_CigaretteNightFar1 (the v6.2.1 night clip) | #4 | Possible at 18.9 s (peak Likely) | **Possible at 34.3 s (peak Likely)** | 2 / 1 - still reaches Likely, but its first Possible is 15 s later |
+| Vape Far Night | #3 | Possible 46.4 s | Possible 46.4 s | puff-only (see caveats) |
+| Aug14_12 TrimNull | - | no event | no event | 0 / 1 |
+| Kabilang walkers | #90 | Possible 118.1 s | **Monitoring** | 2 / 0 |
+| Kabilang walkers | #27, #38, #58, #101, #137 | Possible | Possible (unchanged) | 0 / 0 - puff-only, see caveats |
+| S2 FarVape | #32 | Possible 47.7 s | **Monitoring** | 0 / 0 |
+| S2 FarVape | #28 | Possible 45.2 s | Possible (unchanged) | 0 / 0 |
+| VapeNightNear | #3 | Possible 28.9 s | Possible 28.9 s | 3 / 0 |
+
+## Caveats
+* **Puff-only Possibles on walkers are not from this change.** Kabilang #27 / #38 / #58 / #101 / #137, Vape Far Night #3 and S2 FarVape #28 are the hand-movement-only route
+  (no cigarette, 0 puffs); they are identical before and after. They come from `GESTURE_FROM_ZOOM` (v6.2.10): with it off, Kabilang and Vape Far Night give no Possible, but the pole
+  smoker (#23) drops to Monitoring (its Likely depends on the zoom-fed gestures). Not tuned here.
+* Only zoomed-pose reaches are gated; a person large enough for the whole-frame pose with a phone held to the face is not covered.
+* A smoker who never lowers the cigarette for 5 s (or whose pose loses the wrist at the bottom of the cycle) is counted late or missed on the zoomed path - the night clip's Likely moved from 18.9 to 34.3 s.

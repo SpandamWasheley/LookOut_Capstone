@@ -99,10 +99,18 @@ class FarPuffTests(unittest.TestCase):
         step(cmd, t, 1.0, [cig_at(t, 0.5)])
         self.assertEqual(step(cmd, t, 2.0, [cig_at(t, 0.1)]), 1)
 
-    def test_a_far_person_uses_it_even_when_keypoints_exist(self):
-        cmd, t = make(200, good_kp=True)
+    def test_a_small_person_with_readable_pose_does_not_use_it(self):
+        cmd, t = make(200, good_kp=True)                          # small box, but nose and wrists confident: pose judges, not the object
+        step(cmd, t, 1.0, [cig_at(t, 0.5)])
+        self.assertEqual(step(cmd, t, 2.0, [cig_at(t, 0.1)]), 0)
+        self.assertEqual(t.loc.n_object_puffs, 0)
+
+    def test_a_person_whose_nose_is_unreadable_uses_it_even_when_large(self):
+        cmd, t = make(500, good_kp=True)
+        t.loc.kp[0][2] = 0.1                                       # nose under KP_CONF_MIN
         step(cmd, t, 1.0, [cig_at(t, 0.5)])
         self.assertEqual(step(cmd, t, 2.0, [cig_at(t, 0.1)]), 1)
+        self.assertEqual(t.loc.puff_log[-1]["source"], "object")
 
     def test_switch_off(self):
         cmd, t = make(200)
@@ -123,6 +131,44 @@ class FarPuffTests(unittest.TestCase):
         step(cmd, t, 6.0, [cig_at(t, 0.5)])
         step(cmd, t, 7.0, [cig_at(t, 0.1)])
         self.assertEqual(lm.puff_cap(t, 8.0), (None, ""))
+
+
+class WalkingTests(unittest.TestCase):
+    def setUp(self):
+        lm.reset()
+        self._old_walk = lm.WALKING_NO_PUFF
+        lm.WALKING_NO_PUFF = True                                  # the block is off by default since v6.2.11; these test the code that stays
+        self.addCleanup(setattr, lm, "WALKING_NO_PUFF", self._old_walk)
+
+    def test_off_by_default(self):
+        lm.WALKING_NO_PUFF = self._old_walk
+        self.assertFalse(lm.WALKING_NO_PUFF)
+
+    def _walk(self, t, now, dx):
+        t.box = (t.box[0] + dx, t.box[1], t.box[2] + dx, t.box[3])
+
+    def test_a_walking_person_gets_no_puff(self):
+        cmd, t = make(200)
+        step(cmd, t, 1.0, [cig_at(t, 0.5)])
+        self._walk(t, 1.5, 200)                                   # 200 px in a second = a full body height per second
+        self.assertEqual(step(cmd, t, 2.0, [cig_at(t, 0.1)]), 0)
+
+    def test_a_standing_person_still_gets_the_puff(self):
+        cmd, t = make(200)
+        step(cmd, t, 1.0, [cig_at(t, 0.5)])
+        self._walk(t, 1.5, 5)                                     # jitter only
+        self.assertEqual(step(cmd, t, 2.0, [cig_at(t, 0.1)]), 1)
+
+    def test_switch_off(self):
+        cmd, t = make(200)
+        old = lm.WALKING_NO_PUFF
+        lm.WALKING_NO_PUFF = False
+        try:
+            step(cmd, t, 1.0, [cig_at(t, 0.5)])
+            self._walk(t, 1.5, 200)
+            self.assertEqual(step(cmd, t, 2.0, [cig_at(t, 0.1)]), 1)
+        finally:
+            lm.WALKING_NO_PUFF = old
 
 
 if __name__ == "__main__":

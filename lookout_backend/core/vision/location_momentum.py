@@ -49,11 +49,18 @@ FAR_PUFF_FROM_OBJECT = True
 # raises it to the face and satisfied the puff test. While the person's box centre moves faster than WALK_SPEED_HEIGHTS_PER_SEC box
 # heights per second (measured over the last WALK_WINDOW_SECONDS, at least WALK_MIN_SPAN_SECONDS of it), no puff is counted
 # (reaches / object sightings are simply not turned into puffs). Measured on Sep19_2: walker 0.3-0.5, seated / standing smoker ~0.
-WALKING_NO_PUFF = True
+WALKING_NO_PUFF = False             # OFF (v6.2.11): walking is not a block (a person can smoke while walking); the code stays, see tests
 WALK_WINDOW_SECONDS = 2.0
 WALK_MIN_SPAN_SECONDS = 0.4
 WALK_SPEED_HEIGHTS_PER_SEC = 0.3
-FAR_PUFF_BELOW_FRAC = 0.25          # person box shorter than this x frame height -> use the fallback
+# v6.2.11 puff pairing, narrowed. Diagnosis on Sep19_2 (puff_log): all three of the beanie man's puffs came from the ZOOMED pose
+# (an upscaled crop) paired with a "cigarette" that really was at his mouth zone, so position, size and confidence cannot tell it
+# from a smoker's. What differs: he never completes a hand-to-mouth cycle (hand at the face, then clearly down -- the pose gesture
+# counter, tracking.Track.update_gesture): 0 gestures in 273 frames, against 164 (pole smoker) and 273 (woman). A puff from the
+# zoomed pose therefore also needs a cycle completed at or after its reach (within the pair window, which is how long a reach waits).
+PUFF_ZOOM_NEEDS_GESTURE_CYCLE = True
+PUFF_GESTURE_SLACK_SECONDS = 0.5    # the cycle may complete this long before the reach was registered (frame / keypoint jitter)
+FAR_PUFF_BELOW_FRAC = 0.25          # legacy size trigger: NOT used since v6.2.11 (the object puff needs pose to be unable to measure)
 FAR_PUFF_HEAD_ZONE = 0.22           # head zone = top this fraction of the person box (0 = top, 1 = bottom)
 FAR_PUFF_BODY_ZONE = (0.30, 0.70)   # chest / hand zone
 FAR_PUFF_PAIR_SECONDS = 4.0         # head and body sightings must be this close in time (either order)
@@ -242,6 +249,11 @@ class TrackLoc:
         self.last_object_puff = None
         self.n_object_puffs = 0
         self.n_pose_puffs = 0
+        self.puff_log = deque(maxlen=300)   # one dict per counted puff: time, source, keypoint confidences, cigarette size (diagnosis)
+        self.sightings = deque(maxlen=400)  # (time, "wrist"/"mouth", conf, cigarette width / shoulder width): diagnosis of a counted puff
+        self.reach_src = {}           # wrist id -> kp_source ("zoom" / "full") the pending reach was measured with
+        self.reach_via = {}           # wrist id -> "wrist" or "elbow" for the reach still waiting
+        self.cig_info = {}            # "wrist:<id>" / "mouth" -> (conf, cigarette width / shoulder width) of the last sighting there
         self.trail = deque()          # (video time, box centre x, y, box height) for the walking check
 
 
@@ -512,6 +524,15 @@ def is_walking(track, now):
     return _dist((x0, y0), (loc.trail[-1][1], loc.trail[-1][2])) / span > WALK_SPEED_HEIGHTS_PER_SEC * h
 
 
+def _cycle_after(track, t_reach):
+    """True when the pose gesture counter completed a hand-to-mouth cycle at or after (t_reach - slack). A track with no counter
+    (a bare test double) is not gated."""
+    g = getattr(track, "gestures", None)
+    if g is None:
+        return True
+    return any(t >= t_reach - PUFF_GESTURE_SLACK_SECONDS for t in g)
+
+
 def update_puffs(cmd, track, dets, now):
     """Advance the puff detector for one person this frame and return the puff count so far.
 
@@ -536,15 +557,26 @@ def update_puffs(cmd, track, dets, now):
     close_mouth = (anchors["close"] * (PUFF_CLOSE_SHOULDER_FRAC / CLOSE_SHOULDER_FRAC)
                    if anchors.get("has_shoulders") else anchors["close"])
     mouth = anchors.get(MOUTH)
-    cigs = [tuple(d[:4]) for d in dets if str(d[5]).lower() == "cigarette"
-            and not class_flipped(now, tuple(d[:4]), "cigarette")]
+    shoulder_w = anchors["close"] / CLOSE_SHOULDER_FRAC if anchors.get("has_shoulders") else 0.0
+    cig_dets = [(tuple(d[:4]), float(d[4])) for d in dets if str(d[5]).lower() == "cigarette"
+                and not class_flipped(now, tuple(d[:4]), "cigarette")]
+    cigs = [b for b, _c in cig_dets]
+
+    def _ratio(b):
+        return round((b[2] - b[0]) / shoulder_w, 2) if shoulder_w >= 1 else None
+
     for w in WRISTS:
         pos = anchors.get(w)
-        if pos is not None and any(_dist(_center(b), pos) <= close_wrist for b in cigs):
+        hit = [(b, c) for b, c in cig_dets if pos is not None and _dist(_center(b), pos) <= close_wrist]
+        if hit:
             loc.cig_at_wrist[w] = now
-    if mouth is not None and any(_dist(_center(b), mouth) <= close_mouth for b in cigs):
+            loc.cig_info["wrist:" + w] = (round(hit[0][1], 2), _ratio(hit[0][0]))
+            loc.sightings.append((now, "wrist", round(hit[0][1], 2), _ratio(hit[0][0])))
+    hit = [(b, c) for b, c in cig_dets if mouth is not None and _dist(_center(b), mouth) <= close_mouth]
+    if hit:
         loc.cig_at_mouth = now
-    shoulder_w = anchors["close"] / CLOSE_SHOULDER_FRAC if anchors.get("has_shoulders") else 0.0
+        loc.cig_info["mouth"] = (round(hit[0][1], 2), _ratio(hit[0][0]))
+        loc.sightings.append((now, "mouth", round(hit[0][1], 2), _ratio(hit[0][0])))
     for w in WRISTS:
         pos = anchors.get(w)
         if mouth is None:
@@ -562,12 +594,28 @@ def update_puffs(cmd, track, dets, now):
         loc.in_zone[w] = in_zone
         if in_zone and was is False and (loc.last_reach is None or now - loc.last_reach >= PUFF_MIN_GAP_SECONDS):
             loc.reaches[w] = now
+            loc.reach_via[w] = "wrist" if pos is not None else "elbow"
+            loc.reach_src[w] = loc.kp_source
             loc.last_reach = now
     for w, t_reach in list(loc.reaches.items()):
-        seen = [t for t in (loc.cig_at_wrist.get(w), loc.cig_at_mouth) if t is not None]
-        if not walking and any(abs(t - t_reach) <= PUFF_PAIR_WINDOW_SECONDS for t in seen):
+        seen = {"wrist": loc.cig_at_wrist.get(w), "mouth": loc.cig_at_mouth}
+        ok = {k: t for k, t in seen.items() if t is not None and abs(t - t_reach) <= PUFF_PAIR_WINDOW_SECONDS}
+        if ok and PUFF_ZOOM_NEEDS_GESTURE_CYCLE and loc.reach_src.get(w) == "zoom" and not _cycle_after(track, t_reach):
+            continue                                # zoomed-pose reach with no completed hand-to-mouth cycle yet: keep waiting (the reach expires)
+        if not walking and ok:
             loc.puffs.append(now)
             loc.n_pose_puffs += 1
+            where = min(ok, key=lambda k: abs(ok[k] - t_reach))
+            conf, ratio = loc.cig_info.get("wrist:" + w if where == "wrist" else "mouth", (None, None))
+            loc.puff_log.append(dict(
+                t=round(now, 2), source="pose-%s%s" % (loc.kp_source or "?", "+elbow" if loc.reach_via.get(w) == "elbow" else ""),
+                wrist=w, reach_t=round(t_reach, 2), cig_where=where, cig_dt=round(ok[where] - t_reach, 2), cig_conf=conf,
+                cig_w_over_shoulder=ratio,
+                near_reach=dict(mouth_frames=sum(1 for t, k, _c, _r in loc.sightings if k == "mouth" and abs(t - t_reach) <= 1.0),
+                                wrist_frames=sum(1 for t, k, _c, _r in loc.sightings if k == "wrist" and abs(t - t_reach) <= 1.0),
+                                mouth_ratio_max=max([r for t, k, _c, r in loc.sightings if k == "mouth" and abs(t - t_reach) <= 1.0 and r is not None], default=None)),
+                kp_nose=round(float(kp[recognition.KP_NOSE][2]), 2),
+                kp_wrists=[round(float(kp[recognition.KP_LWRIST][2]), 2), round(float(kp[recognition.KP_RWRIST][2]), 2)]))
             del loc.reaches[w]
     _expire_reaches(loc, now)
     return len(loc.puffs)
@@ -581,11 +629,9 @@ def _frame_height(cmd):
 
 
 def _object_puff_applies(cmd, track, kp):
-    """The object-based puff is used only when pose cannot be trusted for this person: the box is shorter than
-    FAR_PUFF_BELOW_FRAC of the frame, or the nose / both wrists are under KP_CONF_MIN (or there are no keypoints)."""
-    h = _frame_height(cmd)
-    if h and track.box is not None and (track.box[3] - track.box[1]) < FAR_PUFF_BELOW_FRAC * h:
-        return True
+    """The object-based puff is used only when pose cannot measure this person: the nose OR both wrists are under
+    KP_CONF_MIN, or there are no keypoints at all. Box size alone is no longer a trigger (v6.2.11): a small person whose
+    nose and wrists are readable is judged by the pose puff, like everyone else."""
     if kp is None:
         return True
     return kp[recognition.KP_NOSE][2] < KP_CONF_MIN or all(
@@ -614,6 +660,8 @@ def _update_object_puff(loc, track, dets, now):
     loc.puffs.append(now)
     loc.n_object_puffs += 1
     loc.last_object_puff = now
+    loc.puff_log.append(dict(t=round(now, 2), source="object", head_seen=round(loc.head_seen, 2), body_seen=round(loc.body_seen, 2),
+                             kp_source=loc.kp_source))
     loc.head_seen = loc.body_seen = None                 # consumed: the next puff needs fresh sightings of both
 
 

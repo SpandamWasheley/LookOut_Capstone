@@ -34,7 +34,7 @@ import datetime
 # movement in the person box; v6.2.10 = scene-baseline seed fix, zoomed pose feeds the gesture counter, E20 only with a clip time,
 # E12 walking tests in raw box-heights/s (docs/specs/V6_2_LOCATION_MOMENTUM.md).
 # The weights and thresholds are unchanged from v6.
-SCORING_SPEC_VERSION = "v6.2.10"
+SCORING_SPEC_VERSION = "v6.2.11"
 
 
 # --- statuses ----------------------------------------------------------------

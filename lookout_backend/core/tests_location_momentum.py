@@ -125,6 +125,58 @@ class LocationGateTests(unittest.TestCase):
         self.assertFalse(slot.cue_on, slot.momentum)
 
 
+class ZoomCycleTests(unittest.TestCase):
+    """v6.2.11: a reach measured on the ZOOMED pose only becomes a puff once a hand-to-mouth cycle (the gesture counter) completes."""
+
+    def setUp(self):
+        lm.reset()
+        self.cmd = SimpleNamespace(stats=__import__("collections").Counter())
+
+    def frame(self, t, now, wrist, dets, source="zoom"):
+        t.loc.kp, t.loc.kp_at, t.loc.kp_source = kpts(lw=wrist), now, source
+        return lm.update_puffs(self.cmd, t, dets, now)
+
+    def walk_to_mouth(self, source="zoom"):
+        t = person(None, 0.0)
+        t.gestures = []                                            # the track's pose gesture counter (completion times)
+        self.frame(t, 1.0, (60, 160), [cig(60, 160)], source)
+        return t
+
+    def test_zoom_reach_without_a_cycle_is_not_a_puff(self):
+        t = self.walk_to_mouth()
+        self.assertEqual(self.frame(t, 1.5, (100, 50), [cig(100, 55)]), 0)
+        self.assertEqual(self.frame(t, 2.5, (100, 50), [cig(100, 55)]), 0)       # hand stays up: still no cycle
+
+    def test_zoom_reach_is_counted_when_the_cycle_completes_inside_the_window(self):
+        t = self.walk_to_mouth()
+        self.assertEqual(self.frame(t, 1.5, (100, 50), [cig(100, 55)]), 0)
+        t.gestures.append(2.5)                                     # the hand went down: one cycle
+        self.assertEqual(self.frame(t, 2.6, (60, 160), []), 1)
+
+    def test_a_cycle_that_ended_before_the_reach_does_not_count(self):
+        t = self.walk_to_mouth()
+        t.gestures.append(0.2)
+        self.assertEqual(self.frame(t, 1.5, (100, 50), [cig(100, 55)]), 0)
+
+    def test_a_pending_zoom_reach_is_not_released_by_a_later_whole_frame_frame(self):
+        t = self.walk_to_mouth()
+        self.frame(t, 1.5, (100, 50), [], "zoom")
+        self.assertEqual(self.frame(t, 2.0, (100, 50), [cig(100, 55)], "full"), 0)   # the reach was measured on the zoom
+
+    def test_whole_frame_reach_needs_no_cycle(self):
+        t = self.walk_to_mouth("full")
+        self.assertEqual(self.frame(t, 1.5, (100, 50), [cig(100, 55)], "full"), 1)
+
+    def test_switch_off(self):
+        old = lm.PUFF_ZOOM_NEEDS_GESTURE_CYCLE
+        lm.PUFF_ZOOM_NEEDS_GESTURE_CYCLE = False
+        try:
+            t = self.walk_to_mouth()
+            self.assertEqual(self.frame(t, 1.5, (100, 50), [cig(100, 55)]), 1)
+        finally:
+            lm.PUFF_ZOOM_NEEDS_GESTURE_CYCLE = old
+
+
 class PuffTests(unittest.TestCase):
     def setUp(self):
         lm.reset()
@@ -255,7 +307,7 @@ class ScoreCapTests(unittest.TestCase):
         self.assertEqual((capped.level, capped.capped), (scoring.MONITORING, "capped: no puff"))
         self.assertEqual(capped.score, free.score)
         self.assertEqual(capped.as_dict()["checklist"]["capped"], "capped: no puff")
-        self.assertEqual(capped.as_dict()["spec"], "v6.2.10")
+        self.assertEqual(capped.as_dict()["spec"], "v6.2.11")
 
     def test_puff_only_path_is_not_capped(self):
         s = scoring.Score("smoking", scoring.SMOKING_WEIGHTS, {"gesture", "puffs", "puff_pattern"},
