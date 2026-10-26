@@ -82,6 +82,19 @@ class Command(BaseCommand):
             help="Detect and save evidence images but write no Alert rows.",
         )
         parser.add_argument(
+            "--timing",
+            action="store_true",
+            help="Measure per-stage inference time and GPU memory "
+                 "(core/vision/timing.py) and write a JSON report when the run "
+                 "ends. Detection and the zone rule are unchanged.",
+        )
+        parser.add_argument(
+            "--timing-out",
+            default="",
+            help="Where --timing writes its JSON report "
+                 "(default timing_watch_parking_<time>.json).",
+        )
+        parser.add_argument(
             "--far",
             action="store_true",
             help="Deprecated / no-op: long-range tiling is now ON by default "
@@ -146,6 +159,29 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        if options.get("timing"):
+            return self._handle_timed(options)
+        return self._handle(*args, **options)
+
+    def _handle_timed(self, options):
+        """--timing: install the stopwatches, run normally, write the report."""
+        import time as _time
+        from core.vision import timing
+        timing.enable({"command": "watch_parking", "source": options["source"],
+                       "camera": options["camera"], "tracker": options["tracker"],
+                       "tiles": options["tiles"], "fast": options["fast"]})
+        timing.install_frame_hook(type(self), "_run_zone", after=timing.zone_snapshot)
+        timing.install_parking_alert_hook(type(self))
+        timing.install_evidence_hook(type(self), "_create_alert")
+        out = options.get("timing_out") or f"timing_watch_parking_{int(_time.time())}.json"
+        try:
+            return self._handle(**options)
+        finally:
+            path = timing.finalize(out)
+            if path:
+                self.stdout.write(self.style.SUCCESS(f"Timing report written: {path}"))
+
+    def _handle(self, *args, **options):
         # ViolationType/Camera aren't created by any migration, so get_or_create
         # here self-heals a fresh DB the same way watch_curfew does.
         self.parking_type, _ = ViolationType.objects.get_or_create(

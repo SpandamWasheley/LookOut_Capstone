@@ -161,6 +161,13 @@ class Command(BaseCommand):
         parser.add_argument("--stats", action="store_true",
                             help="On exit, print each engine's own detection-stage stats "
                                  "(same --stats output each standalone watcher prints).")
+        parser.add_argument("--timing", action="store_true",
+                            help="Measure per-stage inference time, Qwen latency, alert latency "
+                                 "and GPU memory (core/vision/timing.py) and write a JSON report "
+                                 "when the run ends. Detection and scoring are unchanged.")
+        parser.add_argument("--timing-out", default="",
+                            help="Where --timing writes its JSON report "
+                                 "(default timing_<command>_<time>.json in the working directory).")
         parser.add_argument("--calibration-csv", default="",
                             help="Phase-0 instrumentation: write every raw merged-model "
                                  "detection to this CSV path, one row per detection per "
@@ -177,6 +184,33 @@ class Command(BaseCommand):
                                  "exactly as without this flag.")
 
     def handle(self, *args, **options):
+        if options.get("timing"):
+            return self._handle_timed(options)
+        return self._handle(*args, **options)
+
+    def _handle_timed(self, options):
+        """--timing: install the stopwatches, run normally, write the report."""
+        import time as _time
+        from core.vision import timing
+        timing.enable({"command": type(self).__module__.rsplit(".", 1)[-1],
+                       "source": options["source"], "camera": options["camera"],
+                       "tracker": options["tracker"], "tiles": options["tiles"],
+                       "fast": options["fast"]})
+        timing.install_frame_hook(type(self), "_process_frame")
+        timing.install_incident_hooks()
+        for cls in (SmokingCommand, DrinkingCommand, ThiefCommand):
+            timing.install_evidence_hook(cls, "_create_alert")
+        from ._incidents import IncidentMixin
+        timing.install_evidence_hook(IncidentMixin, "_incident_clip")
+        out = options.get("timing_out") or f"timing_{type(self).__module__.rsplit('.', 1)[-1]}_{int(_time.time())}.json"
+        try:
+            return self._handle(**options)
+        finally:
+            path = timing.finalize(out)
+            if path:
+                self.stdout.write(self.style.SUCCESS(f"Timing report written: {path}"))
+
+    def _handle(self, *args, **options):
         if not recognition.merged_model_available():
             self.stdout.write(self.style.ERROR(
                 f"Merged model not found at {recognition.MERGED_MODEL_PATH}. "
