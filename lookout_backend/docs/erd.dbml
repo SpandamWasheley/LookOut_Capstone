@@ -1,0 +1,227 @@
+// LookOut ERD for dbdiagram.io
+// Generated from lookout_backend/core/models.py (the only app with models).
+// Table names are Django's defaults: core_<model>. Many-to-many join tables
+// are written out explicitly.
+
+Table core_user {
+  id int [pk]
+  username varchar
+  role varchar [note: 'admin | dispatcher | officer | both']
+  display_name varchar
+  must_change_password bool
+  Note: 'Login accounts (AbstractUser subclass). Minimal view: only id, username and role fields; the other built-in auth columns are omitted.'
+}
+
+Table core_emailverificationcode {
+  id int [pk]
+  email varchar
+  code varchar
+  created_at datetime
+  verified bool
+  used bool
+  Note: 'One-time email verification codes and whether each was verified or used.'
+}
+
+Table core_zone {
+  id int [pk]
+  name varchar [unique]
+  Note: 'Barangay subdivisions that cameras are grouped into.'
+}
+
+Table core_violationtype {
+  id int [pk]
+  code varchar [unique]
+  label varchar
+  color varchar
+  icon varchar
+  Note: 'Catalogue of violation kinds (smoking, drinking, parking, holdup...) with display colour and icon.'
+}
+
+Table core_camera {
+  id int [pk]
+  code varchar [unique, note: 'auto CAM-nn']
+  name varchar
+  zone_id int [null, ref: > core_zone.id]
+  address varchar
+  status varchar [note: 'online | degraded | offline']
+  fps int
+  last_motion_at datetime [null]
+  image_url varchar
+  stream_url varchar [note: 'RTSP URL, kept server-side only']
+  edges json [note: 'road-edge lines for parking obstruction']
+  edges_width int [null]
+  edges_height int [null]
+  obstruction_pct int
+  obstruction_minutes float
+  Note: 'CCTV cameras (live RTSP or per-upload "-TEST" cameras) with their location and parking-monitoring config.'
+}
+
+Table core_officer {
+  id int [pk]
+  code varchar [unique, note: 'auto OFC-nn']
+  user_id int [null, ref: - core_user.id]
+  name varchar
+  badge varchar
+  status varchar [note: 'responding | on-duty | off-duty']
+  location varchar
+  phone varchar
+  shift varchar
+  joined_date date [null]
+  Note: 'Field officers/tanods, optionally linked to a login account.'
+}
+
+Table core_alert {
+  id int [pk]
+  code varchar [unique, note: 'auto ALT-nnnn']
+  type_id int [ref: > core_violationtype.id]
+  status varchar [note: 'active | dispatched | acknowledged | resolved']
+  camera_id int [null, ref: > core_camera.id]
+  timestamp datetime
+  confidence float [note: 'final violation score']
+  description text
+  image_url varchar
+  video_url varchar [note: 'annotated evidence clip']
+  raw_video_url varchar [note: 'unannotated evidence clip']
+  suspect varchar
+  notes text
+  level varchar [note: 'current scoring band']
+  peak_level varchar [note: 'highest band ever reached']
+  last_seen_at datetime [null]
+  cues json [note: 'full indicator vector, kept for calibration']
+  reviewed_valid bool [null, note: 'reviewer label: real violation?']
+  reviewed_by_id int [null, ref: > core_user.id]
+  reviewed_at datetime [null]
+  object_confidence float [null, note: 'YOLO confidence of the anchoring box']
+  ai json [note: 'AI checker (VLM) result']
+  timeline json [note: 'status-change history']
+  Note: 'Detected violation events raised by the cameras, with evidence, scoring details and review outcome.'
+}
+
+Table core_alert_officers_assigned {
+  id int [pk]
+  alert_id int [ref: > core_alert.id]
+  officer_id int [ref: > core_officer.id]
+  Note: 'Join table: officers assigned to respond to an alert.'
+}
+
+Table core_violator {
+  id int [pk]
+  first_name varchar
+  last_name varchar
+  middle_name varchar
+  suffix varchar
+  normalized_name varchar [note: 'indexed, auto-generated for exact-match search']
+  aliases json [note: 'names absorbed by merges']
+  first_seen datetime
+  last_seen datetime [null]
+  Note: 'People who have been cited; repeat citations resolve to one record.'
+}
+
+Table core_citation {
+  id int [pk]
+  alert_id int [null, ref: > core_alert.id]
+  violator_id int [ref: > core_violator.id]
+  first_name_entered varchar
+  last_name_entered varchar
+  middle_name_entered varchar
+  suffix_entered varchar
+  officer_id int [ref: > core_officer.id]
+  barangay_of_violation varchar
+  violator_barangay varchar
+  notes text
+  created_by_id int [null, ref: > core_user.id]
+  created_at datetime
+  client_uuid uuid [null, unique, note: 'idempotency key from the mobile app']
+  Note: 'Citations issued by an officer to a violator, optionally tied to an alert; keeps the name exactly as typed.'
+}
+
+Table core_citation_violations {
+  id int [pk]
+  citation_id int [ref: > core_citation.id]
+  violationtype_id int [ref: > core_violationtype.id]
+  Note: 'Join table: violation types listed on a citation.'
+}
+
+Table core_detectionjob {
+  id int [pk]
+  violation_type varchar
+  source_filename varchar
+  source_path varchar
+  camera_id int [null, ref: > core_camera.id]
+  status varchar [note: 'running | done | failed | cancelled']
+  pid int [null]
+  started_at datetime
+  finished_at datetime [null]
+  error text
+  created_by_id int [null, ref: > core_user.id]
+  recorded_at varchar [note: 'footage clock time, as typed']
+  Note: 'Admin-triggered test runs of a detector against an uploaded clip or a live camera.'
+}
+
+Table core_uploadsession {
+  id uuid [pk]
+  filename varchar
+  size bigint
+  fingerprint varchar [note: 'indexed']
+  chunk_size int
+  status varchar [note: 'uploading | complete']
+  staged_token varchar
+  created_by_id int [ref: > core_user.id]
+  created_at datetime
+  updated_at datetime
+  Note: 'Resumable chunked uploads of source video clips for detection runs.'
+}
+
+Table core_systemsettings {
+  id int [pk]
+  parking_enabled bool
+  parking_confidence int
+  parking_dwell int
+  parking_move_tolerance int
+  smoking_enabled bool
+  smoking_confidence int
+  smoking_dwell int
+  thief_enabled bool
+  thief_confidence int
+  thief_dwell int
+  drinking_enabled bool
+  drinking_confidence int
+  drinking_dwell int
+  drinking_hours_enabled bool
+  drinking_start time
+  drinking_end time
+  drinking_min_group int
+  drinking_group_duration int
+  drinking_held_dwell int
+  drinking_evidence_max_age int
+  drinking_mouth_proximity float
+  drinking_cooldown_center_dist float
+  vlm_enabled bool
+  vlm_endpoint varchar
+  vlm_model varchar
+  vlm_timeout int
+  vlm_frames int
+  vlm_max_edge int
+  vlm_async bool
+  object_confirm_seconds float
+  cue_hold_seconds float
+  monitoring_min_seconds float
+  smoking_puff_count int
+  smoking_puff_window_minutes float
+  holdup_loiter_seconds int
+  holdup_near_person_heights float
+  vlm_model_holdup varchar
+  show_testing_tools bool
+  auto_start_detection bool
+  alert_cooldown int
+  evidence_retention_days int
+  evidence_auto_purge bool
+  updated_at datetime
+  Note: 'Single-row (id=1) table of detector thresholds, AI checker config, testing switches and evidence-retention policy.'
+}
+
+// ---------------------------------------------------------------------------
+// Models left out as no longer used: none.
+// core/models.py has no facial-recognition or other leftover models; every
+// model above is still defined there. Django built-in tables (auth_group,
+// auth_permission, django_session, django_admin_log, ...) are skipped.

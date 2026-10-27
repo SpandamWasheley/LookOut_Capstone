@@ -58,15 +58,15 @@ export default function ForgotPasswordPage({ onBackToLogin }) {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-slate-950 px-4">
-      <div className="w-full max-w-md rounded-[32px] bg-slate-900 border border-slate-800 p-8 shadow-2xl">
+      <div className="w-full max-w-md rounded-[32px] bg-slate-900 border border-slate-700/70 p-8 shadow-2xl shadow-black/50">
         <div className="mb-8 text-center">
           <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-3xl bg-amber-400 text-slate-950">
             <KeyRound size={24} />
           </div>
-          <h1 className="text-2xl font-semibold text-white">
+          <h1 className="text-2xl font-semibold text-slate-50">
             {step === 3 ? "Password reset" : "Forgot your password?"}
           </h1>
-          <p className="mt-2 text-sm text-slate-400">
+          <p className="mt-2 text-sm text-slate-300">
             {step === 1 && "Enter the email you registered with — we'll send a reset code to it."}
             {step === 2 && `Enter the code sent to ${email}, then choose a new password.`}
             {step === 3 && "You can now sign in with your new password."}
@@ -76,7 +76,7 @@ export default function ForgotPasswordPage({ onBackToLogin }) {
         {step === 1 && (
           <form onSubmit={handleSendCode} className="space-y-5">
             <div className="space-y-2">
-              <label className="block text-sm font-medium text-slate-300">Email</label>
+              <label className="block text-sm font-medium text-slate-200">Email</label>
               <div className="relative">
                 <Mail size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input
@@ -85,12 +85,12 @@ export default function ForgotPasswordPage({ onBackToLogin }) {
                   onChange={(e) => { setEmail(e.target.value); setError(""); }}
                   placeholder="you@example.com"
                   autoComplete="email"
-                  className="w-full rounded-3xl border border-slate-700 bg-slate-950 px-11 py-3 text-sm text-white outline-none transition focus:border-amber-400"
+                  className="w-full rounded-3xl border border-slate-700 bg-slate-950 placeholder:text-slate-500 px-11 py-3 text-sm text-slate-50 outline-none transition focus:border-amber-400 focus:ring-2 focus:ring-amber-400/20"
                 />
               </div>
             </div>
 
-            {error && <div className="rounded-3xl bg-red-500/10 px-4 py-3 text-sm text-red-300">{error}</div>}
+            {error && <div className="rounded-3xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">{error}</div>}
 
             <button
               type="submit"
@@ -104,7 +104,7 @@ export default function ForgotPasswordPage({ onBackToLogin }) {
             <button
               type="button"
               onClick={onBackToLogin}
-              className="w-full flex items-center justify-center gap-1.5 text-sm text-slate-400 hover:text-slate-200"
+              className="w-full flex items-center justify-center gap-1.5 text-sm text-slate-300 hover:text-amber-300 transition"
             >
               <ArrowLeft size={14} /> Back to login
             </button>
@@ -114,19 +114,19 @@ export default function ForgotPasswordPage({ onBackToLogin }) {
         {step === 2 && (
           <form onSubmit={handleReset} className="space-y-5">
             <div className="space-y-2">
-              <label className="block text-sm font-medium text-slate-300">Reset code</label>
+              <label className="block text-sm font-medium text-slate-200">Reset code</label>
               <input
                 value={code}
                 onChange={(e) => { setCode(e.target.value); setError(""); }}
                 placeholder="6-digit code"
                 maxLength={6}
-                className="w-full rounded-3xl border border-slate-700 bg-slate-950 px-5 py-3 text-sm tracking-widest text-white outline-none transition focus:border-amber-400"
+                className="w-full rounded-3xl border border-slate-700 bg-slate-950 placeholder:text-slate-500 px-5 py-3 text-sm tracking-widest text-slate-50 outline-none transition focus:border-amber-400 focus:ring-2 focus:ring-amber-400/20"
                 style={{ fontFamily: "'DM Mono', monospace" }}
               />
             </div>
 
             <div className="space-y-2">
-              <label className="block text-sm font-medium text-slate-300">New password</label>
+              <label className="block text-sm font-medium text-slate-200">New password</label>
               <div className="relative">
                 <Lock size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input
@@ -135,12 +135,12 @@ export default function ForgotPasswordPage({ onBackToLogin }) {
                   onChange={(e) => { setPassword(e.target.value); setError(""); }}
                   placeholder="At least 8 characters"
                   autoComplete="new-password"
-                  className="w-full rounded-3xl border border-slate-700 bg-slate-950 px-11 py-3 pr-14 text-sm text-white outline-none transition focus:border-amber-400"
+                  className="w-full rounded-3xl border border-slate-700 bg-slate-950 placeholder:text-slate-500 px-11 py-3 pr-14 text-sm text-slate-50 outline-none transition focus:border-amber-400 focus:ring-2 focus:ring-amber-400/20"
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword((v) => !v)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200"
                 >
                   {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
@@ -148,7 +148,7 @@ export default function ForgotPasswordPage({ onBackToLogin }) {
             </div>
 
             <div className="space-y-2">
-              <label className="block text-sm font-medium text-slate-300">Confirm new password</label>
+              <label className="block text-sm font-medium text-slate-200">Confirm new password</label>
               <div className="relative">
                 <Lock size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input
@@ -157,12 +157,12 @@ export default function ForgotPasswordPage({ onBackToLogin }) {
                   onChange={(e) => { setConfirm(e.target.value); setError(""); }}
                   placeholder="Re-enter new password"
                   autoComplete="new-password"
-                  className="w-full rounded-3xl border border-slate-700 bg-slate-950 px-11 py-3 text-sm text-white outline-none transition focus:border-amber-400"
+                  className="w-full rounded-3xl border border-slate-700 bg-slate-950 placeholder:text-slate-500 px-11 py-3 text-sm text-slate-50 outline-none transition focus:border-amber-400 focus:ring-2 focus:ring-amber-400/20"
                 />
               </div>
             </div>
 
-            {error && <div className="rounded-3xl bg-red-500/10 px-4 py-3 text-sm text-red-300">{error}</div>}
+            {error && <div className="rounded-3xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">{error}</div>}
 
             <button
               type="submit"
@@ -176,7 +176,7 @@ export default function ForgotPasswordPage({ onBackToLogin }) {
             <button
               type="button"
               onClick={() => setStep(1)}
-              className="w-full flex items-center justify-center gap-1.5 text-sm text-slate-400 hover:text-slate-200"
+              className="w-full flex items-center justify-center gap-1.5 text-sm text-slate-300 hover:text-amber-300 transition"
             >
               <ArrowLeft size={14} /> Use a different email
             </button>

@@ -510,7 +510,7 @@ function hashString(str) {
   }
   return Math.abs(hash);
 }
-const AVATAR_SLOTS = 6;
+const AVATAR_SLOTS = 12;
 function avatarStyle(name) {
   const slot = hashString(name || "") % AVATAR_SLOTS;
   return { background: `var(--avatar-${slot}-bg)`, color: `var(--avatar-${slot}-text)` };
@@ -531,6 +531,7 @@ const SORT_OPTIONS = [
   { key: "citations", label: "Most citations" },
   { key: "recent", label: "Recently cited" },
   { key: "name", label: "Name A–Z" },
+  { key: "repeat", label: "Repeat offenders" },
 ];
 const FILTERABLE_TYPES = Object.values(VIOLATION_TYPES);
 
@@ -707,6 +708,7 @@ export function ResidentLog() {
 
   const filtered = violators.filter((v) => {
     if (debouncedSearch && !v.full_name.toLowerCase().includes(debouncedSearch.toLowerCase())) return false;
+    if (sortKey === "repeat" && v.citation_count < 2) return false;
     if (typeFilter.size > 0) {
       const codes = violationsByViolator.get(v.id);
       if (!codes || ![...typeFilter].some((code) => codes.has(code))) return false;
@@ -721,6 +723,8 @@ export function ResidentLog() {
   });
 
   const hasActiveFilters = Boolean(debouncedSearch) || typeFilter.size > 0;
+  // Citations behind the people currently listed (a person with 3 citations adds 3).
+  const recordCount = filtered.reduce((sum, v) => sum + v.citation_count, 0);
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -735,23 +739,23 @@ export function ResidentLog() {
       <div className="flex-1 overflow-hidden flex flex-col px-6 py-4 gap-4">
         {/* Summary figures */}
         <div className="flex flex-wrap flex-shrink-0 rounded-xl overflow-hidden" style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
-          <div className="flex-1 min-w-[140px] px-4 py-3" style={{ borderRight: "1px solid var(--border)" }}>
+          <div className="flex-1 min-w-[140px] px-4 py-3" style={{ borderTop: "2px solid var(--avatar-0-text)", borderRight: "1px solid var(--border)" }}>
             <div className="flex items-center gap-1.5 text-[12px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted-foreground)" }}>
-              <Users size={11} /> Total violators
+              <Users size={11} style={{ color: "var(--avatar-0-text)" }} /> Total violators
             </div>
             <div className="text-lg font-bold tabular-nums mt-1" style={{ color: "var(--foreground)" }}>{totalViolators}</div>
           </div>
-          <div className="flex-1 min-w-[140px] px-4 py-3" style={{ borderRight: "1px solid var(--border)" }}>
+          <div className="flex-1 min-w-[140px] px-4 py-3" style={{ borderTop: "2px solid var(--avatar-10-text)", borderRight: "1px solid var(--border)" }}>
             <div className="flex items-center gap-1.5 text-[12px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted-foreground)" }}>
-              <Repeat size={11} /> Repeat offenders
+              <Repeat size={11} style={{ color: "var(--avatar-10-text)" }} /> Repeat offenders
             </div>
-            <div className="text-lg font-bold tabular-nums mt-1" style={{ color: repeatOffenders > 0 ? "#f59e0b" : "var(--foreground)" }}>
+            <div className="text-lg font-bold tabular-nums mt-1" style={{ color: "var(--foreground)" }}>
               {repeatOffenders}
             </div>
           </div>
-          <div className="flex-1 min-w-[180px] px-4 py-3">
+          <div className="flex-1 min-w-[180px] px-4 py-3" style={{ borderTop: "2px solid var(--avatar-2-text)" }}>
             <div className="flex items-center gap-1.5 text-[12px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted-foreground)" }}>
-              <Award size={11} /> Most cited
+              <Award size={11} style={{ color: "var(--avatar-2-text)" }} /> Most cited
             </div>
             {mostCited ? (
               <div className="mt-1">
@@ -768,13 +772,13 @@ export function ResidentLog() {
 
         {/* Search + sort */}
         <div className="flex items-center gap-2 flex-shrink-0 flex-wrap">
-          <div className="relative flex-1 min-w-[180px]">
+          <div className="relative flex-1 min-w-[180px] max-w-md">
             <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: "var(--muted-foreground)" }} />
             <input
               ref={searchRef}
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
-              placeholder="Search by name… (press / to focus)"
+              placeholder="Search by name…"
               aria-label="Search violators by name"
               className="w-full pl-9 pr-8 py-2 rounded-lg text-sm outline-none"
               style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
@@ -803,12 +807,16 @@ export function ResidentLog() {
             </select>
             <ChevronDown size={13} className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: "var(--muted-foreground)" }} />
           </div>
-        </div>
 
-        {/* Type filter — shared with the Violations tab's, so the two
-            can't drift into different rules/looks again. */}
-        <div className="flex-shrink-0">
-          <TypeFilterDropdown selected={typeFilter} onToggle={toggleTypeFilter} onClear={clearTypeFilter} />
+          {/* Type filter — shared with the Violations tab's, so the two
+              can't drift into different rules/looks again. */}
+          <div className="flex-shrink-0">
+            <TypeFilterDropdown selected={typeFilter} onToggle={toggleTypeFilter} onClear={clearTypeFilter} />
+          </div>
+
+          <span className="ml-auto text-sm tabular-nums flex-shrink-0" style={{ color: "var(--muted-foreground)" }}>
+            {recordCount} record{recordCount !== 1 ? "s" : ""}
+          </span>
         </div>
 
         {/* List */}
@@ -850,7 +858,7 @@ export function ResidentLog() {
                     style={{
                       background: "var(--card)",
                       border: "1px solid var(--border)",
-                      borderLeft: `3px solid ${tier === "high" ? "#ef4444" : "transparent"}`,
+                      borderLeft: `3px solid ${avatarStyle(v.full_name).color}`,
                     }}
                     onMouseEnter={(e) => { e.currentTarget.style.background = "var(--secondary)"; }}
                     onMouseLeave={(e) => { e.currentTarget.style.background = "var(--card)"; }}

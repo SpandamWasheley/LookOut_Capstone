@@ -13,7 +13,7 @@ import { SettingsSlider as Slider } from "./components/settings/SettingsSlider";
 
 const sections = [
   { id: "parking", label: "Parking", icon: Car,    color: "#ef4444" },
-  { id: "smoking", label: "Smoking", icon: Cigarette, color: "#f97316" },
+  { id: "smoking", label: "Smoking", icon: Cigarette, color: "#6b8cae" },
   { id: "thief",   label: "Holdup",   icon: Siren,  color: "#dc2626" },
   { id: "drinking", label: "Drinking", icon: Beer, color: "#8b5cf6" },
   { id: "disposal", label: "Disposal", icon: Trash2, color: "#22c55e" },
@@ -79,7 +79,7 @@ function Toggle({ label, desc, value, onChange }) {
       >
         <div
           className="absolute top-0.5 w-3.5 h-3.5 rounded-full transition-all duration-200"
-          style={{ background: value ? "#0c0f16" : "var(--muted-foreground)", left: value ? "calc(100% - 16px)" : "2px" }}
+          style={{ background: value ? "#ffffff" : "var(--muted-foreground)", left: value ? "calc(100% - 16px)" : "2px" }}
         />
       </button>
     </div>
@@ -296,7 +296,7 @@ export function SystemConfig() {
             <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>{TIMINGS_FOOTER}</div>
           </Card>
         }
-        below={<InfoBox color="#f97316">
+        below={<InfoBox color="#6b8cae">
           The system watches for a cigarette in someone&rsquo;s hand. A cigarette seen briefly is flagged for
           monitoring. It&rsquo;s raised further when the person is also seen bringing it to their mouth, again and again.
         </InfoBox>}

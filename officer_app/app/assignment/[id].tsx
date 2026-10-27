@@ -1302,7 +1302,7 @@ export default function AssignmentDetailScreen() {
           <View style={[styles.card, { backgroundColor: c.card, borderColor: c.foreground }]}>
             <Text style={[styles.evidenceText, { color: c.foreground }]}>
               {tip === "status"
-                ? "Shows how strongly the detected evidence points to a violation. It's based only on what the system detected (objects, movement, duration, and time), not on the AI.\n\nMonitoring: An object linked to a violation was detected. Watch the scene.\nPossible: Some signs of a violation, but not enough to be sure. Review the alert before acting.\nLikely: Strong evidence of a violation. Review and respond."
+                ? "Shows how strongly the detected evidence points to a violation. It's based only on what the system detected (objects, movement, duration, and time), not on the AI.\n\nMonitoring: An object or indicator linked to a violation was identified or noticed. Watch the scene.\nPossible: Some signs of a violation, but not enough to be sure. Review the alert before acting.\nLikely: Strong evidence of a violation. Review and respond."
                 : "How certain the YOLOv8 model detected the respective object of the violation."}
             </Text>
           </View>

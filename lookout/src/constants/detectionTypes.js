@@ -8,7 +8,7 @@ import { Cigarette, Beer, Car, ShieldAlert, Trash2, Layers, Layers3 } from "luci
 // watch_thief command and DETECTION_COMMANDS use "thief", and "merged" isn't
 // a ViolationType at all, just a job type. See violationTypes.js's own note.
 export const DETECTION_TYPES = [
-  { key: "smoking", label: "Smoking", icon: Cigarette, color: "#f59e0b" },
+  { key: "smoking", label: "Smoking", icon: Cigarette, color: "#6b8cae" },
   { key: "drinking", label: "Drinking", icon: Beer, color: "#8b5cf6" },
   { key: "thief", label: "Holdup", icon: ShieldAlert, color: "#ef4444" },
   { key: "parking", label: "Parking", icon: Car, color: "#f97316" },

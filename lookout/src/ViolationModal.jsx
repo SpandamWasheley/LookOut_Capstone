@@ -840,7 +840,7 @@ const STATUS_TOOLTIP = (
     Shows how strongly the detected evidence points to a violation. It&rsquo;s based only on
     what the system detected (objects, movement, duration, and time), not on the AI.
     <div className="mt-1.5">
-      <b>Monitoring:</b> An object linked to a violation was detected. Watch the scene.<br />
+      <b>Monitoring:</b> An object or indicator linked to a violation was identified or noticed. Watch the scene.<br />
       <b>Possible:</b> Some signs of a violation, but not enough to be sure. Review the alert before acting.<br />
       <b>Likely:</b> Strong evidence of a violation. Review and respond.
     </div>
