@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Radio, X, Check, MapPin, AlertTriangle, Search } from "lucide-react";
 import { violationDisplay } from "./constants/violationTypes";
-import { RecordingPlayer, QuietCard, StatusCard, ObjectConfidenceCard } from "./ViolationModal";
+import { RecordingPlayer, QuietCard, StatusAndConfidenceRow } from "./ViolationModal";
 
 const officerStatusColor = {
   "on-duty":    "#10b981",
@@ -158,10 +158,7 @@ export function DispatchModal({ alert, officers, alerts, onAssign, onClose }) {
           {/* Left: evidence clip + reference details */}
           <div className="flex flex-col gap-3 min-w-0 overflow-y-auto">
             <RecordingPlayer alert={alert} />
-            <div className="grid grid-cols-2 gap-3 items-stretch">
-              <StatusCard alert={alert} />
-              <ObjectConfidenceCard alert={alert} />
-            </div>
+            <StatusAndConfidenceRow alert={alert} />
             <QuietCard label="What was detected" value={alert.description || "—"} />
           </div>
 
