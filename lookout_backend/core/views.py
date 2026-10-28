@@ -643,6 +643,60 @@ class CameraViewSet(viewsets.ModelViewSet):
         resp["Cache-Control"] = "no-store"
         return resp
 
+    @action(detail=True, methods=["post", "get", "delete"], url_path="trace-zone",
+            permission_classes=[permissions.IsAuthenticated, IsAdmin])
+    def trace_zone(self, request, pk=None):
+        """Suggests the no-parking polygon from this camera's LIVE stream.
+
+        POST starts a background trace (202), GET reports its progress/result,
+        DELETE cancels it. A job rather than one long request: the trace holds
+        the camera ~48 s, which outlasts many tunnels, and a request can neither
+        show progress nor be cancelled.
+
+        NOTHING IS SAVED. The result is points in the stream's own pixels plus
+        its width/height; the editor puts them on the canvas and the admin
+        still presses Save. The trace opens its OWN short-lived RTSP connection
+        (core/vision/live_trace.py) and never touches the running detectors.
+        One trace per camera at a time: a second POST gets 409.
+        """
+        from core.vision import live_trace
+
+        camera = self.get_object()
+        if request.method == "GET":
+            job = live_trace.get(camera.pk)
+            return Response(job or {"state": "idle"})
+        if request.method == "DELETE":
+            return Response({"cancelled": live_trace.cancel(camera.pk)})
+
+        if not getattr(django_settings, "DETECTION_ENABLED", True):
+            return Response({"detail": DetectionJobViewSet.DETECTION_DISABLED}, status=503)
+        source = camera.resolved_stream_url
+        if not source:
+            return Response({"detail": "This camera has no stream address configured.",
+                             "code": live_trace.UNREACHABLE}, status=400)
+
+        def detect(frame):
+            # Imported lazily: recognition pulls in torch.
+            from core.vision import recognition, zone_autodetect
+            return recognition.detect_vehicles(frame, imgsz=zone_autodetect.TRACE_IMGSZ)
+
+        job, started = live_trace.start(camera.pk, source, detect)
+        if not started:
+            return Response({"detail": "A trace is already running for this camera.", **job},
+                            status=409)
+        return Response(job, status=202)
+
+    def update(self, request, *args, **kwargs):
+        """Saving a changed zone also applies it to the running live monitor."""
+        response = super().update(request, *args, **kwargs)
+        if "edges" in request.data and response.status_code == 200:
+            camera = self.get_object()
+            if getattr(django_settings, "DETECTION_ENABLED", True):
+                from core.monitor import CAMERA_CODE, monitor
+                if camera.code == CAMERA_CODE:
+                    response.data["zone_applied"] = monitor.apply_zone(camera)
+        return response
+
     @action(detail=True, methods=["post"], url_path="edge-frame",
             parser_classes=[MultiPartParser, FormParser],
             permission_classes=[permissions.IsAuthenticated, IsAdmin])

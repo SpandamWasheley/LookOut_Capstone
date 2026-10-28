@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  X, Loader2, FileVideo, AlertTriangle, Save, WifiOff,
+  X, Loader2, FileVideo, AlertTriangle, Save, WifiOff, Wand2, Info,
 } from "lucide-react";
-import { getCameraSnapshotUrl, uploadCameraEdgeFrame, updateCamera } from "./api";
+import {
+  getCameraSnapshotUrl, uploadCameraEdgeFrame, updateCamera,
+  startCameraZoneTrace, getCameraZoneTrace, cancelCameraZoneTrace,
+} from "./api";
 import { EdgeCanvas } from "./EdgeCanvas";
 
 const ALLOWED_EXTENSIONS = [".mp4", ".mkv", ".avi"];
@@ -36,6 +39,18 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
 
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
+
+  // Live zone trace. `canvasKey` remounts EdgeCanvas (it only reads
+  // initialPoints at mount) so a traced polygon lands as ordinary editable
+  // points; `edgePoints` mirrors how many points the canvas holds right now.
+  const [trace, setTrace] = useState(null);       // null | running job
+  const [traceNote, setTraceNote] = useState("");
+  const [traceError, setTraceError] = useState("");
+  const [canvasKey, setCanvasKey] = useState(0);
+  const [edgePoints, setEdgePoints] = useState(0);
+  const [applyNote, setApplyNote] = useState("");
+  const pollRef = useRef(null);
+  const tracing = trace?.state === "running";
 
   const liveUrlRef = useRef(null);
   const prefilledRef = useRef(false);
@@ -132,6 +147,64 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
     }
   };
 
+  useEffect(() => () => clearInterval(pollRef.current), []);
+
+  const finishTrace = (job) => {
+    clearInterval(pollRef.current);
+    setTrace(null);
+    if (job.state === "done") {
+      // Points are in the stream's own pixels (main stream); the frame on screen
+      // is the snapshot (often the sub-stream), so scale — the same job
+      // acceptFrame does for saved edges.
+      const sx = frame.width / job.width, sy = frame.height / job.height;
+      setPrefill({
+        points: job.points.map(([x, y]) => ({ x: x * sx, y: y * sy })),
+        legacyKerbs: false,
+      });
+      setCanvasKey((k) => k + 1);
+      const n = job.report.moving_tracks;
+      setTraceNote(
+        `Traced from ${n} moving vehicle${n === 1 ? "" : "s"} across ${job.report.samples} frames — check it before saving.`);
+    } else if (job.state !== "cancelled") {
+      setTraceError(job.reason || "Could not trace a zone.");
+    }
+  };
+
+  const pollTrace = () => {
+    clearInterval(pollRef.current);
+    pollRef.current = setInterval(async () => {
+      try {
+        const job = await getCameraZoneTrace(camera.dbId);
+        if (job.state === "running") setTrace(job);
+        else finishTrace(job);
+      } catch (err) {
+        clearInterval(pollRef.current);
+        setTrace(null);
+        setTraceError(err.message || "Lost contact with the server while tracing.");
+      }
+    }, 1000);
+  };
+
+  const handleTrace = async () => {
+    if (tracing || !frame) return;
+    if (edgePoints > 0 && !window.confirm("Replace the current zone with the traced one?")) return;
+    setTraceError(""); setTraceNote(""); setApplyNote("");
+    try {
+      setTrace(await startCameraZoneTrace(camera.dbId));
+    } catch (err) {
+      if (err.status !== 409) {
+        setTraceError(err.message || "Could not start the trace.");
+        return;
+      }
+      setTrace({ state: "running", progress: 0 });   // already running: just follow it
+    }
+    pollTrace();
+  };
+
+  const handleCancelTrace = async () => {
+    try { await cancelCameraZoneTrace(camera.dbId); } catch { /* the poll reports the outcome */ }
+  };
+
   const handleSave = async () => {
     if (!canSave || !frame) return;
     setSaving(true);
@@ -145,7 +218,16 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
         obstruction_minutes: Number(minutes),
       });
       onSaved?.(updated);
-      onClose();
+      // Parking reads its zone once at start; the server swaps only the parking
+      // process when monitoring is running (CameraViewSet.update). Say so
+      // instead of closing, so the admin knows the new zone is being applied.
+      const note = {
+        restarting: "Saved. Parking is restarting to use the new zone — the other detectors keep running.",
+        started: "Saved. Parking is starting now that the camera has a zone.",
+        stopped: "Saved. The zone was cleared, so parking is switched off.",
+      }[updated?.zone_applied];
+      if (note) setApplyNote(note);
+      else onClose();
     } catch (err) {
       setSaveError(err.message || "Could not save.");
     } finally {
@@ -253,14 +335,62 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
                   trace the road below and save to replace them.
                 </div>
               )}
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  onClick={handleTrace}
+                  disabled={tracing || saving}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-xl text-[13px] font-medium"
+                  style={{ background: "var(--secondary)", color: "var(--foreground)",
+                    border: "1px solid var(--border)", opacity: tracing ? 0.6 : 1,
+                    cursor: tracing ? "not-allowed" : "pointer" }}
+                >
+                  {tracing ? <Loader2 size={13} className="animate-spin" /> : <Wand2 size={13} />}
+                  Trace zone
+                </button>
+                {tracing && (
+                  <>
+                    <span className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>
+                      Watching traffic… ~{trace.estimated_seconds ?? 48} s
+                      {" "}({Math.round((trace.progress ?? 0) * 100)}%)
+                    </span>
+                    <button onClick={handleCancelTrace} className="text-[13px] underline"
+                      style={{ color: "var(--muted-foreground)" }}>
+                      Cancel
+                    </button>
+                  </>
+                )}
+              </div>
+              {traceNote && (
+                <div className="flex items-start gap-2 text-[13px] px-3 py-2.5 rounded-xl"
+                  style={{ background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.25)", color: "#22c55e" }}>
+                  <Info size={13} className="flex-shrink-0 mt-0.5" /><span>{traceNote}</span>
+                </div>
+              )}
+              {traceError && (
+                <div className="flex items-start gap-2 text-[13px] px-3 py-2.5 rounded-xl"
+                  style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", color: "#ef4444" }}>
+                  <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
+                  <span>{traceError} You can draw the zone by hand instead.</span>
+                </div>
+              )}
+              {applyNote && (
+                <div className="flex items-start gap-2 text-[13px] px-3 py-2.5 rounded-xl"
+                  style={{ background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.25)", color: "#22c55e" }}>
+                  <Info size={13} className="flex-shrink-0 mt-0.5" /><span>{applyNote}</span>
+                </div>
+              )}
               <EdgeCanvas
+                key={canvasKey}
                 frame={frame}
                 initialPoints={prefill.points}
                 pct={pct}
                 onPctChange={setPct}
                 minutes={minutes}
                 onMinutesChange={setMinutes}
-                onChange={(spec, can) => { setEdgeSpec(spec); setCanSave(can); }}
+                onChange={(spec, can) => {
+                  setEdgeSpec(spec); setCanSave(can);
+                  setEdgePoints(spec.road?.points?.length ?? 0);
+                }}
               />
 
               {saveError && (
@@ -280,11 +410,11 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
           {!saving && (
             <button onClick={onClose} className="px-4 py-2 rounded-xl text-sm font-medium"
               style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}>
-              Cancel
+              {applyNote ? "Close" : "Cancel"}
             </button>
           )}
           <button
-            disabled={!canSave || saving}
+            disabled={!canSave || saving || !!applyNote}
             onClick={handleSave}
             className="flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-medium"
             style={{
