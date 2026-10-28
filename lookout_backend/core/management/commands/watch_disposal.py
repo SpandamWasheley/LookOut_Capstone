@@ -37,8 +37,20 @@ line a detection falls on. There is ONE row per dumped object either way --
 `Candidate.alert_pk` carries it -- so a Possible that later firms up is
 upgraded in place to Likely rather than filed again.
 
+Waste-collection window
+-----------------------
+Barangay Tetuan allows garbage to be set out only from 04:00 to 07:00, Monday
+to Saturday. A bag that stage 2 judges Confirmed or Weak INSIDE that window is
+stored at Monitoring (no notification) with a reason on the alert, kept tracked
+past 07:00, and re-checked once the window closes: still there and still judged
+garbage, it rises to Likely / Possible exactly as it would have outside the
+window. Outside the window, and all day Sunday, nothing changes. The time of day
+comes from the wall clock (Asia/Manila) live, and from --clock plus the position
+in the clip for a file; a file with no --clock skips the rule, with one warning.
+
     python manage.py watch_disposal --source <rtsp-url-or-clip.mp4>
     python manage.py watch_disposal --source 0 --debug
+    python manage.py watch_disposal --source clip.mp4 --clock "2026-10-27 05:00"
 """
 
 import datetime
@@ -46,6 +58,7 @@ import json
 import os
 import time
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import cv2
 from django.conf import settings
@@ -56,6 +69,8 @@ from core import descriptions
 from core import timeline
 from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
+from core.vision import clock as vclock
+from core.vision import spec_settings
 from core.vision.progress import Spinner
 
 # Same reason as watch_parking: importing recognition pulls in torch, which is
@@ -75,12 +90,20 @@ SETTINGS_REFRESH_SECONDS = 5
 # after the drop, and a pre-roll anchored there would miss the only moment
 # worth watching.
 RAW_CLIP_PRE_DROP_SECONDS = 5.0
+# The collection window is a local-time rule, so a live stream is read in
+# Manila time explicitly rather than in whatever zone the host is set to.
+COLLECTION_TZ = ZoneInfo("Asia/Manila")
 
 
 class Command(BaseCommand):
     # None means "save the annotated clip immediately" — correct for any path
     # that does not drain the queue. _run_stream, which does, switches it on.
     pending = None
+    # --clock footage start; None for live and for a clip run without one.
+    # Class-level so a Command built without handle() (the tests) still has them.
+    clock_start = None
+    _window_warned = False
+    presence_seconds = disposal_cv.PRESENCE_RECHECK_SECONDS
 
     help = (
         "Detects improper disposal: an object that appears, stops moving and is "
@@ -126,6 +149,12 @@ class Command(BaseCommand):
             help="Path to a draw_zone JSON limiting WHERE rubbish is watched for. "
                  "Optional: without one (and without an area saved on the camera) "
                  "the whole frame is watched, which is the old behaviour.",
+        )
+        parser.add_argument(
+            "--clock", default="",
+            help="Footage start time for a video FILE, e.g. \"2026-10-27 05:00\" "
+                 "(Manila time). Drives the waste-collection window. Ignored for "
+                 "live streams; a file without it skips the window rule.",
         )
         parser.add_argument("--start", default=None, help="Trim: start at this position.")
         parser.add_argument("--end", default=None, help="Trim: stop at this position.")
@@ -175,6 +204,11 @@ class Command(BaseCommand):
         self.presence_seconds = (options["presence_seconds"]
                                  or disposal_cv.PRESENCE_RECHECK_SECONDS)
         self.trim = trimming.Trim(options["start"], options["end"])
+        try:
+            self.clock_start = vclock.parse_clock(options.get("clock"))
+        except ValueError as exc:
+            self.stdout.write(self.style.ERROR(str(exc)))
+            return
         # _load_area runs inside _run_stream, after the camera is resolved.
         self._options = options
         self.stride = max(1, options["stride"])
@@ -517,6 +551,31 @@ class Command(BaseCommand):
                                        else scoring.WARNING):
                             n_alerts += 1
 
+                # The collection window closed on a bag stage 1 can still see.
+                # Nothing else asks a CONFIRMED, unpinned candidate anything
+                # again, so without this its row would sit at Monitoring until
+                # the bag moved. Pinned candidates are covered by the loop above.
+                inside, _window, _when = self._in_collection_window(now_ts, cfg)
+                if not inside:
+                    for cand in detector.due_for_window_recheck(
+                            now_ts, self.presence_seconds):
+                        verdict, (g_name, g_conf), _r = self._ask_stage2(
+                            frame, cand, detector.scale, conf)
+                        present = verdict != disposal_cv.REJECTED
+                        if present:
+                            cand.weak = verdict == disposal_cv.WEAK
+                            cand.label, cand.score = g_name, g_conf
+                            cand.confirmed = verdict == disposal_cv.CONFIRMED
+                            if self._alert(cand, detector, frame, g_name, g_conf,
+                                           now_ts, cfg, cooldown, stats,
+                                           scoring.VIOLATION if cand.confirmed
+                                           else scoring.WARNING):
+                                n_alerts += 1
+                        if not detector.record_window_recheck(cand, present, now_ts):
+                            self.stdout.write(
+                                f"  #{cand.id} is no longer there after the "
+                                f"collection window closed -- left at Monitoring.")
+
                 self._drain_pending(now_ts)
 
                 stats["ignored"] += len(detector.ignored)
@@ -544,6 +603,7 @@ class Command(BaseCommand):
             f"{stats['confirmed']} alerted as Likely, "
             f"{stats['possible']} as Possible "
             f"({stats['upgraded']} later rose to Likely), "
+            f"{stats.get('held', 0)} held at Monitoring inside the collection window, "
             f"{stats['rejected']} rejected, "
             f"{stats['adopted']} re-joined a row already open at their spot, "
             f"{stats['cooldown']} suppressed as an already-reported spot. "
@@ -623,7 +683,6 @@ class Command(BaseCommand):
         """
         still = cand.still_for(now)
         away = cand.owner_away_for(now)
-        description = descriptions.disposal(g_name, still, away)
 
         # This candidate does not know a row yet — but its PLACE may already
         # have one. Stage 1 forgets an object a couple of unseen seconds after
@@ -635,6 +694,14 @@ class Command(BaseCommand):
             if taken is not None:
                 cand.alert_pk, cand.alert_level = taken
                 stats["adopted"] += 1
+
+        # Inside the collection window the verdict is stored, not announced.
+        # Decided AFTER the row is adopted because the rule applies to a row
+        # that is new or already parked at Monitoring, never to one that has
+        # reached Possible / Likely: a window opening at 04:00 must not walk an
+        # existing Likely back down.
+        level, window_label = self._apply_collection_window(cand, now, cfg, level)
+        description = descriptions.disposal(g_name, still, away, window=window_label)
 
         # Filed, by this candidate or by the one before it at this spot. The
         # place is held open first, then the row is brought up to date.
@@ -651,7 +718,10 @@ class Command(BaseCommand):
                 f"has already been reported — no alert.")
             return False
 
-        stats["confirmed" if level == scoring.VIOLATION else "possible"] += 1
+        if level == scoring.MONITORING:
+            stats["held"] = stats.get("held", 0) + 1
+        else:
+            stats["confirmed" if level == scoring.VIOLATION else "possible"] += 1
 
         # Draw the box BEFORE the frame becomes evidence: the still and the
         # clip both come from this array, and an evidence photo that does not
@@ -677,6 +747,72 @@ class Command(BaseCommand):
             + (f" — {alert.code}" if alert else "")
         ))
         return True
+
+    # ---- waste-collection window -------------------------------------------
+
+    def _collection_clock(self, now):
+        """Local time of day for the collection rule, or None if it is unknown.
+
+        Same source as the holdup E20 rule: a live stream reads the wall clock
+        (in Manila time); a file reads --clock plus its position in the clip; a
+        file with no --clock has no time of day -- the wall clock would be when
+        it was PROCESSED, not filmed -- so the rule is skipped, with one warning.
+        """
+        if self._source_path is not None:
+            if self.clock_start is None:
+                if not self._window_warned:
+                    self._window_warned = True
+                    self.stdout.write(self.style.WARNING(
+                        "Collection window skipped: no clip time "
+                        "(pass --clock to apply it to this file)."))
+                return None
+            return vclock.clock_now(self.clock_start, now, True)
+        return datetime.datetime.now(COLLECTION_TZ)
+
+    def _in_collection_window(self, now, cfg):
+        """(inside, window, when). `window` is None when the rule is off or unusable."""
+        try:
+            window = disposal_cv.CollectionWindow.from_settings(cfg)
+        except ValueError as exc:
+            if not getattr(self, "_window_bad_logged", False):
+                self._window_bad_logged = True
+                self.stdout.write(self.style.WARNING(
+                    f"Collection window ignored ({exc})"))
+            return False, None, None
+        if window is None:
+            return False, None, None
+        when = self._collection_clock(now)
+        if when is None:
+            return False, None, None
+        return window.contains(when), window, when
+
+    def _apply_collection_window(self, cand, now, cfg, level):
+        """(level to store, window label or None) for a Possible / Likely verdict.
+
+        Inside the window the verdict is stored at Monitoring and the candidate
+        is marked `window_held`, with `hold_until` pushed past the close plus two
+        presence checks so it is still tracked -- pinned past its 30 minute cap
+        if need be -- when the window shuts. Once the window is closed a held
+        candidate is released here, and the unchanged `level` then raises its row
+        to the real status through the ordinary restate path. When the hold ends
+        the pin's own 30 minute clock restarts, so a bag raised at 07:00 gets
+        the same tracking life any other pinned bag has.
+        """
+        if level not in (scoring.WARNING, scoring.VIOLATION):
+            return level, None
+        inside, window, when = self._in_collection_window(now, cfg)
+        if inside and (cand.alert_pk is None or cand.alert_level == scoring.MONITORING):
+            cand.window_held = True
+            cand.window_misses = 0
+            cand.hold_until = (now + window.seconds_until_close(when)
+                               + 2 * self.presence_seconds)
+            return scoring.MONITORING, window.label()
+        if cand.window_held and not inside:
+            cand.window_held = False
+            cand.hold_until = None
+            if cand.pinned:
+                cand.pinned_since = now
+        return level, None
 
     def _restate_alert(self, cand, detector, frame, g_name, g_conf, still,
                        description, level, stats):
@@ -1168,6 +1304,9 @@ class Command(BaseCommand):
         alert = Alert.objects.create(
             suspect_image_url=suspect_image_url,
             suspect_status=suspect_status,
+            # Only the settings in force, as the scored detectors log them. No
+            # `cues` vector inside it: disposal still has no score breakdown.
+            cues=({"settings": spec_settings.snapshot(cfg)} if cfg is not None else {}),
             owner_left_at=owner_left_at,
             footage_offset=self._video_pos_sec if self._source_path is not None else None,
             type=self.disposal_type,

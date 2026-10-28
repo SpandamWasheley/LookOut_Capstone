@@ -750,6 +750,17 @@ class SystemSettings(models.Model):
     # photo, while a wrong one costs nothing the reviewer cannot see for
     # themselves -- the crop is shown for identification, never acted on.
     disposal_suspect_confidence = models.PositiveSmallIntegerField(default=25)
+    # --- waste-collection window -------------------------------------------
+    # Barangay Tetuan only lets garbage be set out from 04:00 to 07:00, Monday
+    # to Saturday (no collection on Sunday). A bag put out INSIDE this window
+    # is allowed, so watch_disposal stores it at Monitoring -- no notification
+    # -- and re-checks it when the window closes; outside it, or on a day not
+    # listed, disposal behaves exactly as before. Days are a comma list with
+    # Monday = 0 ... Sunday = 6. The window may not span midnight (start < end).
+    disposal_collection_enabled = models.BooleanField(default=True)
+    disposal_collection_start = models.TimeField(default=time(4, 0))
+    disposal_collection_end = models.TimeField(default=time(7, 0))
+    disposal_collection_days = models.CharField(max_length=13, default="0,1,2,3,4,5")
 
     # --- VLM verification ---------------------------------------------------
     # Second-stage vision-language check on the evidence crop at alert time

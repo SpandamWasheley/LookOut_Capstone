@@ -239,7 +239,7 @@ export function RunDetectionPage() {
     ? ` (resumed — ${formatBytes(progress.resumedBytes)} was already up)`
     : "";
 
-  const usesClock = source === "file" && ["thief", "drinking", "merged", "merged4"].includes(violationType);
+  const usesClock = source === "file" && ["thief", "drinking", "merged", "merged4", "disposal"].includes(violationType);
   const canStart = source === "camera"
     ? !!cameraId
     : staged && (!needsEdges || edgesOptional || canSaveEdges);
@@ -489,7 +489,7 @@ export function RunDetectionPage() {
 
               {usesClock && (
                 <label className="flex items-center gap-2 text-[13px]" style={{ color: "var(--muted-foreground)" }}
-                  title="When the clip starts. Holdup scoring uses the time of day and drinking counts the evening hours. Left blank, the current clock is used.">
+                  title="When the clip starts. Holdup scoring uses the time of day, drinking counts the evening hours and improper disposal applies the waste-collection hours. Left blank, the current clock is used (improper disposal skips the collection-hours rule).">
                   Recorded at
                   <input type="datetime-local" value={recordedAt} onChange={(e) => setRecordedAt(e.target.value)}
                     className="px-2 py-1 rounded-lg text-[14px] outline-none"

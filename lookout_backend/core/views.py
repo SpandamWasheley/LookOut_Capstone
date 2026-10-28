@@ -1940,11 +1940,12 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
                     cascade_args += ["--start", f"{trim_start:.3f}"]
                 if trim_end:
                     cascade_args += ["--end", f"{trim_end:.3f}"]
-            # Footage start time ("recorded at"): drives the holdup time block and the drinking
-            # evening band. Only for uploaded clips, and only the commands that take --clock.
+            # Footage start time ("recorded at"): drives the holdup time block, the drinking
+            # evening band and the disposal waste-collection window. Only for uploaded clips,
+            # and only the commands that take --clock.
             recorded_at = (request.data.get("recorded_at") or "").strip().replace("T", " ")[:16]
             if recorded_at and camera is None and violation_type in (
-                    "drinking", "thief", "merged", "merged4"):
+                    "drinking", "thief", "merged", "merged4", "disposal"):
                 from core.vision.clock import parse_clock
                 try:
                     parse_clock(recorded_at)

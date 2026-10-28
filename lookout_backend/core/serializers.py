@@ -409,6 +409,8 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
             "disposal_warmup_seconds", "disposal_recheck_seconds",
             "disposal_owner_radius", "disposal_owner_away_seconds",
             "disposal_owner_max_hold", "disposal_suspect_confidence",
+            "disposal_collection_enabled", "disposal_collection_start",
+            "disposal_collection_end", "disposal_collection_days",
             "vlm_enabled", "vlm_model", "vlm_model_holdup", "vlm_endpoint",
             "vlm_timeout",
             "object_confirm_seconds", "cue_hold_seconds", "monitoring_min_seconds", "smoking_puff_count", "smoking_puff_window_minutes",
@@ -426,6 +428,21 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
         for field, (low, high) in LIMITS.items():
             if field in attrs and not (low <= attrs[field] <= high):
                 errors[field] = f"Must be between {low:g} and {high:g}."
+        # The collection window: a PATCH may carry only one of the pair, so the other
+        # half comes from the stored row.
+        def current(name):
+            return attrs.get(name, getattr(self.instance, name, None))
+        if "disposal_collection_days" in attrs:
+            from core.vision.disposal import parse_days
+            try:
+                attrs["disposal_collection_days"] = ",".join(
+                    str(d) for d in parse_days(attrs["disposal_collection_days"]))
+            except ValueError as exc:
+                errors["disposal_collection_days"] = str(exc)
+        if "disposal_collection_start" in attrs or "disposal_collection_end" in attrs:
+            start, end = current("disposal_collection_start"), current("disposal_collection_end")
+            if start is not None and end is not None and not start < end:
+                errors["disposal_collection_end"] = "Must be later than the start time."
         if errors:
             raise serializers.ValidationError(errors)
         return attrs

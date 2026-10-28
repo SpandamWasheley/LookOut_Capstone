@@ -12,11 +12,11 @@ import { SettingsSlider as Slider } from "./components/settings/SettingsSlider";
 // Wording is for barangay staff: plain language, no jargon, no scoring terms.
 
 const sections = [
-  { id: "parking", label: "Parking", icon: Car,    color: "#ef4444" },
+  { id: "parking", label: "Parking", icon: Car,    color: "#f97316" },
   { id: "smoking", label: "Smoking", icon: Cigarette, color: "#6b8cae" },
   { id: "thief",   label: "Holdup",   icon: Siren,  color: "#dc2626" },
   { id: "drinking", label: "Drinking", icon: Beer, color: "#8b5cf6" },
-  { id: "disposal", label: "Disposal", icon: Trash2, color: "#22c55e" },
+  { id: "disposal", label: "Waste", icon: Trash2, color: "#22c55e" },
   { id: "system", label: "System", icon: SlidersHorizontal, color: "#3b82f6" },
 ];
 
@@ -42,6 +42,7 @@ const FIELD_KEYS = [
   ...Object.keys(STATIC_DEFAULTS),
   "object_confirm_seconds", "cue_hold_seconds", "monitoring_min_seconds", "drinking_group_duration", "drinking_min_group", "drinking_start", "drinking_end",
   "smoking_puff_count", "smoking_puff_window_minutes", "holdup_loiter_seconds", "holdup_near_person_heights",
+  "disposal_collection_enabled", "disposal_collection_start", "disposal_collection_end", "disposal_collection_days",
 ];
 
 const hhmm = (t) => (t ? String(t).slice(0, 5) : t);
@@ -51,6 +52,8 @@ function fromApi(s) {
   FIELD_KEYS.forEach((k) => { f[k] = s[k]; });
   f.drinking_start = hhmm(f.drinking_start);
   f.drinking_end = hhmm(f.drinking_end);
+  f.disposal_collection_start = hhmm(f.disposal_collection_start);
+  f.disposal_collection_end = hhmm(f.disposal_collection_end);
   return f;
 }
 
@@ -58,6 +61,8 @@ function defaultsFrom(s) {
   const d = { ...STATIC_DEFAULTS, ...(s?.spec_defaults ?? {}) };
   d.drinking_start = hhmm(d.drinking_start);
   d.drinking_end = hhmm(d.drinking_end);
+  d.disposal_collection_start = hhmm(d.disposal_collection_start);
+  d.disposal_collection_end = hhmm(d.disposal_collection_end);
   return d;
 }
 
@@ -137,6 +142,32 @@ function TimeBox({ value, onChange }) {
   return (
     <input type="time" value={value ?? ""} onChange={(e) => onChange(e.target.value)}
       className="w-36 px-2 py-1 rounded-lg text-[14px] outline-none" style={inputStyle} />
+  );
+}
+
+// Weekday chips for a comma list of day numbers, Monday = 0 ... Sunday = 6 (the server's format).
+const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+function DayPicker({ value, onChange }) {
+  const on = new Set(String(value ?? "").split(",").filter((d) => d !== "").map(Number));
+  const toggle = (i) => {
+    const next = new Set(on);
+    if (next.has(i)) next.delete(i); else next.add(i);
+    onChange([...next].sort((a, b) => a - b).join(","));
+  };
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {WEEKDAYS.map((name, i) => (
+        <button key={name} type="button" onClick={() => toggle(i)}
+          className="px-2.5 py-1 rounded-lg text-[13px] font-medium"
+          style={{
+            background: on.has(i) ? "var(--primary)" : "var(--card)",
+            color: on.has(i) ? "#ffffff" : "var(--muted-foreground)",
+            border: "1px solid var(--border)",
+          }}>
+          {name}
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -418,6 +449,25 @@ export function SystemConfig() {
           </Card>
         }
         below={<>
+        <Card title="Waste collection hours"
+          note="Garbage may be set out for collection only during these hours. A bag put out inside them is kept on the Monitoring watchlist with no alert, and is checked again when the hours end: if it is still there, it is reported then. Outside these hours, and on days not ticked, it is reported straight away."
+          onReset={() => resetKeys(["disposal_collection_enabled", "disposal_collection_start",
+                                    "disposal_collection_end", "disposal_collection_days"])}>
+          <Toggle label="Allow garbage during collection hours"
+            desc="Turn off to report every left-behind bag whatever the time."
+            value={form.disposal_collection_enabled}
+            onChange={(v) => set("disposal_collection_enabled", v)} />
+          <Row label="Collection hours" desc="When garbage may be set out. The end time must be later than the start time."
+            differs={differs("disposal_collection_start") || differs("disposal_collection_end")}>
+            <TimeBox value={form.disposal_collection_start} onChange={(v) => set("disposal_collection_start", v)} />
+            <span className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>to</span>
+            <TimeBox value={form.disposal_collection_end} onChange={(v) => set("disposal_collection_end", v)} />
+          </Row>
+          <Row label="Collection days" desc="Days with collection. Leave Sunday unticked: there is no collection, so a bag put out then is reported."
+            differs={differs("disposal_collection_days")}>
+            <DayPicker value={form.disposal_collection_days} onChange={(v) => set("disposal_collection_days", v)} />
+          </Row>
+        </Card>
         <Card title="What to ignore"
           onReset={() => resetKeys(["disposal_ignore_movers"])}>
           <Toggle label="Ignore people and vehicles"

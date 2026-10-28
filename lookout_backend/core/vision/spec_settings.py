@@ -22,6 +22,10 @@ SPEC_DEFAULTS = {
     "smoking_puff_window_minutes": 5.0,     # ... within 5 minutes
     "holdup_loiter_seconds": 20,            # holdup: someone loitering first
     "holdup_near_person_heights": 1.75,     # holdup: "nearby person" distance, in holder heights
+    "disposal_collection_enabled": True,    # disposal: bags set out in the collection window are only Monitoring
+    "disposal_collection_start": datetime.time(4, 0),   # 04:00 ...
+    "disposal_collection_end": datetime.time(7, 0),     # ... to 07:00
+    "disposal_collection_days": "0,1,2,3,4,5",          # Monday (0) to Saturday (5); no Sunday collection
 }
 
 GROUPS = {
@@ -29,6 +33,8 @@ GROUPS = {
     "drinking": ["drinking_group_duration", "drinking_min_group", "drinking_start", "drinking_end"],
     "smoking": ["smoking_puff_count", "smoking_puff_window_minutes"],
     "holdup": ["holdup_loiter_seconds", "holdup_near_person_heights"],
+    "disposal": ["disposal_collection_enabled", "disposal_collection_start",
+                 "disposal_collection_end", "disposal_collection_days"],
 }
 
 # (min, max) the API accepts. Wide enough to experiment, narrow enough to stay meaningful.
@@ -46,7 +52,7 @@ LIMITS = {
 
 
 def defaults_for(violation):
-    """{field: spec default} for one violation group ('all', 'drinking', 'smoking', 'holdup')."""
+    """{field: spec default} for one violation group ('all', 'drinking', 'smoking', 'holdup', 'disposal')."""
     return {f: SPEC_DEFAULTS[f] for f in GROUPS[violation]}
 
 
