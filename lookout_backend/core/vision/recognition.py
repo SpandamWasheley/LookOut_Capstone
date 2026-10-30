@@ -624,6 +624,12 @@ CASCADE_IMGSZ = int(os.environ.get("LOOKOUT_CASCADE_IMGSZ", 1280))
 # now use the same size. Override with LOOKOUT_FAR_IMGSZ (e.g. 640 to trade
 # recall for speed).
 FAR_IMGSZ = int(os.environ.get("LOOKOUT_FAR_IMGSZ", NEAR_IMGSZ))
+# Drinking: a bottle in a hand is ~1-3 % of a 2688 px frame's width and shrinks
+# further in the whole-frame pass. These crops come from the NATIVE frame.
+BOTTLE_CROP_PAD = 0.20          # padding around the kept part of the person box
+BOTTLE_CROP_BOX_FRACTION = 0.75 # top share of the box kept (head, torso, hands)
+BOTTLE_CROP_IMGSZ = 640
+BOTTLE_CROP_MAX = 4             # most crops per frame (largest persons first), to protect fps
 
 _yolo_model = None
 _merged_model = None
@@ -634,6 +640,12 @@ KP_NOSE = 0
 KP_LSHOULDER, KP_RSHOULDER = 5, 6
 KP_LWRIST, KP_RWRIST = 9, 10
 KP_MIN_CONF = 0.3   # a keypoint below this confidence is treated as unknown
+# Hand-to-mouth GESTURE counter only (gesture_ratio below). The mouth anchor and the puff gate keep KP_MIN_CONF: this stricter bar
+# exists because a guessed nose / wrist on a far or back-turned person made "hand near face" cycles out of nothing.
+GESTURE_KP_MIN_CONF = 0.5           # nose and the wrist used must both reach this, else the frame is unknown
+GESTURE_EYE_MIN_CONF = 0.4          # at least one eye must reach this, else the person is facing away
+GESTURE_MIN_PERSON_HEIGHT_PX = 120  # native-resolution person box height under which no gesture is scored
+GESTURE_MIN_SHOULDER_PX = 25        # native-resolution shoulder width under which no gesture is scored
 
 
 def load_yolo():
@@ -721,6 +733,39 @@ def hand_to_mouth_ratio(kpts):
         if best is None or d < best:
             best = d
     return best
+
+
+def gesture_ratio(kpts, person_height=None):
+    """(ratio, reason) for the hand-to-mouth GESTURE counter.
+
+    `ratio` is hand_to_mouth_ratio's wrist-to-nose distance in shoulder-widths, but only from keypoints the
+    counter can trust; otherwise it is None and `reason` says why, so the caller leaves the hand state alone
+    (an unknown frame neither raises nor lowers it) and can count the skip:
+      "small person"     person box shorter than GESTURE_MIN_PERSON_HEIGHT_PX, or shoulders narrower than GESTURE_MIN_SHOULDER_PX
+      "facing away"      nose under GESTURE_KP_MIN_CONF, or neither eye reaching GESTURE_EYE_MIN_CONF
+      "keypoints unsure" a shoulder under KP_MIN_CONF, or no wrist reaching GESTURE_KP_MIN_CONF
+    Only wrists at GESTURE_KP_MIN_CONF compete for "the closest wrist"."""
+    if person_height is not None and person_height < GESTURE_MIN_PERSON_HEIGHT_PX:
+        return None, "small person"
+    nose = kpts[KP_NOSE]
+    if nose[2] < GESTURE_KP_MIN_CONF or max(kpts[KP_LEYE][2], kpts[KP_REYE][2]) < GESTURE_EYE_MIN_CONF:
+        return None, "facing away"
+    ls, rs = kpts[KP_LSHOULDER], kpts[KP_RSHOULDER]
+    if ls[2] < KP_MIN_CONF or rs[2] < KP_MIN_CONF:
+        return None, "keypoints unsure"
+    shoulder_w = ((ls[0] - rs[0]) ** 2 + (ls[1] - rs[1]) ** 2) ** 0.5
+    if shoulder_w < GESTURE_MIN_SHOULDER_PX:
+        return None, "small person"
+    best = None
+    for w in (kpts[KP_LWRIST], kpts[KP_RWRIST]):
+        if w[2] < GESTURE_KP_MIN_CONF:
+            continue
+        d = ((w[0] - nose[0]) ** 2 + (w[1] - nose[1]) ** 2) ** 0.5 / shoulder_w
+        if best is None or d < best:
+            best = d
+    if best is None:
+        return None, "keypoints unsure"
+    return best, ""
 
 
 def smoking_model_available():
@@ -1261,7 +1306,7 @@ def detect_smoking_far(frame, conf=0.3, tiles=(2, 2), overlap=0.2,
 
 
 def detect_on_person_crops(model, frame, person_boxes, conf, pad=0.35,
-                           crop_imgsz=640, min_person_h=0):
+                           crop_imgsz=640, min_person_h=0, box_fraction=1.0):
     """Cascade crop at native resolution: run a small-object model on each
     person's crop taken from the FULL-RES frame, not the downscaled one.
 
@@ -1274,7 +1319,9 @@ def detect_on_person_crops(model, frame, person_boxes, conf, pad=0.35,
 
     `frame` MUST be the native-resolution frame (use the main stream). `pad`
     widens each person box (a raised hand/cigarette sticks outside the body box).
-    `min_person_h` skips tiny far persons whose crop still wouldn't help. Returns
+    `min_person_h` skips tiny far persons whose crop still wouldn't help.
+    `box_fraction` keeps only the top share of each person box before padding
+    (hands and head live there; 1.0 = the whole box). Returns
     (x1,y1,x2,y2,conf,label) in full-frame coords, de-duplicated with NMS.
     """
     h, w = frame.shape[:2]
@@ -1287,7 +1334,7 @@ def detect_on_person_crops(model, frame, person_boxes, conf, pad=0.35,
         x1 = max(px1 - int(pw * pad), 0)
         y1 = max(py1 - int(ph * pad), 0)
         x2 = min(px2 + int(pw * pad), w)
-        y2 = min(py2 + int(ph * pad), h)
+        y2 = min(py1 + int(ph * box_fraction) + int(ph * pad), h)
         crop = frame[y1:y2, x1:x2]
         if crop.size == 0:
             continue
@@ -1302,6 +1349,18 @@ def detect_smoking_cascade(frame, person_boxes, conf=0.3, pad=0.35, crop_imgsz=6
     Frame must be native resolution (main stream) for the pixels to be there."""
     return _only(detect_on_person_crops(load_smoking_model(), frame, person_boxes,
                                         conf, pad, crop_imgsz), SMOKING_CLASSES)
+
+
+def detect_bottles_on_person_crops(frame, person_boxes, conf, pad=BOTTLE_CROP_PAD,
+                                   crop_imgsz=BOTTLE_CROP_IMGSZ, max_crops=BOTTLE_CROP_MAX,
+                                   box_fraction=BOTTLE_CROP_BOX_FRACTION):
+    """Bottle detections from native-res crops of the largest `max_crops` persons,
+    in full-frame coordinates. Same crop code as the smoking cascade."""
+    largest = sorted(person_boxes or [], key=lambda b: (b[2] - b[0]) * (b[3] - b[1]),
+                     reverse=True)[:max_crops]
+    return _only(detect_on_person_crops(load_merged_model(), frame, largest, conf, pad,
+                                        crop_imgsz, box_fraction=box_fraction),
+                 DRINKING_CLASSES)
 
 
 def thief_model_available():

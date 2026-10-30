@@ -34,6 +34,18 @@ CONTINUE_MIN_GAP = 1.0          # a track processed this recently is still in vi
 CONTINUE_DIST = 0.8             # "same place": centres within this x the mean box size
 CONTINUE_SIZE = (0.45, 2.2)     # ... and a similar size (height ratio)
 
+# The evidence clip and image mark WHO triggered the alert: the triggering person's box is drawn thick in the status colour with
+# "ID 10 - Smoking - Possible" above it, and a holdup's second person is boxed thinner and labelled "partner". (OpenCV's fonts
+# have no middle dot, so the separator is a hyphen.)  Colours are BGR.
+TRIGGER_BOX_THICKNESS = 5
+PARTNER_BOX_THICKNESS = 2
+TRIGGER_LABEL_SCALE = 0.7
+TRIGGER_COLORS = {scoring.MONITORING: (150, 150, 150),     # grey
+                  scoring.WARNING: (0, 140, 255),          # orange  (Possible)
+                  scoring.VIOLATION: (0, 0, 220)}          # red     (Likely)
+PARTNER_COLOR = (255, 190, 0)
+TRIGGER_NAMES = {"smoke": "Smoking", "drink": "Drinking", "cluster": "Drinking", "knife": "Holdup"}   # incident key kind -> name
+
 
 class Incident:
     """In-memory state for one tracked incident (never persisted)."""
@@ -442,14 +454,62 @@ class IncidentMixin:
         inc = self._incident_book().get(key)
         return inc.level if inc is not None else None
 
+    def _trigger_info(self, key, score, partner=None):
+        """Who an incident is about, for the alert record (Alert.cues["trigger"]) and the evidence clip label."""
+        kind, ident = key[0], key[1]
+        info = {"track_id": f"G{ident}" if kind == "cluster" else ident,
+                "violation": TRIGGER_NAMES.get(kind, ""),
+                "cues": debug_view.indicator_list(score)}
+        if partner is not None and partner[0] is not None:
+            info["partner_track_id"] = partner[0]
+        return info
+
+    def _stack_label_y(self, frame, now, text, x, y):
+        """The baseline y for a trigger label, moved up (or down at the top edge) past any label already drawn on this frame
+        that it would overlap, so two incidents on one person read as a stack rather than one smudge.
+        Labels are remembered per (frame object, video time)."""
+        h, w = frame.shape[:2]
+        (tw, th), base = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, TRIGGER_LABEL_SCALE, 2)
+        step = th + base + 6
+        x = max(0, min(x, w - tw - 2))
+        mark = (id(frame), now)
+        if self.__dict__.get("_label_mark") != mark:
+            self._label_mark, self._label_rects = mark, []
+        direction = -1
+        while any(x < rx2 and x + tw > rx1 and y - th - base < ry2 and y + base > ry1 for rx1, ry1, rx2, ry2 in self._label_rects):
+            y += direction * step
+            if y - th - base < 0:          # ran off the top: stack downwards from the original spot instead
+                direction, y = 1, y + step * 2
+            if y > h:
+                break
+        self._label_rects.append((x, y - th - base, x + tw, y + base))
+        return y
+
+    def _draw_trigger(self, frame, key, box, level, trigger, partner=None, now=None):
+        """Mark the triggering person on the frame (and their partner, for a holdup). Drawn before the frame is written to
+        the clip buffer and before the alert image is saved, so both carry it."""
+        name = TRIGGER_NAMES.get(key[0])
+        if frame is None or box is None or not name:
+            return
+        color = TRIGGER_COLORS.get(level, TRIGGER_COLORS[scoring.MONITORING])
+        x1, y1, x2, y2 = (int(v) for v in box)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, TRIGGER_BOX_THICKNESS)
+        text = f"ID {trigger['track_id']} - {name} - {scoring.label_of(level)}"
+        recognition.draw_label(frame, text, x1, self._stack_label_y(frame, now, text, x1, max(y1 - 8, 0)), color, scale=TRIGGER_LABEL_SCALE)
+        if partner is not None and partner[1] is not None:
+            px1, py1, px2, py2 = (int(v) for v in partner[1])
+            cv2.rectangle(frame, (px1, py1), (px2, py2), PARTNER_COLOR, PARTNER_BOX_THICKNESS)
+            recognition.draw_label(frame, "partner", px1, max(py1 - 8, 0), PARTNER_COLOR, scale=TRIGGER_LABEL_SCALE)
+
     def _incident_sync(self, key, score, now, *, create, describe=None, frame=None,
-                       blocked=None, box=None, extra_cues=None, ai=None):
+                       blocked=None, box=None, extra_cues=None, ai=None, partner=None):
         """Apply `score` (a scoring.Score) to the incident `key`.
 
         create(level, with_clip) -> Alert | None    builds the first row
         describe(score) -> str                      refreshed description
         blocked() -> bool                           cooldown check for a NEW row
         extra_cues                                  merged into Alert.cues (audit data)
+        partner                                     (track id, box) of a holdup's second person, boxed in the clip
         ai                                          {"kind", "note", "keys"}: asks the AI
                                                     checker once, when the row is first created
         Returns the Alert (None in --dry-run or when nothing is shown).
@@ -464,6 +524,10 @@ class IncidentMixin:
             if inc is not None:
                 inc.level = scoring.NONE
             return inc.alert if inc is not None else None
+
+        trigger = self._trigger_info(key, score, partner)
+        self._draw_trigger(frame, key, box, level, trigger, partner, now)
+        extra_cues = {**(extra_cues or {}), "trigger": trigger}
 
         if inc is None:
             inc = self._incident_continue(key, box, now) or Incident(now)
@@ -493,7 +557,7 @@ class IncidentMixin:
                 # Log the active settings with the alert, so the timings behind this status
                 # are on record (calibration, and answering "why did this fire?"), and where its
                 # time comes from (live / recorded / processed).
-                extra = {"time_source": self._time_source()}
+                extra = {"time_source": self._time_source(), "trigger": trigger}
                 if self.spec_snapshot is not None:
                     extra["settings"] = self.spec_snapshot
                 alert.cues = {**(alert.cues or {}), **extra}

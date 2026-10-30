@@ -83,7 +83,22 @@ PUFF_WINDOW_SECONDS = 20.0  # count completed puffs within this rolling window
 # counting.
 HAND_RAISED_RATIO = 0.7    # wrist within this many shoulder-widths of the nose = at face
 HAND_LOWERED_RATIO = 1.3   # beyond this = hand down
+# Apex hold: the hand only counts as "at the face" once the ratio has stayed <= HAND_RAISED_RATIO for this long, in VIDEO time.
+# A face touch / scratch / glance at a phone is over in a fraction of a second; a drag on a cigarette or vape is held. There is
+# deliberately no upper bound, so a long vape draw (2-4 s) passes.
+GESTURE_APEX_HOLD_SECONDS = 0.6
+# Two consecutive at-face samples further apart than this do not prove the hand stayed up (the frames between were unknown /
+# the person was not seen), so the hold timer restarts instead of crediting the gap.
+GESTURE_APEX_MAX_GAP_SECONDS = 1.5
 GESTURE_WINDOW_SECONDS = 300.0   # spec v6: 3+ puffs within 5 minutes
+# Strong-gesture exception to "no smoking item seen -> at most Monitoring" (watch_smoking.PUFF_ONLY_NEEDS_ITEM_FOR_POSSIBLE): a
+# pose-only person may reach Possible only with >= STRONG_GESTURE_MIN_DRAWS DRAWS, a draw being the hand held at the face
+# (ratio <= HAND_RAISED_RATIO) for >= STRONG_GESTURE_MIN_HOLD_S of video time, every sample of it on a person box at least
+# STRONG_GESTURE_MIN_BOX_PX tall (native res) that passed the facing check, and the draws within STRONG_GESTURE_WINDOW_S of each other.
+STRONG_GESTURE_MIN_BOX_PX = 250
+STRONG_GESTURE_MIN_HOLD_S = 1.5
+STRONG_GESTURE_MIN_DRAWS = 2
+STRONG_GESTURE_WINDOW_S = 90.0
 
 # Dwell only accrues while a detection is this recent. The vote ratio alone has
 # inertia — it stays true for over a second after the last detection, because
@@ -223,6 +238,11 @@ def _center_proximity(a, b, max_frac=TRACK_MATCH_DIST):
     return 1.0 - dist / limit
 
 
+def _box_conf(person_box):
+    """The detector's confidence carried by a person box (x1, y1, x2, y2, conf), or None for a bare 4-tuple."""
+    return float(person_box[4]) if len(person_box) > 4 else None
+
+
 class Track:
     """One tracked person (or a scene track) and its temporal-confirmation state."""
 
@@ -231,6 +251,8 @@ class Track:
         self.id = track_id
         self.box = box                    # (x1,y1,x2,y2)
         self.last_seen = now              # last frame this track was matched
+        self.conf = None                  # person-detector confidence of the box matched this frame (None = never seen with one)
+        self.missed_frames = 0            # processed frames since this track was last matched to a real detection
         self.window_seconds = window_seconds
         self.is_scene = is_scene          # True = unattributed-detection cluster
         self.ext_id = ext_id              # ByteTrack/BoT-SORT id, when in use
@@ -270,6 +292,10 @@ class Track:
         self.puffs = deque()              # timestamps of completed puffs
         # Pose hand-to-mouth gesture state (long-range smoking).
         self.hand_zone = None             # 'atface' | 'down' | None
+        self.hand_since = None            # when the current run of at-face samples began (the apex hold is timed from here)
+        self.hand_last = None             # the latest at-face sample of that run
+        self.hand_strong = False          # every at-face sample of that run was close range (see STRONG_GESTURE_MIN_BOX_PX)
+        self.strong_draws = deque()       # completion times of the sustained close-range draws (see STRONG_GESTURE_MIN_HOLD_S)
         self.gestures = deque()           # timestamps of completed hand-to-mouth cycles
         self.gestures_still = deque()     # the subset completed while the person was mostly stationary (PUFF_ONLY_REQUIRE_STATIONARY)
         # Rolling (timestamp, box) history for stationarity checks (watch_drinking's
@@ -314,6 +340,7 @@ class Track:
         """Records this frame's position/visibility. Called once per frame by
         PersonTracker.update for every live track, matched or not."""
         seen = self.seen_at(now)
+        self.missed_frames = 0 if seen else self.missed_frames + 1
         if seen:
             cx, cy = self.center
             if self.trail:
@@ -429,29 +456,60 @@ class Track:
             self.puffs.popleft()
         return len(self.puffs)
 
-    def update_gesture(self, ratio, now, window=GESTURE_WINDOW_SECONDS, still=None):
+    def update_gesture(self, ratio, now, window=GESTURE_WINDOW_SECONDS, still=None, strong=False):
         """Feeds the wrist->nose distance (in SHOULDER-WIDTHS) into the pose
         hand-to-mouth state machine. Returns the count of completed hand-to-mouth
         cycles in the window. A cycle = hand clearly at the face then clearly
         down; hysteresis prevents jitter from counting. Two cycles closer than
         GESTURE_MIN_GAP_SECONDS are one (the hand dipped and re-dipped).
         `still` (None = unknown) says whether the person was mostly stationary
-        when the cycle completed; it only matters to gesture_count(still_only=True)."""
+        when the cycle completed; it only matters to gesture_count(still_only=True).
+        `strong` says this sample was close range (person box >= STRONG_GESTURE_MIN_BOX_PX tall); the facing check already
+        passed, or there would be no ratio. It only feeds strong_gesture_count()."""
         if ratio <= HAND_RAISED_RATIO:
-            self.hand_zone = "atface"
+            if self.hand_since is None or (self.hand_last is not None and now - self.hand_last > GESTURE_APEX_MAX_GAP_SECONDS):
+                self.hand_since = now
+                self.hand_strong = bool(strong)
+            else:
+                self.hand_strong = self.hand_strong and bool(strong)
+            self.hand_last = now
+            if self.hand_zone != "atface" and now - self.hand_since >= GESTURE_APEX_HOLD_SECONDS:
+                self.hand_zone = "atface"           # held at the face long enough to count as a real raise
         elif ratio >= HAND_LOWERED_RATIO:
+            held = (self.hand_last - self.hand_since) if (self.hand_since is not None and self.hand_last is not None) else 0.0
+            if self.hand_zone == "atface" and self.hand_strong and held >= STRONG_GESTURE_MIN_HOLD_S:
+                self.strong_draws.append(now)
+            self.hand_since = self.hand_last = None
+            self.hand_strong = False
             if self.hand_zone == "atface":
                 if not (GESTURE_MIN_GAP_SECONDS > 0 and self.gestures and now - self.gestures[-1] < GESTURE_MIN_GAP_SECONDS):
-                    self.gestures.append(now)   # reached the face then dropped = one cycle
+                    self.gestures.append(now)   # held at the face then dropped = one cycle
                     if still is None or still:
                         self.gestures_still.append(now)
             self.hand_zone = "down"
+        elif self.hand_zone != "atface":
+            self.hand_since = self.hand_last = None  # drifted out of the raised band before the hold was met: start over
         cutoff = now - window
         while self.gestures and self.gestures[0] < cutoff:
             self.gestures.popleft()
         while self.gestures_still and self.gestures_still[0] < cutoff:
             self.gestures_still.popleft()
+        while self.strong_draws and self.strong_draws[0] < cutoff:
+            self.strong_draws.popleft()
         return len(self.gestures)
+
+    def strong_gesture(self, now):
+        """True when STRONG_GESTURE_MIN_DRAWS sustained close-range draws completed within STRONG_GESTURE_WINDOW_S of each other."""
+        d = [t for t in self.strong_draws if now - t <= GESTURE_WINDOW_SECONDS]
+        n = STRONG_GESTURE_MIN_DRAWS
+        return any(d[i + n - 1] - d[i] <= STRONG_GESTURE_WINDOW_S for i in range(len(d) - n + 1))
+
+    def reset_hand(self):
+        """Forget the hand-to-mouth state in progress (not the cycles already counted). Used while the person is holding a
+        bottle, so a sip's raise cannot be completed into a smoking cycle once the stand-down ends."""
+        self.hand_zone = "down"
+        self.hand_since = self.hand_last = None
+        self.hand_strong = False
 
     def gesture_count(self, now, window=GESTURE_WINDOW_SECONDS, still_only=False):
         cutoff = now - window
@@ -760,13 +818,16 @@ class PersonTracker:
                 continue
             t.box = tuple(int(v) for v in person_boxes[i][:4])
             t.last_seen = now
+            t.conf = _box_conf(person_boxes[i])
             t.note_position(now)
             matched_tracks.add(id(t))
             matched_boxes.add(i)
 
         for i, pb in enumerate(person_boxes):
             if i not in matched_boxes:
-                self.tracks.append(self._spawn(tuple(int(v) for v in pb[:4]), now))
+                t = self._spawn(tuple(int(v) for v in pb[:4]), now)
+                t.conf = _box_conf(pb)
+                self.tracks.append(t)
 
     def _update_by_ext_id(self, person_boxes, ids, now):
         """Keys tracks off an external tracker's ids instead of associating."""
@@ -778,7 +839,7 @@ class PersonTracker:
                 # The external tracker declined to id this box (usually a
                 # low-confidence detection it won't commit to yet). Fall back to
                 # proximity against the untracked ones so it still gets counted.
-                self._match_or_spawn(box, now)
+                self._match_or_spawn(box, now, _box_conf(pb))
                 continue
             t = live.get(ext)
             if t is None:
@@ -795,6 +856,7 @@ class PersonTracker:
             live[ext] = t
             t.box = box
             t.last_seen = now
+            t.conf = _box_conf(pb)
             t.note_position(now)
 
     def _take_over_lost_id(self, box, ext, in_frame, now):
@@ -816,16 +878,18 @@ class PersonTracker:
             best.ext_id = ext
         return best
 
-    def _match_or_spawn(self, box, now):
+    def _match_or_spawn(self, box, now, conf=None):
         best, best_score = None, 0.0
         for t in self.tracks:
             score = max(_iou(t.box, box), _center_proximity(t.box, box))
             if score > best_score:
                 best, best_score = t, score
         if best is None:
-            self.tracks.append(self._spawn(box, now))
+            t = self._spawn(box, now)
+            t.conf = conf
+            self.tracks.append(t)
         else:
-            best.box, best.last_seen = box, now
+            best.box, best.last_seen, best.conf = box, now, conf
             best.note_position(now)
 
     def _spawn(self, box, now, ext_id=None):

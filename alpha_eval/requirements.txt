@@ -1,0 +1,8 @@
+# Only the EXTRA packages alpha_eval needs on top of the LookOut detection environment
+# (torch, ultralytics, opencv-python, django ... come from lookout_backend/requirements-detection.txt).
+streamlit>=1.40
+openpyxl>=3.1
+pandas>=2.0
+psutil>=5.9
+pytest>=8.0
+formulas>=1.2   # pure-Python recalculation used by the export check when LibreOffice is not installed

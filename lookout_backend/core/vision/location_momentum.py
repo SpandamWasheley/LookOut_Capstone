@@ -92,7 +92,13 @@ POSSIBLE_PUFF_WINDOW_SECONDS = 10.0 # Possible needs >= POSSIBLE_MIN_PUFFS puff 
 POSSIBLE_MIN_PUFFS = 1
 LIKELY_PUFF_WINDOW_SECONDS = 30.0   # Likely also needs >= LIKELY_MIN_PUFFS puffs in this window
 LIKELY_MIN_PUFFS = 2
+# Possible needs, together: the Cigarette detection at POSSIBLE_MIN_CONF or better AND (a puff in the window OR the cigarette
+# accepted by the location gate ON THE MOUTH anchor with momentum >= POSSIBLE_MOUTH_MOMENTUM). Otherwise Monitoring at most.
+POSSIBLE_MIN_CONF = 0.45
+POSSIBLE_MOUTH_MOMENTUM = 1.0
+MOUTH_ACCEPT_FRESH_SECONDS = 1.0    # "accepted at the mouth" must be this recent to count as now
 CAP_NO_PUFF_TEXT = "capped: no puff"
+CAP_LOW_CONF_TEXT = "capped: cigarette confidence under 0.45"
 CAP_FEW_PUFFS_TEXT = "capped: needs 2 puffs in 30 s for Likely"
 
 # holdup (v6.2.1, reworked in v6.2.5). True = knife stability rules, E12 as "stayed close" with pass-through rejection, the
@@ -676,16 +682,34 @@ def puffs_within(track, now, window):
     return 0 if loc is None else sum(1 for t in loc.puffs if now - t <= window)
 
 
-def puff_cap(track, now, previous_level=None):
+def accepted_at_mouth(track, now, cls="cigarette"):
+    """True when the location gate ACCEPTED a `cls` hit on the person's mouth anchor within MOUTH_ACCEPT_FRESH_SECONDS.
+    last_hit is written only for accepted hits, so a detection rejected as off-anchor / jump / flip / no-kp never counts."""
+    loc = getattr(track, "loc", None)
+    last = None if loc is None else loc.last_hit.get(cls)
+    return last is not None and MOUTH in last[2] and now - last[3] <= MOUTH_ACCEPT_FRESH_SECONDS
+
+
+def puff_cap(track, now, previous_level=None, conf=None, momentum=None):
     """(max level name or None, reason text) for a smoking incident WITH an object. Level names are
     scoring's stored values ('monitoring' / 'warning').
 
     Sticky (v6.2.1): the caps only block the FIRST rise. An incident that already reached Possible is
-    never pushed back to Monitoring because the 10 s window ran out, and one that reached Likely keeps it."""
-    if puffs_within(track, now, POSSIBLE_PUFF_WINDOW_SECONDS) < POSSIBLE_MIN_PUFFS:
+    never pushed back to Monitoring because the 10 s window ran out, and one that reached Likely keeps it.
+
+    `conf` (the Cigarette detection confidence) and `momentum` switch on the Possible evidence rule (see POSSIBLE_MIN_CONF);
+    left None, only the puff rule applies."""
+    puffed = puffs_within(track, now, POSSIBLE_PUFF_WINDOW_SECONDS) >= POSSIBLE_MIN_PUFFS
+    if not puffed and (conf is None or not (accepted_at_mouth(track, now) and (momentum or 0.0) >= POSSIBLE_MOUTH_MOMENTUM)):
         if previous_level in ("warning", "violation"):
             return None, ""
         return "monitoring", CAP_NO_PUFF_TEXT
+    if conf is not None and conf < POSSIBLE_MIN_CONF:
+        if previous_level in ("warning", "violation"):
+            return None, ""
+        return "monitoring", CAP_LOW_CONF_TEXT
+    if not puffed:
+        return "warning", CAP_FEW_PUFFS_TEXT
     if puffs_within(track, now, LIKELY_PUFF_WINDOW_SECONDS) < LIKELY_MIN_PUFFS:
         if previous_level == "violation":
             return None, ""

@@ -59,9 +59,10 @@ class SmokingIncidentTests(TestCase):
         self.cmd._process_track(self.track, dets, t, 2.0, 120, self.frame, False)
 
     def puff(self, t):
-        """One completed hand-to-mouth cycle (wrist at the face, then down)."""
+        """One completed hand-to-mouth cycle (wrist held at the face for the apex hold, then down)."""
         self.track.update_gesture(0.3, t)
-        self.track.update_gesture(2.0, t + 0.3)
+        self.track.update_gesture(0.3, t + tracking.GESTURE_APEX_HOLD_SECONDS + 0.1)
+        self.track.update_gesture(2.0, t + tracking.GESTURE_APEX_HOLD_SECONDS + 0.2)
 
     def rows(self):
         return list(Alert.objects.order_by("id"))
@@ -95,10 +96,21 @@ class SmokingIncidentTests(TestCase):
         self.assertEqual(rows[0].cues["level"], scoring.VIOLATION)
         self.assertIn("near_mouth", rows[0].cues["cues"])
 
-    def test_puff_only_is_possible_capped_and_tagged(self):
+    def test_puff_only_without_any_item_is_held_at_monitoring(self):
         for t in (1.0, 20.0, 40.0):
             self.puff(t)
-        self.step(60.0, [])                                  # no cigarette anywhere
+        self.step(60.0, [])                                  # no cigarette anywhere, ever, on this track
+        rows = self.rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].level, scoring.MONITORING)
+        self.assertTrue(rows[0].cues["puff_only"])
+        self.assertEqual(rows[0].video_url, "")              # Monitoring writes no clip
+
+    def test_puff_only_is_possible_capped_and_tagged(self):
+        self.track.smoke_item_seen = True                    # an item was seen on this person at some point
+        for t in (1.0, 20.0, 40.0):
+            self.puff(t)
+        self.step(60.0, [])                                  # ... and is gone now
         rows = self.rows()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].level, scoring.WARNING)
@@ -163,7 +175,11 @@ class ThiefAndDrinkingTests(TestCase):
         self.drink = DrinkingCommand()
 
     def _knife_track(self, tid, box):
-        t = tracking.Track(tid, box, 0.0, 5.0)
+        """A person who has been in view and standing for a few seconds and was matched at t=0 (a real second person)."""
+        t = tracking.Track(tid, box, -5.0, 5.0)
+        for at in (-3.0, -1.5, 0.0):
+            t.note_position(at)
+        t.last_seen = 0.0
         return t
 
     def test_a_knife_with_nobody_near_is_monitoring_only(self):
@@ -372,11 +388,12 @@ class AICheckerWiringTests(SmokingIncidentTests):
         # so the triggering frame is not in it yet and the window is filled by
         # the frames just before. That is also true of the real watcher, which
         # is processing this person the whole time the puffs accumulate.
+        self.track.smoke_item_seen = True                    # without one a puff-only row is held at Monitoring
         for i in range(170):
             t = i * 0.25
             if t in (1.0, 20.0, 40.0):
                 self.puff(t)
-            self.frame_step(t, [])                           # no cigarette anywhere
+            self.frame_step(t, [])                           # ... and none in view now
         row = self.rows()[0]
         self.assertEqual(row.level, scoring.WARNING)
         self.assertTrue(row.cues["puff_only"])

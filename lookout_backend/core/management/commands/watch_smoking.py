@@ -109,6 +109,17 @@ HIRES_BOX_FRACTION = 0.6      # top share of the person box = head + hands regio
 # Pose runs on every processed frame by default; set to 2 to run it every other
 # frame if the cost proves too high (the gesture counter is time-based).
 POSE_EVERY_N_FRAMES = 1
+# Drinking stand-down: a person the drinking engine has associated with a Bottle (the same ByteTrack id, or the same box when
+# tracking is greedy) within this many seconds is not scored for hand-to-mouth cycles. A sip is the same raise-and-lower as a
+# puff. Time-bounded on purpose: a smoker who also holds a drink gets their gestures back once the bottle has gone.
+# Puff-only cap: with no smoking item ever seen on the track, hand movement alone is held at Monitoring and never reaches
+# Possible. Once an item has been seen on the track (object path or the hi-res check) the old cap (Possible) applies again.
+PUFF_ONLY_NEEDS_ITEM_FOR_POSSIBLE = True
+BOTTLE_STANDDOWN_SECONDS = 10.0
+BOTTLE_STANDDOWN_MIN_CONF = 0.5            # a Bottle under this confidence does not count as the person holding one
+BOTTLE_STANDDOWN_MIN_TOTAL_SECONDS = 2.0   # ...and only after the Bottle has been on that person for this long IN TOTAL within the window
+BOTTLE_STANDDOWN_GAP_SECONDS = 1.0         # one sample credits at most this much time (a gap in the detections is not "still holding it")
+BOTTLE_STANDDOWN_IOU = 0.5      # greedy tracking only: how well a bottle-holder's box must overlap the track's box
 
 
 def _is_mouth_anchored(label):
@@ -139,6 +150,7 @@ class Command(IncidentMixin, BaseCommand):
         self.tracker_name = "greedy"
         self.mouth_check = True
         self.require_puff = False
+        self.bottle_seen = []          # [(ext_id, box, video_time)] drinking's Bottle-to-person associations; watch_merged fills it
         self.pose = True
         self.cascade_extra = False     # add a native-res person-crop pass to --far (watch_all sets it)
         self.cascade = False
@@ -548,9 +560,6 @@ class Command(IncidentMixin, BaseCommand):
 
         matched = set()
         for box, kpts in poses:
-            ratio = recognition.hand_to_mouth_ratio(kpts)
-            if ratio is None:
-                continue
             # Greedy IoU match, same association rule the rest of this command
             # uses. A pose with no matching person track is dropped rather than
             # creating one -- person detection owns track creation.
@@ -561,9 +570,17 @@ class Command(IncidentMixin, BaseCommand):
                 iou = recognition._iou(track.box, box)
                 if iou > best_iou:
                     best, best_iou = track, iou
-            if best is not None and best_iou >= POSE_MATCH_IOU:
+            if best is None or best_iou < POSE_MATCH_IOU:
+                continue
+            ratio, why = recognition.gesture_ratio(kpts, person_height=box[3] - box[1])
+            if ratio is None:
+                # Unknown frame: the hand state is left exactly as it was, but the person was resolved, so the
+                # zoomed-pose fallback below must not second-guess a back-turned / tiny person into a gesture.
                 matched.add(best.id)
-                self._count_gesture(best, ratio, now_ts)
+                self.stats[f"gesture skipped: {why}"] += 1
+                continue
+            matched.add(best.id)
+            self._count_gesture(best, ratio, now_ts)
 
         # v6.2.10: a track the whole-frame pass found no usable pose for (far people) gets its zoomed pose instead.
         if location_momentum.GESTURE_FROM_ZOOM and location_momentum.LOCATION_AWARE_MOMENTUM:
@@ -574,15 +591,39 @@ class Command(IncidentMixin, BaseCommand):
                 kp = location_momentum.ensure_keypoints(self, track, now_ts)
                 if kp is None:
                     continue
-                ratio = recognition.hand_to_mouth_ratio(kp)
-                if ratio is not None:
-                    self.stats["gesture counter fed by zoomed pose"] += 1
-                    self._count_gesture(track, ratio, now_ts)
+                ratio, why = recognition.gesture_ratio(kp, person_height=track.box[3] - track.box[1])
+                if ratio is None:
+                    self.stats[f"gesture skipped: {why}"] += 1
+                    continue
+                self.stats["gesture counter fed by zoomed pose"] += 1
+                self._count_gesture(track, ratio, now_ts)
+
+    def _bottle_standdown(self, track, now_ts):
+        """True once the drinking engine has had a confident Bottle (watch_merged keeps only conf >= BOTTLE_STANDDOWN_MIN_CONF)
+        on this person for BOTTLE_STANDDOWN_MIN_TOTAL_SECONDS in total within the last BOTTLE_STANDDOWN_SECONDS.
+
+        Smoking runs before drinking in a frame, so this reads the PREVIOUS frames' associations (self.bottle_seen)."""
+        self.bottle_seen[:] = [b for b in self.bottle_seen if now_ts - b[2] <= BOTTLE_STANDDOWN_SECONDS]   # in place: watch_merged shares this list
+        times = []
+        for ext, box, t in self.bottle_seen:
+            if track.ext_id is not None and ext is not None:
+                if track.ext_id == ext:
+                    times.append(t)
+            elif track.box is not None and box is not None and recognition._iou(track.box, box) >= BOTTLE_STANDDOWN_IOU:
+                times.append(t)
+        times.sort()
+        total = sum(min(b - a, BOTTLE_STANDDOWN_GAP_SECONDS) for a, b in zip(times, times[1:]))
+        return total >= BOTTLE_STANDDOWN_MIN_TOTAL_SECONDS
 
     def _count_gesture(self, track, ratio, now_ts):
         """One person's wrist->nose ratio into their gesture counter (and the hi-res cigarette check on a new puff)."""
+        if self._bottle_standdown(track, now_ts):
+            track.reset_hand()
+            self.stats["gesture skipped: bottle on this person (drinking)"] += 1
+            return
         still = track.mostly_stationary(now_ts)
-        n = track.update_gesture(ratio, now_ts, self.puff_window, still=still)
+        close = track.box is not None and (track.box[3] - track.box[1]) >= tracking.STRONG_GESTURE_MIN_BOX_PX
+        n = track.update_gesture(ratio, now_ts, self.puff_window, still=still, strong=close)
         if n:
             self.stats[f"hand-to-mouth gestures (person #{track.id})"] = n
         # A NEW puff starts the high-resolution cigarette check (path 2).
@@ -906,6 +947,8 @@ class Command(IncidentMixin, BaseCommand):
             return
 
         track.vote(dets, now_ts)       # keeps the label history that track.dets draws from
+        if dets:
+            track.smoke_item_seen = True   # a smoking item has been on this person at some point (see PUFF_ONLY_NEEDS_ITEM_FOR_POSSIBLE)
         self._gate_frame = frame       # v6.2: the location gate may need this frame's keypoints
         # Object cue: momentum per (track, class) -- replaces the vote + dwell gate.
         cue = self._object_cue(track, dets, now_ts)
@@ -940,12 +983,18 @@ class Command(IncidentMixin, BaseCommand):
             location_momentum.update_puffs(self, track, dets, now_ts)
             if object_on:
                 # sticky: the caps only block the FIRST rise to Possible / Likely
-                cap, cap_reason = location_momentum.puff_cap(track, now_ts, self._incident_level(("smoke", track.id)))
+                cap, cap_reason = location_momentum.puff_cap(track, now_ts, self._incident_level(("smoke", track.id)),
+                                                           conf=best_score, momentum=cue.momentum)
 
         key = ("smoke", track.id)
+        item_seen = getattr(track, "smoke_item_seen", False)
+        strong = track.strong_gesture(now_ts)      # sustained close-range draws lift the no-item cap (tracking.STRONG_GESTURE_*)
         score = scoring.Score("smoking", scoring.SMOKING_WEIGHTS, cues,
                               previous_level=self._incident_level(key), object_on=object_on,
-                              cap=cap, cap_reason=cap_reason)
+                              cap=cap, cap_reason=cap_reason,
+                              puff_only_max=(scoring.WARNING if item_seen or strong or not PUFF_ONLY_NEEDS_ITEM_FOR_POSSIBLE
+                                             else scoring.MONITORING),
+                              strong_gesture=strong and not item_seen)
         self._debug_note("Smoking", key, track.id, track.box, score, cue.momentum)
         if not score.stored:
             if puffs and not object_on:
@@ -986,6 +1035,12 @@ class Command(IncidentMixin, BaseCommand):
         ratio = getattr(track, "last_mouth_ratio", None)
         fired = (seen is not None and ratio is not None
                  and (now_ts - seen) <= MOUTH_FRESH_SECONDS and ratio <= MOUTH_PROXIMITY)
+        # The ratio above is measured on the RAW detections (_apply_mouth_cue runs before the location gate), so it also fires for
+        # a cigarette the gate rejected as "[off-anchor]" (ALT-0194 / ALT-0196). Only a hit the gate ACCEPTED on the mouth anchor is
+        # "near mouth". The hold below still carries a genuine one for cue_hold seconds.
+        if fired and location_momentum.LOCATION_AWARE_MOMENTUM and not location_momentum.accepted_at_mouth(track, now_ts):
+            fired = False
+            self.stats["near mouth withheld: not accepted on the mouth anchor"] += 1
         # Held for `cue_hold` seconds after it last fired: the item goes in and out of range of the
         # mouth frame to frame, and scoring each frame alone made the status flicker.
         return self._sticky(("smoke", track.id), "near_mouth", fired, now_ts)

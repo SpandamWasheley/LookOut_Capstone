@@ -1,0 +1,123 @@
+=== 4a video-time accuracy: smoking clip, run T1 (events at logged video_time vs the frame that matches the saved event image) ===
+[
+ {
+  "event": "E0001",
+  "status": "Monitoring",
+  "logged_video_time": 4.269,
+  "best_matching_frame_time": 4.3,
+  "abs_difference_sec": 0.03,
+  "mean_pixel_diff": 2.21
+ },
+ {
+  "event": "E0001",
+  "status": "Possible",
+  "logged_video_time": 6.469,
+  "best_matching_frame_time": 6.49,
+  "abs_difference_sec": 0.02,
+  "mean_pixel_diff": 1.86
+ },
+ {
+  "event": "E0001",
+  "status": "Likely",
+  "logged_video_time": 21.969,
+  "best_matching_frame_time": 21.98,
+  "abs_difference_sec": 0.01,
+  "mean_pixel_diff": 2.59
+ }
+]
+=== 4a video-time accuracy: parking clip run c75439 ===
+[
+ {
+  "event": "E0001",
+  "status": "Monitoring",
+  "logged_video_time": 2.008,
+  "best_matching_frame_time": 2.1,
+  "abs_difference_sec": 0.09,
+  "mean_pixel_diff": 3.04
+ },
+ {
+  "event": "E0002",
+  "status": "Monitoring",
+  "logged_video_time": 15.508,
+  "best_matching_frame_time": 15.47,
+  "abs_difference_sec": 0.04,
+  "mean_pixel_diff": 2.39
+ },
+ {
+  "event": "E0003",
+  "status": "Likely",
+  "logged_video_time": 40.008,
+  "best_matching_frame_time": 40.01,
+  "abs_difference_sec": 0.0,
+  "mean_pixel_diff": 2.7
+ },
+ {
+  "event": "E0004",
+  "status": "Monitoring",
+  "logged_video_time": 49.308,
+  "best_matching_frame_time": 49.29,
+  "abs_difference_sec": 0.02,
+  "mean_pixel_diff": 2.5
+ }
+]
+=== 4b slowed run (0.2 s/frame, 1.46 fps) vs normal run (2.15 fps) ===
+{
+ "status_events_A": 5,
+ "status_events_B": 5,
+ "status_identical": true,
+ "only_in_A": [],
+ "only_in_B": [],
+ "ai_identical": true,
+ "ai_A": [
+  [
+   "E0001",
+   "Disagrees",
+   "unclear",
+   "Likely"
+  ]
+ ],
+ "ai_B": [
+  [
+   "E0001",
+   "Disagrees",
+   "unclear",
+   "Likely"
+  ]
+ ]
+}
+=== 6 repeatability: T1 (direct worker) vs 6b0674 (queue) ===
+{
+ "status_events_A": 5,
+ "status_events_B": 5,
+ "status_identical": true,
+ "only_in_A": [],
+ "only_in_B": [],
+ "ai_identical": true,
+ "ai_A": [
+  [
+   "E0001",
+   "Disagrees",
+   "unclear",
+   "Likely"
+  ]
+ ],
+ "ai_B": [
+  [
+   "E0001",
+   "Disagrees",
+   "unclear",
+   "Likely"
+  ]
+ ]
+}
+=== 6 repeatability: parking threshold-20 run 8c8557 vs c75439 ===
+{
+ "status_events_A": 4,
+ "status_events_B": 4,
+ "status_identical": true,
+ "only_in_A": [],
+ "only_in_B": [],
+ "ai_identical": true,
+ "ai_A": [],
+ "ai_B": []
+}

@@ -119,6 +119,14 @@ ANCHOR_MATCH_REACH = 2.0
 # HOLDER's heights (spec decision: about 1.5-2, configurable in Settings).
 NEAR_PERSON_HEIGHTS = 1.75
 
+# What counts as a real second person (holdup "2 people" rule). A partner must have been DETECTED by the person detector in
+# THIS frame (not a predicted / lost / grace-period track), be big enough to be a person standing with the holder, be detected
+# with some confidence, and have stayed put: a rider or vehicle passing through overlaps for a moment and moves on.
+PARTNER_MIN_HEIGHT_FRAC = 0.5       # partner box height >= this x the knife holder's box height
+PARTNER_MIN_CONF = 0.4              # person-detector confidence of the partner's box this frame
+PARTNER_STILL_SECONDS = 2.0         # the partner must have stayed within PARTNER_STILL_MAX_FRAC for this long ...
+PARTNER_STILL_MAX_FRAC = 0.6        # ... of its own box widths (tracking.STATIONARY_DIST's measure)
+
 # --- Holdup v2: sequencing and memory ------------------------------------------
 # E12 (the freeze) only counts if the knife was seen DURING it or up to this many
 # seconds BEFORE it began. A freeze that ended before any knife appeared is two
@@ -251,6 +259,27 @@ def _seat_region(box):
     x1, y1, x2, y2 = box
     w, h = x2 - x1, y2 - y1
     return (x1 + 0.2 * w, y1, x2 - 0.2 * w, y1 + 0.5 * h)
+
+
+def partner_problem(holder, other, now):
+    """Why `other` cannot be the knife holder's second person, or "" when it can.
+
+    Judged on real detections only: a track the detector did not match this frame is a prediction (its last box simply
+    sits where it was), and a prediction never counts as a person standing next to the holder."""
+    if getattr(other, "is_scene", False):
+        return "not a person"
+    if not other.seen_at(now):
+        return "not detected this frame"
+    conf = getattr(other, "conf", None)
+    if conf is not None and conf < PARTNER_MIN_CONF:
+        return "low detection confidence"
+    if other.height < PARTNER_MIN_HEIGHT_FRAC * max(holder.height, 1):
+        return "too small next to the holder"
+    if other.age(now) < PARTNER_STILL_SECONDS:
+        return "seen too briefly to be standing"
+    if not other.stationary(now, PARTNER_STILL_SECONDS, PARTNER_STILL_MAX_FRAC):
+        return "moving, not standing"
+    return ""
 
 
 class Evidence:
@@ -1116,9 +1145,15 @@ class TheftEngine:
 
     def _pair_evidence(self, tracks, now, reach, threats, is_night):
         out = []
-        for i, ta in enumerate(tracks):
-            for tb in tracks[i + 1:]:
+        # The frozen-pair measure (E12) runs on tracks the detector actually matched THIS frame. A lost track keeps its last
+        # box, which is "frozen" by construction; letting it pair up manufactured a second person out of a ghost.
+        real = [t for t in tracks if t.seen_at(now) and (t.conf is None or t.conf >= PARTNER_MIN_CONF)]
+        self._live = {t.id: t for t in real}
+        updated = set()
+        for i, ta in enumerate(real):
+            for tb in real[i + 1:]:
                 key = (min(ta.id, tb.id), max(ta.id, tb.id))
+                updated.add(key)
                 if (location_momentum.fake_person_filter_on()
                         and location_momentum.is_shadow_pair(ta.box, tb.box)):
                     self.pairs.pop(key, None)            # person + own shadow: not a pair
@@ -1142,6 +1177,13 @@ class TheftEngine:
                 holdup = self._holdup(state, ta, tb, now, threats, is_night)
                 if holdup is not None:
                     out.append(holdup)
+        for key, state in self.pairs.items():
+            if key not in updated and state.freeze_ok:
+                # One of the pair was not detected this frame: the freeze stops being measured. `freeze_last` is kept, so the
+                # cue_hold window (flicker tolerance) still runs from the last REAL frame, and no longer.
+                state.freeze_ok = False
+                state.freeze_since = None
+                self._bump("holdup pair: freeze dropped, a partner was not detected this frame")
         return out
 
     def _snatch(self, state, ta, tb, now, is_night):
@@ -1311,7 +1353,8 @@ class TheftEngine:
             # Spec v6 section 7: a second person must be NEAR the knife holder
             # (within near_person_heights of the HOLDER's height) to go above
             # Monitoring.
-            others = [(o, _person_norm_distance(t.box, o.box)) for o in tracks if o is not t]
+            others = [(o, _person_norm_distance(t.box, o.box)) for o in tracks
+                      if o is not t and not partner_problem(t, o, now)]
             nearest = min(others, key=lambda x: x[1], default=None)
             near = nearest is not None and nearest[1] <= self.near_person_heights
             ev = self._evidence(
@@ -1401,7 +1444,7 @@ class TheftEngine:
         stamp = getattr(track, "loiter_last_seen", None)
         return stamp is not None and 0 <= now - stamp <= LOITER_MEMORY_SECONDS
 
-    def holdup_pair_cues(self, holder_id, e14_times, now, hold=5.0):
+    def holdup_pair_cues(self, holder_id, e14_times, now, hold=5.0, holder=None):
         """E12 and E11->E12 for the knife holder, as {rule: weight}.
 
         E12 counts when a pair involving the holder is frozen now (or was a
@@ -1416,6 +1459,11 @@ class TheftEngine:
         for (a, b), st in self.pairs.items():
             if holder_id not in (a, b) or st.freeze_start_ok is None:
                 continue
+            if holder is not None:
+                # With the holder's track in hand, the other half of the pair has to be a valid partner right now.
+                other = getattr(self, "_live", {}).get(b if a == holder_id else a)
+                if other is None or partner_problem(holder, other, now):
+                    continue
             active = st.freeze_ok or (st.freeze_last is not None and now - st.freeze_last <= hold)
             if not active:
                 continue
