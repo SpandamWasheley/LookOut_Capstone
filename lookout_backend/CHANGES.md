@@ -331,6 +331,32 @@ Measured on the clips I could rerun. The earlier J2 runs and mine do not agree o
 - **Re-run of S 2NearFar (one dry run, crops ON):** the smoking alert does **NOT** stay Possible, and the reason is not the reset. Smoking id 12 reaches Possible at 41.15 s (cigarette + near_mouth, 0.55), has a cue-less frame at 41.19 s (level now kept, no cap), and at 46.79 s scores cigarette only = 0.40, below the 0.50 floor, so it drops to Monitoring by the normal rule (alert E0003 status change 46.787 s). `peak_level` stays Possible, so under the new listing the alert stays in the Violations tab labelled "Monitoring, peaked at Possible". The old failure (a capped 0.55 flipping to Monitoring) is gone; this one is a sustained 0.40 score. If you want Possible to survive a few seconds of lower score too, that needs a time-based hold on the drop (for example `cue_hold_seconds`) in `Score`/`_incident_sync`; I did not add one because you specified the existing hysteresis.
 - Run-to-run note: ids and the drinking path are as in K (smoking 12, no drinking Possible on the far person in this run).
 
+## M. Gesture counter, bottle stand-down, repeated-draw rule (merged_v2.pt only, no Qwen/VLM in the runs)
+
+What changed
+- Hand down is now 1.0 shoulder-widths: `HAND_LOWERED_RATIO` 1.3 -> 1.0, core/vision/tracking.py:85. Raised stays 0.7 (tracking.py:84).
+- Apex hold is now 1.0 s: `GESTURE_APEX_HOLD_SECONDS` 0.6 -> 1.0, tracking.py:89.
+- Bottle stand-down needs a CONTINUOUS run: Bottle conf >= 0.5 on the same person for >= 3.0 s, samples no more than 1.0 s apart (`BOTTLE_STANDDOWN_MIN_RUN_SECONDS`, watch_smoking.py:120; logic in `_bottle_standdown`, watch_smoking.py:601-621). It replaced the old "2 s IN TOTAL within 10 s", so scattered flickers no longer add up.
+- Repeated-draw rule reuses the existing strong-gesture path (tracking.py:94-103, `strong_gesture` 502): 3 draws (was 2), each held >= 1.0 s (was 1.5), within 120 s (was 90), on a person box >= 150 px (was 250; far vaper boxes measured 147-255 px, median ~200).
+- Facing check: unchanged. A sample with no usable face/pose gives no ratio, so it never reaches the draw counter (recognition.gesture_ratio).
+- Tag text is now "Repeated draws — no smoking item detected" (core/vision/scoring.py:300).
+- Item-less cap: the draw rule sets `puff_only_max` to Possible (watch_smoking.py:995-997), so `PUFF_ONLY_NEEDS_ITEM_FOR_POSSIBLE` does not block it. Never Likely: puff-only is clamped to `puff_only_max` even with a Likely carried over (scoring.py:380-384). Tested in tests_false_alarm_fixes.py (`test_repeated_draws_reach_possible_without_a_cigarette_and_never_likely`).
+- Tests updated for the new timings (tests_false_alarm_fixes.py, tests_v6210.py) and added for the stand-down (1.3 s vape misread, scattered flickers, exactly 3 s).
+
+Dry runs (crops on, VLM off, one at a time)
+- Vape Far Night.mkv: 0 smoking alerts. The far vaper (track 9, box 147-255 px) has 56 samples at ratio <= 1.0 but only 12 at <= 0.7, never held for 1.0 s, so 0 gestures and 0 draws. Only Monitoring rows: knife (theft) x2. A different person (track 11, 581 px) holds a hand at the cap for 4.6 s: that is 1 draw, not 3.
+- S VapeNightNear.mkv: 0 smoking alerts. Near vaper (track 5, 407-529 px): at-face runs <= 0.7 last only 0.9 s and 0.7 s, so 0 draws. His ratio jitters 0.4-1.1 during each draw.
+- S 2NearFar.mkv: 1 smoking alert, the near smoker (track 12), Possible at 41.15 s via the cigarette path, back to Monitoring at 46.79 s (same as section L). Far vaper (track 35, 134-316 px): 0 draws, no smoking alert, only a 3 s drinking Monitoring row (67.3 s) and knife Monitoring rows. The Bottle stand-down never fired in any of the three runs.
+- Result: the repeated-draw rule fires on none of the three vape clips, so the vapers are still missed. The new constants are stricter, not looser.
+
+Why, and what the data says (offline replay of the logged ratios, scratchpad only)
+- Pose ratio at these ranges is noisy: during a draw it bounces 0.4-1.1, so the hold timer keeps restarting. Samples are also sparse (gaps of 2-10 s when the pose is lost).
+- With raised 0.9 and a 3-sample median, the replay finds 2 draws on the near vaper (21.4 s, 27.2 s), 2 on the 2NearFar vaper (36.8 s, 88.6 s), 0 on the Far Night vaper. Even then no clip reaches 3 draws; two draws is the most any vaper has.
+- Not applied: raising 0.7 -> 0.9, a median filter, or lowering to 2 draws. Each changes what you asked for. They are the next thing to try.
+
+Duplicate-file check
+- Only one "Vape Far Night.mkv" exists (Accuracy\Smoking\, 69,888,187 bytes). There is no copy in HIde\, so nothing to compare.
+
 ## Tests
 
 New: `core/tests_false_alarm_fixes.py` (38 tests). Updated for the apex hold and the puff-only cap: `core/tests_incidents.py`, `core/tests_v6210.py`.

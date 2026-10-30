@@ -112,10 +112,10 @@ class GestureFromZoom(unittest.TestCase):
         poses = mock.patch.object(lm, "shared_poses", return_value=list(whole))
         with zoom, poses:
             self.cmd._feed_pose(self.frame, [self.t], self.now)
-        self.now += 0.05
+        self.now += 0.1
 
     def raise_and_drop(self, gap=0.6):
-        # a held raise: 15 samples 0.05 s apart = 0.7 s at the face (the apex hold is 0.6 s), then the hand drops
+        # a held raise: 15 samples 0.1 s apart = 1.5 s at the face (the apex hold is 1.0 s), then the hand drops
         for r in [2.0] + [0.5] * 15 + [2.0]:
             self.feed(r)
         self.now += gap
@@ -140,17 +140,18 @@ class GestureFromZoom(unittest.TestCase):
             ek.assert_not_called()
 
     def test_two_cycles_inside_one_second_are_one_gesture(self):
-        # each raise is held 0.7 s (the apex hold is 0.6 s); the second drop comes 0.7 s after the first
-        seq = ((0.0, 0.5), (0.7, 0.5), (0.8, 2.0), (0.9, 0.5), (1.6, 0.5), (1.7, 2.0),
-               (3.0, 0.5), (3.7, 0.5), (3.8, 2.0))
-        for now, r in seq:
-            self.t.update_gesture(r, now)
-        self.assertEqual(self.t.gesture_count(4.0), 2)           # 0.8 and 3.8; the 1.7 one is a re-dip
+        # each raise is held 1.0 s (the apex hold); the second drop comes 1.2 s after the first
+        seq = ((0.0, 0.5), (1.0, 0.5), (1.1, 2.0), (1.2, 0.5), (2.2, 0.5), (2.3, 2.0),
+               (4.0, 0.5), (5.0, 0.5), (5.1, 2.0))
+        with mock.patch.object(tracking, "GESTURE_MIN_GAP_SECONDS", 2.0):    # a held raise now takes >= 1.0 s, so widen the gap to see the merge
+            for now, r in seq:
+                self.t.update_gesture(r, now)
+            self.assertEqual(self.t.gesture_count(6.0), 2)       # 1.1 and 5.1; the 2.3 one is a re-dip
         with mock.patch.object(tracking, "GESTURE_MIN_GAP_SECONDS", 0.0):
             u = track(2)
             for now, r in seq[:6]:
                 u.update_gesture(r, now)
-            self.assertEqual(u.gesture_count(2.0), 2)
+            self.assertEqual(u.gesture_count(3.0), 2)
 
     def test_the_vaper_pattern_reaches_the_puff_only_threshold(self):
         # 3 raises 1.2 s apart inside the 5 minute window = the puff_pattern cue (>= 3) -> a tagged puff-only Possible
@@ -177,13 +178,13 @@ class StationarySwitch(unittest.TestCase):
     def test_gestures_are_tagged_still_or_moving_and_the_count_can_ask_for_still_only(self):
         t = track()
         t.update_gesture(0.5, 0.0, still=True)
-        t.update_gesture(0.5, 0.7, still=True)
-        t.update_gesture(2.0, 0.8, still=True)                   # still
-        t.update_gesture(0.5, 2.0, still=False)
-        t.update_gesture(0.5, 2.7, still=False)
-        t.update_gesture(2.0, 2.8, still=False)                  # walking
-        self.assertEqual(t.gesture_count(3.0), 2)
-        self.assertEqual(t.gesture_count(3.0, still_only=True), 1)
+        t.update_gesture(0.5, 1.0, still=True)
+        t.update_gesture(2.0, 1.1, still=True)                   # still
+        t.update_gesture(0.5, 3.0, still=False)
+        t.update_gesture(0.5, 4.0, still=False)
+        t.update_gesture(2.0, 4.1, still=False)                  # walking
+        self.assertEqual(t.gesture_count(5.0), 2)
+        self.assertEqual(t.gesture_count(5.0, still_only=True), 1)
 
     def test_feed_pose_tags_a_walking_person_as_not_still(self):
         cmd = Smoking()
@@ -193,10 +194,10 @@ class StationarySwitch(unittest.TestCase):
         end = walk(t, 3.0, step_px=7.0)
         frame = np.zeros((1440, 2560, 3), dtype=np.uint8)
         now = end
-        for r in [0.5] * 15 + [2.0]:                             # held at the face 0.7 s, then dropped
+        for r in [0.5] * 15 + [2.0]:                             # held at the face 1.4 s, then dropped
             with mock.patch.object(lm, "ensure_keypoints", return_value=kp(r)), mock.patch.object(lm, "shared_poses", return_value=[]):
                 cmd._feed_pose(frame, [t], now)
-            now += 0.05
+            now += 0.1
         self.assertEqual(t.gesture_count(now), 1)
         self.assertEqual(t.gesture_count(now, still_only=True), 0)
 

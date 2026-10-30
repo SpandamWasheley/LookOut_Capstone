@@ -82,23 +82,25 @@ PUFF_WINDOW_SECONDS = 20.0  # count completed puffs within this rolling window
 # drops; the hysteresis gap between the two keeps ordinary small movements from
 # counting.
 HAND_RAISED_RATIO = 0.7    # wrist within this many shoulder-widths of the nose = at face
-HAND_LOWERED_RATIO = 1.3   # beyond this = hand down
+HAND_LOWERED_RATIO = 1.0   # beyond this = hand down (was 1.3; the measured vape draws drop the hand only this far)
 # Apex hold: the hand only counts as "at the face" once the ratio has stayed <= HAND_RAISED_RATIO for this long, in VIDEO time.
 # A face touch / scratch / glance at a phone is over in a fraction of a second; a drag on a cigarette or vape is held. There is
 # deliberately no upper bound, so a long vape draw (2-4 s) passes.
-GESTURE_APEX_HOLD_SECONDS = 0.6
+GESTURE_APEX_HOLD_SECONDS = 1.0
 # Two consecutive at-face samples further apart than this do not prove the hand stayed up (the frames between were unknown /
 # the person was not seen), so the hold timer restarts instead of crediting the gap.
 GESTURE_APEX_MAX_GAP_SECONDS = 1.5
 GESTURE_WINDOW_SECONDS = 300.0   # spec v6: 3+ puffs within 5 minutes
-# Strong-gesture exception to "no smoking item seen -> at most Monitoring" (watch_smoking.PUFF_ONLY_NEEDS_ITEM_FOR_POSSIBLE): a
+# Repeated-draw exception to "no smoking item seen -> at most Monitoring" (watch_smoking.PUFF_ONLY_NEEDS_ITEM_FOR_POSSIBLE): a
 # pose-only person may reach Possible only with >= STRONG_GESTURE_MIN_DRAWS DRAWS, a draw being the hand held at the face
 # (ratio <= HAND_RAISED_RATIO) for >= STRONG_GESTURE_MIN_HOLD_S of video time, every sample of it on a person box at least
 # STRONG_GESTURE_MIN_BOX_PX tall (native res) that passed the facing check, and the draws within STRONG_GESTURE_WINDOW_S of each other.
-STRONG_GESTURE_MIN_BOX_PX = 250
-STRONG_GESTURE_MIN_HOLD_S = 1.5
-STRONG_GESTURE_MIN_DRAWS = 2
-STRONG_GESTURE_WINDOW_S = 90.0
+# Repeated-draw rule: 3 held draws (>= 1.0 s each) within 120 s. The box floor is set from the measured far vaper (Vape Far Night,
+# track box 147-255 px tall, ~200 median): 150 admits him, still excludes the tiny background people.
+STRONG_GESTURE_MIN_BOX_PX = 150
+STRONG_GESTURE_MIN_HOLD_S = 1.0
+STRONG_GESTURE_MIN_DRAWS = 3
+STRONG_GESTURE_WINDOW_S = 120.0
 
 # Dwell only accrues while a detection is this recent. The vote ratio alone has
 # inertia — it stays true for over a second after the last detection, because

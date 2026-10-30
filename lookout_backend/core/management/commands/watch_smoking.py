@@ -117,8 +117,8 @@ POSE_EVERY_N_FRAMES = 1
 PUFF_ONLY_NEEDS_ITEM_FOR_POSSIBLE = True
 BOTTLE_STANDDOWN_SECONDS = 10.0
 BOTTLE_STANDDOWN_MIN_CONF = 0.5            # a Bottle under this confidence does not count as the person holding one
-BOTTLE_STANDDOWN_MIN_TOTAL_SECONDS = 2.0   # ...and only after the Bottle has been on that person for this long IN TOTAL within the window
-BOTTLE_STANDDOWN_GAP_SECONDS = 1.0         # one sample credits at most this much time (a gap in the detections is not "still holding it")
+BOTTLE_STANDDOWN_MIN_RUN_SECONDS = 3.0     # ...and only after the Bottle has been on that person CONTINUOUSLY for this long (vape mis-reads: 1.0-1.3 s; a real drinker: 5.5 s)
+BOTTLE_STANDDOWN_GAP_SECONDS = 1.0         # two samples further apart than this are not one run (a gap in the detections is not "still holding it")
 BOTTLE_STANDDOWN_IOU = 0.5      # greedy tracking only: how well a bottle-holder's box must overlap the track's box
 
 
@@ -600,7 +600,8 @@ class Command(IncidentMixin, BaseCommand):
 
     def _bottle_standdown(self, track, now_ts):
         """True once the drinking engine has had a confident Bottle (watch_merged keeps only conf >= BOTTLE_STANDDOWN_MIN_CONF)
-        on this person for BOTTLE_STANDDOWN_MIN_TOTAL_SECONDS in total within the last BOTTLE_STANDDOWN_SECONDS.
+        on this person CONTINUOUSLY for BOTTLE_STANDDOWN_MIN_RUN_SECONDS, within the last BOTTLE_STANDDOWN_SECONDS. Samples
+        more than BOTTLE_STANDDOWN_GAP_SECONDS apart start a new run, so scattered flickers never add up.
 
         Smoking runs before drinking in a frame, so this reads the PREVIOUS frames' associations (self.bottle_seen)."""
         self.bottle_seen[:] = [b for b in self.bottle_seen if now_ts - b[2] <= BOTTLE_STANDDOWN_SECONDS]   # in place: watch_merged shares this list
@@ -612,8 +613,12 @@ class Command(IncidentMixin, BaseCommand):
             elif track.box is not None and box is not None and recognition._iou(track.box, box) >= BOTTLE_STANDDOWN_IOU:
                 times.append(t)
         times.sort()
-        total = sum(min(b - a, BOTTLE_STANDDOWN_GAP_SECONDS) for a, b in zip(times, times[1:]))
-        return total >= BOTTLE_STANDDOWN_MIN_TOTAL_SECONDS
+        run_start = longest = 0.0
+        for i, t in enumerate(times):
+            if i == 0 or t - times[i - 1] > BOTTLE_STANDDOWN_GAP_SECONDS:
+                run_start = t
+            longest = max(longest, t - run_start)
+        return longest >= BOTTLE_STANDDOWN_MIN_RUN_SECONDS
 
     def _count_gesture(self, track, ratio, now_ts):
         """One person's wrist->nose ratio into their gesture counter (and the hi-res cigarette check on a new puff)."""

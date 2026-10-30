@@ -297,7 +297,7 @@ CONDITIONAL_CUES = {
 PUFF_ONLY_CUE = "puff_pattern"
 PUFF_ONLY_TAG = "No smoking item detected — based on hand movement only"
 PUFF_ONLY_NO_ITEM_TEXT = "capped: no smoking item seen"
-PUFF_ONLY_STRONG_TAG = "Hand movement only — close range, sustained draws"
+PUFF_ONLY_STRONG_TAG = "Repeated draws — no smoking item detected"
 
 
 def _apply_conditionals(cues, kind):

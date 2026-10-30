@@ -71,11 +71,17 @@ class ApexHold(unittest.TestCase):
             t.update_gesture(r, now)
         self.assertEqual(t.gesture_count(1.0), 0)
 
+    def test_a_raise_held_0_9_s_is_not_a_cycle(self):
+        t = person(1)
+        for now, r in ((0.0, 0.5), (0.9, 0.5), (1.0, 2.0)):
+            t.update_gesture(r, now)
+        self.assertEqual(t.gesture_count(2.0), 0)
+
     def test_a_held_raise_is_one_cycle(self):
         t = person(1)
-        for now, r in ((0.0, 0.5), (0.7, 0.5), (0.8, 2.0)):
+        for now, r in ((0.0, 0.5), (1.0, 0.5), (1.1, 2.0)):
             t.update_gesture(r, now)
-        self.assertEqual(t.gesture_count(1.0), 1)
+        self.assertEqual(t.gesture_count(2.0), 1)
 
     def test_a_long_vape_draw_still_counts(self):
         t = person(1)
@@ -87,9 +93,9 @@ class ApexHold(unittest.TestCase):
 
     def test_leaving_the_raised_band_before_the_hold_restarts_it(self):
         t = person(1)
-        for now, r in ((0.0, 0.5), (0.4, 0.5), (0.5, 1.0), (0.6, 0.5), (1.0, 0.5), (1.1, 2.0)):
+        for now, r in ((0.0, 0.5), (0.4, 0.5), (0.5, 0.85), (0.6, 0.5), (1.0, 0.5), (1.1, 2.0)):
             t.update_gesture(r, now)
-        self.assertEqual(t.gesture_count(2.0), 0)                       # 0.4 s, then 0.4 s: neither reached 0.6 s
+        self.assertEqual(t.gesture_count(2.0), 0)                       # 0.4 s, then 0.4 s: neither reached 1.0 s
 
     def test_a_gap_in_the_samples_does_not_count_as_holding(self):
         t = person(1)
@@ -127,7 +133,7 @@ class FeedPoseSkips(unittest.TestCase):
         now = t0
         for r in [2.0] + [0.5] * 15 + [2.0]:
             self.feed(track, keypoints_for(r), now)
-            now += 0.05
+            now += 0.1                                                  # 15 raised samples = 1.5 s held (the apex hold is 1.0 s)
         return now
 
     def test_a_back_turned_person_never_scores(self):
@@ -147,7 +153,7 @@ class FeedPoseSkips(unittest.TestCase):
         now = 0.0
         for r in [2.0] + [0.5] * 15:
             self.feed(t, kp(r), now)
-            now += 0.05
+            now += 0.1
         self.assertEqual(t.hand_zone, "atface")
         self.feed(t, kp(2.0, nose=0.1), now)                           # an unknown frame while the hand is "down" in the pixels
         self.assertEqual(t.hand_zone, "atface")
@@ -166,17 +172,39 @@ class FeedPoseSkips(unittest.TestCase):
         self.assertEqual(t.gesture_count(end), 0)
         self.assertGreater(self.cmd.stats["gesture skipped: bottle on this person (drinking)"], 0)
 
-    def test_a_bottle_seen_for_under_two_seconds_in_total_does_not_stand_down(self):
+    def test_a_bottle_seen_for_under_three_seconds_does_not_stand_down(self):
         t = person(1)
         t.ext_id = 7
-        self.hold_bottle(7, tuple(t.box), seconds=1.5)
+        self.hold_bottle(7, tuple(t.box), seconds=2.5)
         end = self.run_cycle(t, lambda r: kp(r))
         self.assertEqual(t.gesture_count(end), 1)
+
+    def test_a_vape_misread_of_1_3_s_does_not_stand_down(self):
+        t = person(1)
+        t.ext_id = 7
+        for ts in (-1.3, -1.0, -0.5, 0.0):
+            self.cmd.bottle_seen.append((7, tuple(t.box), ts))
+        self.assertFalse(self.cmd._bottle_standdown(t, 0.0))
+
+    def test_flickers_that_only_add_up_to_three_seconds_do_not_stand_down(self):
+        t = person(1)
+        t.ext_id = 7
+        for start in (-9.0, -6.0, -3.0, 0.0):                           # 4 bursts of 0.5-1.0 s, gaps of 2 s between them
+            for dt in (0.0, 0.5):
+                self.cmd.bottle_seen.append((7, tuple(t.box), start + dt))
+        self.assertFalse(self.cmd._bottle_standdown(t, 0.0))
+
+    def test_a_continuous_run_of_exactly_three_seconds_stands_down(self):
+        t = person(1)
+        t.ext_id = 7
+        for i in range(7):
+            self.cmd.bottle_seen.append((7, tuple(t.box), -3.0 + i * 0.5))
+        self.assertTrue(self.cmd._bottle_standdown(t, 0.0))
 
     def test_a_gap_between_bottle_samples_is_not_credited(self):
         t = person(1)
         t.ext_id = 7
-        for ts in (-6.0, 0.0):                                          # two lone samples 6 s apart: 1 s credit at most
+        for ts in (-6.0, 0.0):                                          # two lone samples 6 s apart: never one run
             self.cmd.bottle_seen.append((7, tuple(t.box), ts))
         self.assertFalse(self.cmd._bottle_standdown(t, 0.0))
 
@@ -325,50 +353,52 @@ if __name__ == "__main__":
 
 
 class StrongGesture(unittest.TestCase):
-    """Sustained close-range draws lift the no-item cap (tracking.STRONG_GESTURE_*)."""
+    """Repeated held draws lift the no-item cap (tracking.STRONG_GESTURE_*): 3 draws of >= 1.0 s within 120 s."""
 
-    def draw(self, t, start, hold=1.6, strong=True):
-        for i in range(int(hold / 0.4) + 1):
-            t.update_gesture(0.5, start + i * 0.4, strong=strong)
+    def draw(self, t, start, hold=1.2, strong=True):
+        for i in range(int(hold / 0.2) + 1):
+            t.update_gesture(0.5, start + i * 0.2, strong=strong)
         t.update_gesture(2.0, start + hold + 0.1, strong=strong)
 
-    def test_two_sustained_close_draws_within_90_s(self):
+    def three(self, t, gap=30.0, **kw):
+        for i in range(3):
+            self.draw(t, i * gap, **kw)
+
+    def test_three_held_draws_within_120_s(self):
+        t = person(1)
+        self.three(t)
+        self.assertTrue(t.strong_gesture(62.0))
+
+    def test_two_draws_are_not_enough(self):
         t = person(1)
         self.draw(t, 0.0)
         self.draw(t, 30.0)
-        self.assertTrue(t.strong_gesture(32.0))
-
-    def test_one_draw_is_not_enough(self):
-        t = person(1)
-        self.draw(t, 0.0)
-        self.assertFalse(t.strong_gesture(5.0))
-
-    def test_draws_more_than_90_s_apart_do_not_pair(self):
-        t = person(1)
-        self.draw(t, 0.0)
-        self.draw(t, 100.0)
-        self.assertFalse(t.strong_gesture(102.0))
-
-    def test_a_draw_held_under_1_5_s_does_not_count(self):
-        t = person(1)
-        self.draw(t, 0.0, hold=1.0)
-        self.draw(t, 30.0, hold=1.0)
         self.assertFalse(t.strong_gesture(32.0))
+
+    def test_draws_spread_over_more_than_120_s_do_not_count(self):
+        t = person(1)
+        self.three(t, gap=70.0)
+        self.assertFalse(t.strong_gesture(142.0))
+
+    def test_a_draw_held_under_1_s_does_not_count(self):
+        t = person(1)
+        self.three(t, hold=0.8)
+        self.assertFalse(t.strong_gesture(62.0))
 
     def test_one_far_sample_inside_the_draw_spoils_it(self):
         t = person(1)
         self.draw(t, 0.0)
-        t.update_gesture(0.5, 30.0, strong=True)
-        t.update_gesture(0.5, 30.8, strong=False)
-        t.update_gesture(0.5, 31.7, strong=True)
-        t.update_gesture(2.0, 31.8, strong=True)
-        self.assertFalse(t.strong_gesture(32.0))
+        self.draw(t, 30.0)
+        t.update_gesture(0.5, 60.0, strong=True)
+        t.update_gesture(0.5, 60.6, strong=False)
+        t.update_gesture(0.5, 61.3, strong=True)
+        t.update_gesture(2.0, 61.4, strong=True)
+        self.assertFalse(t.strong_gesture(62.0))
 
     def test_small_person_never_earns_it(self):
         t = person(1)
-        self.draw(t, 0.0, strong=False)
-        self.draw(t, 30.0, strong=False)
-        self.assertFalse(t.strong_gesture(32.0))
+        self.three(t, strong=False)
+        self.assertFalse(t.strong_gesture(62.0))
 
     def test_the_exception_lifts_the_cap_and_tags_the_alert(self):
         s = scoring.Score("smoking", scoring.SMOKING_WEIGHTS, {"gesture", "puffs", "puff_pattern"}, object_on=False,
@@ -376,12 +406,24 @@ class StrongGesture(unittest.TestCase):
         self.assertEqual(s.level, scoring.WARNING)
         self.assertEqual(s.tag, scoring.PUFF_ONLY_STRONG_TAG)
 
+    def test_repeated_draws_reach_possible_without_a_cigarette_and_never_likely(self):
+        # every cue on, no smoking item: the item-less cap (PUFF_ONLY_NEEDS_ITEM_FOR_POSSIBLE) holds at Monitoring...
+        cues = {"gesture", "puffs", "puff_pattern"}
+        held = scoring.Score("smoking", scoring.SMOKING_WEIGHTS, cues, object_on=False, puff_only_max=scoring.MONITORING)
+        self.assertEqual(held.level, scoring.MONITORING)
+        # ...and the repeated-draw rule lifts it to Possible only, even carrying a Likely from the previous frame
+        for prev in (None, scoring.WARNING, scoring.VIOLATION):
+            s = scoring.Score("smoking", scoring.SMOKING_WEIGHTS, cues, object_on=False, previous_level=prev,
+                              puff_only_max=scoring.WARNING, strong_gesture=True)
+            self.assertEqual(s.level, scoring.WARNING)
+            self.assertEqual(s.tag, "Repeated draws — no smoking item detected")
+
     def test_feed_pose_marks_only_tall_boxes_as_close(self):
         cmd = Smoking()
         cmd.puff_window = 300.0
         cmd.stdout = mock.Mock()
         frame = np.zeros((1440, 2560, 3), dtype=np.uint8)
-        for height, expect in ((260, True), (240, False)):
+        for height, expect in ((160, True), (140, False)):
             t = person(1, box=(100, 100, 160, 100 + height))
             now = 0.0
             for r in [0.5] * 40 + [2.0]:
