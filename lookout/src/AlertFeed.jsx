@@ -6,6 +6,7 @@ import { mapAlert, levelColor } from "./alertModel";
 import { DispatchModal } from "./DispatchModal";
 import { TypeFilterDropdown } from "./TypeFilterDropdown";
 import { useTestingTools } from "./useTestingTools";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { getAlerts, getOfficers, getCameras, updateAlert } from "./api";
 
 function mapOfficer(raw) {
@@ -203,7 +204,16 @@ function DismissModal({ alert, onConfirm, onClose }) {
 // ── Alert card ────────────────────────────────────────────────────────────────
 const THIN_CARD_H = 56;
 
-function AlertCard({ alert, onView, thin = false, extraPad = 0 }) {
+// A card that fails to render is skipped (and logged) instead of taking the whole list, and so the tab, down with it.
+function AlertCard(props) {
+  return (
+    <ErrorBoundary label={`alert card ${props.alert?.id}`} resetKey={props.alert}>
+      <AlertCardView {...props} />
+    </ErrorBoundary>
+  );
+}
+
+function AlertCardView({ alert, onView, thin = false, extraPad = 0 }) {
   const vcfg = violationDisplay(alert.type);
   const VIcon = vcfg.icon;
   const officerCount = alert.officersAssignedNames.length;
@@ -514,9 +524,9 @@ export function AlertFeed({ showFilters = false, user }) {
     // alert must still match a "theft" filter selection (the checkboxes
     // below are built from VIOLATION_TYPES' canonical codes).
     if (typeFilter.size > 0 && !typeFilter.has(resolveViolationType({ code: a.type }).code)) return false;
-    // Peak, not current: an event that reached Possible stays on this panel even
-    // after its cues fade and it drops back to Monitoring. Same rule the server
-    // applies to the full list (AlertViewSet.get_queryset).
+    // NOTE: the server (AlertViewSet.get_queryset) hides an alert whose CURRENT level is Monitoring,
+    // so one that reached Possible and then faded back is gone from this list on the next poll even
+    // though this peak test would keep it. It only reappears with "Include Monitoring" on.
     if (!showFilters) return a.status === "active" && a.peakLevel !== "monitoring";
     if (statusFilter === "active")     return a.status === "active";
     if (statusFilter === "dispatched") return a.status === "dispatched";
@@ -749,6 +759,19 @@ export function AlertFeed({ showFilters = false, user }) {
   const modals = (
     <>
       {selectedAlert && (
+        <ErrorBoundary
+          label={`alert modal ${selectedAlert.id}`}
+          resetKey={selectedAlert}
+          fallback={
+            <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.4)" }}>
+              <div className="rounded-lg p-5 text-sm" style={{ background: "var(--card)", color: "var(--foreground)" }}>
+                <div className="font-semibold mb-1">This alert could not be displayed.</div>
+                <div className="mb-3" style={{ color: "var(--muted-foreground)" }}>{selectedAlert.id} — the details are unreadable. See the browser console.</div>
+                <button onClick={() => setSelectedAlert(null)} className="font-semibold cursor-pointer" style={{ color: "var(--primary)" }}>Close</button>
+              </div>
+            </div>
+          }
+        >
         <ViolationModal
           alert={selectedAlert}
           assignedOfficerNames={assignedOfficerNames(selectedAlert.id)}
@@ -761,6 +784,7 @@ export function AlertFeed({ showFilters = false, user }) {
           onResolved={handleCitationResolved}
           onDispatch={() => { setDispatchingAlert(selectedAlert); setSelectedAlert(null); }}
         />
+        </ErrorBoundary>
       )}
       {dismissTarget && (
         <DismissModal

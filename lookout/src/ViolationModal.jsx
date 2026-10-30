@@ -1152,7 +1152,8 @@ const HOLDUP_INDICATOR_LABELS = {
 function TriggeredBy({ alert }) {
   const t = alert.cues?.trigger;
   if (!t || t.track_id == null) return null;
-  const cues = (t.cues || []).map((i) => `${i.name} ${i.points}`).join(", ");
+  // Array.isArray, not `|| []`: a non-array value here (an older alert, a hand-edited row) would throw in .map and unmount the page.
+  const cues = (Array.isArray(t.cues) ? t.cues : []).map((i) => `${i?.name} ${i?.points}`).join(", ");
   return (
     <div className="mt-3 text-[13px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
       <span style={{ color: "var(--foreground)" }}>Triggered by:</span> ID {t.track_id}
