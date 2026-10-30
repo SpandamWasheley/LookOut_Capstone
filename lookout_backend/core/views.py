@@ -21,7 +21,7 @@ from django.core.exceptions import ValidationError
 import threading
 from django.core.validators import validate_email
 from django.db import transaction
-from django.db.models import Count
+from django.db.models import Count, Q
 from django.utils import timezone
 from django.utils.text import get_valid_filename
 from rapidfuzz import process as rapidfuzz_process
@@ -1005,20 +1005,23 @@ class AlertViewSet(viewsets.ModelViewSet):
         the normal alert list or notify anyone. Ask for them explicitly with
         ?level=monitoring (the dashboard watchlist) or ?include_monitoring=1.
 
-        Both lists split on the CURRENT level, so the two remain a clean
-        partition and nothing can fall between them. An event that reached
-        Possible and then faded back to Monitoring leaves Potential Violations
-        and goes to the watchlist: with "Include Monitoring" off, nothing
-        labelled Monitoring is shown. (It used to split on peak_level, which
-        kept a faded event listed under a Monitoring badge.)
+        Both lists split on the PEAK level (the highest status the event ever
+        reached), so they remain a clean partition and an event that reached
+        Possible or Likely stays in Potential Violations after its cues fade
+        (its card shows the current status and "peaked at ..."). It used to
+        split on the current level, and a Possible alert that dropped back to
+        Monitoring simply disappeared while a reviewer was looking at it.
+        A row with no peak recorded (older than peak_level) falls back to its
+        current level.
         """
         qs = super().get_queryset()
         if self.action == "list":
             params = self.request.query_params
+            quiet = Q(peak_level="monitoring") | Q(peak_level="", level="monitoring")
             if params.get("level") == "monitoring":
-                return qs.filter(level="monitoring")
+                return qs.filter(quiet)
             if params.get("include_monitoring") not in ("1", "true"):
-                qs = qs.exclude(level="monitoring")
+                qs = qs.exclude(quiet)
         return qs
 
     # Statuses that mean somebody has looked at the footage and closed the

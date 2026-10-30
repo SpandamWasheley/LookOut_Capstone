@@ -355,7 +355,9 @@ class IncidentMixin:
             top = max(slots.values(), key=lambda sl: sl.momentum, default=None)
             return ObjectCue(False, None, None, top.momentum if top else 0.0, None, why)
         cls = max(on, key=lambda c: slots[c].momentum)
-        conf = confs.get(cls, slots[cls].last_conf) or slots[cls].peak / 3.0
+        # The detection's own confidence: this frame's, else the most recent real one. (Not the momentum
+        # peak / 3, which read as a flat 1.0 whenever the alert was written on a frame with no detection.)
+        conf = confs.get(cls) or slots[cls].last_detected_conf
         return ObjectCue(True, names[cls], float(conf), slots[cls].momentum,
                          book.snapshot(track.id, cls), why)
 
@@ -519,10 +521,13 @@ class IncidentMixin:
         level = score.level
 
         if level == scoring.NONE:
-            # Behaviour points are still logged; the incident (if any) is no
-            # longer active and will be closed by _incident_gc after the grace.
-            if inc is not None:
-                inc.level = scoring.NONE
+            # Behaviour points are still logged; the incident (if any) is no longer active and
+            # will be closed by _incident_gc after the grace. inc.level is deliberately LEFT
+            # ALONE: it is the next frame's previous_level (hysteresis, and the sticky puff
+            # caps). Resetting it to NONE here made the next scoring frame look like a first
+            # rise, so a Possible event that had one cue-less frame came back capped to
+            # Monitoring and _incident_write lowered the stored row (ALT-0208). The stored
+            # level now falls only through Score's own drop-out rule.
             return inc.alert if inc is not None else None
 
         trigger = self._trigger_info(key, score, partner)

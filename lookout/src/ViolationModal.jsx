@@ -951,7 +951,12 @@ export function StatusCard({ alert, testingTools = false }) {
   );
   return (
     <InfoCard label="Status" tooltip={STATUS_TOOLTIP} aside={details || undefined}>
-      <div className="mt-1.5"><LevelPill label={label} /></div>
+      <div className="mt-1.5 flex items-center gap-2 flex-wrap">
+        <LevelPill label={label} />
+        {alert.peakLevelLabel && alert.peakLevelLabel !== label && (
+          <span className="text-[12px] font-medium" style={{ color: levelColor(alert.peakLevelLabel) }}>peaked at {alert.peakLevelLabel}</span>
+        )}
+      </div>
     </InfoCard>
   );
 }

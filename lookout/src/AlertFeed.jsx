@@ -204,6 +204,17 @@ function DismissModal({ alert, onConfirm, onClose }) {
 // ── Alert card ────────────────────────────────────────────────────────────────
 const THIN_CARD_H = 56;
 
+// "peaked at Likely": shown only when the event's highest status is not its current one (it reached
+// Possible/Likely and its cues faded). The list keeps such an alert on peak, so the card has to say why.
+function PeakNote({ alert }) {
+  if (!alert.peakLevelLabel || !alert.levelLabel || alert.peakLevelLabel === alert.levelLabel) return null;
+  return (
+    <span className="text-[12px] font-medium ml-1.5" style={{ color: levelColor(alert.peakLevelLabel) }}>
+      peaked at {alert.peakLevelLabel}
+    </span>
+  );
+}
+
 // A card that fails to render is skipped (and logged) instead of taking the whole list, and so the tab, down with it.
 function AlertCard(props) {
   return (
@@ -260,6 +271,7 @@ function AlertCardView({ alert, onView, thin = false, extraPad = 0 }) {
                 {alert.levelLabel && (
                   <span className="text-[12px] font-semibold flex-shrink-0" style={{ color: levelColor(alert.levelLabel) }}>
                     {alert.levelLabel}
+                    <PeakNote alert={alert} />
                   </span>
                 )}
               </div>
@@ -299,6 +311,7 @@ function AlertCardView({ alert, onView, thin = false, extraPad = 0 }) {
                     {alert.levelLabel}
                   </span>
                 )}
+                <PeakNote alert={alert} />
               </div>
               {/* Row 2: alert ID + time */}
               <div className="flex items-center gap-3 text-[13px]" style={{ color: "var(--muted-foreground)" }}>
@@ -524,9 +537,9 @@ export function AlertFeed({ showFilters = false, user }) {
     // alert must still match a "theft" filter selection (the checkboxes
     // below are built from VIOLATION_TYPES' canonical codes).
     if (typeFilter.size > 0 && !typeFilter.has(resolveViolationType({ code: a.type }).code)) return false;
-    // NOTE: the server (AlertViewSet.get_queryset) hides an alert whose CURRENT level is Monitoring,
-    // so one that reached Possible and then faded back is gone from this list on the next poll even
-    // though this peak test would keep it. It only reappears with "Include Monitoring" on.
+    // Peak, not current: an event that reached Possible stays on this panel even
+    // after its cues fade and it drops back to Monitoring. Same rule the server
+    // applies to the full list (AlertViewSet.get_queryset).
     if (!showFilters) return a.status === "active" && a.peakLevel !== "monitoring";
     if (statusFilter === "active")     return a.status === "active";
     if (statusFilter === "dispatched") return a.status === "dispatched";

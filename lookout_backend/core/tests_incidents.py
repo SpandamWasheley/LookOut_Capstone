@@ -539,3 +539,71 @@ class StickyAndContinuityTests(SmokingIncidentTests):
         self.assertEqual(labels[0], "Monitoring")
         self.assertEqual(labels[-1], "Likely")
         self.assertEqual(len(labels), len(set(labels)))        # no repeats from flicker
+
+
+class LevelSurvivesACuelessFrameTests(SmokingIncidentTests):
+    """ALT-0208: Possible, one frame with no scoring cue, and the row came back as Monitoring.
+
+    A cue-less frame used to reset the incident's level to NONE. The next frame then had no
+    previous_level, so the sticky puff cap (which only holds for an event already at Possible)
+    saw a "first rise", capped it to Monitoring, and the stored row was lowered. The level may
+    now only fall through Score's own drop-out rule.
+    """
+
+    KEY = ("smoke", 1)
+
+    def sync(self, cues, t, *, puffed=False):
+        """What _process_track does for a person with a cigarette and no pose: cap from puff_cap
+        (the sticky one, fed the incident's current level), score, sync."""
+        prev = self.cmd._incident_level(self.KEY)
+        cap, why = (None, "") if puffed else location_momentum.puff_cap(self.track, t, prev, conf=0.8, momentum=1.0)
+        score = scoring.Score("smoking", scoring.SMOKING_WEIGHTS, cues, previous_level=prev,
+                              object_on=bool(cues), cap=cap, cap_reason=why)
+
+        def create(level, with_clip):
+            return self.cmd._create_alert(score.score, "Cigarette", self.frame, description="d", box=BOX,
+                                          now=t, score_obj=score, object_confidence=0.8, with_clip=with_clip)
+
+        self.cmd._incident_sync(self.KEY, score, t, create=create, frame=self.frame, box=BOX)
+        return score
+
+    def open_at_possible(self):
+        self.sync({"cigarette", "near_mouth"}, 0.0, puffed=True)      # puffed: not capped, 0.55
+        row = self.rows()[-1]
+        self.assertEqual(row.level, scoring.WARNING)
+        return row
+
+    def test_one_cueless_frame_leaves_a_possible_row_possible(self):
+        row = self.open_at_possible()
+        none = self.sync(set(), 0.25)                                  # the cue-less frame
+        self.assertEqual(none.level, scoring.NONE)
+        self.assertEqual(self.cmd._incident_level(self.KEY), scoring.WARNING, "the incident's level was reset")
+        again = self.sync({"cigarette", "near_mouth"}, 0.5)            # same cues, no puff this time
+        self.assertEqual(again.level, scoring.WARNING, "the sticky cap did not hold after the gap")
+        row.refresh_from_db()
+        self.assertEqual(row.level, scoring.WARNING)
+        self.assertEqual(row.peak_level, scoring.WARNING)
+
+    def test_a_run_of_cueless_frames_does_not_lower_the_row_either(self):
+        row = self.open_at_possible()
+        for i in range(1, 20):
+            self.sync(set(), i * 0.25)
+        row.refresh_from_db()
+        self.assertEqual(row.level, scoring.WARNING)
+
+    def test_the_level_still_falls_through_the_normal_drop_out_rule(self):
+        row = self.open_at_possible()
+        self.sync(set(), 0.25)
+        low = self.sync({"cigarette"}, 0.5)                            # 0.40: under 0.55 - hysteresis
+        self.assertEqual(low.level, scoring.MONITORING)
+        row.refresh_from_db()
+        self.assertEqual(row.level, scoring.MONITORING)
+        self.assertEqual(row.peak_level, scoring.WARNING)              # the peak stays
+
+    def test_object_confidence_is_the_last_detection_not_the_momentum_peak(self):
+        for i in range(12):
+            self.step(i * 0.25, [CIG])                                 # 0.8 each frame; the cue turns ON
+        self.track.box = BOX
+        cue = self.cmd._object_cue(self.track, [], 3.1)                # a frame with no detection
+        self.assertTrue(cue.on)
+        self.assertAlmostEqual(cue.conf, 0.8, places=2)                # was 1.0 (momentum peak 3.0 / 3)

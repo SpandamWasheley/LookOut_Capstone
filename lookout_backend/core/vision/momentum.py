@@ -68,12 +68,13 @@ KNIFE_CONFIRM_SECONDS = 0.5
 
 
 class Slot:
-    __slots__ = ("momentum", "cue_on", "last_conf", "peak", "on_since", "held_until")
+    __slots__ = ("momentum", "cue_on", "last_conf", "last_detected_conf", "peak", "on_since", "held_until")
 
     def __init__(self):
         self.momentum = 0.0
         self.cue_on = False
         self.last_conf = 0.0
+        self.last_detected_conf = 0.0   # the most recent NONZERO confidence (last_conf is 0 on every frame the class is absent)
         self.peak = 0.0
         self.on_since = None        # when the cue last turned ON (the caller's clock), None while OFF
         self.held_until = None      # momentum does not decay before this time (see MomentumConfig.hold)
@@ -91,6 +92,8 @@ def update_momentum(slot, confidence, cfg=DEFAULT_CONFIG, now=None):
             return slot
     slot.momentum = min(slot.momentum * cfg.decay + confidence, cfg.max)
     slot.last_conf = confidence
+    if confidence > 0:
+        slot.last_detected_conf = confidence
     slot.peak = max(slot.peak, slot.momentum)
     if not slot.cue_on and slot.momentum >= cfg.on:
         slot.cue_on = True
