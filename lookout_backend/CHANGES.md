@@ -389,6 +389,25 @@ Part D: drinking solo sip rule (commit f43f8e3)
 - Mouth zone = the existing `_posture` check (`drinking_mouth_proximity`). With the mouth check off, or no face resolvable (far CCTV range), posture reads "held", so no sip is ever seen and a lone drinker stays at Monitoring. That follows from the rule as specified.
 - Tests: core/tests_solo_sip.py (15).
 
+## P. Vape: small-object puffs and the Bottle size gate (merged_v2.pt only; unit tests only, no clip runs)
+
+1. Settings restored / changed
+- Raised 0.9, 3-sample median, 2 draws and the `puff_pattern`-on-strong cue fix were already in the code from e185ec8 (tracking.py:84, :87-88, :106; watch_smoking.py:981-983). Nothing to restore.
+- Apex hold 1.0 -> 0.7 s: `GESTURE_APEX_HOLD_SECONDS`, tracking.py:93. A pose draw still needs the hand held 1.0 s (`STRONG_GESTURE_MIN_HOLD_S`, tracking.py:106); I did not touch it.
+- Differences between the committed code and the earlier experiment that alerted S VapeNightNear: I cannot prove which exact build alerted, but the code from before 83a46be differed in these places, and the committed code does not match them: apex hold 0.6 (now 0.7), hand-down ratio 1.3 (now 1.0), draw hold 1.5 s / box 250 px (now 1.0 s / 150 px), and the stand-down counted any 2 s of Bottle in 10 s (now 3 s continuous). The committed raised/median/2-draw/cue-fix code is identical to the uncommitted experiment I committed. The dry run on that code (S VapeNightNear, this session) gave no smoking alert; the Bottle stand-down is the other known suppressor (section earlier: 183 of 329 samples flagged), which rule 2 below addresses.
+
+2. Stand-down size gate: `watch_merged.holds_real_bottle` (watch_merged.py:78), used where the drinking engine records Bottle-to-person associations (watch_merged.py:672). A Bottle stands smoking down only with conf >= `BOTTLE_STANDDOWN_MIN_CONF` (0.5) AND box height >= `tracking.VAPE_BOTTLE_MAX_FRAC` (0.10) of the person box; the >= 3 s continuous run in `_bottle_standdown` is unchanged. A smaller Bottle never stands down smoking.
+
+3. Small-object puff: a Bottle under 10% of the person height, conf >= `VAPE_PUFF_MIN_CONF` (0.5, my choice; you did not give one), inside the mouth zone (the drinking engine's own `_posture`, so it needs a mouth anchor) for >= `VAPE_PUFF_MIN_HOLD_S` (0.7 s) is one "puff (no item)", pose or no pose. `tracking.SmallBottlePuff` (tracking.py, run logic), `watch_drinking._note_vape_puff` (writes the shared `vape_puffs` list that watch_merged hands to both engines), `watch_smoking._absorb_object_puffs` (reads it, matched by tracker id, or by box overlap under greedy tracking). It joins the pose draws in `Track._draws`; 2 of them (pose or object) open the puff-only Possible exactly as 2 pose draws do (`strong_gesture`, the `gesture`/`puffs`/`puff_pattern` cues use max(gesture cycles, no-item draws)). An object puff within 3 s of a pose draw is the same draw and is not counted twice (`VAPE_PUFF_DEDUP_S`). Never Likely (puff-only stays clamped to Possible), never the cigarette puff counter (`location_momentum` `loc.puffs`), and ignored once a smoking item has been seen on the person. Shown as "puffs (no item) N/2" with each duration, as before.
+- Only in watch_merged: standalone watch_drinking has no smoking engine to read the list. `watch_all` has its own loop and does not share it.
+- The cigarette puff counter is unchanged.
+
+4. Drinking: a Bottle under 10% of the person height is dropped before the solo gate, so it is neither "bottle held" nor a sip (watch_drinking.py:1036). Group (inuman) paths are unchanged.
+
+5. Constants at the top of tracking.py: `VAPE_BOTTLE_MAX_FRAC` 0.10, `VAPE_PUFF_MIN_HOLD_S` 0.7, `VAPE_PUFF_MIN_CONF` 0.5, `VAPE_PUFF_RUN_GAP_S` 1.0, `VAPE_PUFF_DEDUP_S` 3.0. Tests: core/tests_vape_size_gate.py (one or more per rule), tests_false_alarm_fixes.py (apex hold 0.7).
+
+Not verified on clips: whether these change any of the three vape clips or SD NearFar.
+
 ## Tests
 
 New: `core/tests_false_alarm_fixes.py` (38 tests). Updated for the apex hold and the puff-only cap: `core/tests_incidents.py`, `core/tests_v6210.py`.

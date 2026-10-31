@@ -76,6 +76,47 @@ PUFF_RAISED_RATIO = 1.5    # within this many face-widths of the mouth = "raised
 PUFF_LOWERED_RATIO = 3.0   # beyond this = "lowered"
 PUFF_WINDOW_SECONDS = 20.0  # count completed puffs within this rolling window
 
+# Vape "object puff": a Bottle box shorter than VAPE_BOTTLE_MAX_FRAC of its person's box height is a vape / small device the
+# model mis-reads as a Bottle, not a drink. Held inside the mouth zone for VAPE_PUFF_MIN_HOLD_S it counts as one "puff (no
+# item)" even with no pose. A Bottle that small never stands the smoking gesture counter down and never counts as drinking's
+# "bottle held" or "sip" (watch_merged, solo_sip). VAPE_PUFF_MIN_CONF is the confidence such a Bottle needs to count at all.
+# An object puff within VAPE_PUFF_DEDUP_S of a pose draw is the same draw seen twice and is not counted again.
+VAPE_BOTTLE_MAX_FRAC = 0.10
+VAPE_PUFF_MIN_HOLD_S = 0.7
+VAPE_PUFF_MIN_CONF = 0.5
+VAPE_PUFF_RUN_GAP_S = 1.0
+VAPE_PUFF_DEDUP_S = 3.0
+
+
+def bottle_height_frac(det, person_box):
+    """A detection's box height as a fraction of the person box's height (0.0 when the person box has no height)."""
+    ph = float(person_box[3]) - float(person_box[1])
+    return (float(det[3]) - float(det[1])) / ph if ph > 0 else 0.0
+
+
+class SmallBottlePuff:
+    """One person's run of a small Bottle held in the mouth zone. `update` returns None until the run has lasted
+    VAPE_PUFF_MIN_HOLD_S, then (run number, video time it was first counted, seconds held so far). Samples further apart
+    than VAPE_PUFF_RUN_GAP_S start a new run."""
+
+    def __init__(self):
+        self.start = None
+        self.last = None
+        self.run = 0
+
+    def update(self, now, in_zone):
+        if not in_zone:
+            return None
+        if self.start is None or now - self.last > VAPE_PUFF_RUN_GAP_S:
+            self.start = now
+            self.run += 1
+        self.last = now
+        hold = now - self.start
+        if hold >= VAPE_PUFF_MIN_HOLD_S:
+            return self.run, self.start + VAPE_PUFF_MIN_HOLD_S, hold
+        return None
+
+
 # Pose-based hand-to-mouth gesture (long-range smoking, when the cigarette is too
 # small to see). Distance of a wrist to the nose, in SHOULDER-WIDTHS, so it is
 # distance-invariant. A gesture = the hand clearly reaches the face then clearly
@@ -90,7 +131,7 @@ HAND_LOWERED_RATIO = 1.0   # beyond this = hand down (was 1.3; the measured vape
 # Apex hold: the hand only counts as "at the face" once the ratio has stayed <= HAND_RAISED_RATIO for this long, in VIDEO time.
 # A face touch / scratch / glance at a phone is over in a fraction of a second; a drag on a cigarette or vape is held. There is
 # deliberately no upper bound, so a long vape draw (2-4 s) passes.
-GESTURE_APEX_HOLD_SECONDS = 1.0
+GESTURE_APEX_HOLD_SECONDS = 0.7
 # Two consecutive at-face samples further apart than this do not prove the hand stayed up (the frames between were unknown /
 # the person was not seen), so the hold timer restarts instead of crediting the gap.
 GESTURE_APEX_MAX_GAP_SECONDS = 1.5
@@ -312,7 +353,8 @@ class Track:
         self.hand_last = None             # the latest at-face sample of that run
         self.hand_strong = False          # every at-face sample of that run was close range (see STRONG_GESTURE_MIN_BOX_PX)
         self.strong_draws = deque()       # completion times of the sustained close-range draws (see STRONG_GESTURE_MIN_HOLD_S)
-        self.strong_draw_holds = deque()  # (completion time, seconds held) per draw, for the "puffs (no item)" display only
+        self.strong_draw_holds = deque()  # (completion time, seconds held) per pose draw, for the "puffs (no item)" display
+        self.object_puffs = {}            # entry key -> (time counted, seconds held): small-Bottle puffs from the drinking engine
         self.gestures = deque()           # timestamps of completed hand-to-mouth cycles
         self.gestures_still = deque()     # the subset completed while the person was mostly stationary (PUFF_ONLY_REQUIRE_STATIONARY)
         # Rolling (timestamp, box) history for stationarity checks (watch_drinking's
@@ -524,17 +566,34 @@ class Track:
             self.strong_draw_holds.popleft()
         return len(self.gestures)
 
+    def note_object_puff(self, key, when, hold):
+        """A small Bottle held in the mouth zone (VAPE_PUFF_MIN_HOLD_S): one more "puff (no item)", pose or no pose. `key`
+        names the run, so a run still going just updates its hold."""
+        self.object_puffs[key] = (when, hold)
+        if len(self.object_puffs) > 50:
+            for k in sorted(self.object_puffs, key=lambda k: self.object_puffs[k][0])[:-50]:
+                del self.object_puffs[k]
+
+    def _draws(self, now, window):
+        """[(time, seconds held)] of this person's no-item draws inside `window`, oldest first: the pose draws plus the
+        object puffs, with an object puff dropped when a pose draw is within VAPE_PUFF_DEDUP_S of it (one draw, seen twice)."""
+        pose = [(t, h) for t, h in self.strong_draw_holds if now - t <= window]
+        obj = [(t, h) for t, h in self.object_puffs.values()
+               if now - t <= window and not any(abs(t - p) <= VAPE_PUFF_DEDUP_S for p, _ in pose)]
+        return sorted(pose + obj)
+
     def strong_gesture(self, now):
-        """True when STRONG_GESTURE_MIN_DRAWS sustained close-range draws completed within STRONG_GESTURE_WINDOW_S of each other."""
-        d = [t for t in self.strong_draws if now - t <= GESTURE_WINDOW_SECONDS]
+        """True when STRONG_GESTURE_MIN_DRAWS no-item draws (sustained close-range pose draws, or small-Bottle puffs)
+        happened within STRONG_GESTURE_WINDOW_S of each other. Never the cigarette puff counter."""
+        d = [t for t, _ in self._draws(now, GESTURE_WINDOW_SECONDS)]
         n = STRONG_GESTURE_MIN_DRAWS
         return any(d[i + n - 1] - d[i] <= STRONG_GESTURE_WINDOW_S for i in range(len(d) - n + 1))
 
     def no_item_puffs(self, now):
         """The held draws inside STRONG_GESTURE_WINDOW_S, as [seconds held, ...], oldest first. Display only: the
-        count shown as "puffs (no item) N/STRONG_GESTURE_MIN_DRAWS". Nothing reads this to score, and none of it
-        reaches location_momentum.update_puffs (the cigarette puff counter that gates Possible / Likely)."""
-        return [round(h, 1) for t, h in self.strong_draw_holds if now - t <= STRONG_GESTURE_WINDOW_S]
+        count shown as "puffs (no item) N/STRONG_GESTURE_MIN_DRAWS", and the no-item draw count that opens the puff-only
+        Possible. None of it reaches location_momentum.update_puffs (the cigarette puff counter that gates Possible / Likely)."""
+        return [round(h, 1) for _, h in self._draws(now, STRONG_GESTURE_WINDOW_S)]
 
     def reset_hand(self):
         """Forget the hand-to-mouth state in progress (not the cycles already counted). Used while the person is holding a

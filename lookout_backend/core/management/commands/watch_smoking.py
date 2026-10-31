@@ -151,6 +151,7 @@ class Command(IncidentMixin, BaseCommand):
         self.mouth_check = True
         self.require_puff = False
         self.bottle_seen = []          # [(ext_id, box, video_time)] drinking's Bottle-to-person associations; watch_merged fills it
+        self.vape_puffs = []           # [{"key", "ext", "box", "t", "hold"}] small-Bottle puffs the drinking engine saw; watch_merged fills it
         self.pose = True
         self.cascade_extra = False     # add a native-res person-crop pass to --far (watch_all sets it)
         self.cascade = False
@@ -598,6 +599,19 @@ class Command(IncidentMixin, BaseCommand):
                 self.stats["gesture counter fed by zoomed pose"] += 1
                 self._count_gesture(track, ratio, now_ts)
 
+    def _absorb_object_puffs(self, track, now_ts):
+        """Pull this person's small-Bottle puffs (drinking's engine, tracking.VAPE_BOTTLE_MAX_FRAC) into their no-item draw
+        list. The drinking engine runs after smoking in a frame, so this reads the previous frames' entries."""
+        for e in self.vape_puffs:
+            if now_ts - e["t"] > tracking.GESTURE_WINDOW_SECONDS:
+                continue
+            if track.ext_id is not None and e["ext"] is not None:
+                same = track.ext_id == e["ext"]
+            else:
+                same = track.box is not None and e["box"] is not None and recognition._iou(track.box, e["box"]) >= BOTTLE_STANDDOWN_IOU
+            if same:
+                track.note_object_puff(e["key"], e["t"], e["hold"])
+
     def _bottle_standdown(self, track, now_ts):
         """True once the drinking engine has had a confident Bottle (watch_merged keeps only conf >= BOTTLE_STANDDOWN_MIN_CONF)
         on this person CONTINUOUSLY for BOTTLE_STANDDOWN_MIN_RUN_SECONDS, within the last BOTTLE_STANDDOWN_SECONDS. Samples
@@ -962,10 +976,18 @@ class Command(IncidentMixin, BaseCommand):
         if not object_on and dets:
             self.stats["held back: momentum below ON"] += 1
 
+        # Small-Bottle puffs (a vape the model reads as a Bottle) join this person's no-item draws -- only while no smoking
+        # item has been seen on them, and never the cigarette puff counter (location_momentum.update_puffs).
+        if not getattr(track, "smoke_item_seen", False):
+            self._absorb_object_puffs(track, now_ts)
+
         # --- the cues (spec v6 section 6) ---
         # pose counter (Settings window); v6.2.10: with PUFF_ONLY_REQUIRE_STATIONARY, a puff-only Possible counts only still gestures
         puffs = track.gesture_count(now_ts, self.puff_window,
                                     still_only=location_momentum.PUFF_ONLY_REQUIRE_STATIONARY and not object_on)
+        # no-item draws: pose draws plus small-Bottle puffs, an object puff next to a pose draw counted once
+        draws_now = 0 if getattr(track, "smoke_item_seen", False) else len(track.no_item_puffs(now_ts))
+        puffs_cue = max(puffs, draws_now)
         cues = set()
         if (location_momentum.LOCATION_AWARE_MOMENTUM and location_momentum.NEAR_MOUTH_HELD_BEFORE_CONFIRM
                 and not object_on):
@@ -974,12 +996,12 @@ class Command(IncidentMixin, BaseCommand):
             cues.add("cigarette")
             if self._near_mouth(track, now_ts):
                 cues.add("near_mouth")
-        if puffs >= 1:
+        if puffs_cue >= 1:
             cues.add("gesture")
-        if puffs >= 2:
+        if puffs_cue >= 2:
             cues.add("puffs")
         strong = track.strong_gesture(now_ts)      # sustained close-range draws lift the no-item cap (tracking.STRONG_GESTURE_*)
-        if puffs >= self.puff_count or strong:     # the repeated-draw rule opens the puff-only path on its own count of draws
+        if puffs_cue >= self.puff_count or strong:     # the repeated-draw rule opens the puff-only path on its own count of draws
             cues.add("puff_pattern")
 
         # v6.2 puff gate: a cigarette (even at the mouth) needs a real puff -- a cigarette seen at a

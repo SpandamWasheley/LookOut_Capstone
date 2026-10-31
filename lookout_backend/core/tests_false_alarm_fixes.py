@@ -71,15 +71,18 @@ class ApexHold(unittest.TestCase):
             t.update_gesture(r, now)
         self.assertEqual(t.gesture_count(1.0), 0)
 
-    def test_a_raise_held_0_9_s_is_not_a_cycle(self):
+    def test_a_raise_held_0_6_s_is_not_a_cycle(self):
         t = person(1)
-        for now, r in ((0.0, 0.5), (0.9, 0.5), (1.0, 2.0)):
+        for now, r in ((0.0, 0.5), (0.6, 0.5), (0.7, 2.0)):
             t.update_gesture(r, now)
         self.assertEqual(t.gesture_count(2.0), 0)
 
+    def test_the_apex_hold_is_0_7_s(self):
+        self.assertEqual(tracking.GESTURE_APEX_HOLD_SECONDS, 0.7)
+
     def test_a_held_raise_is_one_cycle(self):
         t = person(1)
-        for now, r in ((0.0, 0.5), (1.0, 0.5), (1.1, 2.0)):
+        for now, r in ((0.0, 0.5), (0.7, 0.5), (0.8, 2.0)):
             t.update_gesture(r, now)
         self.assertEqual(t.gesture_count(2.0), 1)
 

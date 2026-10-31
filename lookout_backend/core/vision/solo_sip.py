@@ -6,7 +6,9 @@ Pure bookkeeping, no Django, no models: the watcher feeds it one sample per proc
     BOTTLE_MIN_RUN_SECONDS (two samples further apart than RUN_GAP_SECONDS are not one run).
   * Sip: a confident Bottle inside the mouth zone, continuously for SIP_MIN_HOLD_SECONDS.
 
-A vape draw lifts a mis-read "Bottle" to the face for a second or so, so a mouth-zone hit alone is not enough. Both
+A vape draw lifts a mis-read "Bottle" to the face for a second or so, so a mouth-zone hit alone is not enough. A Bottle
+box shorter than tracking.VAPE_BOTTLE_MAX_FRAC of the person's height is a vape, not a drink: the watcher never feeds it
+here, so it counts as neither "bottle held" nor a sip. Both
 conditions latch once met: after that the incident's level only falls through Score's own drop-out rule. Group
 (inuman) events do not use this gate.
 """

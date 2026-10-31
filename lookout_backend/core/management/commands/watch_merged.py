@@ -75,6 +75,13 @@ SETTINGS_REFRESH_SECONDS = 5
 # case-insensitively; anything the model returns that isn't one of these
 # three is dropped (and counted), never silently misrouted to the wrong
 # engine.
+def holds_real_bottle(track, dets):
+    """True when `dets` hold a Bottle that can stand smoking's gesture counter down: confidence >= BOTTLE_STANDDOWN_MIN_CONF
+    AND a box at least tracking.VAPE_BOTTLE_MAX_FRAC of the person's height. A smaller one is a vape, not a drink."""
+    return any(str(d[5]).lower() == "bottle" and d[4] >= BOTTLE_STANDDOWN_MIN_CONF
+               and tracking.bottle_height_frac(d, track.box) >= tracking.VAPE_BOTTLE_MAX_FRAC for d in dets)
+
+
 BOTTLE_SEEN_MAX = 200       # most Bottle-to-person associations kept for smoking's stand-down
 ROUTE_ENGINE = {"cigarette": "smoking", "bottle": "drinking", "knife": "thief"}
 
@@ -280,12 +287,16 @@ class Command(BaseCommand):
 
         self.engines = {}
         self.bottle_seen = []       # drinking's Bottle-to-person associations, read by smoking's gesture stand-down
+        self.vape_puffs = []        # drinking's small-Bottle puffs in the mouth zone, read by smoking's no-item draw count
         for name, cls in (("smoking", SmokingCommand),
                           ("drinking", DrinkingCommand),
                           ("thief", ThiefCommand)):
             cmd = cls()
             if name == "smoking":
                 cmd.bottle_seen = self.bottle_seen
+                cmd.vape_puffs = self.vape_puffs
+            elif name == "drinking":
+                cmd.vape_puffs = self.vape_puffs
             self._setup_engine(name, cmd)
             self.engines[name] = {"cmd": cmd, "tracker": tracking.PersonTracker()}
         self.engines["drinking"]["group_tracker"] = tracking.GroupTracker()
@@ -658,7 +669,7 @@ class Command(BaseCommand):
                 # Which people are holding a Bottle right now -- smoking's gesture counter stands down for them
                 # (watch_smoking.BOTTLE_STANDDOWN_SECONDS). Smoking runs first in the frame, so it reads these next frame.
                 for track, tdets in per_track.items():
-                    if not track.is_scene and track.box is not None and any(str(d[5]).lower() == "bottle" and d[4] >= BOTTLE_STANDDOWN_MIN_CONF for d in tdets):
+                    if not track.is_scene and track.box is not None and holds_real_bottle(track, tdets):
                         self.bottle_seen.append((track.ext_id, tuple(track.box), now))
                 del self.bottle_seen[:-BOTTLE_SEEN_MAX]       # smoking prunes by age; this only bounds a run where it is switched off
             if name == "smoking":

@@ -1032,9 +1032,13 @@ class Command(IncidentMixin, BaseCommand):
         gate = getattr(track, "solo_sip", None)
         if gate is None:
             gate = track.solo_sip = solo_sip.SoloSipGate()
-        confident = [d for d in dets if d[4] >= solo_sip.BOTTLE_MIN_CONF]
+        # A Bottle under tracking.VAPE_BOTTLE_MAX_FRAC of the person's height is a vape: never "bottle held", never a sip.
+        big = [d for d in dets if tracking.bottle_height_frac(d, track.box) >= tracking.VAPE_BOTTLE_MAX_FRAC]
+        confident = [d for d in big if d[4] >= solo_sip.BOTTLE_MIN_CONF]
         in_zone = bool(confident) and self._posture(frame, track, confident, now_ts, mouth_proximity) == "at-mouth"
-        gate.update(now_ts, max((d[4] for d in dets), default=None), in_zone)
+        gate.update(now_ts, max((d[4] for d in big), default=None), in_zone)
+        self._note_vape_puff(frame, track, [d for d in dets if d not in big and d[4] >= tracking.VAPE_PUFF_MIN_CONF],
+                             now_ts, mouth_proximity)
         group = self._cluster_of.get(track.id)
         params = getattr(self, "_gathering_params", None)
         folded = group is not None and params is not None and len(group.member_ids) >= params[0]
@@ -1076,6 +1080,30 @@ class Command(IncidentMixin, BaseCommand):
             extra_cues={"posture": posture, "momentum": cue.snapshot, "solo_sip": gate_summary,
                         "object_confidence": None if best_score is None else round(best_score, 3)},
         )
+
+    def _note_vape_puff(self, frame, track, small, now_ts, mouth_proximity):
+        """A small Bottle (tracking.VAPE_BOTTLE_MAX_FRAC) held in the mouth zone for tracking.VAPE_PUFF_MIN_HOLD_S is one "puff
+        (no item)", with or without pose. It goes on the list smoking reads (watch_merged shares it); standalone there is
+        no reader, so nothing is kept. Never the cigarette puff counter."""
+        shared = getattr(self, "vape_puffs", None)
+        if shared is None or track.box is None:
+            return
+        run = getattr(track, "small_bottle_puff", None)
+        if run is None:
+            run = track.small_bottle_puff = tracking.SmallBottlePuff()
+        in_zone = bool(small) and self._posture(frame, track, small, now_ts, mouth_proximity) == "at-mouth"
+        counted = run.update(now_ts, in_zone)
+        if counted is None:
+            return
+        number, when, hold = counted
+        key = (track.id, number)
+        for e in reversed(shared[-20:]):
+            if e["key"] == key:
+                e["hold"], e["box"] = hold, tuple(track.box)
+                return
+        shared.append({"key": key, "ext": track.ext_id, "box": tuple(track.box), "t": when, "hold": hold})
+        del shared[:-200]
+        self.stats["vape puff: small Bottle in the mouth zone"] += 1
 
     def _cooldown_blocks(self, box, now, cooldown, cooldown_center_dist):
         """True if we already alerted near roughly this spot inside the
