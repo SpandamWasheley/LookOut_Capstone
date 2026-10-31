@@ -1231,11 +1231,11 @@ function ScoreBreakdown({ alert }) {
             <>
               <tr>
                 <td className="py-0.5">bottle held</td>
-                <td className="py-0.5 text-right">{c.solo_sip.bottle_held_s} s (needs {c.solo_sip.bottle_needed_s} s)</td>
+                <td className="py-0.5 text-right">{c.solo_sip.bottle_now_s ?? 0} s (best {c.solo_sip.bottle_held_s} s, needs {c.solo_sip.bottle_needed_s} s)</td>
               </tr>
               <tr>
                 <td className="py-0.5">sip</td>
-                <td className="py-0.5 text-right">{c.solo_sip.sip_s} s (needs {c.solo_sip.sip_needed_s} s)</td>
+                <td className="py-0.5 text-right">{c.solo_sip.sip_now_s ?? 0} s (best {c.solo_sip.sip_s} s, needs {c.solo_sip.sip_needed_s} s)</td>
               </tr>
             </>
           )}

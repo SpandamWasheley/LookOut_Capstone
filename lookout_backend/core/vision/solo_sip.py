@@ -28,6 +28,12 @@ class _Run:
         self.last = None
         self.best = 0.0
 
+    def current(self, now):
+        """Length of the run going on at `now` (0.0 when the last sample is more than RUN_GAP_SECONDS old)."""
+        if self.start is None or now - self.last > RUN_GAP_SECONDS:
+            return 0.0
+        return self.last - self.start
+
     def feed(self, now, on):
         if not on:
             return
@@ -61,14 +67,16 @@ class SoloSipGate:
     def satisfied(self):
         return self.bottle_ok and self.sip_ok
 
-    def summary(self):
-        """What the testing view and the alert's score breakdown print."""
-        return {"bottle_held_s": round(self.bottle.best, 1), "sip_s": round(self.sip.best, 1),
+    def summary(self, now=None):
+        """What the testing view and the alert's score breakdown print: the run going on now and the best one so far."""
+        cur = lambda run: 0.0 if now is None else run.current(now)
+        return {"bottle_now_s": round(cur(self.bottle), 1), "sip_now_s": round(cur(self.sip), 1),
+                "bottle_held_s": round(self.bottle.best, 1), "sip_s": round(self.sip.best, 1),
                 "bottle_ok": self.bottle_ok, "sip_ok": self.sip_ok,
                 "bottle_needed_s": BOTTLE_MIN_RUN_SECONDS, "sip_needed_s": SIP_MIN_HOLD_SECONDS}
 
 
 def indicators(summary):
-    """Testing-view rows: 'bottle held 3.2 s', 'sip 1.4 s' (no points: they are gates, not weights)."""
-    return [{"name": "bottle held %.1f s" % summary["bottle_held_s"], "points": None},
-            {"name": "sip %.1f s" % summary["sip_s"], "points": None}]
+    """Testing-view rows: 'bottle held 1.2 s (best 4.8 s)', 'sip 0.0 s (best 2.7 s)' (no points: gates, not weights)."""
+    return [{"name": "bottle held %.1f s (best %.1f s)" % (summary.get("bottle_now_s", 0.0), summary["bottle_held_s"]), "points": None},
+            {"name": "sip %.1f s (best %.1f s)" % (summary.get("sip_now_s", 0.0), summary["sip_s"]), "points": None}]

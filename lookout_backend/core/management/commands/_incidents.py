@@ -301,13 +301,17 @@ class IncidentMixin:
 
     # ---- object cue: momentum per (track, class) ---------------------------
 
+    # class (lower case) -> seconds its momentum is frozen after the last accepted detection. The knife's hold is the
+    # holdup engine's; watch_drinking replaces this with the Bottle's (momentum.BOTTLE_HOLD_SECONDS).
+    momentum_holds = {"knife": momentum.KNIFE_HOLD_SECONDS}
+
     def _momentum_book(self):
         book = self.__dict__.get("_momentum")
         if book is None:
-            # Only the knife gets a hold: smoking and drinking keep the spec's pure decay.
-            knife_cfg = dataclasses.replace(momentum.DEFAULT_CONFIG, hold=momentum.KNIFE_HOLD_SECONDS)
-            book = self._momentum = momentum.MomentumBook(momentum.DEFAULT_CONFIG,
-                                                           per_class={"knife": knife_cfg})
+            # Only the classes in `momentum_holds` get a hold; the rest keep the spec's pure decay.
+            per_class = {cls: dataclasses.replace(momentum.DEFAULT_CONFIG, hold=secs)
+                         for cls, secs in self.momentum_holds.items()}
+            book = self._momentum = momentum.MomentumBook(momentum.DEFAULT_CONFIG, per_class=per_class)
             self._seen_track_ids = set()
         return book
 

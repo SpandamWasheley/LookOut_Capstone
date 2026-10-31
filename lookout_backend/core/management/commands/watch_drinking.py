@@ -978,6 +978,8 @@ class Command(IncidentMixin, BaseCommand):
                     found.append(d)
         return found
 
+    momentum_holds = {"bottle": momentum.BOTTLE_HOLD_SECONDS}      # drinking only: bursts of Bottle chain into one sighting
+
     def _process_track(self, track, dets, now_ts, dwell_seconds, cooldown,
                        frame, debug, *,
                        held_dwell_seconds, mouth_proximity, cooldown_center_dist):
@@ -1048,7 +1050,7 @@ class Command(IncidentMixin, BaseCommand):
         score = scoring.Score("drinking", scoring.DRINKING_WEIGHTS, cues,
                               previous_level=self._incident_level(key), object_on=object_on,
                               cap=solo_cap, cap_reason=solo_sip.CAP_TEXT)
-        gate_summary = gate.summary()
+        gate_summary = gate.summary(now_ts)
         self._debug_note("Drinking", key, track.id, track.box, score, cue.momentum,
                          extra_indicators=solo_sip.indicators(gate_summary) if gate_summary["bottle_held_s"] or gate_summary["sip_s"] else None)
         if folded:

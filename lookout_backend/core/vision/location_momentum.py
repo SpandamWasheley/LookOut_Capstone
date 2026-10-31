@@ -19,6 +19,13 @@ from core.vision import recognition
 LOCATION_AWARE_MOMENTUM = True      # master switch; False = behaviour exactly as before v6.2
 GATED_CLASSES = ("cigarette", "bottle")   # lower-case class names that need a location (knife is untouched)
 
+# Drinking only (class "bottle"): a Bottle is also accepted anywhere in the upper DRINKING_UPPER_BODY_FRAC of the SAME
+# person's box (face / chest / hands), not only at a wrist or the mouth anchor. Needs no keypoints. Cigarette and knife are
+# untouched. Hits accepted this way carry the kind UPPER_BODY and are exempt from the jump check (a bottle rising from the
+# chest to the mouth is a sip, not a jump).
+DRINKING_UPPER_BODY_FRAC = 0.60
+UPPER_BODY = "upper"
+
 KP_CONF_MIN = 0.3                   # a keypoint below this confidence is "missing"
 KP_MAX_AGE_SECONDS = 0.05           # keypoints must belong to THIS frame (pose runs every processed frame)
 POSE_MATCH_IOU = 0.3                # pose box <-> person track box
@@ -343,6 +350,12 @@ def anchor_kinds(center, anchors):
     return frozenset(k for k in (LEFT_WRIST, RIGHT_WRIST, MOUTH) if k in anchors and _dist(center, anchors[k]) <= close)
 
 
+def in_upper_body(center, person_box):
+    """True when the point is inside the person's box and in its top DRINKING_UPPER_BODY_FRAC."""
+    x1, y1, x2, y2 = person_box
+    return x1 <= center[0] <= x2 and y1 <= center[1] <= y1 + DRINKING_UPPER_BODY_FRAC * max(y2 - y1, 1)
+
+
 def _is_wrist_mouth_move(prev, new):
     return ((prev & set(WRISTS) and MOUTH in new) or (MOUTH in prev and new & set(WRISTS)))
 
@@ -386,17 +399,18 @@ def evaluate_track(cmd, track, dets, now):
             reason, kinds = "", frozenset()
             if class_flipped(now, box, cls):
                 reason = REASON_FLIP
-            elif anchors is None:
-                reason = REASON_NO_KP
             else:
-                kinds = anchor_kinds(c, anchors)
+                kinds = anchor_kinds(c, anchors) if anchors is not None else frozenset()
+                if not kinds and cls == "bottle" and in_upper_body(c, track.box):
+                    kinds = frozenset({UPPER_BODY})
                 if not kinds:
-                    reason = REASON_OFF_ANCHOR
+                    reason = REASON_NO_KP if anchors is None else REASON_OFF_ANCHOR
                 else:
                     last = loc.last_hit.get(cls)
                     if last is not None and now - last[3] <= JUMP_MEMORY_SECONDS:
                         moved = math.hypot(((c[0] - bx1) / bw - last[0]) * bw, ((c[1] - by1) / bh - last[1]) * bh)
-                        if moved > JUMP_HEIGHT_FRAC * bh and not _is_wrist_mouth_move(last[2], kinds):
+                        if (moved > JUMP_HEIGHT_FRAC * bh and not _is_wrist_mouth_move(last[2], kinds)
+                                and UPPER_BODY not in kinds and UPPER_BODY not in last[2]):
                             reason = REASON_JUMP
             if reason:
                 if best is None and d[4] > best_conf:

@@ -408,6 +408,30 @@ Part D: drinking solo sip rule (commit f43f8e3)
 
 Not verified on clips: whether these change any of the three vape clips or SD NearFar.
 
+## Q. Drinking: Bottle gap carry-over, upper-body gate, current vs best in the breakdown (unit tests only, no clip runs)
+
+Why (D Near 1.mkv, drinking ID 5, from the replay before this change): the Bottle was seen in bursts of 0.3-1 s; the longest stretch of momentum at or above ON was 1.3 s against the 2.0 s confirm time; 202 frames were rejected "off-anchor" and 77 "flip". Score stayed 0, so no row was created. The sip gate only caps a score, it cannot raise one.
+
+1. Gap carry-over (drinking only)
+- Momentum for the Bottle class is frozen (no decay) for `momentum.BOTTLE_HOLD_SECONDS` = 1.0 s after the last ACCEPTED Bottle sighting, so bursts under a second apart chain into one sighting. Uses the existing per-class `MomentumConfig.hold` that the knife already used. [momentum.py:66](core/vision/momentum.py#L66).
+- Wired per engine through `IncidentMixin.momentum_holds` ([_incidents.py:306](core/management/commands/_incidents.py#L306), book built at :311-314). Default is the knife's hold (holdup engine, unchanged). `watch_drinking` overrides it with the Bottle only ([watch_drinking.py:981](core/management/commands/watch_drinking.py#L981)); smoking's Cigarette gets no hold.
+- Not touched: `object_confirm_seconds` (still 2.0 s), Cigarette, knife.
+- A frame whose Bottle the location gate rejected has accepted confidence 0, so it is also carried over inside the 1.0 s.
+
+2. Upper-body location rule (drinking's Bottle only)
+- A Bottle is also accepted anywhere inside the top `DRINKING_UPPER_BODY_FRAC` = 0.60 of the SAME person's box (horizontally inside the box too), no keypoints needed. [location_momentum.py:26](core/vision/location_momentum.py#L26), `in_upper_body` :353, applied in `evaluate_track` :404. Cigarette and knife unchanged.
+- Hits accepted this way are exempt from the jump check (a bottle rising from the chest to the mouth is a sip): :413.
+- What "flip" is: a spot where the other engine (or the same one a moment ago) saw a DIFFERENT class (Cigarette vs Bottle, IoU over 0.3, within 5 processed frames) is treated as ambiguous and rejected, `class_flipped` ([location_momentum.py:208](core/vision/location_momentum.py#L208)), checked BEFORE any location test. This change does NOT affect flips: a flipped Bottle is still rejected wherever it is on the body. The 77 flip frames in D Near 1 will still be rejected; the 202 off-anchor (and the 6 no-kp) frames are the ones this can recover, where the Bottle centre is in the upper 60% of the person's box. "jump" (2 frames) is only exempted for upper-body hits.
+- Side effect to know: this widens what counts as a Bottle on the person, so it adds Monitoring rows for people holding a bottle at chest height. The solo Possible still needs the 3 s Bottle + 1 s sip gate and the vape size gate.
+
+3. Kept: the solo gate (Bottle >= 0.5 for 3 s continuous + a 1 s sip) and the small-Bottle size gate (< 10% of person height).
+
+4. Breakdown shows current next to best: "bottle held 1.2 s (best 4.8 s)", "sip 0.0 s (best 2.7 s)". `SoloSipGate.current` / `summary(now)` ([solo_sip.py:31](core/vision/solo_sip.py#L31), :70), stored as `cues.solo_sip.bottle_now_s` / `sip_now_s`, printed in [ViolationModal.jsx:1234](../lookout/src/ViolationModal.jsx#L1234) and the testing view. "Current" is the run going on at that frame (0 once the Bottle has been gone over 1.0 s).
+
+5. Tests: core/tests_drinking_carry.py (hold frozen / decays / chains bursts / per-engine wiring / confirm time unchanged; upper-body accept, lower reject, edge, same-person, cigarette untouched, flip still rejected, no jump), core/tests_solo_sip.py (current vs best).
+
+Not verified on clips: whether D Near 1 ID 5 now alerts.
+
 ## Tests
 
 New: `core/tests_false_alarm_fixes.py` (38 tests). Updated for the apex hold and the puff-only cap: `core/tests_incidents.py`, `core/tests_v6210.py`.

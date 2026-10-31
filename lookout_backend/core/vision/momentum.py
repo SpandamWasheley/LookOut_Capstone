@@ -59,6 +59,12 @@ DEFAULT_CONFIG = config_from_env()
 # two, short enough that a knife put away really does fade.
 KNIFE_HOLD_SECONDS = 1.0
 
+# The Bottle's hold (drinking only): a Bottle is seen in short bursts (a hand or arm crosses it, the model drops it for a
+# few frames) and the location gate also rejects frames as off-anchor / flip. Frozen momentum for this long after the last
+# ACCEPTED Bottle sighting chains the bursts into one sighting. Same figure as solo_sip.RUN_GAP_SECONDS. Smoking's
+# Cigarette and the knife are not given it here.
+BOTTLE_HOLD_SECONDS = 1.0
+
 # How long a knife's cue must stay ON before it counts. Shorter than the spec's
 # ~2 s (object_confirm_seconds) for the knife class ONLY: a holdup is brief and the
 # blade is visible for a second or less as it is drawn, so waiting 2 s meant the

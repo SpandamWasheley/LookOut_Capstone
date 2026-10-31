@@ -78,7 +78,23 @@ class GateTests(unittest.TestCase):
         s = g.summary()
         self.assertEqual(s["bottle_held_s"], 4.9)
         self.assertEqual(s["sip_s"], 1.4)
-        self.assertEqual([r["name"] for r in solo_sip.indicators(s)], ["bottle held 4.9 s", "sip 1.4 s"])
+        self.assertEqual([r["name"] for r in solo_sip.indicators(s)], ["bottle held 0.0 s (best 4.9 s)", "sip 0.0 s (best 1.4 s)"])
+
+    def test_current_values_sit_next_to_the_best(self):
+        g = solo_sip.SoloSipGate()
+        self.run_gate(g, 0.0, 4.8, zone=True)                       # best run: 4.8 s bottle, 4.8 s sip
+        self.run_gate(g, 6.0, 7.2, step=0.2)                        # a new run: 1.2 s of bottle, no sip
+        s = g.summary(7.2)
+        self.assertEqual((s["bottle_now_s"], s["bottle_held_s"]), (1.2, 4.8))
+        self.assertEqual((s["sip_now_s"], s["sip_s"]), (0.0, 4.8))
+        self.assertEqual([r["name"] for r in solo_sip.indicators(s)],
+                         ["bottle held 1.2 s (best 4.8 s)", "sip 0.0 s (best 4.8 s)"])
+
+    def test_current_drops_to_zero_once_the_bottle_is_gone(self):
+        g = solo_sip.SoloSipGate()
+        self.run_gate(g, 0.0, 2.0)
+        self.assertEqual(g.summary(2.5)["bottle_now_s"], 2.0)
+        self.assertEqual(g.summary(4.0)["bottle_now_s"], 0.0)       # more than RUN_GAP_SECONDS since the last sample
 
 
 class SoloDrinkingTests(TestCase):
