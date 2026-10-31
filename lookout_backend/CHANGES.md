@@ -365,6 +365,30 @@ Duplicate-file check
 - With that, "peaked at ..." only appears when a Likely alert has fallen to Possible. Monitoring rows are still hidden from the main list unless Include Monitoring is on (core/views.py:1020, on peak level).
 - Tests: tests_incidents.py (`test_a_possible_event_never_goes_back_to_monitoring`, `test_a_monitoring_only_event_still_stays_monitoring`, AICheckerWiringTests fade case), tests_peak_level.py (old faded row shows Possible; Likely-to-Possible shows its peak).
 
+## O. Vape rule applied, no-item puff display, solo drinking sip rule (merged_v2.pt only; unit tests, no clip runs)
+
+Part A: vape (commit e185ec8)
+- Raised threshold 0.7 -> 0.9: `HAND_RAISED_RATIO`, core/vision/tracking.py:84.
+- 3-sample median of the wrist-to-nose ratio (samples within 0.5 s): `GESTURE_MEDIAN_SAMPLES` / `GESTURE_MEDIAN_SPAN_SECONDS`, tracking.py:87-88; applied at the top of `update_gesture`, tracking.py:~480. Side effect: a drop needs two low samples, so a draw reads about one sample (0.1 s) longer.
+- Repeated-draw rule is 2 draws (was 3): `STRONG_GESTURE_MIN_DRAWS`, tracking.py:106.
+- Cue fix kept: `puff_pattern` also fires on `strong_gesture`, watch_smoking.py:981-983.
+- Tests: tests_false_alarm_fixes.py `StrongGesture` rewritten for 2 draws, ratio 0.9, jitter spike; the single down-sample cycles in tests_false_alarm_fixes.py and tests_v6210.py now end with two down samples.
+
+Part B: no-item puff display (commit 5c9d86c)
+- `Track.no_item_puffs(now)` lists each held draw's duration within 120 s; `no_item_puffs_summary` builds "puffs (no item) 1/2 (1.4 s)": tracking.py:252, :533.
+- Testing view (live processing list) gets it as an extra indicator via `_debug_note(extra_indicators=...)` ([_incidents.py:177](core/management/commands/_incidents.py#L177), watch_smoking.py:1004). It is stored on the alert as `cues.no_item_puffs` (watch_smoking.py:1032) and printed in the score breakdown and the "Triggered by" line (lookout/src/ViolationModal.jsx:1224, :1168). Only shown while no smoking item has been seen on the person.
+- Display only. Held draws are not read by the cigarette puff counter (`location_momentum.update_puffs`, `loc.puffs`), by `smoke_item_seen`, or by Likely (puff-only stays clamped to Possible). One thing they still do: a held draw is also an ordinary gesture cycle, so it still feeds the `gesture`/`puffs` score cues, which is what lets the draw rule reach 0.55. Removing that would take the vape path below Possible; say if you want it.
+
+Part C: alert level reset, peak level, confidence
+- Already done and committed before this session (1dcf34e, 4d84a01, section L and N): no-cue frame keeps the level (_incidents.py:~521), `peak_level` exists (migration 0055) and the Violations list filters on it (views.py:1020), the card shows "peaked at X", `object_confidence` is the real detection (_incidents.py:~360). Nothing new here; no migration needed. Test: tests_incidents.py:576 `test_one_cueless_frame_leaves_a_possible_row_possible`.
+
+Part D: drinking solo sip rule (commit f43f8e3)
+- New core/vision/solo_sip.py: `SoloSipGate`. Bottle conf >= 0.5 on the same person continuously for >= 3.0 s (gap over 1.0 s restarts the run) AND a sip: a confident Bottle in the mouth zone continuously for >= 1.0 s. Both latch once met.
+- watch_drinking.py:1030-1050: the gate is fed every frame; until it is satisfied a lone person is capped at Monitoring (`Score(cap=MONITORING)`, card text "capped: solo Possible needs a Bottle held 3 s and a 1 s sip"). A person folded into a group event (min group reached) is not capped: the group (inuman) path is unchanged.
+- Score breakdown shows "bottle held N s" and "sip N s" (`cues.solo_sip`, ViolationModal.jsx:~1235); the testing view lists "bottle held 3.2 s" and "sip 1.4 s".
+- Mouth zone = the existing `_posture` check (`drinking_mouth_proximity`). With the mouth check off, or no face resolvable (far CCTV range), posture reads "held", so no sip is ever seen and a lone drinker stays at Monitoring. That follows from the rule as specified.
+- Tests: core/tests_solo_sip.py (15).
+
 ## Tests
 
 New: `core/tests_false_alarm_fixes.py` (38 tests). Updated for the apex hold and the puff-only cap: `core/tests_incidents.py`, `core/tests_v6210.py`.
