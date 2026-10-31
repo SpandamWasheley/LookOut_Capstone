@@ -421,7 +421,7 @@ function RightPanel({ alerts, cameras }) {
         {sectionLabel("Violations")}
         <div className="grid grid-cols-2 gap-2">
           {[
-            { label: "All time",        value: allTimeTotal,    color: "#a855f7" },
+            { label: "All",             value: allTimeTotal,    color: "#a855f7" },
             { label: "Today",           value: todayTotal,      color: "#f59e0b" },
             { label: "Assigned",        value: dispatchedCount, color: "#3b82f6" },
             { label: "Unassigned",      value: activeCount,     color: "#ef4444" },
