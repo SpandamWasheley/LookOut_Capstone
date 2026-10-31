@@ -174,7 +174,7 @@ class IncidentMixin:
         if self.debug_pub is not None:
             self.debug_pub.stash(frame)
 
-    def _debug_note(self, violation, key, ident, box, score, momentum_value):
+    def _debug_note(self, violation, key, ident, box, score, momentum_value, extra_indicators=None):
         """Tell the live view about one tracked subject (any status, including below
         Monitoring). Subjects with no signal at all are skipped so the list stays readable."""
         pub = self.debug_pub
@@ -190,7 +190,7 @@ class IncidentMixin:
             return
         pub.note(key, violation, ident, box, status,
                  int(round(float(getattr(score, "score", 0) or 0) * 100)),
-                 debug_view.indicator_list(score) if score is not None else [],
+                 (debug_view.indicator_list(score) if score is not None else []) + list(extra_indicators or []),
                  {k: round(float(v), 2) for k, v in (getattr(score, "multipliers", None) or {}).items()},
                  momentum_value or 0.0)
 

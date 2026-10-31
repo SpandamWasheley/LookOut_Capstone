@@ -1000,7 +1000,10 @@ class Command(IncidentMixin, BaseCommand):
                               puff_only_max=(scoring.WARNING if item_seen or strong or not PUFF_ONLY_NEEDS_ITEM_FOR_POSSIBLE
                                              else scoring.MONITORING),
                               strong_gesture=strong and not item_seen)
-        self._debug_note("Smoking", key, track.id, track.box, score, cue.momentum)
+        # Held draws made with no smoking item on the person: shown apart from the cigarette puff cues, never scored from here.
+        draws_label, draws_cue = tracking.no_item_puffs_summary([] if item_seen else track.no_item_puffs(now_ts))
+        self._debug_note("Smoking", key, track.id, track.box, score, cue.momentum,
+                         extra_indicators=[{"name": draws_label, "points": None}] if draws_cue else None)
         if not score.stored:
             if puffs and not object_on:
                 self.stats[f"puffs logged only ({puffs})"] += 1
@@ -1026,6 +1029,7 @@ class Command(IncidentMixin, BaseCommand):
             ai={"kind": "smoking", "keys": [("track", track.id)],
                 "note": ai_checker.system_note("smoking", puff_only=score.puff_only, puffs=puffs)},
             extra_cues={"puffs_seen": puffs, "momentum": cue.snapshot,
+                        **({"no_item_puffs": draws_cue} if draws_cue else {}),
                         "object_confidence": None if best_score is None else round(best_score, 3)},
         )
 

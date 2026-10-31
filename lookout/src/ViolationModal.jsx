@@ -1154,16 +1154,24 @@ const HOLDUP_INDICATOR_LABELS = {
 
 // Who the detector was following when it raised this alert (the boxed person in the annotated clip), and which indicators
 // fired for them. Older alerts carry no `trigger`, so nothing is shown for them.
+// Held draws made with no smoking item on the person ("puffs (no item) 1/2 (1.4 s)"); separate from the cigarette puff cues.
+function noItemPuffsText(p) {
+  if (!p || !Array.isArray(p.durations) || p.durations.length === 0) return "";
+  return `puffs (no item) ${p.count}/${p.needed} (${p.durations.map((d) => `${d} s`).join(", ")})`;
+}
+
 function TriggeredBy({ alert }) {
   const t = alert.cues?.trigger;
   if (!t || t.track_id == null) return null;
   // Array.isArray, not `|| []`: a non-array value here (an older alert, a hand-edited row) would throw in .map and unmount the page.
   const cues = (Array.isArray(t.cues) ? t.cues : []).map((i) => `${i?.name} ${i?.points}`).join(", ");
+  const draws = noItemPuffsText(alert.cues?.no_item_puffs);
   return (
     <div className="mt-3 text-[13px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
       <span style={{ color: "var(--foreground)" }}>Triggered by:</span> ID {t.track_id}
       {t.partner_track_id != null && <> · partner ID {t.partner_track_id}</>}
       {cues && <> · {cues}</>}
+      {draws && <> · {draws}</>}
     </div>
   );
 }
@@ -1213,6 +1221,12 @@ function ScoreBreakdown({ alert }) {
             <td className="py-0.5">status</td>
             <td className="py-0.5 text-right">{c.label || alert.levelLabel || "—"}{c.tag ? ` · ${c.tag}` : ""}</td>
           </tr>
+          {noItemPuffsText(c.no_item_puffs) && (
+            <tr>
+              <td className="py-0.5">puffs (no item)</td>
+              <td className="py-0.5 text-right">{c.no_item_puffs.count}/{c.no_item_puffs.needed} ({c.no_item_puffs.durations.map((d) => `${d} s`).join(", ")})</td>
+            </tr>
+          )}
           <tr>
             <td className="py-0.5">momentum</td>
             <td className="py-0.5 text-right">

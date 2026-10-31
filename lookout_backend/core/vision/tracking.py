@@ -249,6 +249,15 @@ def _box_conf(person_box):
     return float(person_box[4]) if len(person_box) > 4 else None
 
 
+def no_item_puffs_summary(holds):
+    """(label, cue dict) for the held draws a person made with no smoking item on them, or ("", None) with none.
+    The label is what the testing view prints: "puffs (no item) 1/2 (1.4 s)". Kept apart from the cigarette "puff" cues."""
+    if not holds:
+        return "", None
+    label = "puffs (no item) %d/%d (%s)" % (len(holds), STRONG_GESTURE_MIN_DRAWS, ", ".join("%.1f s" % h for h in holds))
+    return label, {"count": len(holds), "needed": STRONG_GESTURE_MIN_DRAWS, "durations": list(holds)}
+
+
 class Track:
     """One tracked person (or a scene track) and its temporal-confirmation state."""
 
@@ -303,6 +312,7 @@ class Track:
         self.hand_last = None             # the latest at-face sample of that run
         self.hand_strong = False          # every at-face sample of that run was close range (see STRONG_GESTURE_MIN_BOX_PX)
         self.strong_draws = deque()       # completion times of the sustained close-range draws (see STRONG_GESTURE_MIN_HOLD_S)
+        self.strong_draw_holds = deque()  # (completion time, seconds held) per draw, for the "puffs (no item)" display only
         self.gestures = deque()           # timestamps of completed hand-to-mouth cycles
         self.gestures_still = deque()     # the subset completed while the person was mostly stationary (PUFF_ONLY_REQUIRE_STATIONARY)
         # Rolling (timestamp, box) history for stationarity checks (watch_drinking's
@@ -492,6 +502,7 @@ class Track:
             held = (self.hand_last - self.hand_since) if (self.hand_since is not None and self.hand_last is not None) else 0.0
             if self.hand_zone == "atface" and self.hand_strong and held >= STRONG_GESTURE_MIN_HOLD_S:
                 self.strong_draws.append(now)
+                self.strong_draw_holds.append((now, held))
             self.hand_since = self.hand_last = None
             self.hand_strong = False
             if self.hand_zone == "atface":
@@ -509,6 +520,8 @@ class Track:
             self.gestures_still.popleft()
         while self.strong_draws and self.strong_draws[0] < cutoff:
             self.strong_draws.popleft()
+        while self.strong_draw_holds and self.strong_draw_holds[0][0] < cutoff:
+            self.strong_draw_holds.popleft()
         return len(self.gestures)
 
     def strong_gesture(self, now):
@@ -516,6 +529,12 @@ class Track:
         d = [t for t in self.strong_draws if now - t <= GESTURE_WINDOW_SECONDS]
         n = STRONG_GESTURE_MIN_DRAWS
         return any(d[i + n - 1] - d[i] <= STRONG_GESTURE_WINDOW_S for i in range(len(d) - n + 1))
+
+    def no_item_puffs(self, now):
+        """The held draws inside STRONG_GESTURE_WINDOW_S, as [seconds held, ...], oldest first. Display only: the
+        count shown as "puffs (no item) N/STRONG_GESTURE_MIN_DRAWS". Nothing reads this to score, and none of it
+        reaches location_momentum.update_puffs (the cigarette puff counter that gates Possible / Likely)."""
+        return [round(h, 1) for t, h in self.strong_draw_holds if now - t <= STRONG_GESTURE_WINDOW_S]
 
     def reset_hand(self):
         """Forget the hand-to-mouth state in progress (not the cycles already counted). Used while the person is holding a

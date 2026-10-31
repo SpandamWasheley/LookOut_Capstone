@@ -40,7 +40,7 @@ function testingLabel(e) {
     e.violation,
     `${e.status}${e.detail ? ` — ${e.detail}` : ""} (${e.score})`,
   ];
-  if (e.indicators?.length) parts.push(e.indicators.map((i) => `${i.name} ${i.points}`).join(", "));
+  if (e.indicators?.length) parts.push(e.indicators.map((i) => (i.points == null ? i.name : `${i.name} ${i.points}`)).join(", "));
   parts.push(`momentum ${e.momentum}`);
   return parts.join(" · ");
 }
@@ -215,7 +215,7 @@ export function ProcessingView({ fetchState, testingTools = false, title = "Proc
                       <span style={{ color: STATUS_COLOR[e.status] }}>{e.status} ({e.score})</span>
                     </div>
                     <div style={{ color: "var(--muted-foreground)" }}>
-                      {e.indicators?.length ? e.indicators.map((i) => `${i.name} ${i.points}`).join(", ") : "no indicators"}
+                      {e.indicators?.length ? e.indicators.map((i) => (i.points == null ? i.name : `${i.name} ${i.points}`)).join(", ") : "no indicators"}
                     </div>
                     <div style={{ color: "var(--muted-foreground)" }}>
                       momentum {e.momentum}

@@ -415,6 +415,36 @@ class StrongGesture(unittest.TestCase):
             t.update_gesture(2.0, start + 1.6, strong=True)
         self.assertTrue(t.strong_gesture(32.0))
 
+    def test_no_item_puffs_lists_each_draw_with_its_duration(self):
+        # the 3-sample median keeps the hand "raised" through the first down sample, so a draw reads one sample (0.1 s) long
+        t = person(1)
+        self.draw(t, 0.0, hold=1.4)
+        self.assertEqual(t.no_item_puffs(2.0), [1.5])
+        label, cue = tracking.no_item_puffs_summary(t.no_item_puffs(2.0))
+        self.assertEqual(label, "puffs (no item) 1/2 (1.5 s)")
+        self.assertEqual(cue, {"count": 1, "needed": 2, "durations": [1.5]})
+        self.draw(t, 30.0, hold=1.2)
+        self.assertEqual(t.no_item_puffs(32.0), [1.5, 1.3])
+        self.assertEqual(tracking.no_item_puffs_summary(t.no_item_puffs(32.0))[0], "puffs (no item) 2/2 (1.5 s, 1.3 s)")
+
+    def test_no_item_puffs_is_empty_without_a_held_draw(self):
+        t = person(1)
+        self.draw(t, 0.0, hold=0.8)
+        self.assertEqual(t.no_item_puffs(2.0), [])
+        self.assertEqual(tracking.no_item_puffs_summary([]), ("", None))
+
+    def test_no_item_puffs_forgets_draws_past_the_window(self):
+        t = person(1)
+        self.draw(t, 0.0)
+        self.assertEqual(t.no_item_puffs(200.0), [])
+
+    def test_held_draws_leave_the_cigarette_puff_counter_alone(self):
+        # the cigarette puff counter (location_momentum.update_puffs) reads detections and keypoints, never the held draws
+        t = person(1)
+        self.two(t)
+        self.assertEqual(len(lm.loc_of(t).puffs), 0)
+        self.assertFalse(getattr(t, "smoke_item_seen", False))        # a held draw never marks "a smoking item was seen" (item-5 rule)
+
     def test_small_person_never_earns_it(self):
         t = person(1)
         self.two(t, strong=False)
