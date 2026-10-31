@@ -530,6 +530,11 @@ class IncidentMixin:
             # level now falls only through Score's own drop-out rule.
             return inc.alert if inc is not None else None
 
+        # An event that reached Possible or Likely never goes back to Monitoring: it keeps (at least) Possible until the
+        # incident closes. Monitoring is the quiet watchlist, and a reviewer must not see a Possible alert turn into one.
+        if inc is not None and level == scoring.MONITORING and inc.peak in scoring.NOTIFY_LEVELS:
+            level = scoring.WARNING
+
         trigger = self._trigger_info(key, score, partner)
         self._draw_trigger(frame, key, box, level, trigger, partner, now)
         extra_cues = {**(extra_cues or {}), "trigger": trigger}

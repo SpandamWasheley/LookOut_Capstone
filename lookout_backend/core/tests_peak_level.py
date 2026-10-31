@@ -174,10 +174,19 @@ class SerialisationTests(TestCase):
         self.assertEqual(r.status_code, 200, r.content)
         return r.json()
 
-    def test_the_badge_shows_the_current_status_not_the_peak(self):
+    def test_an_old_faded_row_is_shown_as_possible_never_monitoring(self):
+        # Written before the detector held a Possible event at Possible: level=monitoring, peak=warning.
         body = self._body()
-        self.assertEqual(body["level_label"], "Monitoring")
+        self.assertEqual(body["level"], scoring.WARNING)
+        self.assertEqual(body["level_label"], "Possible")
         self.assertEqual(body["peak_level_label"], "Possible")
+
+    def test_a_likely_event_that_fell_to_possible_shows_possible_and_its_peak(self):
+        self.alert.level, self.alert.peak_level = scoring.WARNING, scoring.VIOLATION
+        self.alert.save(update_fields=["level", "peak_level"])
+        body = self._body()
+        self.assertEqual(body["level_label"], "Possible")
+        self.assertEqual(body["peak_level_label"], "Likely")
 
     def test_a_pre_scoring_alert_labels_as_empty_rather_than_guessing(self):
         self.alert.level = self.alert.peak_level = ""

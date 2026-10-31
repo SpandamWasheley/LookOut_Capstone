@@ -357,6 +357,14 @@ Why, and what the data says (offline replay of the logged ratios, scratchpad onl
 Duplicate-file check
 - Only one "Vape Far Night.mkv" exists (Accuracy\Smoking\, 69,888,187 bytes). There is no copy in HIde\, so nothing to compare.
 
+## N. A Possible / Likely alert is never shown as Monitoring (follows sections L and M)
+
+- "peaked at Possible" was the display half of section L (core/AlertFeed.jsx:209, ViolationModal.jsx:957). It is display-only and has no part in alert creation or notification. It showed because an alert that reached Possible could fall back to Monitoring (the score dropping under 0.50) while the peak stayed Possible.
+- The detector no longer lowers it: once an incident's peak is Possible or Likely, a Monitoring score keeps the stored status at Possible until the incident closes (core/management/commands/_incidents.py, in `_incident_sync`, just before `_trigger_info`). Monitoring-only events are untouched and stay on the quiet watchlist.
+- Rows already in the database with level=monitoring and a Possible/Likely peak (ALT-0205, ALT-0208) are shown as Possible: `AlertSerializer._shown_level` / `to_representation` (core/serializers.py). Nothing was written to the database.
+- With that, "peaked at ..." only appears when a Likely alert has fallen to Possible. Monitoring rows are still hidden from the main list unless Include Monitoring is on (core/views.py:1020, on peak level).
+- Tests: tests_incidents.py (`test_a_possible_event_never_goes_back_to_monitoring`, `test_a_monitoring_only_event_still_stays_monitoring`, AICheckerWiringTests fade case), tests_peak_level.py (old faded row shows Possible; Likely-to-Possible shows its peak).
+
 ## Tests
 
 New: `core/tests_false_alarm_fixes.py` (38 tests). Updated for the apex hold and the puff-only cap: `core/tests_incidents.py`, `core/tests_v6210.py`.

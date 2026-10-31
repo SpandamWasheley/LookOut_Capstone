@@ -296,7 +296,19 @@ class AlertSerializer(serializers.ModelSerializer):
 
     def get_level_label(self, obj):
         from core.vision.scoring import label_of
-        return label_of(obj.level) if obj.level else ""
+        return label_of(self._shown_level(obj)) if obj.level else ""
+
+    @staticmethod
+    def _shown_level(obj):
+        """An event that ever reached Possible / Likely is never shown as Monitoring (rows written before the detector
+        held the level at Possible still carry a faded 'monitoring' level)."""
+        from core.vision.scoring import MONITORING, NOTIFY_LEVELS, WARNING
+        return WARNING if obj.level == MONITORING and obj.peak_level in NOTIFY_LEVELS else obj.level
+
+    def to_representation(self, obj):
+        data = super().to_representation(obj)
+        data["level"] = self._shown_level(obj)
+        return data
 
     def get_peak_level_label(self, obj):
         """The highest status this event reached. The UI badges `level_label`

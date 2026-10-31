@@ -362,7 +362,7 @@ class AICheckerWiringTests(SmokingIncidentTests):
         self.cmd.puff_window = 1.0
         for i in range(12):
             self.frame_step(10.0 + i * 0.25, [CIG])
-        self.assertEqual(self.rows()[0].level, scoring.MONITORING)
+        self.assertEqual(self.rows()[0].level, scoring.WARNING)        # a Possible event is held at Possible, not dropped to Monitoring
         self.assertEqual(self.rows()[0].peak_level, scoring.WARNING)
         self.assertEqual(self.client.calls, 1, "a faded event asked again")
 
@@ -591,14 +591,19 @@ class LevelSurvivesACuelessFrameTests(SmokingIncidentTests):
         row.refresh_from_db()
         self.assertEqual(row.level, scoring.WARNING)
 
-    def test_the_level_still_falls_through_the_normal_drop_out_rule(self):
+    def test_a_possible_event_never_goes_back_to_monitoring(self):
         row = self.open_at_possible()
         self.sync(set(), 0.25)
-        low = self.sync({"cigarette"}, 0.5)                            # 0.40: under 0.55 - hysteresis
+        low = self.sync({"cigarette"}, 0.5)                            # 0.40: the score alone would say Monitoring
         self.assertEqual(low.level, scoring.MONITORING)
         row.refresh_from_db()
-        self.assertEqual(row.level, scoring.MONITORING)
-        self.assertEqual(row.peak_level, scoring.WARNING)              # the peak stays
+        self.assertEqual(row.level, scoring.WARNING)                   # ...but the stored status stays Possible
+        self.assertEqual(row.peak_level, scoring.WARNING)
+        self.assertEqual(self.cmd._incident_level(self.KEY), scoring.WARNING)
+
+    def test_a_monitoring_only_event_still_stays_monitoring(self):
+        self.sync({"cigarette"}, 0.0)                                  # never reached Possible
+        self.assertEqual(self.rows()[-1].level, scoring.MONITORING)
 
     def test_object_confidence_is_the_last_detection_not_the_momentum_peak(self):
         for i in range(12):
