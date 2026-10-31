@@ -1227,6 +1227,18 @@ function ScoreBreakdown({ alert }) {
               <td className="py-0.5 text-right">{c.no_item_puffs.count}/{c.no_item_puffs.needed} ({c.no_item_puffs.durations.map((d) => `${d} s`).join(", ")})</td>
             </tr>
           )}
+          {c.solo_sip && (
+            <>
+              <tr>
+                <td className="py-0.5">bottle held</td>
+                <td className="py-0.5 text-right">{c.solo_sip.bottle_held_s} s (needs {c.solo_sip.bottle_needed_s} s)</td>
+              </tr>
+              <tr>
+                <td className="py-0.5">sip</td>
+                <td className="py-0.5 text-right">{c.solo_sip.sip_s} s (needs {c.solo_sip.sip_needed_s} s)</td>
+              </tr>
+            </>
+          )}
           <tr>
             <td className="py-0.5">momentum</td>
             <td className="py-0.5 text-right">

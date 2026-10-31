@@ -14,7 +14,7 @@ from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
 from core.vision import trim as trimming
 from core.vision import clock as vclock
-from core.vision import ai_checker, location_momentum, momentum, recognition, scoring, tracking
+from core.vision import ai_checker, location_momentum, momentum, recognition, scoring, solo_sip, tracking
 from ._incidents import IncidentMixin
 
 DRINKING_CAMERA_CODE = "CAM-SMOKE-01"
@@ -1027,13 +1027,27 @@ class Command(IncidentMixin, BaseCommand):
         if self._time_band_cue(now_ts):
             cues.add("time_band")
 
-        key = ("drink", track.id)
-        score = scoring.Score("drinking", scoring.DRINKING_WEIGHTS, cues,
-                              previous_level=self._incident_level(key), object_on=object_on)
-        self._debug_note("Drinking", key, track.id, track.box, score, cue.momentum)
+        # Solo Possible rule (core/vision/solo_sip.py): a Bottle held 3 s on this person AND a held sip. Fed every
+        # frame so the run is continuous; only a person who is NOT part of a group event is held to it.
+        gate = getattr(track, "solo_sip", None)
+        if gate is None:
+            gate = track.solo_sip = solo_sip.SoloSipGate()
+        confident = [d for d in dets if d[4] >= solo_sip.BOTTLE_MIN_CONF]
+        in_zone = bool(confident) and self._posture(frame, track, confident, now_ts, mouth_proximity) == "at-mouth"
+        gate.update(now_ts, max((d[4] for d in dets), default=None), in_zone)
         group = self._cluster_of.get(track.id)
         params = getattr(self, "_gathering_params", None)
-        if group is not None and params is not None and len(group.member_ids) >= params[0]:
+        folded = group is not None and params is not None and len(group.member_ids) >= params[0]
+        solo_cap = None if (folded or gate.satisfied) else scoring.MONITORING
+
+        key = ("drink", track.id)
+        score = scoring.Score("drinking", scoring.DRINKING_WEIGHTS, cues,
+                              previous_level=self._incident_level(key), object_on=object_on,
+                              cap=solo_cap, cap_reason=solo_sip.CAP_TEXT)
+        gate_summary = gate.summary()
+        self._debug_note("Drinking", key, track.id, track.box, score, cue.momentum,
+                         extra_indicators=solo_sip.indicators(gate_summary) if gate_summary["bottle_held_s"] or gate_summary["sip_s"] else None)
+        if folded:
             # One gathering is ONE event for the whole group (its own row, below). This person's
             # bottle already counts there, so they do not get a second event of their own.
             self.stats["person event folded into the group's event"] += 1
@@ -1059,7 +1073,7 @@ class Command(IncidentMixin, BaseCommand):
             blocked=lambda: "cooldown" not in self.ablate
             and self._cooldown_blocks(box, now_ts, cooldown, cooldown_center_dist),
             ai={"kind": "drinking", "keys": [("track", track.id)], "note": ai_checker.system_note("drinking")},
-            extra_cues={"posture": posture, "momentum": cue.snapshot,
+            extra_cues={"posture": posture, "momentum": cue.snapshot, "solo_sip": gate_summary,
                         "object_confidence": None if best_score is None else round(best_score, 3)},
         )
 
