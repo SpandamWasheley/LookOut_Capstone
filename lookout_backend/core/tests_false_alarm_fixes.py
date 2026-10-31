@@ -93,9 +93,9 @@ class ApexHold(unittest.TestCase):
 
     def test_leaving_the_raised_band_before_the_hold_restarts_it(self):
         t = person(1)
-        for now, r in ((0.0, 0.5), (0.4, 0.5), (0.5, 0.85), (0.6, 0.5), (1.0, 0.5), (1.1, 2.0)):
+        for now, r in ((0.0, 0.5), (0.4, 0.5), (0.5, 0.95), (0.6, 0.95), (1.0, 0.5), (1.1, 0.5), (1.2, 2.0), (1.3, 2.0)):
             t.update_gesture(r, now)
-        self.assertEqual(t.gesture_count(2.0), 0)                       # 0.4 s, then 0.4 s: neither reached 1.0 s
+        self.assertEqual(t.gesture_count(2.0), 0)                       # out of the raised band (> 0.9) in between: neither run reached 1.0 s
 
     def test_a_gap_in_the_samples_does_not_count_as_holding(self):
         t = person(1)
@@ -131,7 +131,7 @@ class FeedPoseSkips(unittest.TestCase):
 
     def run_cycle(self, track, keypoints_for, t0=0.0):
         now = t0
-        for r in [2.0] + [0.5] * 15 + [2.0]:
+        for r in [2.0] + [0.5] * 15 + [2.0, 2.0]:     # two down samples: the 3-sample median needs a majority to call the hand lowered
             self.feed(track, keypoints_for(r), now)
             now += 0.1                                                  # 15 raised samples = 1.5 s held (the apex hold is 1.0 s)
         return now
@@ -353,52 +353,72 @@ if __name__ == "__main__":
 
 
 class StrongGesture(unittest.TestCase):
-    """Repeated held draws lift the no-item cap (tracking.STRONG_GESTURE_*): 3 draws of >= 1.0 s within 120 s."""
+    """Repeated held draws lift the no-item cap (tracking.STRONG_GESTURE_*): 2 draws of >= 1.0 s within 120 s."""
 
-    def draw(self, t, start, hold=1.2, strong=True):
+    def draw(self, t, start, hold=1.2, strong=True, ratio=0.5):
         for i in range(int(hold / 0.2) + 1):
-            t.update_gesture(0.5, start + i * 0.2, strong=strong)
-        t.update_gesture(2.0, start + hold + 0.1, strong=strong)
+            t.update_gesture(ratio, start + i * 0.2, strong=strong)
+        for k in (0.1, 0.2):                       # two down samples: the 3-sample median needs a majority to call the hand lowered
+            t.update_gesture(2.0, start + hold + k, strong=strong)
 
-    def three(self, t, gap=30.0, **kw):
-        for i in range(3):
+    def two(self, t, gap=30.0, **kw):
+        for i in range(2):
             self.draw(t, i * gap, **kw)
 
-    def test_three_held_draws_within_120_s(self):
+    def test_two_held_draws_within_120_s(self):
         t = person(1)
-        self.three(t)
-        self.assertTrue(t.strong_gesture(62.0))
+        self.two(t)
+        self.assertTrue(t.strong_gesture(32.0))
 
-    def test_two_draws_are_not_enough(self):
+    def test_one_draw_is_not_enough(self):
         t = person(1)
         self.draw(t, 0.0)
-        self.draw(t, 30.0)
-        self.assertFalse(t.strong_gesture(32.0))
+        self.assertFalse(t.strong_gesture(2.0))
 
     def test_draws_spread_over_more_than_120_s_do_not_count(self):
         t = person(1)
-        self.three(t, gap=70.0)
-        self.assertFalse(t.strong_gesture(142.0))
+        self.two(t, gap=130.0)
+        self.assertFalse(t.strong_gesture(132.0))
 
     def test_a_draw_held_under_1_s_does_not_count(self):
         t = person(1)
-        self.three(t, hold=0.8)
-        self.assertFalse(t.strong_gesture(62.0))
+        self.two(t, hold=0.8)
+        self.assertFalse(t.strong_gesture(32.0))
 
     def test_one_far_sample_inside_the_draw_spoils_it(self):
         t = person(1)
         self.draw(t, 0.0)
-        self.draw(t, 30.0)
-        t.update_gesture(0.5, 60.0, strong=True)
-        t.update_gesture(0.5, 60.6, strong=False)
-        t.update_gesture(0.5, 61.3, strong=True)
-        t.update_gesture(2.0, 61.4, strong=True)
-        self.assertFalse(t.strong_gesture(62.0))
+        t.update_gesture(0.5, 30.0, strong=True)
+        t.update_gesture(0.5, 30.4, strong=False)
+        t.update_gesture(0.5, 30.8, strong=True)
+        t.update_gesture(0.5, 31.2, strong=True)
+        t.update_gesture(2.0, 31.3, strong=True)
+        t.update_gesture(2.0, 31.4, strong=True)
+        self.assertFalse(t.strong_gesture(32.0))
+
+    def test_vape_draw_at_ratio_0_85_counts_as_at_face(self):
+        t = person(1)
+        self.two(t, ratio=0.85)                    # above the old 0.7 threshold, inside the raised 0.9 one
+        self.assertTrue(t.strong_gesture(32.0))
+
+    def test_ratio_above_0_9_is_not_at_face(self):
+        t = person(1)
+        self.two(t, ratio=0.95)
+        self.assertFalse(t.strong_gesture(32.0))
+
+    def test_a_single_jitter_spike_does_not_break_a_held_draw(self):
+        t = person(1)
+        for start in (0.0, 30.0):
+            for i in range(7):
+                t.update_gesture(1.5 if i == 3 else 0.5, start + i * 0.2, strong=True)   # one outlier mid-hold
+            t.update_gesture(2.0, start + 1.5, strong=True)
+            t.update_gesture(2.0, start + 1.6, strong=True)
+        self.assertTrue(t.strong_gesture(32.0))
 
     def test_small_person_never_earns_it(self):
         t = person(1)
-        self.three(t, strong=False)
-        self.assertFalse(t.strong_gesture(62.0))
+        self.two(t, strong=False)
+        self.assertFalse(t.strong_gesture(32.0))
 
     def test_the_exception_lifts_the_cap_and_tags_the_alert(self):
         s = scoring.Score("smoking", scoring.SMOKING_WEIGHTS, {"gesture", "puffs", "puff_pattern"}, object_on=False,
@@ -426,7 +446,7 @@ class StrongGesture(unittest.TestCase):
         for height, expect in ((160, True), (140, False)):
             t = person(1, box=(100, 100, 160, 100 + height))
             now = 0.0
-            for r in [0.5] * 40 + [2.0]:
+            for r in [0.5] * 40 + [2.0, 2.0]:
                 with mock.patch.object(lm, "ensure_keypoints", return_value=kp(r)), mock.patch.object(lm, "shared_poses", return_value=[]):
                     cmd._feed_pose(frame, [t], now)
                 now += 0.05

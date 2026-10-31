@@ -81,7 +81,11 @@ PUFF_WINDOW_SECONDS = 20.0  # count completed puffs within this rolling window
 # distance-invariant. A gesture = the hand clearly reaches the face then clearly
 # drops; the hysteresis gap between the two keeps ordinary small movements from
 # counting.
-HAND_RAISED_RATIO = 0.7    # wrist within this many shoulder-widths of the nose = at face
+HAND_RAISED_RATIO = 0.9    # wrist within this many shoulder-widths of the nose = at face (was 0.7; measured vape draws bounce 0.4-1.1)
+# The ratio is the median of the last GESTURE_MEDIAN_SAMPLES samples within GESTURE_MEDIAN_SPAN_SECONDS: pose jitter at range
+# otherwise restarts the apex hold on every bounce. 1 = off.
+GESTURE_MEDIAN_SAMPLES = 3
+GESTURE_MEDIAN_SPAN_SECONDS = 0.5
 HAND_LOWERED_RATIO = 1.0   # beyond this = hand down (was 1.3; the measured vape draws drop the hand only this far)
 # Apex hold: the hand only counts as "at the face" once the ratio has stayed <= HAND_RAISED_RATIO for this long, in VIDEO time.
 # A face touch / scratch / glance at a phone is over in a fraction of a second; a drag on a cigarette or vape is held. There is
@@ -95,11 +99,11 @@ GESTURE_WINDOW_SECONDS = 300.0   # spec v6: 3+ puffs within 5 minutes
 # pose-only person may reach Possible only with >= STRONG_GESTURE_MIN_DRAWS DRAWS, a draw being the hand held at the face
 # (ratio <= HAND_RAISED_RATIO) for >= STRONG_GESTURE_MIN_HOLD_S of video time, every sample of it on a person box at least
 # STRONG_GESTURE_MIN_BOX_PX tall (native res) that passed the facing check, and the draws within STRONG_GESTURE_WINDOW_S of each other.
-# Repeated-draw rule: 3 held draws (>= 1.0 s each) within 120 s. The box floor is set from the measured far vaper (Vape Far Night,
+# Repeated-draw rule: 2 held draws (>= 1.0 s each) within 120 s. The box floor is set from the measured far vaper (Vape Far Night,
 # track box 147-255 px tall, ~200 median): 150 admits him, still excludes the tiny background people.
 STRONG_GESTURE_MIN_BOX_PX = 150
 STRONG_GESTURE_MIN_HOLD_S = 1.0
-STRONG_GESTURE_MIN_DRAWS = 3
+STRONG_GESTURE_MIN_DRAWS = 2
 STRONG_GESTURE_WINDOW_S = 120.0
 
 # Dwell only accrues while a detection is this recent. The vote ratio alone has
@@ -294,6 +298,7 @@ class Track:
         self.puffs = deque()              # timestamps of completed puffs
         # Pose hand-to-mouth gesture state (long-range smoking).
         self.hand_zone = None             # 'atface' | 'down' | None
+        self.ratio_recent = deque()       # (t, ratio) feeding the median in update_gesture
         self.hand_since = None            # when the current run of at-face samples began (the apex hold is timed from here)
         self.hand_last = None             # the latest at-face sample of that run
         self.hand_strong = False          # every at-face sample of that run was close range (see STRONG_GESTURE_MIN_BOX_PX)
@@ -468,6 +473,12 @@ class Track:
         when the cycle completed; it only matters to gesture_count(still_only=True).
         `strong` says this sample was close range (person box >= STRONG_GESTURE_MIN_BOX_PX tall); the facing check already
         passed, or there would be no ratio. It only feeds strong_gesture_count()."""
+        if GESTURE_MEDIAN_SAMPLES > 1:
+            recent = self.ratio_recent
+            recent.append((now, ratio))
+            while len(recent) > GESTURE_MEDIAN_SAMPLES or (recent and now - recent[0][0] > GESTURE_MEDIAN_SPAN_SECONDS):
+                recent.popleft()
+            ratio = sorted(r for _, r in recent)[len(recent) // 2]
         if ratio <= HAND_RAISED_RATIO:
             if self.hand_since is None or (self.hand_last is not None and now - self.hand_last > GESTURE_APEX_MAX_GAP_SECONDS):
                 self.hand_since = now
@@ -512,6 +523,7 @@ class Track:
         self.hand_zone = "down"
         self.hand_since = self.hand_last = None
         self.hand_strong = False
+        self.ratio_recent.clear()
 
     def gesture_count(self, now, window=GESTURE_WINDOW_SECONDS, still_only=False):
         cutoff = now - window

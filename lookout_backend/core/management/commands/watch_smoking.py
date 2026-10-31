@@ -978,7 +978,8 @@ class Command(IncidentMixin, BaseCommand):
             cues.add("gesture")
         if puffs >= 2:
             cues.add("puffs")
-        if puffs >= self.puff_count:
+        strong = track.strong_gesture(now_ts)      # sustained close-range draws lift the no-item cap (tracking.STRONG_GESTURE_*)
+        if puffs >= self.puff_count or strong:     # the repeated-draw rule opens the puff-only path on its own count of draws
             cues.add("puff_pattern")
 
         # v6.2 puff gate: a cigarette (even at the mouth) needs a real puff -- a cigarette seen at a
@@ -993,7 +994,6 @@ class Command(IncidentMixin, BaseCommand):
 
         key = ("smoke", track.id)
         item_seen = getattr(track, "smoke_item_seen", False)
-        strong = track.strong_gesture(now_ts)      # sustained close-range draws lift the no-item cap (tracking.STRONG_GESTURE_*)
         score = scoring.Score("smoking", scoring.SMOKING_WEIGHTS, cues,
                               previous_level=self._incident_level(key), object_on=object_on,
                               cap=cap, cap_reason=cap_reason,

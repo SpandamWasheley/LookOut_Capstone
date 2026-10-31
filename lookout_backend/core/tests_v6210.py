@@ -116,7 +116,7 @@ class GestureFromZoom(unittest.TestCase):
 
     def raise_and_drop(self, gap=0.6):
         # a held raise: 15 samples 0.1 s apart = 1.5 s at the face (the apex hold is 1.0 s), then the hand drops
-        for r in [2.0] + [0.5] * 15 + [2.0]:
+        for r in [2.0] + [0.5] * 15 + [2.0, 2.0]:     # two down samples: the 3-sample median needs a majority
             self.feed(r)
         self.now += gap
 
@@ -194,7 +194,7 @@ class StationarySwitch(unittest.TestCase):
         end = walk(t, 3.0, step_px=7.0)
         frame = np.zeros((1440, 2560, 3), dtype=np.uint8)
         now = end
-        for r in [0.5] * 15 + [2.0]:                             # held at the face 1.4 s, then dropped
+        for r in [0.5] * 15 + [2.0, 2.0]:                             # held at the face 1.4 s, then dropped
             with mock.patch.object(lm, "ensure_keypoints", return_value=kp(r)), mock.patch.object(lm, "shared_poses", return_value=[]):
                 cmd._feed_pose(frame, [t], now)
             now += 0.1
