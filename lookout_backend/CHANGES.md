@@ -432,6 +432,19 @@ Why (D Near 1.mkv, drinking ID 5, from the replay before this change): the Bottl
 
 Not verified on clips: whether D Near 1 ID 5 now alerts.
 
+## R. Drinking: solo gate follows a person across track IDs (unit tests only, no clip runs)
+
+Why (D Far.mkv, from the testing view): the person stayed in one spot but the tracker re-issued IDs (11, 15, 19, 20). The bottle/sip gate lives on the track, so each new ID restarted it: ID 11 held the Bottle 5.0 s but its best sip was 0.7 s (needs 1.0 s), so it stayed capped at Monitoring while the sip time was split across IDs.
+
+- `solo_sip.GateHandover` ([solo_sip.py:92](core/vision/solo_sip.py#L92)): a new track with no gate adopts the gate of an old track only if the old one is gone (last seen at least `HANDOVER_MIN_GAP_S` = 0.25 s ago), was seen at most `HANDOVER_MAX_GAP_S` = 1.5 s ago, and its last box overlaps the new box by `HANDOVER_MIN_IOU` = 0.5. Each old gate is adopted once. Only the bottle/sip timers move; score, momentum, location gate and the 3 s / 1 s thresholds are unchanged.
+- Switch: `SOLO_GATE_HANDOVER` ([solo_sip.py:20](core/vision/solo_sip.py#L20)); False restores the old behaviour for an A/B accuracy run.
+- Wired in `watch_drinking._process_track` ([watch_drinking.py:1035-1039](core/management/commands/watch_drinking.py#L1035)); one registry per engine instance.
+- With stable IDs nothing is ever adopted, so such clips behave as before. Clips with ID changes at the same spot can now reach Possible sooner; that is the intended effect and also the possible source of new false Possibles.
+- `SIP_MIN_HOLD_SECONDS` stays 1.0 s.
+- Tests: core/tests_solo_gate_handover.py.
+
+Not verified on clips: whether D Far now alerts, or the effect on the accuracy set.
+
 ## Tests
 
 New: `core/tests_false_alarm_fixes.py` (38 tests). Updated for the apex hold and the puff-only cap: `core/tests_incidents.py`, `core/tests_v6210.py`.

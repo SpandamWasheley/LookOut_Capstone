@@ -1032,8 +1032,11 @@ class Command(IncidentMixin, BaseCommand):
         # Solo Possible rule (core/vision/solo_sip.py): a Bottle held 3 s on this person AND a held sip. Fed every
         # frame so the run is continuous; only a person who is NOT part of a group event is held to it.
         gate = getattr(track, "solo_sip", None)
+        handover = self.__dict__.setdefault("_solo_handover", solo_sip.GateHandover())
         if gate is None:
-            gate = track.solo_sip = solo_sip.SoloSipGate()
+            # a person re-issued a new ID keeps the bottle/sip time the old ID had earned (solo_sip.GateHandover)
+            gate = track.solo_sip = handover.adopt(track.id, track.box, now_ts) or solo_sip.SoloSipGate()
+        handover.note(track.id, track.box, now_ts, gate)
         # A Bottle under tracking.VAPE_BOTTLE_MAX_FRAC of the person's height is a vape: never "bottle held", never a sip.
         big = [d for d in dets if tracking.bottle_height_frac(d, track.box) >= tracking.VAPE_BOTTLE_MAX_FRAC]
         confident = [d for d in big if d[4] >= solo_sip.BOTTLE_MIN_CONF]

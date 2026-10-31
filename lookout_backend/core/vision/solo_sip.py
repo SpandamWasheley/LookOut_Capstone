@@ -17,6 +17,11 @@ BOTTLE_MIN_RUN_SECONDS = 3.0
 SIP_MIN_HOLD_SECONDS = 1.0
 RUN_GAP_SECONDS = 1.0
 
+SOLO_GATE_HANDOVER = True          # False = every new track ID starts its gate from zero (the old behaviour)
+HANDOVER_MAX_GAP_S = 1.5           # the old ID must have been last seen at most this long ago
+HANDOVER_MIN_GAP_S = 0.25          # ...and at least this long ago, so a track still being tracked is never robbed
+HANDOVER_MIN_IOU = 0.5             # old last box vs new box
+
 CAP_TEXT = "capped: solo Possible needs a Bottle held 3 s and a 1 s sip"
 
 
@@ -74,6 +79,46 @@ class SoloSipGate:
                 "bottle_held_s": round(self.bottle.best, 1), "sip_s": round(self.sip.best, 1),
                 "bottle_ok": self.bottle_ok, "sip_ok": self.sip_ok,
                 "bottle_needed_s": BOTTLE_MIN_RUN_SECONDS, "sip_needed_s": SIP_MIN_HOLD_SECONDS}
+
+
+def _iou(a, b):
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / union if union > 0 else 0.0
+
+
+class GateHandover:
+    """Lets a person who is given a new track ID keep the gate their old ID had built up.
+
+    A new track adopts a gate only when the old track has vanished (not seen for HANDOVER_MIN_GAP_S, so a live
+    track is never robbed), was last seen no longer than HANDOVER_MAX_GAP_S ago, and its last box overlaps the new
+    one by HANDOVER_MIN_IOU. Each old gate is adopted at most once. With stable IDs `adopt` never finds anything."""
+
+    def __init__(self):
+        self._seen = {}                 # track id -> [box, last_seen, gate]
+
+    def note(self, track_id, box, now, gate):
+        self._seen[track_id] = [tuple(box), now, gate]
+        for tid in [t for t, e in self._seen.items() if now - e[1] > HANDOVER_MAX_GAP_S]:
+            del self._seen[tid]
+
+    def adopt(self, track_id, box, now):
+        """The gate to carry over for a track that has none yet, or None."""
+        if not SOLO_GATE_HANDOVER:
+            return None
+        best, best_iou = None, HANDOVER_MIN_IOU
+        for tid, (old_box, seen, _gate) in self._seen.items():
+            age = now - seen
+            if tid == track_id or age < HANDOVER_MIN_GAP_S or age > HANDOVER_MAX_GAP_S:
+                continue
+            iou = _iou(old_box, box)
+            if iou >= best_iou:
+                best, best_iou = tid, iou
+        if best is None:
+            return None
+        return self._seen.pop(best)[2]
 
 
 def indicators(summary):
