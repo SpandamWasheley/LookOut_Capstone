@@ -30,6 +30,15 @@ REQUIRED_FIELDS = {
                "holdup_likelihood", "scene_type", "confidence"),
 }
 
+# Fields asked of the model but not required of a stored reply, so alerts checked before they existed stay valid.
+OPTIONAL_FIELDS = {"holdup": ("people_count",)}
+
+
+def schema_fields(kind):
+    """Every field the model is asked to return for `kind` (required first, optional last)."""
+    return tuple(REQUIRED_FIELDS[kind]) + tuple(OPTIONAL_FIELDS.get(kind, ()))
+
+
 _CHOICES = {
     "drinking_likelihood": {"likely", "possible", "unlikely"},
     "holdup_likelihood": {"likely", "possible", "unlikely"},
@@ -78,6 +87,10 @@ def validate_reply(kind, reply):
     for field, allowed in _CHOICES.items():
         if field in reply and str(reply[field]).lower() not in allowed:
             return None
+    if "people_count" in reply:
+        pc = reply["people_count"]
+        if isinstance(pc, bool) or not isinstance(pc, int) or pc < 0:
+            return None
     out = dict(reply)
     for field in _CHOICES:
         if field in out:
@@ -90,6 +103,12 @@ def validate_reply(kind, reply):
     # lines, and a newline inside a quoted sentence renders as a gap.
     out["observations"] = " ".join(str(out.get("observations", "")).split())
     return out
+
+
+def _few_people(r):
+    """True when the reply says fewer than two real people are visible (people_count asked of holdup only)."""
+    pc = r.get("people_count")
+    return isinstance(pc, int) and not isinstance(pc, bool) and pc < 2
 
 
 def _step(level, delta):
@@ -108,6 +127,11 @@ def ai_badge(kind, reply):
         return {"code": "unavailable", "text": UNAVAILABLE}
     scene = r.get("scene_type")
     htm = r.get("hand_to_mouth_activity")
+    # Holdup needs two people (v6.2.4). One person with "an object pointed at a person" contradicts itself.
+    if kind == "holdup" and _few_people(r):
+        if r.get("object_pointed_at_a_person") is True:
+            return {"code": "unclear", "text": "AI: unclear"}
+        return {"code": "ordinary", "text": "AI: may be ordinary activity"}
     if scene == "other_activity" or htm == "other_activity":
         return {"code": "ordinary", "text": "AI: may be ordinary activity"}
     supports = (
@@ -127,8 +151,11 @@ def _supports_up(kind, r):
     if kind == "smoking":
         return r.get("hand_to_mouth_activity") == "smoking"
     if kind == "holdup":
+        # v6.2.4: the AI may push a holdup up only when it counts two real people AND calls it a confrontation
+        # (high confidence is required for every upward suggestion, see suggest_status).
         return (r.get("holdup_likelihood") == "likely"
-                and (r.get("object_pointed_at_a_person") is True or r.get("scene_type") == "confrontation"))
+                and r.get("scene_type") == "confrontation"
+                and isinstance(r.get("people_count"), int) and r["people_count"] >= 2)
     return False
 
 
@@ -162,6 +189,9 @@ def suggest_status(official_level, kind, reply, puff_only=False):
     if r["confidence"] != HIGH:
         return same(f"No change — {official}")
 
+    if kind == "holdup" and _few_people(r):
+        return same(f"No change — {official} (AI sees fewer than 2 people)")
+
     ordinary = r.get("scene_type") == "other_activity" or r.get("hand_to_mouth_activity") == "other_activity"
     if ordinary:
         if official == MONITORING:
@@ -184,6 +214,7 @@ def suggest_status(official_level, kind, reply, puff_only=False):
 
 # --- what the API serves for an alert (recomputed on every read) -------------
 
+_COUNT_LABELS = {"people_count": "Distinct real people seen"}
 _FIELD_LABELS = {
     "table_chairs_or_seating_visible": "Table, chairs or seating visible",
     "drinking_items_visible": "Drinks or items set out",
@@ -212,6 +243,9 @@ def ai_checklist(kind, reply):
     for field in REQUIRED_FIELDS[kind]:
         if field in _CHOICE_LABELS:
             out.append({"field": field, "label": _CHOICE_LABELS[field], "value": r[field].replace("_", " ")})
+    for field in OPTIONAL_FIELDS.get(kind, ()):
+        if field in r and field in _COUNT_LABELS:
+            out.append({"field": field, "label": _COUNT_LABELS[field], "value": r[field]})
     return out
 
 
@@ -227,11 +261,12 @@ def ai_context(kind, ai, official_level, puff_only=False):
         shown = "pending" if state == "pending" else "unavailable"
         return {"state": shown, "badge": {"code": "unavailable", "text": UNAVAILABLE},
                 "suggestion": {"text": UNAVAILABLE, "suggested": None, "changed": False, "direction": "none"},
-                "observations": "", "checklist": [], "confidence": None,
+                "observations": "", "checklist": [], "confidence": None, "people_count": None,
                 "model": ai.get("model", ""), "seconds": ai.get("seconds"), "frames": ai.get("frame_files", []),
                 "system_note": ai.get("system_note", ""), "error": ai.get("error", "")}
     return {"state": "done", "badge": ai_badge(kind, valid),
             "suggestion": suggest_status(official_level, kind, valid, puff_only=puff_only),
             "observations": valid["observations"], "checklist": ai_checklist(kind, valid),
+            "people_count": valid.get("people_count"),
             "confidence": valid["confidence"], "model": ai.get("model", ""), "seconds": ai.get("seconds"),
             "frames": ai.get("frame_files", []), "system_note": ai.get("system_note", ""), "error": ""}

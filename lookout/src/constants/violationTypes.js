@@ -30,7 +30,7 @@ export const VIOLATION_TYPES = {
   },
   parking: {
     code: "parking",
-    label: "Parking Obstruction in Area",
+    label: "Parking Obstruction in Road",
     short: "Parking",
     icon: Car,
     aliases: [
@@ -59,7 +59,7 @@ export const VIOLATION_TYPES = {
   },
   disposal: {
     code: "disposal",
-    label: "Improper Disposal",
+    label: "Discarded Waste",
     short: "Disposal",
     icon: Trash2,
     aliases: [

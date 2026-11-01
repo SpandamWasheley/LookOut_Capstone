@@ -16,7 +16,7 @@ from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
 from core.vision import trim as trimming
 from core.vision import clock as vclock
-from core.vision import recognition, scoring, theft, tracking, ai_checker
+from core.vision import recognition, scoring, theft, tracking, ai_checker, location_momentum
 from ._incidents import IncidentMixin
 
 THIEF_CAMERA_CODE = "CAM-SMOKE-01"
@@ -119,6 +119,9 @@ KNIFE_MAX_WRIST_DIST_FRAC = 0.22
 # momentum.KNIFE_HOLD_SECONDS), not instead of it: momentum decides when the cue
 # is ON, this decides whether the knife is solid enough to be scored as E14.
 KNIFE_PERSIST_HITS = 2
+# Holdup only: a knife detection below this confidence is dropped whatever the Settings confidence says (phones, remotes and
+# umbrella handles score in the 0.3-0.5 range). Raises the effective floor; a higher Settings value still wins.
+KNIFE_MIN_CONF = 0.50
 KNIFE_PERSIST_WINDOW = 5
 # The 2-of-5 test is satisfied BY A BURST, and the cue then confirms a moment later
 # (momentum.KNIFE_CONFIRM_SECONDS). Checking it only at the instant of confirmation
@@ -199,7 +202,9 @@ NIGHT_START, NIGHT_END = datetime.time(22, 0), datetime.time(5, 0)
 
 
 def _is_night(now_dt):
-    """22:00 to 05:00 local time — E16 dwell only."""
+    """22:00 to 05:00 local time — E16 dwell only. No clock (a file with no clip time) is never night."""
+    if now_dt is None:
+        return False
     t = now_dt.time()
     return t >= NIGHT_START or t < NIGHT_END
 
@@ -235,6 +240,7 @@ class Command(IncidentMixin, BaseCommand):
         self._frame_tracks = []
         self.clock_start = None       # --clock footage start (file sources only)
         self._holdup_cues = {}        # holder track id -> (time, Layer E cues seen recently)
+        self._partner_logged = {}     # (holder id, other id) -> last verdict logged, so a change is logged once
         self._knife_hits = {}         # track id -> last KNIFE_PERSIST_WINDOW frames: knife detected?
         self._e14_times = {}          # track id -> times a knife was SEEN on them (after the wrist rule)
         self._knife_persist_at = {}   # track id -> last time the 2-of-5 persistence test was met
@@ -498,7 +504,10 @@ class Command(IncidentMixin, BaseCommand):
         kept = []
         for d in dets:
             self.stats[f"detected:{d[5]}"] += 1
-            if d[4] >= min(conf * self._policy(d[5])["conf_scale"], 1.0):
+            floor = min(conf * self._policy(d[5])["conf_scale"], 1.0)
+            if str(d[5]).lower() == "knife":
+                floor = max(floor, KNIFE_MIN_CONF)
+            if d[4] >= floor:
                 kept.append(d)
             else:
                 self.stats[f"cut by class floor:{d[5]}"] += 1
@@ -510,6 +519,8 @@ class Command(IncidentMixin, BaseCommand):
         that person's own box to plausibly be that object, or isn't actually
         near a HAND (see KNIFE_MAX_WRIST_DIST_FRAC).
 
+        (v6.2.4: also hands this frame to location_momentum, which the holdup pair filter uses to check skeletons.)
+
         Mirrors watch_smoking._apply_mouth_rule's placement exactly: this runs
         on `per_track` right after tracker.assign(), so a rejected detection
         never reaches track.vote()/tick() at all — it can't build dwell, not
@@ -519,6 +530,7 @@ class Command(IncidentMixin, BaseCommand):
         waved through — an unresolvable case is exactly the kind of thing
         that turned into a floating false positive before this rule existed.
         """
+        location_momentum.CURRENT_FRAME["frame"] = frame     # v6.2.4: lets the pair filter read this frame's skeletons
         if "spatial" in self.ablate:
             return per_track
 
@@ -955,6 +967,11 @@ class Command(IncidentMixin, BaseCommand):
                 self.stats["held back: momentum below ON"] += 1
             self._debug_note("Holdup", ("knife", track.id), track.id, track.box, None, cue.momentum)
             return
+        if location_momentum.holdup_rules_on() and not location_momentum.knife_recent(track, now_ts):
+            # v6.2.1: E14 needs an accepted knife sighting in the last 1 s -- no long "last seen" carry.
+            self.stats["held back: knife not seen in the last 1 s"] += 1
+            self._debug_note("Holdup", ("knife", track.id), track.id, track.box, None, cue.momentum)
+            return
         persisted = self._knife_persist_at.get(track.id)
         if persisted is None or now_ts - persisted > KNIFE_PERSIST_MEMORY_SECONDS:
             self.stats["held back: knife in fewer than 2 of the last 5 frames"] += 1
@@ -990,6 +1007,7 @@ class Command(IncidentMixin, BaseCommand):
             blocked=lambda: "cooldown" not in self.ablate and self._cooldown_blocks(box, now_ts, cooldown),
             ai=self._ai_request(track, evidence),
             extra_cues={"object_confidence": round(best_score, 3), "momentum": cue.snapshot},
+            partner=(evidence.partner_id, evidence.partner_box) if getattr(evidence, "partner_box", None) else None,
         )
         if alert is not None or self.dry_run:
             self.stats[f"status:{evidence.band}:{best_label}"] += 1
@@ -1008,12 +1026,20 @@ class Command(IncidentMixin, BaseCommand):
         """Time of day for scoring, in Manila time.
 
         A file with a --clock "Recorded at" uses that footage time (entered as
-        Manila wall-clock time) plus the position in the clip. Everything else
-        uses the wall clock IN Asia/Manila -- explicitly, not whatever zone the
+        Manila wall-clock time) plus the position in the clip. A file WITHOUT one
+        returns None (v6.2.10: E20 off). A live source uses the wall clock IN Asia/Manila -- explicitly, not whatever zone the
         laptop happens to be set to.
         """
         if self._source_path is not None and self.clock_start is not None:
             return vclock.clock_now(self.clock_start, now_ts, True)
+        if self._source_path is not None and location_momentum.E20_REQUIRES_CLIP_TIME:
+            # v6.2.10: a file with no "Recorded at" has no time of day. The wall clock is when it was PROCESSED, not filmed, so
+            # E20 is switched off for the run (None reads as hour-unknown everywhere: 0 points, multiplier 1.0, never night).
+            if not getattr(self, "_e20_off_logged", False):
+                self._e20_off_logged = True
+                self.stats["E20 disabled: no clip time"] += 1
+                self.stdout.write(self.style.WARNING("E20 disabled: no clip time (pass --clock to score the time of day)."))
+            return None
         return datetime.datetime.now(ZoneInfo("Asia/Manila"))
 
     def _describe(self, ev, summary, who, present_for):
@@ -1038,7 +1064,7 @@ class Command(IncidentMixin, BaseCommand):
             if "e10" not in self.ablate and engine.loiter_recent(track, now_ts):
                 cues["E10"] = theft.WEIGHTS["E10"]
             cues.update(engine.holdup_pair_cues(
-                track.id, self._e14_times.get(track.id, ()), now_ts, hold=self.cue_hold))
+                track.id, self._e14_times.get(track.id, ()), now_ts, hold=self.cue_hold, holder=track))
         # E20 as added points from the Manila table (Asia/Manila hour). Evidence
         # decides whether it counts and how much of it fits under the cap.
         bonus = scoring.manila_time_bonus(self._clock_now(now_ts))
@@ -1046,13 +1072,44 @@ class Command(IncidentMixin, BaseCommand):
             cues["E20"] = bonus
         mult = {}
         near_limit = engine.near_person_heights if engine is not None else theft.NEAR_PERSON_HEIGHTS
-        near = any(o is not track and not getattr(o, "is_scene", False)
-                   and theft._person_norm_distance(track.box, o.box) <= near_limit
-                   for o in self._frame_tracks)
-        return theft.Evidence(
+        partner = self._valid_partner(track, near_limit, now_ts)
+        near = partner is not None
+        ev = theft.Evidence(
             "weapon", tuple(box), cues, mult, set(), [track.id],
             f"{label} (momentum {present_for:.1f})",
             people_near=near, previous_level=self._incident_level(("knife", track.id)))
+        ev.partner_id = partner.id if partner is not None else None
+        ev.partner_box = tuple(partner.box) if partner is not None else None   # the AI checker's crop and the evidence clip
+        return ev
+
+    def _valid_partner(self, holder, near_limit, now_ts):
+        """The nearest OTHER person who is a real second person (theft.partner_problem), or None.
+
+        Every candidate within reach is logged once per change of verdict ($LOOKOUT_MOUTH_LOG, kind "partner"): who it was, how
+        old the track is, how long since the detector last matched it, how big its box is -- so a ghost partner can be told
+        from a real one after the run."""
+        best, best_d = None, None
+        for o in self._frame_tracks:
+            if o is holder or getattr(o, "is_scene", False):
+                continue
+            d = theft._person_norm_distance(holder.box, o.box)
+            if d > near_limit:
+                continue
+            why = theft.partner_problem(holder, o, now_ts)
+            verdict = why or "valid"
+            if self._partner_logged.get((holder.id, o.id)) != verdict:
+                self._partner_logged[(holder.id, o.id)] = verdict
+                self.stats[f"holdup partner: {verdict}"] += 1
+                recognition.log_mouth(
+                    kind="partner", holder=holder.id, partner=o.id, verdict=verdict, t=round(now_ts, 2),
+                    partner_age_s=round(o.age(now_ts), 1), missed_frames=o.missed_frames,
+                    seconds_since_detected=round(now_ts - o.last_seen, 2),
+                    partner_box_wh=[o.box[2] - o.box[0], o.box[3] - o.box[1]],
+                    holder_box_wh=[holder.box[2] - holder.box[0], holder.box[3] - holder.box[1]],
+                    partner_conf=None if o.conf is None else round(o.conf, 2), distance_heights=round(d, 2))
+            if not why and (best_d is None or d < best_d):
+                best, best_d = o, d
+        return best
 
     # ---- Layer E evidence handling (E29) ----------------------------------
 

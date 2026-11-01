@@ -15,9 +15,9 @@ from core.models import (
 # reseed. See migration 0026 for the one-time rename/merge this mirrors.
 VIOLATION_TYPES = [
     {"code": "theft", "label": "Holdup in Public Area", "color": "#ef4444", "icon": "theft"},
-    {"code": "parking", "label": "Parking Obstruction in Area", "color": "#f97316", "icon": "car"},
-    {"code": "drinking", "label": "Drinking", "color": "#8b5cf6", "icon": "beer"},
-    {"code": "smoking", "label": "Smoking", "color": "#64748b", "icon": "smoke"},
+    {"code": "parking", "label": "Parking Obstruction in Road", "color": "#f97316", "icon": "car"},
+    {"code": "drinking", "label": "Drinking in Public Area", "color": "#8b5cf6", "icon": "beer"},
+    {"code": "smoking", "label": "Smoking in Public Area", "color": "#64748b", "icon": "smoke"},
     {"code": "disposal", "label": "Improper Disposal", "color": "#22c55e", "icon": "trash"},
 ]
 

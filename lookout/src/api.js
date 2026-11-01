@@ -429,6 +429,15 @@ export const uploadCameraEdgeFrame = (id, file) => {
   return apiUpload(`/cameras/${id}/edge-frame/`, formData);
 };
 
+// Live zone trace for the Edge Zones editor: start / poll / cancel a background
+// trace of the camera's live stream. Nothing is saved server-side; the result
+// is points in the STREAM's pixels (+ width/height) for the editor to scale.
+export const startCameraZoneTrace = (id) =>
+  apiFetch(`/cameras/${id}/trace-zone/`, { method: "POST", body: "{}" });
+export const getCameraZoneTrace = (id) => apiFetch(`/cameras/${id}/trace-zone/`);
+export const cancelCameraZoneTrace = (id) =>
+  apiFetch(`/cameras/${id}/trace-zone/`, { method: "DELETE" });
+
 // Proposes parking's no-parking polygon from a clip ALREADY STAGED for a run,
 // by watching where traffic drives in it. Returns `points` (the suggested
 // shape, in the staged frame's own pixels) plus the counts behind it.

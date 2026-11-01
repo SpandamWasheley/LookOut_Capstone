@@ -43,7 +43,7 @@ flagged rather than silently resolved:
 import math
 from collections import deque
 
-from . import scoring
+from . import location_momentum, scoring
 from .recognition import _iou
 from .tracking import SceneBaseline, norm_distance
 
@@ -118,6 +118,14 @@ ANCHOR_MATCH_REACH = 2.0
 # A second person counts as NEAR the knife holder within this many of the
 # HOLDER's heights (spec decision: about 1.5-2, configurable in Settings).
 NEAR_PERSON_HEIGHTS = 1.75
+
+# What counts as a real second person (holdup "2 people" rule). A partner must have been DETECTED by the person detector in
+# THIS frame (not a predicted / lost / grace-period track), be big enough to be a person standing with the holder, be detected
+# with some confidence, and have stayed put: a rider or vehicle passing through overlaps for a moment and moves on.
+PARTNER_MIN_HEIGHT_FRAC = 0.5       # partner box height >= this x the knife holder's box height
+PARTNER_MIN_CONF = 0.4              # person-detector confidence of the partner's box this frame
+PARTNER_STILL_SECONDS = 2.0         # the partner must have stayed within PARTNER_STILL_MAX_FRAC for this long ...
+PARTNER_STILL_MAX_FRAC = 0.6        # ... of its own box widths (tracking.STATIONARY_DIST's measure)
 
 # --- Holdup v2: sequencing and memory ------------------------------------------
 # E12 (the freeze) only counts if the knife was seen DURING it or up to this many
@@ -253,6 +261,27 @@ def _seat_region(box):
     return (x1 + 0.2 * w, y1, x2 - 0.2 * w, y1 + 0.5 * h)
 
 
+def partner_problem(holder, other, now):
+    """Why `other` cannot be the knife holder's second person, or "" when it can.
+
+    Judged on real detections only: a track the detector did not match this frame is a prediction (its last box simply
+    sits where it was), and a prediction never counts as a person standing next to the holder."""
+    if getattr(other, "is_scene", False):
+        return "not a person"
+    if not other.seen_at(now):
+        return "not detected this frame"
+    conf = getattr(other, "conf", None)
+    if conf is not None and conf < PARTNER_MIN_CONF:
+        return "low detection confidence"
+    if other.height < PARTNER_MIN_HEIGHT_FRAC * max(holder.height, 1):
+        return "too small next to the holder"
+    if other.age(now) < PARTNER_STILL_SECONDS:
+        return "seen too briefly to be standing"
+    if not other.stationary(now, PARTNER_STILL_SECONDS, PARTNER_STILL_MAX_FRAC):
+        return "moving, not standing"
+    return ""
+
+
 class Evidence:
     """One scored incident (E28) with its status (E29) and full cue vector.
 
@@ -283,7 +312,10 @@ class Evidence:
         # is one possibly-wrong detection, and the time of day (E20) is a prior,
         # not evidence -- so with no behavioural cue E20 is not counted and the
         # status is held at Monitoring.
-        self.corroborated = bool(self.cues.keys() & {"E10", "E12"})
+        # v6.2.1: with the location switch on, ONLY a frozen pair (E12, held 3 s) corroborates; loitering
+        # (E10) is still scored but no longer lifts a knife above Monitoring on its own.
+        self.corroborated = bool(self.cues.keys() & (
+            {"E12"} if location_momentum.holdup_rules_on() else {"E10", "E12"}))
         self.e20_table = self.cues.get("E20", 0.0)      # what the hour would add
         self.e20_capped = False
         if "E14" in self.cues:
@@ -320,12 +352,18 @@ class Evidence:
         self.people_near = (len(self.tracks) >= 2) if people_near is None else bool(people_near)
         self.object_on = "E14" in self.cues
         self.holdup_capped = False
+        self.capped = ""
         if self.object_on:
             level = scoring.level_with_hysteresis(self.score, previous_level, True)
-            if ((not self.people_near or not self.corroborated)
+            # v6.2.1 sticky: the caps only block the FIRST rise to Possible / Likely.
+            sticky = (location_momentum.holdup_rules_on()
+                      and previous_level in (scoring.WARNING, scoring.VIOLATION))
+            if ((not self.people_near or not self.corroborated) and not sticky
                     and scoring.LEVEL_ORDER[level] > scoring.LEVEL_ORDER[scoring.MONITORING]):
                 level = scoring.MONITORING
                 self.holdup_capped = True
+                if location_momentum.holdup_rules_on() and not self.corroborated:
+                    self.capped = location_momentum.CAP_NO_FROZEN_PAIR_TEXT
         elif any(c in LEGACY_CUES for c in self.cues):
             level = (scoring.VIOLATION if scoring._r(self.score) >= scoring.SCORE_VIOLATION
                      else scoring.WARNING if scoring._r(self.score) >= scoring.SCORE_WARNING
@@ -360,6 +398,8 @@ class Evidence:
             "corroborated": self.corroborated,
             "e20_capped": self.e20_capped,
             "holdup_capped": self.holdup_capped,
+            "capped": self.capped,
+            "spec": scoring.SCORING_SPEC_VERSION,
             "level": self.band,
             "label": scoring.label_of(self.band),
             "tag": "",
@@ -374,12 +414,17 @@ class Evidence:
         found = [scoring.Score.CUE_LABELS.get(n, n) for n in sorted(self.cues)]
         notes = [scoring.Score.MULTIPLIER_LABELS.get(n, n) for n, f in sorted(self.multipliers.items())
                  if f != 1.0]
-        return {"found": found, "adjusted_by": notes, "tag": ""}
+        out = {"found": found, "adjusted_by": notes, "tag": ""}
+        if self.capped:
+            out["capped"] = self.capped
+        return out
 
     def summary(self):
         cues = ", ".join(f"{r}={w:.2f}" for r, w in sorted(self.cues.items()))
         mults = "".join(f" x{f}" for f in self.multipliers.values())
         abst = f" [abstained: {', '.join(sorted(self.abstained))}]" if self.abstained else ""
+        if self.capped:
+            abst += f" [{self.capped}]"
         return f"{self.detail} | {cues}{mults} -> {self.score:.2f} ({self.band}){abst}"
 
     def __repr__(self):
@@ -794,7 +839,7 @@ class PairState:
         self.pending = None       # snatch awaiting the E24 grace period
         self.emitted = {}
 
-    def update(self, ta, tb, d, va, vb, now, reach):
+    def update(self, ta, tb, d, va, vb, now, reach, sa=None, sb=None):
         self.last_update = now
 
         # E6 — monotonic approach and contact.
@@ -849,6 +894,15 @@ class PairState:
             self.close_at = now
 
         # E12 — confrontation freeze.
+        if location_momentum.holdup_rules_on():
+            # v6.2.5: E12 = the pair STAYED CLOSE for CLOSE_STAY_SECONDS (no speed requirement, overlapping boxes
+            # count as close), unless it was a pass-through (someone moving before AND after the closest approach
+            # who is back outside the close distance within PASS_SEPARATE_SECONDS).
+            if location_momentum.HOLDUP_ABSOLUTE_SPEEDS and sa is not None and sb is not None:
+                self._update_close_stay(d, sa, sb, now, reach)      # v6.2.10: box-heights/s, not baseline-relative
+            else:
+                self._update_close_stay(d, va, vb, now, reach)
+            return self._after_freeze(va, vb, now)
         if d < FREEZE_REACH * (reach / REACH_NORM) and va < FREEZE_SPEED and vb < FREEZE_SPEED:
             if self.freeze_since is None:
                 self.freeze_since = now
@@ -867,6 +921,76 @@ class PairState:
             self.freeze_since = None
             self.freeze_ok = False
 
+        return self._after_freeze(va, vb, now)
+
+    def _update_close_stay(self, d, va, vb, now, reach):
+        """v6.2.5 E12 state machine (see the comment at the call). `freeze_since` is the start of the current close
+        run, `freeze_ok` latches once the run has lasted CLOSE_STAY_SECONDS and is not a pass-through."""
+        hist = self.__dict__.setdefault("_spd_hist", deque())
+        hist.append((now, va, vb))
+        while hist and now - hist[0][0] > 8.0:
+            hist.popleft()
+        if d < location_momentum.CLOSE_DISTANCE:
+            self._close_last = now
+            if self.freeze_since is None:                      # a new close run begins
+                self.freeze_since = now
+                self._run_dmin, self._run_tc = d, now
+                self._run_samples = []
+                self._seq_candidate = (self.close_at is not None
+                                       and -1.0 <= now - self.close_at <= E11_E12_WINDOW_SECONDS)
+            elif d < self._run_dmin:
+                self._run_dmin, self._run_tc = d, now
+            self._run_samples.append((now, va, vb))
+            walking = self._co_walking(now)
+            if walking:
+                self.freeze_ok = False                         # two people walking side by side are not a standoff (re-checked every frame)
+            else:
+                self.freeze_last = now                         # the hold (cue_hold) is counted from the last frame that was not co-walking
+                if (not self.freeze_ok
+                        and now - self.freeze_since >= location_momentum.CLOSE_STAY_SECONDS
+                        and not self._pass_through_possible(now)):
+                    self.freeze_ok = True
+                    self.freeze_start_ok = self.freeze_since
+                    self.seq_ok = bool(getattr(self, "_seq_candidate", False))
+            return
+        last = getattr(self, "_close_last", None)
+        if self.freeze_since is not None and last is not None and now - last <= location_momentum.CLOSE_GAP_TOLERANCE_SECONDS:
+            return                                             # jitter on the close-distance line: the stay goes on
+        self.freeze_since = None                               # the run ended (a pass-through never got E12)
+        self.freeze_ok = False
+
+    def _co_walking(self, now):
+        """True when BOTH people were walking over the last CLOSE_STAY_SECONDS of this close run (pedestrians side by side)."""
+        if not location_momentum.CO_WALKERS_REJECTED:
+            return False
+        recent = [(va, vb) for t, va, vb in self._run_samples if now - t <= location_momentum.CLOSE_STAY_SECONDS]
+        if len(recent) < 3:
+            return False
+        med = lambda xs: sorted(xs)[len(xs) // 2]                      # noqa: E731
+        limit = location_momentum.moving_speed()
+        return (med([x[0] for x in recent]) > limit and med([x[1] for x in recent]) > limit)
+
+    def _pass_through_possible(self, now):
+        """True while this close run still looks like a walk-past that has not yet had time to separate: a person was moving
+        both before and after the closest approach, and fewer than PASS_SEPARATE_SECONDS have passed since it."""
+        tc = self._run_tc
+        before = [(va, vb) for t, va, vb in self._spd_hist
+                  if tc - location_momentum.PASS_BEFORE_WINDOW_SECONDS <= t <= tc]
+        after = [(va, vb) for t, va, vb in self._spd_hist if tc < t <= now]
+        if not before or len(after) < 2:
+            return False
+
+        limit = location_momentum.moving_speed()
+
+        def moving(xs):
+            xs = sorted(xs)
+            return xs[len(xs) // 2] > limit
+
+        walker = any(moving([x[i] for x in before]) and moving([x[i] for x in after]) for i in (0, 1))
+        return walker and now - tc <= location_momentum.PASS_SEPARATE_SECONDS
+
+    def _after_freeze(self, va, vb, now):
+        """The rest of update(): E24 sampling and the snatch candidate (runs even on a skipped E12 frame)."""
         # E24 — sample the post-separation window so a greeting can be told
         # apart from a snatch after the fact.
         if self.contact_end is not None and now - self.contact_end <= GREETING_WINDOW:
@@ -1021,9 +1145,20 @@ class TheftEngine:
 
     def _pair_evidence(self, tracks, now, reach, threats, is_night):
         out = []
-        for i, ta in enumerate(tracks):
-            for tb in tracks[i + 1:]:
+        # The frozen-pair measure (E12) runs on tracks the detector actually matched THIS frame. A lost track keeps its last
+        # box, which is "frozen" by construction; letting it pair up manufactured a second person out of a ghost.
+        real = [t for t in tracks if t.seen_at(now) and (t.conf is None or t.conf >= PARTNER_MIN_CONF)]
+        self._live = {t.id: t for t in real}
+        updated = set()
+        for i, ta in enumerate(real):
+            for tb in real[i + 1:]:
                 key = (min(ta.id, tb.id), max(ta.id, tb.id))
+                updated.add(key)
+                if (location_momentum.fake_person_filter_on()
+                        and location_momentum.is_shadow_pair(ta.box, tb.box)):
+                    self.pairs.pop(key, None)            # person + own shadow: not a pair
+                    self._bump("holdup pair: person and own shadow ignored")
+                    continue
                 state = self.pairs.get(key)
                 if state is None:
                     state = self.pairs[key] = PairState(key, now)
@@ -1031,7 +1166,7 @@ class TheftEngine:
                 va = self.baseline.norm(ta, now)
                 vb = self.baseline.norm(tb, now)
                 was_closing = state.close_at
-                state.update(ta, tb, d, va, vb, now, reach)
+                state.update(ta, tb, d, va, vb, now, reach, sa=ta.speed(now), sb=tb.speed(now))
                 if state.close_at is not None and state.close_at != was_closing:
                     self._converge_log.append((now, ta.id, tb.id))
                     self._converge_log.append((now, tb.id, ta.id))
@@ -1042,6 +1177,13 @@ class TheftEngine:
                 holdup = self._holdup(state, ta, tb, now, threats, is_night)
                 if holdup is not None:
                     out.append(holdup)
+        for key, state in self.pairs.items():
+            if key not in updated and state.freeze_ok:
+                # One of the pair was not detected this frame: the freeze stops being measured. `freeze_last` is kept, so the
+                # cue_hold window (flicker tolerance) still runs from the last REAL frame, and no longer.
+                state.freeze_ok = False
+                state.freeze_since = None
+                self._bump("holdup pair: freeze dropped, a partner was not detected this frame")
         return out
 
     def _snatch(self, state, ta, tb, now, is_night):
@@ -1211,7 +1353,8 @@ class TheftEngine:
             # Spec v6 section 7: a second person must be NEAR the knife holder
             # (within near_person_heights of the HOLDER's height) to go above
             # Monitoring.
-            others = [(o, _person_norm_distance(t.box, o.box)) for o in tracks if o is not t]
+            others = [(o, _person_norm_distance(t.box, o.box)) for o in tracks
+                      if o is not t and not partner_problem(t, o, now)]
             nearest = min(others, key=lambda x: x[1], default=None)
             near = nearest is not None and nearest[1] <= self.near_person_heights
             ev = self._evidence(
@@ -1301,7 +1444,7 @@ class TheftEngine:
         stamp = getattr(track, "loiter_last_seen", None)
         return stamp is not None and 0 <= now - stamp <= LOITER_MEMORY_SECONDS
 
-    def holdup_pair_cues(self, holder_id, e14_times, now, hold=5.0):
+    def holdup_pair_cues(self, holder_id, e14_times, now, hold=5.0, holder=None):
         """E12 and E11->E12 for the knife holder, as {rule: weight}.
 
         E12 counts when a pair involving the holder is frozen now (or was a
@@ -1316,6 +1459,11 @@ class TheftEngine:
         for (a, b), st in self.pairs.items():
             if holder_id not in (a, b) or st.freeze_start_ok is None:
                 continue
+            if holder is not None:
+                # With the holder's track in hand, the other half of the pair has to be a valid partner right now.
+                other = getattr(self, "_live", {}).get(b if a == holder_id else a)
+                if other is None or partner_problem(holder, other, now):
+                    continue
             active = st.freeze_ok or (st.freeze_last is not None and now - st.freeze_last <= hold)
             if not active:
                 continue

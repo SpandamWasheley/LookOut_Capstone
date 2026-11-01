@@ -10,7 +10,9 @@ from django.test import TestCase
 
 from core.management.commands.watch_smoking import Command as SmokingCommand
 from core.models import Alert, Camera, ViolationType
-from core.vision import scoring, tracking
+from unittest import mock
+
+from core.vision import ai_checker, location_momentum, scoring, tracking
 
 BOX = (400, 200, 520, 500)
 CIG = (440, 230, 450, 245, 0.8, "Cigarette")
@@ -18,6 +20,11 @@ CIG = (440, 230, 450, 245, 0.8, "Cigarette")
 
 class SmokingIncidentTests(TestCase):
     def setUp(self):
+        # These tests feed bare detections (no pose), i.e. the pre-v6.2 incident machinery; the v6.2
+        # location gate (tests_location_momentum.py) would reject every hit as "no keypoints".
+        patcher = mock.patch.object(location_momentum, "LOCATION_AWARE_MOMENTUM", False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.cam = Camera.objects.create(code="CAM-SMOKE-01", name="Hikvision DS-2CD1047G2")
@@ -52,9 +59,10 @@ class SmokingIncidentTests(TestCase):
         self.cmd._process_track(self.track, dets, t, 2.0, 120, self.frame, False)
 
     def puff(self, t):
-        """One completed hand-to-mouth cycle (wrist at the face, then down)."""
+        """One completed hand-to-mouth cycle (wrist held at the face for the apex hold, then down)."""
         self.track.update_gesture(0.3, t)
-        self.track.update_gesture(2.0, t + 0.3)
+        self.track.update_gesture(0.3, t + tracking.GESTURE_APEX_HOLD_SECONDS + 0.1)
+        self.track.update_gesture(2.0, t + tracking.GESTURE_APEX_HOLD_SECONDS + 0.2)
 
     def rows(self):
         return list(Alert.objects.order_by("id"))
@@ -88,10 +96,21 @@ class SmokingIncidentTests(TestCase):
         self.assertEqual(rows[0].cues["level"], scoring.VIOLATION)
         self.assertIn("near_mouth", rows[0].cues["cues"])
 
-    def test_puff_only_is_possible_capped_and_tagged(self):
+    def test_puff_only_without_any_item_is_held_at_monitoring(self):
         for t in (1.0, 20.0, 40.0):
             self.puff(t)
-        self.step(60.0, [])                                  # no cigarette anywhere
+        self.step(60.0, [])                                  # no cigarette anywhere, ever, on this track
+        rows = self.rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].level, scoring.MONITORING)
+        self.assertTrue(rows[0].cues["puff_only"])
+        self.assertEqual(rows[0].video_url, "")              # Monitoring writes no clip
+
+    def test_puff_only_is_possible_capped_and_tagged(self):
+        self.track.smoke_item_seen = True                    # an item was seen on this person at some point
+        for t in (1.0, 20.0, 40.0):
+            self.puff(t)
+        self.step(60.0, [])                                  # ... and is gone now
         rows = self.rows()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].level, scoring.WARNING)
@@ -135,6 +154,9 @@ class SmokingIncidentTests(TestCase):
 
 class ThiefAndDrinkingTests(TestCase):
     def setUp(self):
+        patcher = mock.patch.object(location_momentum, "LOCATION_AWARE_MOMENTUM", False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         from core.management.commands.watch_thief import Command as ThiefCommand
         from core.management.commands.watch_drinking import Command as DrinkingCommand
         self.tmp = tempfile.TemporaryDirectory()
@@ -153,7 +175,11 @@ class ThiefAndDrinkingTests(TestCase):
         self.drink = DrinkingCommand()
 
     def _knife_track(self, tid, box):
-        t = tracking.Track(tid, box, 0.0, 5.0)
+        """A person who has been in view and standing for a few seconds and was matched at t=0 (a real second person)."""
+        t = tracking.Track(tid, box, -5.0, 5.0)
+        for at in (-3.0, -1.5, 0.0):
+            t.note_position(at)
+        t.last_seen = 0.0
         return t
 
     def test_a_knife_with_nobody_near_is_monitoring_only(self):
@@ -348,8 +374,10 @@ class AICheckerWiringTests(SmokingIncidentTests):
         sent = sorted(float(t) for t, _jpg, _boxes in
                       self.cmd.ai_ring.window(9.75))
         self.assertTrue(sent, "nothing was in the ring around the trigger")
-        self.assertGreater(min(sent), 5.0,
-                           "frames from the start of the event were sent")
+        self.assertGreaterEqual(min(sent), 9.75 - ai_checker.FRAMES_BEFORE - 1e-9,
+                                "frames from before the window were sent")
+        self.assertLess(self.cmd.ai_ring._items[0][0], min(sent),
+                        "the ring held nothing older than the window, so this proves nothing")
 
     def test_an_event_opening_straight_at_possible_is_checked_at_that_moment(self):
         # Puff-only smoking: the row is CREATED at Possible rather than rising
@@ -360,11 +388,12 @@ class AICheckerWiringTests(SmokingIncidentTests):
         # so the triggering frame is not in it yet and the window is filled by
         # the frames just before. That is also true of the real watcher, which
         # is processing this person the whole time the puffs accumulate.
+        self.track.smoke_item_seen = True                    # without one a puff-only row is held at Monitoring
         for i in range(170):
             t = i * 0.25
             if t in (1.0, 20.0, 40.0):
                 self.puff(t)
-            self.frame_step(t, [])                           # no cigarette anywhere
+            self.frame_step(t, [])                           # ... and none in view now
         row = self.rows()[0]
         self.assertEqual(row.level, scoring.WARNING)
         self.assertTrue(row.cues["puff_only"])

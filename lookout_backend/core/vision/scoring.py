@@ -28,6 +28,14 @@ without a database.
 
 import datetime
 
+# Scoring spec version. v6.2 = location-aware object momentum + the smoking puff gate; v6.2.1 = looser strict puff,
+# steadier holdup (knife + frozen pair), sticky statuses; v6.2.4 = no shadow pairs, the holdup AI checker is asked unprimed;
+# v6.2.5 = holdup E12 is "stayed close" with pass-through rejection; v6.2.8 = far-range puff counted from the cigarette's own
+# movement in the person box; v6.2.10 = scene-baseline seed fix, zoomed pose feeds the gesture counter, E20 only with a clip time,
+# E12 walking tests in raw box-heights/s (docs/specs/V6_2_LOCATION_MOMENTUM.md).
+# The weights and thresholds are unchanged from v6.
+SCORING_SPEC_VERSION = "v6.2.11"
+
 
 # --- statuses ----------------------------------------------------------------
 # Stored level names. `warning` and `violation` keep their historical stored
@@ -288,6 +296,8 @@ CONDITIONAL_CUES = {
 # The smoking cue that opens the capped puff-only path.
 PUFF_ONLY_CUE = "puff_pattern"
 PUFF_ONLY_TAG = "No smoking item detected — based on hand movement only"
+PUFF_ONLY_NO_ITEM_TEXT = "capped: no smoking item seen"
+PUFF_ONLY_STRONG_TAG = "Hand movement only — close range, sustained draws"
 
 
 def _apply_conditionals(cues, kind):
@@ -311,10 +321,17 @@ class Score:
     people_near    holdup only: a second person is near the knife holder
     object_on      override the gate (the watchers pass the momentum cue);
                    default is "the gate cue is among `cues`"
+    cap            optional ceiling for the status (a stored level name); applied last, never
+                   to the puff-only path. v6.2 smoking puff gate: no puff -> Monitoring.
+    cap_reason     text shown in the breakdown when the cap actually lowered the status
+    puff_only_max  smoking only: the highest status the puff-only path (no item) may reach; Possible by default,
+                   Monitoring while no smoking item has ever been seen on the person
+    strong_gesture smoking only: the puff-only Possible was earned by the sustained close-range draws exception, so the
+                   tag says so instead of the generic "hand movement only" text
     """
 
     def __init__(self, kind, weights, cues, multipliers=None, *, previous_level=None,
-                 people_near=True, object_on=None, detail=""):
+                 people_near=True, object_on=None, detail="", cap=None, cap_reason="", puff_only_max=WARNING, strong_gesture=False):
         self.kind = kind
         self.detail = detail
         self.multipliers = dict(multipliers or {})
@@ -343,7 +360,7 @@ class Score:
         # Possible and always tagged; fewer puffs are logged and never shown.
         self.puff_only = (kind == "smoking" and not self.object_on
                           and PUFF_ONLY_CUE in self.fired)
-        self.tag = PUFF_ONLY_TAG if self.puff_only else ""
+        self.tag = (PUFF_ONLY_STRONG_TAG if strong_gesture else PUFF_ONLY_TAG) if self.puff_only else ""
 
         if self.object_on:
             level = level_with_hysteresis(self.score, previous_level, True)
@@ -360,9 +377,15 @@ class Score:
         if kind == "holdup" and not self.people_near and LEVEL_ORDER[level] > LEVEL_ORDER[MONITORING]:
             level = MONITORING
             self.holdup_capped = True
-        # Puff-only can never exceed Possible, even with hysteresis carry-over.
-        if self.puff_only and LEVEL_ORDER[level] > LEVEL_ORDER[WARNING]:
-            level = WARNING
+        # Puff-only can never exceed Possible (or `puff_only_max`), even with hysteresis carry-over.
+        self.capped = ""
+        if self.puff_only and LEVEL_ORDER[level] > LEVEL_ORDER[puff_only_max]:
+            level = puff_only_max
+            self.capped = PUFF_ONLY_NO_ITEM_TEXT
+        # v6.2 ceiling (smoking puff gate). The score stays as computed; only the status is held down.
+        if cap is not None and not self.puff_only and LEVEL_ORDER[level] > LEVEL_ORDER.get(cap, 3):
+            level = cap
+            self.capped = cap_reason or "capped"
         self.level = level
 
     @property
@@ -412,7 +435,10 @@ class Score:
         found = [self.CUE_LABELS.get(n, n) for n in sorted(self.cues)]
         notes = [self.MULTIPLIER_LABELS.get(n, n) for n, f in sorted(self.multipliers.items())
                  if f != 1.0]
-        return {"found": found, "adjusted_by": notes, "tag": self.tag}
+        out = {"found": found, "adjusted_by": notes, "tag": self.tag}
+        if self.capped:
+            out["capped"] = self.capped
+        return out
 
     def as_dict(self):
         """Serialisable cue vector -- stored on the Alert for audit and calibration."""
@@ -430,6 +456,8 @@ class Score:
             "level": self.level,
             "label": label_of(self.level),
             "tag": self.tag,
+            "capped": self.capped,
+            "spec": SCORING_SPEC_VERSION,
             "checklist": self.checklist(),
         }
 
@@ -438,6 +466,8 @@ class Score:
         mults = "".join(f" x{f:.2f}" for f in self.multipliers.values())
         head = f"{self.detail} | " if self.detail else ""
         tag = f" [{self.tag}]" if self.tag else ""
+        if self.capped:
+            tag += f" [{self.capped}]"
         return f"{head}{cues}{mults} -> {self.score:.2f} ({self.level}){tag}"
 
     def __repr__(self):

@@ -63,7 +63,7 @@ from core.vision import debug_view
 
 from ._incidents import ai_setup
 
-from .watch_smoking import Command as SmokingCommand
+from .watch_smoking import Command as SmokingCommand, BOTTLE_STANDDOWN_MIN_CONF
 from core.vision import theft
 from .watch_thief import Command as ThiefCommand, _is_night
 from .watch_drinking import Command as DrinkingCommand
@@ -75,6 +75,7 @@ SETTINGS_REFRESH_SECONDS = 5
 # case-insensitively; anything the model returns that isn't one of these
 # three is dropped (and counted), never silently misrouted to the wrong
 # engine.
+BOTTLE_SEEN_MAX = 200       # most Bottle-to-person associations kept for smoking's stand-down
 ROUTE_ENGINE = {"cigarette": "smoking", "bottle": "drinking", "knife": "thief"}
 
 
@@ -153,6 +154,10 @@ class Command(BaseCommand):
                  "(it is on by default: about 0.04 s/frame, finds cigarettes the "
                  "downscaled passes miss).",
         )
+        parser.add_argument(
+            "--no-bottle-crops", action="store_true",
+            help="Skip the native-resolution person-crop pass for Bottle (on by "
+                 "default; at most recognition.BOTTLE_CROP_MAX crops per frame).")
         parser.add_argument("--dry-run", action="store_true",
                             help="Detect and save evidence but write no Alert rows.")
         trimming.add_cli_flags(parser)
@@ -161,6 +166,13 @@ class Command(BaseCommand):
         parser.add_argument("--stats", action="store_true",
                             help="On exit, print each engine's own detection-stage stats "
                                  "(same --stats output each standalone watcher prints).")
+        parser.add_argument("--timing", action="store_true",
+                            help="Measure per-stage inference time, Qwen latency, alert latency "
+                                 "and GPU memory (core/vision/timing.py) and write a JSON report "
+                                 "when the run ends. Detection and scoring are unchanged.")
+        parser.add_argument("--timing-out", default="",
+                            help="Where --timing writes its JSON report "
+                                 "(default timing_<command>_<time>.json in the working directory).")
         parser.add_argument("--calibration-csv", default="",
                             help="Phase-0 instrumentation: write every raw merged-model "
                                  "detection to this CSV path, one row per detection per "
@@ -177,6 +189,33 @@ class Command(BaseCommand):
                                  "exactly as without this flag.")
 
     def handle(self, *args, **options):
+        if options.get("timing"):
+            return self._handle_timed(options)
+        return self._handle(*args, **options)
+
+    def _handle_timed(self, options):
+        """--timing: install the stopwatches, run normally, write the report."""
+        import time as _time
+        from core.vision import timing
+        timing.enable({"command": type(self).__module__.rsplit(".", 1)[-1],
+                       "source": options["source"], "camera": options["camera"],
+                       "tracker": options["tracker"], "tiles": options["tiles"],
+                       "fast": options["fast"]})
+        timing.install_frame_hook(type(self), "_process_frame")
+        timing.install_incident_hooks()
+        for cls in (SmokingCommand, DrinkingCommand, ThiefCommand):
+            timing.install_evidence_hook(cls, "_create_alert")
+        from ._incidents import IncidentMixin
+        timing.install_evidence_hook(IncidentMixin, "_incident_clip")
+        out = options.get("timing_out") or f"timing_{type(self).__module__.rsplit('.', 1)[-1]}_{int(_time.time())}.json"
+        try:
+            return self._handle(**options)
+        finally:
+            path = timing.finalize(out)
+            if path:
+                self.stdout.write(self.style.SUCCESS(f"Timing report written: {path}"))
+
+    def _handle(self, *args, **options):
         if not recognition.merged_model_available():
             self.stdout.write(self.style.ERROR(
                 f"Merged model not found at {recognition.MERGED_MODEL_PATH}. "
@@ -211,6 +250,7 @@ class Command(BaseCommand):
         self.dry_run = options["dry_run"]
         self.trim = trimming.Trim(options["start"], options["end"])
         self.cascade = not options["no_cascade"]
+        self.bottle_crops = not options["no_bottle_crops"]
         self.clock_start = vclock.parse_clock(options.get("clock"))
         self.tracker_name = options["tracker"]
         self.show_stats = options["stats"]
@@ -239,10 +279,13 @@ class Command(BaseCommand):
         self.calibration_writer = None
 
         self.engines = {}
+        self.bottle_seen = []       # drinking's Bottle-to-person associations, read by smoking's gesture stand-down
         for name, cls in (("smoking", SmokingCommand),
                           ("drinking", DrinkingCommand),
                           ("thief", ThiefCommand)):
             cmd = cls()
+            if name == "smoking":
+                cmd.bottle_seen = self.bottle_seen
             self._setup_engine(name, cmd)
             self.engines[name] = {"cmd": cmd, "tracker": tracking.PersonTracker()}
         self.engines["drinking"]["group_tracker"] = tracking.GroupTracker()
@@ -569,6 +612,13 @@ class Command(BaseCommand):
                 dets = recognition._nms(list(dets) + casc)
                 self.stats_cascade = getattr(self, "stats_cascade", 0) + len(casc)
 
+        # Bottle recall: same idea for drinking, from the largest persons' upper bodies.
+        if self.bottle_crops and "drinking" in active and persons:
+            bc = recognition.detect_bottles_on_person_crops(
+                frame, persons, conf=getattr(cfg, "drinking_confidence") / 100)
+            if bc:
+                dets = recognition._nms(list(dets) + bc)
+
         if self.calibration_writer is not None:
             self._log_calibration_rows(dets, persons, ids, frame_idx, timestamp)
 
@@ -604,6 +654,13 @@ class Command(BaseCommand):
             filtered = self._apply_engine_floor(name, cmd, routed[name], conf)
             tracks = tracker.update(persons, now, ids=ids)
             per_track = tracker.assign(filtered, now)
+            if name == "drinking":
+                # Which people are holding a Bottle right now -- smoking's gesture counter stands down for them
+                # (watch_smoking.BOTTLE_STANDDOWN_SECONDS). Smoking runs first in the frame, so it reads these next frame.
+                for track, tdets in per_track.items():
+                    if not track.is_scene and track.box is not None and any(str(d[5]).lower() == "bottle" and d[4] >= BOTTLE_STANDDOWN_MIN_CONF for d in tdets):
+                        self.bottle_seen.append((track.ext_id, tuple(track.box), now))
+                del self.bottle_seen[:-BOTTLE_SEEN_MAX]       # smoking prunes by age; this only bounds a run where it is switched off
             if name == "smoking":
                 cmd._feed_pose(frame, tracks, now)          # pose hand-to-mouth counter
                 per_track = cmd._hires_check(frame, per_track, now)

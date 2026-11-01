@@ -1,0 +1,1088 @@
+{
+  "generated_at": "2026-10-29T18:36:52",
+  "git": {
+    "commit": "37cbead52ab51c0faf9f49c179025a4dc4315600",
+    "branch": "feat/v6.2-location-momentum",
+    "commit_date": "2026-10-28T21:15:39+08:00",
+    "uncommitted_changes": [
+      "?? alpha_eval/",
+      "?? docs/DETECTION_RULES_FOR_MANUSCRIPT.md"
+    ],
+    "tracked_files_modified": []
+  },
+  "models": {
+    "merged_v2 (smoking/drinking/holdup detector)": {
+      "path": "lookout_backend\\core\\vision\\merged_v2.pt",
+      "bytes": 6235555,
+      "sha256": "8e9c77665b243ce8aebe9457ca2bc4f9fd11f09d0d88e406789d42172d2e8bbb"
+    },
+    "yolov8n person/vehicle (core/vision copy, used by recognition.load_yolo)": {
+      "path": "lookout_backend\\core\\vision\\yolov8n.pt",
+      "bytes": 6549796,
+      "sha256": "f59b3d833e2ff32e194b5bb8e08d211dc7c5bdf144b90d2c8412c47ccfc83b36"
+    },
+    "yolov8n (backend root copy)": {
+      "path": "lookout_backend\\yolov8n.pt",
+      "bytes": 6549796,
+      "sha256": "f59b3d833e2ff32e194b5bb8e08d211dc7c5bdf144b90d2c8412c47ccfc83b36"
+    },
+    "yolov8n-pose (backend root)": {
+      "path": "lookout_backend\\yolov8n-pose.pt",
+      "bytes": 6832633,
+      "sha256": "c6fa93dd1ee4a2c18c900a45c1d864a1c6f7aba75d84f91648a30b7fb641d212"
+    },
+    "yolov8s-worldv2 (disposal zero-shot)": "UNCERTAIN: not found on disk; ultralytics auto-downloads it on the first disposal run - hash it after that run",
+    "unused-by-run-detection legacy weights present": {
+      "smoking.pt": {
+        "bytes": 23239827,
+        "sha256": "c1b9c79cac5cfad2ca657ac021d21e2d904d619db444e78f0cc5e6fe3bb4b550"
+      },
+      "smoking_v5.pt": {
+        "bytes": 6231203,
+        "sha256": "e2cc1be73f89fa1aedfa1d7efac78cd9ff1294ea84795b42fa006a848789f0df"
+      },
+      "drinking.pt": {
+        "bytes": 6230435,
+        "sha256": "0b60576acad647cd1a147555d839a5558177b9da89c18301f4505657ce4902f8"
+      },
+      "thief.pt": {
+        "bytes": 6250794,
+        "sha256": "f8a9e32ce08fcf9c8b4f05f0795fdea0aa7f22a61e642c4065e76e763a29fa80"
+      }
+    }
+  },
+  "ollama_models": {
+    "qwen3-vl:4b-instruct": {
+      "digest": "ef33995bb2ac37689e49c1a15cd627354d05a3c21d1f4bdcd6a5c83825349c1f",
+      "bytes": 3335885370
+    },
+    "qwen3-vl:2b-instruct": {
+      "digest": "ff304a477a01ad3771ecdabc5edbd40da7070efff96f58a553a29c30aa920c8c",
+      "bytes": 1930039258
+    },
+    "qwen3-vl:4b": {
+      "digest": "1343d82ebee38e26a4dd6b0180b915eb91550184e67c505dea97509571c8f683",
+      "bytes": 3295636135
+    }
+  },
+  "db_systemsettings": {
+    "id": 1,
+    "alert_cooldown": 120,
+    "evidence_retention_days": 30,
+    "updated_at": "2026-10-10 01:15:04.429986",
+    "parking_confidence": 35,
+    "parking_dwell": 60,
+    "parking_enabled": 1,
+    "parking_move_tolerance": 40,
+    "smoking_confidence": 30,
+    "smoking_dwell": 3,
+    "smoking_enabled": 1,
+    "thief_confidence": 30,
+    "thief_dwell": 3,
+    "thief_enabled": 1,
+    "drinking_confidence": 35,
+    "drinking_dwell": 8,
+    "drinking_enabled": 1,
+    "drinking_end": "00:00:00",
+    "drinking_hours_enabled": 0,
+    "drinking_start": "16:00:00",
+    "drinking_group_duration": 600,
+    "drinking_min_group": 2,
+    "drinking_cooldown_center_dist": 1.5,
+    "drinking_evidence_max_age": 12,
+    "drinking_held_dwell": 24,
+    "drinking_mouth_proximity": 3.0,
+    "vlm_enabled": 1,
+    "vlm_model": "qwen3-vl:2b-instruct",
+    "vlm_timeout": 120,
+    "vlm_endpoint": "http://localhost:11434",
+    "vlm_frames": 8,
+    "vlm_max_edge": 640,
+    "vlm_async": 1,
+    "evidence_auto_purge": 0,
+    "holdup_loiter_seconds": 20,
+    "holdup_near_person_heights": 1.75,
+    "object_confirm_seconds": 2.0,
+    "smoking_puff_count": 3,
+    "smoking_puff_window_minutes": 5.0,
+    "vlm_model_holdup": "qwen3-vl:4b-instruct",
+    "show_testing_tools": 1,
+    "auto_start_detection": 0,
+    "cue_hold_seconds": 5.0,
+    "monitoring_min_seconds": 3.0,
+    "disposal_confidence": 15,
+    "disposal_cooldown": 120,
+    "disposal_enabled": 1,
+    "disposal_static_seconds": 5,
+    "disposal_cooldown_dist": 60,
+    "disposal_max_area": 8.0,
+    "disposal_min_area": 0.08,
+    "disposal_recheck_seconds": 10,
+    "disposal_warmup_seconds": 5,
+    "disposal_ignore_movers": 1,
+    "disposal_owner_away_seconds": 5,
+    "disposal_owner_max_hold": 60,
+    "disposal_owner_radius": 80,
+    "disposal_suspect_confidence": 25,
+    "disposal_collection_days": "0,1,2,3,4,5",
+    "disposal_collection_enabled": 1,
+    "disposal_collection_end": "07:00:00",
+    "disposal_collection_start": "04:00:00"
+  },
+  "db_cameras": [
+    {
+      "code": "CAM-SMOKE-01",
+      "name": "Hikvision DS-2CD1047G2",
+      "status": "online",
+      "edges": "{}",
+      "edges_width": null,
+      "edges_height": null,
+      "obstruction_pct": 35,
+      "obstruction_minutes": 2.0
+    },
+    {
+      "code": "CAM-MERGED-TEST",
+      "name": "Hikvision DS-2CD1047G2",
+      "status": "online",
+      "edges": "{}",
+      "edges_width": null,
+      "edges_height": null,
+      "obstruction_pct": 35,
+      "obstruction_minutes": 2.0
+    },
+    {
+      "code": "CAM-MERGED4-TEST",
+      "name": "Merged4 Monitor",
+      "status": "online",
+      "edges": "{\"road\": {\"type\": \"zone\", \"points\": [[741, 108], [1129, 715], [1645, 1433], [2550, 1431], [2557, 799], [2149, 534], [1605, 266], [1186, 99], [918, 6]]}}",
+      "edges_width": 2560,
+      "edges_height": 1440,
+      "obstruction_pct": 25,
+      "obstruction_minutes": 1.0
+    },
+    {
+      "code": "CAM-TIMING-TEST",
+      "name": "Hikvision DS-2CD1047G2",
+      "status": "online",
+      "edges": "{}",
+      "edges_width": null,
+      "edges_height": null,
+      "obstruction_pct": 35,
+      "obstruction_minutes": 2.0
+    },
+    {
+      "code": "CAM-SMOKING-TEST",
+      "name": "Hikvision DS-2CD1047G2",
+      "status": "online",
+      "edges": "{}",
+      "edges_width": null,
+      "edges_height": null,
+      "obstruction_pct": 35,
+      "obstruction_minutes": 2.0
+    }
+  ],
+  "code_constants": {
+    "vision/scoring.py": {
+      "SCORING_SPEC_VERSION": "v6.2.11",
+      "VIOLATION": "violation",
+      "WARNING": "warning",
+      "MONITORING": "monitoring",
+      "NONE": "none",
+      "SCORE_VIOLATION": 0.75,
+      "SCORE_WARNING": 0.55,
+      "HYSTERESIS_DROP": 0.05,
+      "LEVEL_ORDER": "EXPR: {NONE: 0, MONITORING: 1, WARNING: 2, VIOLATION: 3}",
+      "LEVEL_CHOICES": "EXPR: (\n    (NONE, \"None\"),\n    (MONITORING, \"Monitoring\"),\n    (WARNING, \"Possible\"),\n    (VIOLATION, \"Likely\"),\n)",
+      "LEVEL_LABELS": "EXPR: {\n    VIOLATION: \"Likely\",\n    WARNING: \"Possible\",\n    MONITORING: \"Monitoring\",\n    NONE: \"Not shown\",\n}",
+      "STORED_LEVELS": "EXPR: (MONITORING, WARNING, VIOLATION)",
+      "NOTIFY_LEVELS": "EXPR: (WARNING, VIOLATION)",
+      "MANILA_HOUR_BLOCKS": [
+        [
+          0,
+          3,
+          0.095,
+          0.76
+        ],
+        [
+          3,
+          6,
+          0.1,
+          0.8
+        ],
+        [
+          6,
+          9,
+          0.07,
+          0.56
+        ],
+        [
+          9,
+          12,
+          0.156,
+          1.25
+        ],
+        [
+          12,
+          15,
+          0.163,
+          1.31
+        ],
+        [
+          15,
+          18,
+          0.17,
+          1.36
+        ],
+        [
+          18,
+          21,
+          0.136,
+          1.09
+        ],
+        [
+          21,
+          24,
+          0.109,
+          0.87
+        ]
+      ],
+      "UNIFORM_BLOCK_PROBABILITY": 0.125,
+      "E20_MAX_POINTS": 10,
+      "_P_MAX": "EXPR: max(block[2] for block in MANILA_HOUR_BLOCKS)",
+      "MANILA_TZ_NAME": "Asia/Manila",
+      "DRINKING_HIGH_BAND": "EXPR: (datetime.time(16, 0), datetime.time(0, 0))",
+      "DRINKING_WEIGHTS": {
+        "bottle": 0.4,
+        "gathering": 0.1,
+        "gathering_duration": 0.15,
+        "at_mouth": 0.15,
+        "time_band": 0.05
+      },
+      "SMOKING_WEIGHTS": {
+        "cigarette": 0.4,
+        "gesture": 0.2,
+        "puffs": 0.2,
+        "puff_pattern": 0.15,
+        "near_mouth": 0.15
+      },
+      "HOLDUP_WEIGHTS": {
+        "E14": 0.45,
+        "E12": 0.2,
+        "E10": 0.1
+      },
+      "GATE_CUES": {
+        "drinking": "bottle",
+        "smoking": "cigarette",
+        "holdup": "E14"
+      },
+      "CONDITIONAL_CUES": {
+        "drinking": {
+          "at_mouth": "bottle"
+        },
+        "smoking": {
+          "near_mouth": "cigarette"
+        },
+        "holdup": {}
+      },
+      "PUFF_ONLY_CUE": "puff_pattern",
+      "PUFF_ONLY_TAG": "No smoking item detected — based on hand movement only"
+    },
+    "vision/momentum.py": {
+      "DEFAULT_CONFIG": "EXPR: config_from_env()",
+      "KNIFE_HOLD_SECONDS": 1.0,
+      "KNIFE_CONFIRM_SECONDS": 0.5
+    },
+    "vision/location_momentum.py": {
+      "LOCATION_AWARE_MOMENTUM": true,
+      "GATED_CLASSES": [
+        "cigarette",
+        "bottle"
+      ],
+      "KP_CONF_MIN": 0.3,
+      "KP_MAX_AGE_SECONDS": 0.05,
+      "POSE_MATCH_IOU": 0.3,
+      "ZOOM_POSE": true,
+      "ZOOM_POSE_BELOW_FRAC": 0.4,
+      "CLOSE_SHOULDER_FRAC": 0.5,
+      "CLOSE_HEIGHT_FRAC_NO_SHOULDERS": 0.15,
+      "JUMP_HEIGHT_FRAC": 0.25,
+      "JUMP_MEMORY_SECONDS": 2.0,
+      "CONF_FULL_AT": 0.6,
+      "CLASS_FLIP_FRAMES": 5,
+      "CLASS_FLIP_IOU": 0.3,
+      "PUFF_PAIR_WINDOW_SECONDS": 5.0,
+      "PUFF_CLOSE_SHOULDER_FRAC": 0.7,
+      "ELBOW_FALLBACK": true,
+      "PUFF_ELBOW_SHOULDER_FRAC": 1.1,
+      "PUFF_MIN_GAP_SECONDS": 1.0,
+      "FAR_PUFF_FROM_OBJECT": true,
+      "WALKING_NO_PUFF": false,
+      "WALK_WINDOW_SECONDS": 2.0,
+      "WALK_MIN_SPAN_SECONDS": 0.4,
+      "WALK_SPEED_HEIGHTS_PER_SEC": 0.3,
+      "PUFF_ZOOM_NEEDS_GESTURE_CYCLE": true,
+      "PUFF_GESTURE_SLACK_SECONDS": 0.5,
+      "FAR_PUFF_BELOW_FRAC": 0.25,
+      "FAR_PUFF_HEAD_ZONE": 0.22,
+      "FAR_PUFF_BODY_ZONE": [
+        0.3,
+        0.7
+      ],
+      "FAR_PUFF_PAIR_SECONDS": 4.0,
+      "FAR_PUFF_MIN_GAP_SECONDS": 2.0,
+      "NEAR_MOUTH_HELD_BEFORE_CONFIRM": true,
+      "GESTURE_FROM_ZOOM": true,
+      "PUFF_ONLY_REQUIRE_STATIONARY": false,
+      "HOLDUP_ABSOLUTE_SPEEDS": true,
+      "HOLDUP_MOVING_SPEED": 0.25,
+      "E20_REQUIRES_CLIP_TIME": true,
+      "POSSIBLE_PUFF_WINDOW_SECONDS": 10.0,
+      "POSSIBLE_MIN_PUFFS": 1,
+      "LIKELY_PUFF_WINDOW_SECONDS": 30.0,
+      "LIKELY_MIN_PUFFS": 2,
+      "CAP_NO_PUFF_TEXT": "capped: no puff",
+      "CAP_FEW_PUFFS_TEXT": "capped: needs 2 puffs in 30 s for Likely",
+      "HOLDUP_V621_RULES": true,
+      "KNIFE_CLASS": "knife",
+      "KNIFE_CONF_FULL_AT": 0.6,
+      "KNIFE_JUMP_HEIGHT_FRAC": 0.25,
+      "KNIFE_JUMP_MEMORY_SECONDS": 2.0,
+      "KNIFE_CLASS_FLIP_FRAMES": 5,
+      "KNIFE_PRESENT_SECONDS": 2.0,
+      "CLOSE_DISTANCE": 1.0,
+      "CO_WALKERS_REJECTED": true,
+      "CLOSE_STAY_SECONDS": 2.0,
+      "CLOSE_GAP_TOLERANCE_SECONDS": 0.3,
+      "PASS_MOVING_SPEED": 0.3,
+      "PASS_BEFORE_WINDOW_SECONDS": 1.0,
+      "PASS_SEPARATE_SECONDS": 2.0,
+      "CAP_NO_FROZEN_PAIR_TEXT": "capped: no frozen pair",
+      "FAKE_PERSON_FILTER": true,
+      "SHADOW_FEET_TOUCH_FRAC": 0.15,
+      "SHADOW_BRIGHTNESS_RATIO": 0.6,
+      "SHADOW_HEIGHT_RATIO": 0.65,
+      "GROUP_AREA_EXPAND": 1.2,
+      "STATIONARY_HEIGHT_FRAC": 0.1,
+      "STATIONARY_MEMORY_SECONDS": 2.0,
+      "REASON_OFF_ANCHOR": "off-anchor",
+      "REASON_JUMP": "jump",
+      "REASON_NO_KP": "no-kp",
+      "REASON_FLIP": "flip",
+      "WRISTS": "EXPR: (LEFT_WRIST, RIGHT_WRIST)",
+      "ELBOWS": "EXPR: {LEFT_WRIST: 7, RIGHT_WRIST: 8}",
+      "MOUTH": "mouth",
+      "_SEQ": {
+        "now": null,
+        "n": 0
+      },
+      "_RECENT": "EXPR: deque(maxlen=400)",
+      "_POSE": {
+        "now": null,
+        "poses": null,
+        "fails": 0
+      },
+      "POSE_MAX_FAILS": 3,
+      "CURRENT_FRAME": {
+        "frame": null
+      }
+    },
+    "vision/tracking.py": {
+      "TRACK_MATCH_IOU": 0.3,
+      "TRACK_MATCH_DIST": 0.8,
+      "TRACK_MAX_GAP": 2.0,
+      "TOMBSTONE_SECONDS": 10.0,
+      "TOMBSTONE_MATCH_DIST": 1.2,
+      "ASSIGN_REACH": 0.45,
+      "SCENE_MATCH_DIST": 1.5,
+      "SCENE_MAX_GAP": 2.0,
+      "VOTE_WINDOW_SECONDS": 5.0,
+      "VOTE_MIN_RATIO": 0.4,
+      "VOTE_MIN_FRAMES": 2,
+      "PUFF_RAISED_RATIO": 1.5,
+      "PUFF_LOWERED_RATIO": 3.0,
+      "PUFF_WINDOW_SECONDS": 20.0,
+      "HAND_RAISED_RATIO": 0.7,
+      "HAND_LOWERED_RATIO": 1.3,
+      "GESTURE_WINDOW_SECONDS": 300.0,
+      "ACCRUAL_STALE_SECONDS": 0.5,
+      "STATIONARY_DIST": 0.6,
+      "POSITION_HISTORY_MAX_SECONDS": 900,
+      "GROUP_CLUSTER_DIST": 1.8,
+      "GROUP_MATCH_DIST": 1.2,
+      "GROUP_MAX_GAP": 3.0,
+      "GROUP_PRESENCE_GRACE_SECONDS": 3.0,
+      "GROUP_TOMBSTONE_SECONDS": 15.0,
+      "GROUP_TOMBSTONE_MATCH_DIST": 2.0,
+      "TRAIL_SECONDS": 30.0,
+      "SPEED_WINDOW": 0.5,
+      "EFF_WINDOW": 20.0,
+      "EFF_MIN_SAMPLES": 3,
+      "SCENE_VELOCITY_WINDOW": 60.0,
+      "MIN_SCENE_SPEED": 0.1,
+      "SCENE_BASELINE_MIN_TRAIL_S": 0.5,
+      "SPEED_MIN_DT": 0.05,
+      "GESTURE_MIN_GAP_SECONDS": 1.0,
+      "STILL_WINDOW_SECONDS": 2.0,
+      "STILL_MIN_SPAN_SECONDS": 1.0,
+      "STILL_MAX_EXCURSION": 0.25,
+      "EDGE_MARGIN_PX": 2,
+      "ID_SWITCH_SPEED": 6.0
+    },
+    "vision/theft.py": {
+      "REACH_NORM": 0.8,
+      "CONTACT_DWELL_MIN": 0.3,
+      "CONTACT_DWELL_MAX": 2.0,
+      "BURST_RATIO": 2.5,
+      "STATIC_RATIO": 0.4,
+      "DIVERGENCE_DEG": 90,
+      "EFF_LOITER": 0.3,
+      "LOITER_SECONDS": 20,
+      "FREEZE_SECONDS": 2.0,
+      "ANCHOR_STATIC_SECONDS": 60,
+      "ABSENCE_SECONDS": 120,
+      "INTERACT_DWELL": 15.0,
+      "INTERACT_DWELL_NIGHT": 10.0,
+      "CROUCH_ASPECT": 0.9,
+      "PUSH_SECONDS": 5.0,
+      "OBJ_STATIC_SECONDS": 30,
+      "CROWD_SOFT": 6,
+      "CROWD_HARD": 10,
+      "SCORE_ALERT": "EXPR: scoring.SCORE_WARNING",
+      "SCORE_VIOLATION": "EXPR: scoring.SCORE_VIOLATION",
+      "APPROACH_FRAMES": 3,
+      "BURST_AFTER": 1.5,
+      "BURST_HOLD": 1.0,
+      "OWNER_REACH": 1.2,
+      "CO_MOVE_SECONDS": 1.0,
+      "STILL_TOLERANCE": 0.1,
+      "UNATTENDED_REACH": 1.5,
+      "INTERACT_REACH": 1.0,
+      "INTERACT_IOU": 0.15,
+      "PUSH_REACH": 0.9,
+      "PUSH_SPEED_MAX": 1.0,
+      "DEPART_DISPLACE": 1.0,
+      "PROPERTY_IOU": 0.2,
+      "CLOSE_FROM": 3.0,
+      "CLOSE_TO": 1.0,
+      "CLOSE_SECONDS": 3.0,
+      "FREEZE_REACH": 1.0,
+      "FREEZE_SPEED": 0.3,
+      "CONVERGE_WINDOW": 5.0,
+      "CONVERGE_MIN": 2,
+      "WEAPON_REACH": 0.5,
+      "CROWD_GATE_RELAX": 1.3,
+      "GREETING_WINDOW": 3.0,
+      "GREETING_SPEED_LO": 0.7,
+      "GREETING_SPEED_HI": 1.3,
+      "OCCLUSION_ABSTAIN": 0.4,
+      "EVIDENCE_WINDOW": 20.0,
+      "EVIDENCE_REEMIT_SECONDS": 30.0,
+      "ANCHOR_LOST_SECONDS": 10.0,
+      "ANCHOR_MATCH_IOU": 0.3,
+      "ANCHOR_MATCH_REACH": 2.0,
+      "NEAR_PERSON_HEIGHTS": 1.75,
+      "E12_E14_LEAD_SECONDS": 3.0,
+      "E12_E14_TRAIL_SECONDS": 3.0,
+      "E11_E12_WINDOW_SECONDS": 5.0,
+      "LOITER_MEMORY_SECONDS": 60.0,
+      "LOITER_RELINK": true,
+      "LOITER_RELINK_SECONDS": 3.0,
+      "LOITER_RELINK_HEIGHTS": 0.5,
+      "LEGACY_CUES": "EXPR: frozenset({\n    \"E6\", \"E7\", \"E8\", \"E9\",              # snatch\n    \"E15\", \"E16\", \"E17\", \"E18\", \"E19\",   # carnapping\n    \"E21\", \"E22\",                        # unattended property\n})",
+      "HOLDUP_CUES": "EXPR: frozenset({\"E10\", \"E12\", \"E11E12\", \"E14\", \"E20\"})",
+      "WEIGHTS": {
+        "E14": 0.45,
+        "E12": 0.2,
+        "E10": 0.1,
+        "E11E12": 0.1,
+        "E9": 0.35,
+        "E22": 0.35,
+        "E18": 0.35,
+        "E19": 0.25,
+        "E7": 0.2,
+        "E16": 0.2,
+        "E17": 0.15,
+        "E8": 0.1
+      },
+      "MULTIPLIERS": {},
+      "LEGACY_NOCTURNAL_MULTIPLIER": 1.3,
+      "WARNING": "EXPR: scoring.WARNING",
+      "VIOLATION": "EXPR: scoring.VIOLATION",
+      "STORED_BANDS": "EXPR: scoring.STORED_LEVELS"
+    },
+    "vision/obstruction_zone.py": {
+      "VEHICLE_CLASSES": [
+        "bus",
+        "car",
+        "motorcycle",
+        "truck"
+      ],
+      "ALERT_SCORE": 120.0,
+      "ENTER_FRACTION": 0.35,
+      "FRACTION_HYSTERESIS": 0.1,
+      "MOVING_WEIGHT": 0.0,
+      "STATIONARY_DIST": 0.15,
+      "STATIONARY_WINDOW": 3.0,
+      "DECAY_PER_SEC": 2.0,
+      "MISSING_DECAY_PER_SEC": 0.5,
+      "PRESENCE_GRACE": 2.0,
+      "MAX_DT": 2.0,
+      "FORGET_AFTER": 30.0,
+      "ADOPT_DIST": 1.2,
+      "ADOPT_MIN_IOU": 0.55,
+      "COOLDOWN_SECONDS": 120.0,
+      "COOLDOWN_CENTER_DIST": 1.5,
+      "COLOR_ZONE": [
+        0,
+        191,
+        255
+      ],
+      "COLOR_OUTSIDE": [
+        160,
+        160,
+        160
+      ],
+      "COLOR_ACCRUING": [
+        0,
+        200,
+        0
+      ],
+      "COLOR_ALERT": [
+        0,
+        140,
+        255
+      ],
+      "FOOTPRINT_SAMPLES": 21
+    },
+    "vision/zone_autodetect.py": {
+      "SAMPLE_STRIDE_SECONDS": 0.4,
+      "MAX_SAMPLES": 120,
+      "TRACE_IMGSZ": 640,
+      "WEB_MAX_SAMPLES": 60,
+      "VEHICLE_CONF": 0.4,
+      "MIN_TRACK_SAMPLES": 3,
+      "MOVED_MIN_WIDTHS": 1.0,
+      "ASSOC_MAX_WIDTHS": 2.5,
+      "MIN_TRAFFIC_POINTS": 12,
+      "SIMPLIFY_EPSILON_FRAC": 0.015,
+      "MIN_POLYGON_POINTS": 3,
+      "PAD_FRACTION": 0.02
+    },
+    "vision/disposal.py": {
+      "PROC_WIDTH": 960,
+      "WARMUP_SECONDS": 5.0,
+      "WARMUP_LR": 0.05,
+      "LONG_LR": 0.0005,
+      "SHORT_LR": 0.02,
+      "FG_THRESHOLD": 200,
+      "MIN_AREA_FRAC": 0.0008,
+      "MAX_AREA_FRAC": 0.08,
+      "MATCH_DIST": 40,
+      "CANDIDATE_GRACE": 2.0,
+      "RECHECK_SECONDS": 10.0,
+      "OWNER_RADIUS": 80,
+      "OWNER_AWAY_SECONDS": 3.0,
+      "OWNER_MAX_HOLD": 3.0,
+      "OWNER_TRACK_GATE": 120,
+      "SUSPECT_PRE_SECONDS": 3.0,
+      "SUSPECT_POST_SECONDS": 1.0,
+      "SUSPECT_CONFIDENCE": 0.25,
+      "SUSPECT_SAMPLE_INTERVAL": 0.25,
+      "SUSPECT_MAX_FRAMES": 24,
+      "SUSPECT_JPEG_QUALITY": 80,
+      "SUSPECT_NEAR_FACTOR": 1.5,
+      "CROP_PAD": 0.5,
+      "MIN_CROP": 96,
+      "PROMPTS": [
+        "plastic bag",
+        "garbage bag",
+        "trash bag",
+        "pile of trash",
+        "sack",
+        "cardboard box",
+        "rice sack",
+        "styrofoam",
+        "pile of plastic bottles"
+      ],
+      "REJECT": [
+        "person",
+        "dog",
+        "cat",
+        "motorcycle",
+        "car",
+        "bicycle",
+        "chair",
+        "trash can",
+        "garbage bin",
+        "bucket",
+        "potted plant"
+      ],
+      "CONFIRM_CONF": 0.15,
+      "WEAK_PREDICT_CONF": 0.05,
+      "CONFIRMED": "confirmed",
+      "WEAK": "weak",
+      "REJECTED": "rejected",
+      "GROUP_IOU": 0.5,
+      "DEFAULT_WORLD_MODEL": "yolov8s-worldv2.pt",
+      "STATIC_SECONDS": 2.0,
+      "COOLDOWN_SECONDS": 120,
+      "COOLDOWN_DIST": 60,
+      "IGNORE_PAD": 0.08,
+      "IGNORE_COVERAGE": 0.5,
+      "OCCLUSION_HOLD_SECONDS": 20.0,
+      "PIN_MAX_SECONDS": 1800.0,
+      "PRESENCE_RECHECK_SECONDS": 15.0,
+      "PIN_MISS_LIMIT": 2,
+      "DEFAULT_COLLECTION_DAYS": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "VISION_DIR": "EXPR: Path(__file__).resolve().parent",
+      "PROMPT_CACHE_DIR": "EXPR: Path(os.environ.get(\"LOOKOUT_WORLD_CACHE\", VISION_DIR / \"world_cache\"))"
+    },
+    "vision/ai_checker.py": {
+      "DEFAULT_MODEL": "qwen3-vl:2b-instruct",
+      "DEFAULT_ENDPOINT": "http://localhost:11434",
+      "DEFAULT_TIMEOUT": 90.0,
+      "TOKENS_PER_IMAGE": 1200,
+      "PROMPT_TOKENS": 2500,
+      "MAX_TOKENS": 400,
+      "FRAMES_DEFAULT": 8,
+      "FRAMES_BEFORE": 5.0,
+      "FRAMES_AFTER": 1.0,
+      "RING_SECONDS": 7.0,
+      "AI_SPREAD_FRAMES": true,
+      "OBJECT_FRAME_SHARE": 0.5,
+      "OBJECT_FRAME_GAP": 0.3,
+      "OBJECT_CLASSES": [
+        "cigarette",
+        "bottle",
+        "knife"
+      ],
+      "RING_MIN_GAP": 0.15,
+      "SEND_EDGE": 640,
+      "MIN_EDGE": 0,
+      "JPEG_QUALITY_RING": 90,
+      "JPEG_QUALITY_SEND": 88,
+      "SHARED_INSTRUCTIONS": "You are reviewing a short CCTV video from a barangay street camera in the Philippines.\nThe video is cropped around the person or group of interest. The frames are in time order.\nSystem detections (from the object and pose models): {system_note}\nDescribe what you see first, then answer.\nFor true/false fields about objects, answer true only if you can see them.\nFor likelihood and choice fields, give your best judgment from what is visible.\nPick \"unclear\" if you cannot tell.\nRate confidence: \"high\" if the evidence is clearly visible, \"medium\" if it is\npartly visible or you are partly sure, \"low\" if you are mostly guessing.\nReply only with the JSON below. No other text.",
+      "BLOCKS": {
+        "drinking": "{\n\"observations\": \"one sentence, under 20 words, only what you see\",\n\"drinking_likelihood\": \"likely\" | \"possible\" | \"unlikely\",\n\"table_chairs_or_seating_visible\": true/false,\n\"drinking_items_visible\": true/false,\n\"scene_type\": \"drinking_session\" | \"other_activity\" | \"unclear\",\n\"confidence\": \"high\" | \"medium\" | \"low\"\n}\nDefinitions:\n- observations: the people, objects and actions you can see. No conclusions.\n- drinking_likelihood: how likely it is that people are drinking at this spot.\n\"likely\" = someone drinks from a bottle, can or cup, or drinks are shared;\n\"possible\" = people are gathered with drinks nearby, but no drinking is seen;\n\"unlikely\" = no sign of drinking.\n- table_chairs_or_seating_visible: chairs, stools, benches, or a table used by the people.\n- drinking_items_visible: drinks, glasses, cups, plates or snacks set down near the people.\n- scene_type: \"drinking_session\" if people are drinking or gathered with drinks;\n\"other_activity\" ONLY if you can clearly see an ordinary activity, such as a store\nselling drinks, someone carrying or delivering drinks, or people eating a meal.\nVehicles or people passing in the background do not count;\n\"unclear\" if you cannot tell.",
+        "smoking": "{\n\"observations\": \"one sentence, under 20 words, only what you see\",\n\"smoking_item_visible\": true/false,\n\"hand_to_mouth_activity\": \"smoking\" | \"other_activity\" | \"none\" | \"unclear\",\n\"confidence\": \"high\" | \"medium\" | \"low\"\n}\nDefinitions:\n- observations: the person's hands, what they hold, and what they do. If smoke or vapor\nis clearly leaving the person's mouth, nose, or a held item, mention it; otherwise do\nnot mention smoke. No conclusions.\n- smoking_item_visible: a small thin object (cigarette) or a small device (vape)\nheld between the fingers or at the lips.\n- hand_to_mouth_activity: what the hand is doing when it is at the mouth.\n\"smoking\" = fingers held together at the lips briefly, then the hand moves away;\nmay hold a small thin object or exhale smoke;\n\"other_activity\" = an ordinary reason, such as eating, drinking from a bottle or cup,\nusing a phone, or wiping the face;\n\"none\" = the hand never reaches the mouth;\n\"unclear\" = you cannot tell.",
+        "holdup": "{\n\"observations\": \"one sentence, under 20 words, only what you see\",\n\"people_count\": integer,\n\"object_pointed_at_a_person\": true/false,\n\"victim_response_visible\": true/false,\n\"holdup_likelihood\": \"likely\" | \"possible\" | \"unlikely\",\n\"scene_type\": \"confrontation\" | \"other_activity\" | \"unclear\",\n\"confidence\": \"high\" | \"medium\" | \"low\"\n}\nDefinitions:\n- observations: the people, the object, and how they act toward each other. No conclusions.\n- people_count: the number of distinct real people you can see in the frames, as a whole number.\nShadows, reflections, posters and mannequins are not people. Count a person once even if they\nappear in several frames.\n- object_pointed_at_a_person: a knife or sharp object is pointed or held toward another person.\n- victim_response_visible: a person raising their hands, handing over items, or backing away.\n- holdup_likelihood: how likely it is that one person is robbing or threatening another.\n\"likely\" = threatening behaviour is visible; \"possible\" = tense or unusual, but no clear threat;\n\"unlikely\" = no sign of a threat.\n- scene_type: \"confrontation\" if one person appears to be threatening another;\n\"other_activity\" ONLY if you can clearly see ordinary use of the object, such as vending,\nfood preparation, work, or play; \"unclear\" if you cannot tell."
+      },
+      "KINDS": "EXPR: tuple(BLOCKS)",
+      "_ENUMS": {
+        "drinking_likelihood": [
+          "likely",
+          "possible",
+          "unlikely"
+        ],
+        "holdup_likelihood": [
+          "likely",
+          "possible",
+          "unlikely"
+        ],
+        "scene_type": {
+          "drinking": [
+            "drinking_session",
+            "other_activity",
+            "unclear"
+          ],
+          "holdup": [
+            "confrontation",
+            "other_activity",
+            "unclear"
+          ]
+        },
+        "hand_to_mouth_activity": [
+          "smoking",
+          "other_activity",
+          "none",
+          "unclear"
+        ],
+        "confidence": [
+          "high",
+          "medium",
+          "low"
+        ]
+      },
+      "UNPRIMED_KINDS": [
+        "holdup"
+      ],
+      "UNPRIMED_INSTRUCTIONS": "EXPR: \"\\n\".join(line for line in SHARED_INSTRUCTIONS.splitlines()\n                                  if not line.startswith(\"System detections\"))",
+      "CROP_PAD": {
+        "smoking": 0.25,
+        "drinking": 0.45,
+        "holdup": 0.35
+      },
+      "SMOKING_BODY_FRACTION": 0.55
+    },
+    "vision/recognition.py": {
+      "RAW_CLIP_PRE_SECONDS": 15,
+      "RAW_CLIP_POST_SECONDS": 15,
+      "VISION_DIR": "EXPR: Path(__file__).resolve().parent",
+      "MODEL_PATH": "EXPR: Path(os.environ.get(\"LOOKOUT_MODEL\", str(VISION_DIR / \"merged_v2.pt\")))",
+      "SMOKING_MODEL_PATH": "EXPR: MODEL_PATH",
+      "THIEF_MODEL_PATH": "EXPR: MODEL_PATH",
+      "DRINKING_MODEL_PATH": "EXPR: MODEL_PATH",
+      "MERGED_MODEL_PATH": "EXPR: MODEL_PATH",
+      "SMOKING_CLASSES": [
+        "cigarette",
+        "vape"
+      ],
+      "DRINKING_CLASSES": [
+        "bottle"
+      ],
+      "THIEF_CLASSES": [
+        "knife"
+      ],
+      "PERSON_CLASS_ID": 0,
+      "VESSEL_CLASS_IDS": {
+        "39": "bottle",
+        "40": "wine glass",
+        "41": "cup"
+      },
+      "VEHICLE_CLASS_IDS": {
+        "2": "car",
+        "3": "motorcycle",
+        "5": "bus",
+        "7": "truck"
+      },
+      "CARRIABLE_CLASS_IDS": {
+        "24": "backpack",
+        "26": "handbag",
+        "28": "suitcase"
+      },
+      "TWO_WHEELER_LABELS": [
+        "bicycle",
+        "motorcycle"
+      ],
+      "BICYCLE_CLASS_ID": 1,
+      "NEAR_IMGSZ": "EXPR: int(os.environ.get(\"LOOKOUT_IMGSZ\", 960 if _gpu_available() else 640))",
+      "CASCADE_IMGSZ": "EXPR: int(os.environ.get(\"LOOKOUT_CASCADE_IMGSZ\", 1280))",
+      "FAR_IMGSZ": "EXPR: int(os.environ.get(\"LOOKOUT_FAR_IMGSZ\", NEAR_IMGSZ))",
+      "KP_NOSE": 0,
+      "KP_MIN_CONF": 0.3,
+      "POSE_HALF": "EXPR: _gpu_available()",
+      "MOUTH_MISS_CACHE_SECONDS": 0.5,
+      "POSE_CROP_PAD": 0.1,
+      "POSE_CROP_IMGSZ": 640,
+      "POSE_EAR_TO_FACE": 0.92,
+      "POSE_EYE_TO_FACE": 2.51,
+      "POSE_SHOULDER_TO_FACE": 0.55,
+      "POSE_MOUTH_DY": 0.29,
+      "VEHICLE_IMGSZ": 1280
+    },
+    "vision/spec_settings.py": {
+      "SPEC_DEFAULTS": "EXPR: {\n    \"object_confirm_seconds\": 2.0,          # all: object must stay detected about 2 s before Monitoring\n    \"cue_hold_seconds\": 5.0,                # all: a behaviour (hand at the mouth) still counts this long\n    \"monitoring_min_seconds\": 3.0,          # all: a Monitoring event shorter than this",
+      "GROUPS": {
+        "all": [
+          "object_confirm_seconds",
+          "cue_hold_seconds",
+          "monitoring_min_seconds"
+        ],
+        "drinking": [
+          "drinking_group_duration",
+          "drinking_min_group",
+          "drinking_start",
+          "drinking_end"
+        ],
+        "smoking": [
+          "smoking_puff_count",
+          "smoking_puff_window_minutes"
+        ],
+        "holdup": [
+          "holdup_loiter_seconds",
+          "holdup_near_person_heights"
+        ],
+        "disposal": [
+          "disposal_collection_enabled",
+          "disposal_collection_start",
+          "disposal_collection_end",
+          "disposal_collection_days"
+        ]
+      },
+      "LIMITS": {
+        "object_confirm_seconds": [
+          0.5,
+          10.0
+        ],
+        "cue_hold_seconds": [
+          0.0,
+          30.0
+        ],
+        "monitoring_min_seconds": [
+          0.0,
+          60.0
+        ],
+        "drinking_group_duration": [
+          60,
+          7200
+        ],
+        "drinking_min_group": [
+          2,
+          20
+        ],
+        "smoking_puff_count": [
+          2,
+          10
+        ],
+        "smoking_puff_window_minutes": [
+          1.0,
+          30.0
+        ],
+        "holdup_loiter_seconds": [
+          5,
+          300
+        ],
+        "holdup_near_person_heights": [
+          0.5,
+          4.0
+        ]
+      }
+    },
+    "management/commands/watch_smoking.py": {
+      "SMOKING_CAMERA_CODE": "CAM-SMOKE-01",
+      "SETTINGS_REFRESH_SECONDS": 5,
+      "PRESENCE_GRACE_SECONDS": 2,
+      "COOLDOWN_CENTER_DIST": 1.5,
+      "ABLATABLE": [
+        "class-floor",
+        "mouth",
+        "vote",
+        "dwell",
+        "cooldown",
+        "puff",
+        "preprocess",
+        "pose",
+        "scoring",
+        "vlm"
+      ],
+      "CLASS_POLICY": {
+        "cigarette": {
+          "conf_scale": 1.0,
+          "dwell_scale": 1.0
+        },
+        "smoking": {
+          "conf_scale": 1.0,
+          "dwell_scale": 1.0
+        },
+        "vape": {
+          "conf_scale": 1.0,
+          "dwell_scale": 1.0
+        },
+        "smoke": {
+          "conf_scale": 1.5,
+          "dwell_scale": 2.0
+        },
+        "vapor": {
+          "conf_scale": 1.5,
+          "dwell_scale": 2.0
+        }
+      },
+      "DEFAULT_POLICY": {
+        "conf_scale": 1.0,
+        "dwell_scale": 1.0
+      },
+      "MOUTH_ANCHORED_CLASSES": [
+        "cigarette",
+        "smoking",
+        "vape"
+      ],
+      "MOUTH_PROXIMITY": 2.5,
+      "MOUTH_CUE_MAX_AGE": 5.0,
+      "MOUTH_FRESH_SECONDS": 1.0,
+      "POSE_MATCH_IOU": 0.3,
+      "PUFF_MIN_CYCLES": 1,
+      "PUFF_PATTERN_COUNT": 3,
+      "HIRES_SECONDS": 4.0,
+      "HIRES_BOX_FRACTION": 0.6,
+      "POSE_EVERY_N_FRAMES": 1,
+      "MOUTH_CACHE_SECONDS": 1.0
+    },
+    "management/commands/watch_drinking.py": {
+      "DRINKING_CAMERA_CODE": "CAM-SMOKE-01",
+      "SETTINGS_REFRESH_SECONDS": 5,
+      "PRESENCE_GRACE_SECONDS": 2,
+      "GENERIC_LABELS": "EXPR: set(recognition.VESSEL_CLASS_IDS.values())",
+      "MOUTH_CACHE_SECONDS": 1.0,
+      "ABLATABLE": [
+        "posture",
+        "vote",
+        "dwell",
+        "cooldown",
+        "hours",
+        "zones",
+        "stationary",
+        "gathering",
+        "preprocess",
+        "scoring",
+        "vlm"
+      ],
+      "GATHERING_ALERT_COLOR": [
+        200,
+        40,
+        160
+      ]
+    },
+    "management/commands/watch_thief.py": {
+      "THIEF_CAMERA_CODE": "CAM-SMOKE-01",
+      "SETTINGS_REFRESH_SECONDS": 5,
+      "PRESENCE_GRACE_SECONDS": 4,
+      "CLASS_POLICY": {
+        "knife": {
+          "conf_scale": 1.0,
+          "dwell_scale": 1.0,
+          "ratio_scale": 0.25,
+          "stale_scale": 6.0
+        }
+      },
+      "DEFAULT_POLICY": {
+        "conf_scale": 1.0,
+        "dwell_scale": 1.0,
+        "ratio_scale": 1.0,
+        "stale_scale": 1.0
+      },
+      "SPATIALLY_GATED_CLASSES": [
+        "knife"
+      ],
+      "KNIFE_HEAD_EXCLUSION_FRAC": 0.15,
+      "KNIFE_MAX_HEIGHT_FRAC": 0.25,
+      "KNIFE_MAX_WRIST_DIST_FRAC": 0.22,
+      "KNIFE_PERSIST_HITS": 2,
+      "KNIFE_PERSIST_WINDOW": 5,
+      "KNIFE_PERSIST_MEMORY_SECONDS": 3.0,
+      "E14_HISTORY_SECONDS": 30.0,
+      "COOLDOWN_IOU": 0.3,
+      "ABLATABLE": "EXPR: (\"class-floor\", \"spatial\", \"vote\", \"dwell\", \"cooldown\", \"preprocess\", \"layer-e\")\n    # Layer E is ablatable per RULE as well as wholesale: E.9 of the spec calls\n    # for per-cue removal so each weight can be revised against measured\n    # precision instead of asserted. `--ablate e9` drops just the ",
+      "HOLDUP_MIN_PERSONS": 2
+    },
+    "management/commands/watch_parking.py": {
+      "DEFAULT_ZONE_PATH": "EXPR: settings.BASE_DIR / \"core\" / \"vision\" / \"zones\" / \"obstruction_zone.json\"",
+      "PARKING_CAMERA_CODE": "CAM-SMOKE-01",
+      "SETTINGS_REFRESH_SECONDS": 5
+    },
+    "management/commands/watch_disposal.py": {
+      "DISPOSAL_CAMERA_CODE": "CAM-SMOKE-01",
+      "SETTINGS_REFRESH_SECONDS": 5,
+      "RAW_CLIP_PRE_DROP_SECONDS": 5.0,
+      "COLLECTION_TZ": "EXPR: ZoneInfo(\"Asia/Manila\")"
+    },
+    "management/commands/watch_merged.py": {
+      "MERGED_CAMERA_CODE": "CAM-SMOKE-01",
+      "SETTINGS_REFRESH_SECONDS": 5,
+      "ROUTE_ENGINE": {
+        "cigarette": "smoking",
+        "bottle": "drinking",
+        "knife": "thief"
+      }
+    },
+    "management/commands/watch_merged_all.py": {},
+    "management/commands/_incidents.py": {
+      "CLIP_REFRESH_SECONDS": 15.0,
+      "ROW_UPDATE_SECONDS": 5.0,
+      "STATUS_EVENT_GAP": 5.0,
+      "END_GRACE_SECONDS": 3.0,
+      "CONTINUE_SECONDS": 15.0,
+      "CONTINUE_MIN_GAP": 1.0,
+      "CONTINUE_DIST": 0.8,
+      "CONTINUE_SIZE": [
+        0.45,
+        2.2
+      ],
+      "NO_CUE": "EXPR: ObjectCue(False, None, None, 0.0, None)"
+    }
+  },
+  "source_file_sha256": {
+    "vision/scoring.py": "64b79aadef7255151495171f9405da1f68af99f8b532209c37e99d2d3bbaaec6",
+    "vision/momentum.py": "6081efde018e44cdd681c56780b82dbf5025b34064df8529cab38ce54325b37f",
+    "vision/location_momentum.py": "24cba748d8826228f0a73da007200b1f98c453ebbe049ad6bf8f1456c2d51c7c",
+    "vision/tracking.py": "b27ce41e7f339eb156eccd1c893873b957a181e3666bd98a27fcf9233e1d0c78",
+    "vision/theft.py": "3926604fcb449ca34a02a04e044877aacda3a8e4ffeaf48c4004a3c0fb70764e",
+    "vision/obstruction_zone.py": "1fd1a7903c5a1ad321c5d66171e73b714acfae307e0b3ce9cf688721f38ecf4c",
+    "vision/zone_autodetect.py": "95d7860c2cf0948e06d56246fc3dbcf1759d38066843fc7242aab8d9e7c85a3e",
+    "vision/disposal.py": "48befa2f48bc1fa3a71a5dc70d14ca80be1536f20bd8f70774f1473c9695d9fe",
+    "vision/ai_checker.py": "0c06da1dabb268086011cacaade09fc9d9af5942761d81b51c7c96231fe91301",
+    "vision/recognition.py": "4d7dc3a25b9aee06e2b0a17d86c383610a6cfc3bd1a10b5ffe353d78ac1fd974",
+    "vision/spec_settings.py": "43d022a7fcbde5761a176fb34f9687264dc4e64b569faea9a576502a0df5ce5d",
+    "management/commands/watch_smoking.py": "c68ba3c0c3731ae8d35257f375728e6a06e6aa1e36bfe7a9b7f5440da15b1e56",
+    "management/commands/watch_drinking.py": "f9753213e6ac71e014cf500cda799509cf5634d9910a97251f84e0a5028d18a1",
+    "management/commands/watch_thief.py": "ce7a4dff7068b0262a0eca74b077a4da7d7085bce619b5fb9991a126e7f47895",
+    "management/commands/watch_parking.py": "28f2bf7c937165d9499225e5bdae148f8966a9cc1bac39d615accc47a6f21975",
+    "management/commands/watch_disposal.py": "97c1c952da922b3f1179328ac1f31c543f5c6df3f59a778e407c022964c3e83a",
+    "management/commands/watch_merged.py": "0be93929b817bf38376c0670756edc49db8558c0a2d2d193747b25d95b995509",
+    "management/commands/watch_merged_all.py": "6726e71753164271893782084db11881a0b26a9f03d97c336cb2b7f92a2e382c",
+    "management/commands/_incidents.py": "dddbfa8b441660b1a33d7cdb9674e9bff6ad7f092b17b5e208393fce8a100d3e",
+    "views.py": "c5e0cbd484c3bf5bba82d50ff07f9479d006aad907ba72977c6230bdd60e87ed",
+    "models.py": "8bd5cdf64bec180a96b83056934dd0f4af6454b6efcc5fca0bcadd18155721fa",
+    "vision/clock.py": "88c8b64f0c9247825ce4463066b07e49caa3159171405da80fb88a99e110d641",
+    "vision/trim.py": "574a00b8b447c15317d88d28fdcceb3c3abb1fd7d2ef4f6c8ba39937e7369e08"
+  },
+  "momentum_config_dataclass_defaults": {
+    "decay": 0.9,
+    "on": 1.5,
+    "off": 0.4,
+    "max": 3.0,
+    "hold": 0.0,
+    "knife_hold": 1.0,
+    "source": "vision/momentum.py MomentumConfig; knife override in _incidents._momentum_book"
+  },
+  "ultralytics_version": "8.4.67",
+  "bytetrack_yaml_sha256": "395701d947a749179dee3e327b1181b730c4ca98e7cac5a2ab05280aae573b8b",
+  "bytetrack_yaml": "# Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license\n\n# ByteTrack tracker defaults for mode=\"track\"\n# Docs: https://docs.ultralytics.com/modes/track\n\ntracker_type: bytetrack # (str) Tracker backend: bytetrack\ntrack_high_thresh: 0.25 # (float) First-stage match threshold; raise for cleaner tracks, lower to keep more\ntrack_low_thresh: 0.1 # (float) Second-stage threshold for low-score matches; balances recovery vs drift\nnew_track_thresh: 0.25 # (float) Start a new track if no match ≥ this; higher reduces false tracks\ntrack_buffer: 30 # (int) Frames to keep lost tracks alive; higher handles occlusion, increases ID switches risk\nmatch_thresh: 0.8 # (float) Association similarity threshold (IoU/cost); tune with detector quality\nfuse_score: True # (bool) Fuse detection score with motion/IoU for matching; stabilizes weak detections\n",
+  "torch": {
+    "version": "2.6.0+cu124",
+    "cuda_available": true,
+    "device": "NVIDIA GeForce RTX 4050 Laptop GPU"
+  },
+  "python": "3.13.5 | packaged by Anaconda, Inc. | (main, Jun 12 2025, 16:37:03) [MSC v.1929 64 bit (AMD64)]",
+  "python_executable_of_this_snapshot": "C:\\Users\\User\\anaconda3\\python.exe",
+  "LOOKOUT_env_vars_set_in_this_shell": {},
+  "effective_imgsz_if_cuda": {
+    "NEAR_IMGSZ": 960,
+    "FAR_IMGSZ": 960,
+    "CASCADE_IMGSZ": 1280,
+    "VEHICLE_IMGSZ": 1280,
+    "POSE_CROP_IMGSZ": 640
+  },
+  "run_detection": {
+    "launch": "views.py DetectionJobViewSet.create (views.py:1781-2067) -> subprocess `python manage.py <command> --source <staged clip> --camera CAM-<TYPE>-TEST [--cascade] [--start s] [--end s] [--clock 'YYYY-MM-DD HH:MM']`",
+    "commands": {
+      "smoking": "watch_smoking (+ --cascade, always)",
+      "drinking": "watch_drinking",
+      "thief": "watch_thief",
+      "parking": "watch_parking",
+      "disposal": "watch_disposal",
+      "merged": "watch_merged (smoking+drinking+holdup, one merged_v2 pass; cascade ON by default)",
+      "merged4": "watch_merged_all (merged + parking; REQUIRES a drawn area)"
+    },
+    "no_cli_threshold_flags_passed": true,
+    "thresholds_source": "SystemSettings row id=1 (re-read every 5 s while running) except parking area %/minutes which come from the CAM-PARKING-TEST / CAM-MERGED4-TEST camera row written by Start",
+    "time_source_file_clips": "video position (CAP_PROP_POS_MSEC) for dwell/cooldown/timing in every detector; wall clock only for Settings refresh",
+    "time_of_day_source": "--clock = 'Recorded at' field + video position. Passed only for drinking, thief, merged, merged4, disposal and only when Recorded at is filled in",
+    "no_recorded_at": {
+      "thief": "E20 time-of-day points OFF (0)",
+      "drinking": "evening-band cue uses the machine's wall clock (datetime.now()) = upload time",
+      "disposal": "collection-window rule SKIPPED with a warning",
+      "merged/merged4": "drinking band = wall clock; holdup E20 off"
+    },
+    "trim_respected": true,
+    "ai_checker": "ON when vlm_enabled=1 and Ollama reachable; asynchronous; writes Alert.ai only, never changes score/status/level (_incidents.py:218, store_ai_result)",
+    "parking_zone": "Start writes CAM-PARKING-TEST.edges = drawn polygon, or {} when none drawn (cleared every Start because Run Detection always sends obstruction_pct/minutes). With none drawn, watch_parking auto-traces from the clip (not saved on -TEST cameras). No automatic trace happens in the UI unless the operator presses Trace zone.",
+    "run_detection_ui_defaults_for_parking": {
+      "inside_pct": 50,
+      "minutes": 5,
+      "source": "RunDetectionPage.jsx:98-99"
+    },
+    "auto_changes_during_run": [
+      "Start overwrites CAM-PARKING-TEST / CAM-MERGED4-TEST edges, edges_width/height, obstruction_pct, obstruction_minutes (views.py:1922-1957)",
+      "Start of a disposal run with NO area drawn does NOT clear CAM-DISPOSAL-TEST.edges: a stale area from an earlier disposal run would be reused (views.py:1922 condition). Currently no CAM-DISPOSAL-TEST row exists.",
+      "watch_* get_or_create the CAM-<TYPE>-TEST Camera and ViolationType rows if missing",
+      "SystemSettings is only read, never written, by detectors"
+    ]
+  }
+}

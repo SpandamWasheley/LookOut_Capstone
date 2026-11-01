@@ -167,7 +167,7 @@ Hysteresis: once Possible or Likely is entered, it is only left when the score f
 | Model                                      | Qwen3-VL, run locally (being finalised: 2B with video input through Transformers, or 4B with frames through Ollama) |
 | When it is called                          | When the event enters Monitoring (object detected about 2 seconds), and when a puff-only alert reaches Possible     |
 | What it receives                           | The alert's evidence window, trimmed to the moment of detection and cropped to the alert's subject (table below)    |
-| Frames                                     | 8–12, bunched around the detection or the puff rather than spread evenly                                            |
+| Frames                                     | 8 by default (up to 12), from the 5 s before the event first reached Possible to 1 s after it: the frame nearest that moment, up to half the rest where the cigarette, bottle or knife was detected on the subject (highest confidence first, 0.3 s apart), and the remainder spread evenly over the window. `AI_SPREAD_FRAMES = False` restores the old 8 nearest the moment. |
 | What it changes                            | Nothing in the score or the official status. It produces the AI context card and the suggested status.              |
 | What it shows                              | AI badge, the answered fields as a checklist, and the observations sentence, marked AI-generated                    |
 | Faces blurred before sending               | No — frames never leave the device, and blurring would hide the mouth the smoking question needs                    |

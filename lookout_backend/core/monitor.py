@@ -121,6 +121,64 @@ class LiveMonitor:
             self._kill(p)
         return True, "Detection stopped."
 
+    def apply_zone(self, camera):
+        """Make a just-saved no-parking zone take effect. -> outcome string.
+
+        watch_parking reads the camera's zone ONCE, when it starts, so a saved
+        change does nothing to a running process. Only the parking process is
+        touched -- merged and disposal keep running, so smoking/drinking/holdup
+        coverage has no gap. The old parking process is removed from `_procs`
+        BEFORE it is killed, so the supervisor (which restarts everything when
+        any tracked process exits) never sees it die.
+
+        Outcomes: "not_running" (nothing to apply; the next start reads it),
+        "restarting" (parking was running, now relaunching on the new zone),
+        "started" (parking was absent for want of a zone and is now launched),
+        "stopped" (the zone was cleared, so parking is switched off).
+        """
+        with self._lock:
+            if not self._want or not self._procs:
+                return "not_running"
+            old = self._procs.pop("parking", None)
+            had_old = old is not None
+        ready = has_road_edge(camera) and bool(camera.resolved_stream_url)
+        if not ready:
+            self._swap_thread = threading.Thread(
+                target=self._retire if old is not None else (lambda *_: None),
+                args=(old,), daemon=True, name="parking-retire")
+            self._swap_thread.start()
+            return "stopped" if had_old else "not_running"
+        self._swap_thread = threading.Thread(target=self._swap_parking, args=(camera, old),
+                                             daemon=True, name="parking-swap")
+        self._swap_thread.start()
+        return "restarting" if had_old else "started"
+
+    def _retire(self, proc):
+        from core.models import DetectionJob
+        self._kill(proc)
+        try:
+            DetectionJob.objects.filter(pid=proc.pid, status=DetectionJob.Status.RUNNING).update(
+                status=DetectionJob.Status.CANCELLED, finished_at=timezone.now())
+        except Exception:                                   # noqa: BLE001
+            pass     # bookkeeping must never stop the relaunch that follows
+
+    def _swap_parking(self, camera, old):
+        from core.models import DetectionJob
+        if old is not None:
+            self._retire(old)
+        with self._lock:
+            if not self._want:
+                return
+        proc, job_id = self._spawn("parking", camera)
+        with self._lock:
+            if not self._want:
+                self._kill(proc)
+                DetectionJob.objects.filter(pk=job_id).update(
+                    status=DetectionJob.Status.CANCELLED, finished_at=timezone.now())
+                return
+            self._procs["parking"] = proc
+            self._job_ids.append(job_id)
+
     @staticmethod
     def _reap_orphans():
         """Detector processes left behind by an earlier run of the web server (it restarts itself
@@ -235,6 +293,34 @@ class LiveMonitor:
         with self._lock:
             self._procs = {}
 
+    def _spawn(self, name, camera, args=None, ldir=None, env=None):
+        """Popen one detector and record its DetectionJob row -> (proc, job_id)."""
+        from core.models import DetectionJob
+        base = settings.BASE_DIR
+        if env is None:
+            env = os.environ.copy()
+            env["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+            env["PYTHONUNBUFFERED"] = "1"
+        if args is None:
+            args = ["watch_" + name, "--source", camera.resolved_stream_url, "--camera", camera.code]
+        stream_url = camera.resolved_stream_url
+        log_dir = settings.MEDIA_ROOT / "uploads"
+        os.makedirs(log_dir, exist_ok=True)
+        child_env = dict(env)
+        if name == "merged":
+            child_env["LOOKOUT_DEBUG_DIR"] = str(ldir or live_dir())
+        log = open(log_dir / f"live_{name}.log", "w")
+        try:
+            proc = subprocess.Popen([sys.executable, "manage.py", *args], cwd=str(base),
+                                    stdout=log, stderr=subprocess.STDOUT, env=child_env)
+        finally:
+            log.close()
+        job = DetectionJob.objects.create(
+            violation_type=name, source_filename=f"Live — {camera.name}", source_path=stream_url,
+            camera=camera, status=DetectionJob.Status.RUNNING, pid=proc.pid,
+            created_by_id=getattr(self, "_user_id", None))
+        return proc, job.pk
+
     def _launch(self, camera):
         from core.models import DetectionJob
         base = settings.BASE_DIR
@@ -272,20 +358,8 @@ class LiveMonitor:
                                     "--camera", camera.code]
         procs, job_ids = {}, []
         for name, args in commands.items():
-            child_env = dict(env)
-            if name == "merged":
-                child_env["LOOKOUT_DEBUG_DIR"] = str(ldir)
-            log = open(log_dir / f"live_{name}.log", "w")
-            try:
-                procs[name] = subprocess.Popen([sys.executable, "manage.py", *args], cwd=str(base),
-                                               stdout=log, stderr=subprocess.STDOUT, env=child_env)
-            finally:
-                log.close()
-            job = DetectionJob.objects.create(
-                violation_type=name, source_filename=f"Live — {camera.name}", source_path=stream_url,
-                camera=camera, status=DetectionJob.Status.RUNNING, pid=procs[name].pid,
-                created_by_id=getattr(self, "_user_id", None))
-            job_ids.append(job.pk)
+            procs[name], job_id = self._spawn(name, camera, args=args, ldir=ldir, env=env)
+            job_ids.append(job_id)
         with self._lock:
             self._procs = procs
             self._job_ids = job_ids

@@ -1,11 +1,11 @@
-import { Cigarette, Beer, Car, Siren, ShieldCheck, Lock, Users, Info } from "lucide-react";
+import { Cigarette, Beer, Car, Siren, Trash2, ShieldCheck, Lock, Users, Info } from "lucide-react";
 
 // About page. Plain language for barangay staff: no points, scores or numbers about how an alert is
 // rated. EDIT THE CONSTANTS BELOW to fill in the study title and team.
 
 const STUDY_TITLE = "LookOut: A Computer Vision-Based System for Detecting Selected Barangay Ordinance Violations with Automated Barangay Authority Response in Zamboanga City";   // TODO: replace with the full study title
 const TAGLINE =
-  "LookOut watches a CCTV feed or footage for four violations it then detects possible violations and proposes an alert " +
+  "LookOut watches a CCTV feed or footage for five violations. It then detects possible violations and proposes an alert " +
   "for an officer to review. It never decides on its own.";
 const VERSION = "Version 1.0";
 const TEAM = [
@@ -16,15 +16,16 @@ const TEAM = [
 ];
 
 const VIOLATIONS = [
-  { icon: Cigarette, color: "#f97316", name: "Smoking", law: "", note: "Smoking in public places." },
+  { icon: Cigarette, color: "#6b8cae", name: "Smoking", law: "", note: "Smoking in public places." },
   { icon: Beer, color: "#8b5cf6", name: "Drinking", law: "", note: "Drinking in public." },
   { icon: Car, color: "#ef4444", name: "Parking Obstruction", law: "", note: "Vehicles obstructing the road." },
   { icon: Siren, color: "#dc2626", name: "Holdup", law: "", note: "A person holding a knife near another person. Loitering first, or the two people freezing close together, makes it stronger." },
+  { icon: Trash2, color: "#22c55e", name: "Discarded Waste", law: "", note: "A big item, such as a bag of rubbish, left in the frame or zone. Only large items trigger an alert, not small litter." },
 ];
 
 const STATUSES = [
   { name: "Monitoring", color: "#64748b",
-    text: "An object linked to a violation was detected." },
+    text: "An object or indicator linked to a violation was identified or noticed." },
   { name: "Possible", color: "#f59e0b",
     text: "Some signs of a violation, but not enough to be sure. Review the alert before acting." },
   { name: "Likely", color: "#dc2626",
@@ -78,8 +79,15 @@ export function AboutPage() {
 
           <Section icon={ShieldCheck} title="The system proposes, the officer confirms">
             <p className="text-[14px] leading-relaxed mb-3" style={{ color: "var(--muted-foreground)" }}>
-              LookOut specifically detects 3 types of classes or objects: a bottle for the drinking violation, a cigarette for smoking and a knife for Holdup. Once the heuristic rules are applied, it proposes a alert with a status. An officer then reviews
+              LookOut detects 4 types of classes or objects: a bottle for the drinking violation, a cigarette for smoking,
+              a knife for Holdup and a vehicle for parking obstruction. Some violations have no object in the model, such
+              as vaping, so LookOut also uses YOLO pose to track body keypoints and spot the hand-to-mouth gesture.
+              Once the heuristic rules are applied, it proposes an alert with a status. An officer then reviews
               the alert and marks it accordingly. A person always makes the final call.
+              <br /><br />
+              <b>Improper disposal</b> has no trained class either. LookOut looks for an object that appears in the scene
+              and then stops moving, then checks whether it looks like a garbage bag. Rubbish that stays put is
+              filed as one alert for that spot.
             </p>
             <div className="space-y-2">
               {STATUSES.map((s) => (

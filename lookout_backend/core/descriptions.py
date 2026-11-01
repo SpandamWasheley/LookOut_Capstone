@@ -56,7 +56,7 @@ def parking(obj=None, seconds=0):
     return f"{thing.capitalize()} stopped in a no-parking area for {round(seconds)} s."
 
 
-def disposal(obj=None, seconds=0, away_seconds=None):
+def disposal(obj=None, seconds=0, away_seconds=None, window=None):
     """Improper disposal. The wording leads with LEFT BEHIND, not "bag seen" --
     that is the thing the ordinance is about, and the thing the static-object
     rule actually established.
@@ -66,7 +66,18 @@ def disposal(obj=None, seconds=0, away_seconds=None):
     the strongest fact the detector holds: somebody was standing over this and
     then walked away from it, which is dumping described exactly. None means
     nobody was ever detected beside it, and the wording falls back to what the
-    static rule alone can honestly claim."""
+    static rule alone can honestly claim.
+
+    `window` is the waste-collection hours label (e.g. "4:00–7:00 AM") when the
+    object was set out inside them. The alert is then only Monitoring, and this
+    is the sentence that tells a reviewer why."""
+    text = _disposal_base(obj, seconds, away_seconds)
+    if window:
+        text += f" Within collection window ({window})."
+    return text
+
+
+def _disposal_base(obj, seconds, away_seconds):
     thing = _object(obj, "garbage")
     if away_seconds is not None:
         return (f"{thing.capitalize()} left behind; person walked away "

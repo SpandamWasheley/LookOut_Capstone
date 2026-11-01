@@ -5,6 +5,7 @@ import { ViolationModal } from "./ViolationModal";
 import { mapAlert, levelColor } from "./alertModel";
 import { DispatchModal } from "./DispatchModal";
 import { TypeFilterDropdown } from "./TypeFilterDropdown";
+import { useTestingTools } from "./useTestingTools";
 import { getAlerts, getOfficers, getCameras, updateAlert } from "./api";
 
 function mapOfficer(raw) {
@@ -241,7 +242,7 @@ function AlertCard({ alert, onView, thin = false, extraPad = 0 }) {
                   already covers what the per-card "Active" dot used to say,
                   and dropping it keeps this row to one line so every card in
                   the list stays the same height regardless of title length
-                  (e.g. "Parking Obstruction in Area" vs "Smoking"). */}
+                  (e.g. "Parking Obstruction in Road" vs "Smoking"). */}
               <div className="flex items-center gap-2">
                 <span className="text-[15px] font-semibold truncate" style={{ color: "var(--foreground)" }}>
                   {vcfg.label}
@@ -656,6 +657,16 @@ export function AlertFeed({ showFilters = false, user }) {
     return () => { clearInterval(id); document.removeEventListener("visibilitychange", tick); };
   }, []);
 
+  // Include Monitoring is a testing tool: turning the tools off hides the chip and drops the
+  // watchlist rows it had pulled in.
+  const testingTools = useTestingTools(user?.role === "admin");
+  useEffect(() => {
+    if (testingTools || !showMonitoringRef.current) return;
+    showMonitoringRef.current = false;
+    setShowMonitoring(false);
+    refresh().catch(() => {});
+  }, [testingTools]);
+
   const toggleMonitoring = () => {
     showMonitoringRef.current = !showMonitoringRef.current;
     setShowMonitoring(showMonitoringRef.current);
@@ -918,7 +929,7 @@ export function AlertFeed({ showFilters = false, user }) {
                 );
               })}
 
-              <button
+              {testingTools && <button
                 onClick={toggleMonitoring}
                 className="px-3 py-1 text-xs font-medium rounded-full transition-all whitespace-nowrap"
                 title="Monitoring events: an object was seen, the evidence is still thin. A quiet watchlist with no notification."
@@ -928,7 +939,7 @@ export function AlertFeed({ showFilters = false, user }) {
                   border: `1px solid ${showMonitoring ? "#64748b66" : "var(--border)"}`,
                 }}>
                 {showMonitoring ? "✓ " : ""}Include Monitoring
-              </button>
+              </button>}
 
               {/* Type filter — shared with the Violator Log's, so the two can't drift into
                   different rules/looks again. Checkbox values are canonical codes, matched in

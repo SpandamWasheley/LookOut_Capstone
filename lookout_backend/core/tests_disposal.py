@@ -30,6 +30,29 @@ from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import disposal
 from core.vision import scoring
 
+_clock_patch = None
+_REAL_COLLECTION_CLOCK = None
+
+
+def setUpModule():
+    """Keep the suite off the real clock.
+
+    watch_disposal reads the wall clock for a live source, so without this every
+    alert test below would behave differently between 04:00 and 07:00 Monday to
+    Saturday. The collection-window tests set their own clock; the clock tests
+    use _REAL_COLLECTION_CLOCK, the method as shipped.
+    """
+    global _clock_patch, _REAL_COLLECTION_CLOCK
+    from core.management.commands import watch_disposal
+    _REAL_COLLECTION_CLOCK = watch_disposal.Command._collection_clock
+    _clock_patch = mock.patch.object(
+        watch_disposal.Command, "_collection_clock", return_value=None)
+    _clock_patch.start()
+
+
+def tearDownModule():
+    _clock_patch.stop()
+
 
 def scene(width=640, height=360, shade=90):
     """A plain, slightly textured background. Pure flat grey makes MOG2's
@@ -330,10 +353,12 @@ class PinWiringTests(TestCase):
         self.assertIn("record_presence", source)
 
     def test_both_check_paths_share_one_stage_two_call(self):
-        """Two copies would be two places for the crop or the floor to drift."""
+        """Two copies would be two places for the crop or the floor to drift.
+        Three callers now: the static check, the pinned presence check and the
+        post-collection-window recheck -- all through the one helper."""
         from core.management.commands import watch_disposal
         source = inspect.getsource(watch_disposal.Command._run_stream)
-        self.assertEqual(source.count("_ask_stage2"), 2)
+        self.assertEqual(source.count("_ask_stage2"), 3)
         self.assertNotIn("disposal_cv.confirm(", source)
 
     def test_a_late_confirmation_goes_through_the_same_alert_path(self):
@@ -2096,10 +2121,13 @@ class PossibleAlertTests(TestCase):
     def test_the_alert_carries_no_cue_vector(self):
         """Borrowing scoring's two status NAMES is not adopting its cue table:
         an empty breakdown under a real status reads as a detector whose
-        indicators all failed rather than one that has none."""
+        indicators all failed rather than one that has none. The settings in
+        force are logged beside it, as for the scored detectors, but they are
+        not a breakdown."""
         cmd, _mod = self._command()
         self._fire(cmd, self._candidate(), scoring.VIOLATION)
-        self.assertEqual(Alert.objects.get(type__code="disposal").cues, {})
+        cues = Alert.objects.get(type__code="disposal").cues
+        self.assertEqual(set(cues), {"settings"})
 
     def test_a_dry_run_writes_no_row_and_leaves_the_candidate_unmarked(self):
         cmd, _mod = self._command()
@@ -2294,3 +2322,447 @@ class SpatialPlaceRegistryTests(TestCase):
         cd.remember((100.0, 100.0), 0.0)
         self.assertTrue(cd.blocks((100.0, 100.0), 10.0))
         self.assertIsNone(cd.alert_at((100.0, 100.0), 10.0))
+
+
+# ---------------------------------------------------------------------------
+# Waste-collection window: bags set out 04:00-07:00 Mon-Sat are only Monitoring
+# ---------------------------------------------------------------------------
+
+import datetime as _dt
+
+MON = _dt.date(2026, 10, 26)        # a Monday
+SUN = _dt.date(2026, 11, 1)
+
+
+def at(day, hh, mm=0):
+    return _dt.datetime.combine(day, _dt.time(hh, mm))
+
+
+class CollectionWindowTests(TestCase):
+    def window(self, **kw):
+        return disposal.CollectionWindow(
+            kw.get("start", _dt.time(4, 0)), kw.get("end", _dt.time(7, 0)),
+            kw.get("days", "0,1,2,3,4,5"))
+
+    def test_the_dates_used_below_are_the_weekdays_they_claim_to_be(self):
+        self.assertEqual(MON.weekday(), 0)
+        self.assertEqual(SUN.weekday(), 6)
+
+    def test_inside_the_hours_on_a_collection_day(self):
+        self.assertTrue(self.window().contains(at(MON, 5)))
+
+    def test_start_is_inclusive_and_end_is_exclusive(self):
+        w = self.window()
+        self.assertTrue(w.contains(at(MON, 4, 0)))
+        self.assertFalse(w.contains(at(MON, 3, 59)))
+        self.assertFalse(w.contains(at(MON, 7, 0)))
+        self.assertTrue(w.contains(at(MON, 6, 59)))
+
+    def test_saturday_is_a_collection_day_and_sunday_is_not(self):
+        w = self.window()
+        self.assertTrue(w.contains(at(MON + _dt.timedelta(days=5), 5)))
+        self.assertFalse(w.contains(at(SUN, 5)))
+
+    def test_an_aware_datetime_is_read_by_its_own_wall_time(self):
+        from zoneinfo import ZoneInfo
+        self.assertTrue(self.window().contains(at(MON, 5).replace(tzinfo=ZoneInfo("Asia/Manila"))))
+
+    def test_seconds_until_close(self):
+        self.assertEqual(self.window().seconds_until_close(at(MON, 5)), 2 * 3600)
+        self.assertEqual(self.window().seconds_until_close(at(MON, 8)), 0.0)
+
+    def test_label_reads_as_a_time_range(self):
+        self.assertEqual(self.window().label(), "4:00–7:00 AM")
+        self.assertEqual(self.window(start=_dt.time(11, 0), end=_dt.time(14, 30)).label(),
+                         "11:00 AM–2:30 PM")
+
+    def test_days_parse_and_reject_nonsense(self):
+        self.assertEqual(disposal.parse_days("5, 0,1"), (0, 1, 5))
+        for bad in ("7", "-1", "a,b"):
+            with self.assertRaises(ValueError):
+                disposal.parse_days(bad)
+
+    def test_a_window_that_ends_before_it_starts_is_refused(self):
+        with self.assertRaises(ValueError):
+            self.window(start=_dt.time(7, 0), end=_dt.time(4, 0))
+
+    def test_from_settings_is_none_when_switched_off(self):
+        cfg = SystemSettings.load()
+        self.assertIsNotNone(disposal.CollectionWindow.from_settings(cfg))
+        cfg.disposal_collection_enabled = False
+        self.assertIsNone(disposal.CollectionWindow.from_settings(cfg))
+
+    def test_the_defaults_are_the_barangay_ordinance(self):
+        cfg = SystemSettings.load()
+        self.assertTrue(cfg.disposal_collection_enabled)
+        self.assertEqual(cfg.disposal_collection_start, _dt.time(4, 0))
+        self.assertEqual(cfg.disposal_collection_end, _dt.time(7, 0))
+        self.assertEqual(disposal.parse_days(cfg.disposal_collection_days), (0, 1, 2, 3, 4, 5))
+
+
+class CollectionWindowHoldTests(TestCase):
+    """The detector must still be tracking the bag when the window closes."""
+
+    def held(self, det, now, hold):
+        cand = det.candidates[0]
+        cand.confirmed = True
+        cand.window_held, cand.hold_until = True, now + hold
+        return cand
+
+    def test_a_held_candidate_outlives_the_pin_cap(self):
+        det = disposal.StaticObjectDetector(suspect_window=False, pin_max_seconds=5.0)
+        now = dumped(det, warm_up(det))
+        cand = self.held(det, now, hold=100.0)
+        now = forget(det, cand, now)
+        det.update(scene(), now + 50.0)
+        self.assertIn(cand, det.candidates, "past the 5 s cap but inside the hold")
+
+    def test_the_hold_ends_when_hold_until_passes(self):
+        det = disposal.StaticObjectDetector(suspect_window=False, pin_max_seconds=5.0)
+        now = dumped(det, warm_up(det))
+        cand = self.held(det, now, hold=100.0)
+        now = forget(det, cand, now)
+        det.update(scene(), now + 200.0)
+        self.assertEqual(det.candidates, [])
+
+    def test_an_unheld_candidate_still_expires_at_the_cap(self):
+        det = disposal.StaticObjectDetector(suspect_window=False, pin_max_seconds=5.0)
+        now = dumped(det, warm_up(det))
+        det.candidates[0].confirmed = True
+        now = forget(det, det.candidates[0], now)
+        det.update(scene(), now + 50.0)
+        self.assertEqual(det.candidates, [])
+
+    def test_recheck_is_for_visible_held_candidates_only(self):
+        det = disposal.StaticObjectDetector(suspect_window=False)
+        now = dumped(det, warm_up(det))
+        cand = det.candidates[0]
+        self.assertEqual(det.due_for_window_recheck(now), [], "not held")
+        cand.window_held = True
+        self.assertEqual(det.due_for_window_recheck(now), [cand])
+        cand.pinned_since = now
+        self.assertEqual(det.due_for_window_recheck(now), [],
+                         "pinned ones are re-asked by the presence loop")
+
+    def test_recheck_waits_for_its_interval(self):
+        det = disposal.StaticObjectDetector(suspect_window=False)
+        now = dumped(det, warm_up(det))
+        cand = det.candidates[0]
+        cand.window_held = True
+        det.record_window_recheck(cand, True, now)
+        self.assertEqual(det.due_for_window_recheck(now + 1.0, 15.0), [])
+        self.assertEqual(det.due_for_window_recheck(now + 16.0, 15.0), [cand])
+
+    def test_two_misses_let_a_held_candidate_go(self):
+        det = disposal.StaticObjectDetector(suspect_window=False)
+        now = dumped(det, warm_up(det))
+        cand = det.candidates[0]
+        cand.window_held, cand.hold_until = True, now + 99
+        self.assertTrue(det.record_window_recheck(cand, False, now))
+        self.assertFalse(det.record_window_recheck(cand, False, now + 16))
+        self.assertFalse(cand.window_held)
+
+    def test_a_hit_resets_the_misses(self):
+        det = disposal.StaticObjectDetector(suspect_window=False)
+        now = dumped(det, warm_up(det))
+        cand = det.candidates[0]
+        cand.window_held = True
+        det.record_window_recheck(cand, False, now)
+        det.record_window_recheck(cand, True, now + 16)
+        self.assertEqual(cand.window_misses, 0)
+
+
+class CollectionWindowAlertTests(TestCase):
+    """_alert's decision, with the clock supplied by the test."""
+
+    BOX = (100, 100, 60, 45)
+
+    @classmethod
+    def setUpTestData(cls):
+        call_command("seed_core", verbosity=0)
+
+    def setUp(self):
+        self.cmd = self._command()
+
+    def _command(self):
+        from core.management.commands import watch_disposal
+        cmd = watch_disposal.Command()
+        cmd.violations_dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, cmd.violations_dir, True)
+        cmd.stdout = types.SimpleNamespace(write=lambda *a, **k: None)
+        cmd.style = types.SimpleNamespace(SUCCESS=lambda m: m, WARNING=lambda m: m)
+        cmd.dry_run = False
+        cmd.clip = None
+        cmd._raw_buffer = None
+        cmd._source_path = None
+        cmd._video_pos_sec = None
+        cmd.camera = Camera.objects.get(code="CAM-SMOKE-01")
+        cmd.disposal_type = ViolationType.objects.get(code="disposal")
+        return cmd
+
+    def fire(self, cand, level, when, now=10.0, cd=None, score=0.4):
+        """One _alert call with the local time of day pinned to `when`."""
+        with mock.patch.object(self.cmd, "_collection_clock", return_value=when):
+            return self.cmd._alert(
+                cand, types.SimpleNamespace(scale=1.0), scene(640, 360),
+                "garbage bag", score, now, SystemSettings.load(),
+                cd or disposal.SpatialCooldown(seconds=120, distance=60),
+                {"confirmed": 0, "possible": 0, "cooldown": 0, "upgraded": 0,
+                 "adopted": 0},
+                level)
+
+    def candidate(self, cid=1):
+        return disposal.Candidate(cid, self.BOX, 0.0)
+
+    def row(self):
+        return Alert.objects.get(type__code="disposal")
+
+    # -- inside the window ---------------------------------------------------
+
+    def test_a_confirmed_bag_inside_the_window_is_stored_at_monitoring(self):
+        cand = self.candidate()
+        self.assertTrue(self.fire(cand, scoring.VIOLATION, at(MON, 5)))
+        row = self.row()
+        self.assertEqual(row.level, scoring.MONITORING)
+        self.assertEqual(row.peak_level, scoring.MONITORING)
+        self.assertTrue(cand.window_held)
+
+    def test_a_weak_bag_inside_the_window_is_stored_at_monitoring(self):
+        self.fire(self.candidate(), scoring.WARNING, at(MON, 5))
+        self.assertEqual(self.row().level, scoring.MONITORING)
+
+    def test_the_alert_says_why_it_stayed_at_monitoring(self):
+        self.fire(self.candidate(), scoring.VIOLATION, at(MON, 5))
+        self.assertIn("Within collection window (4:00–7:00 AM)", self.row().description)
+
+    def test_it_is_hidden_from_the_normal_alert_list(self):
+        """Monitoring is the quiet watchlist: AlertViewSet excludes it unless asked."""
+        self.fire(self.candidate(), scoring.VIOLATION, at(MON, 5))
+        self.assertNotIn(self.row().level, scoring.NOTIFY_LEVELS)
+
+    def test_evidence_and_the_place_registry_are_kept(self):
+        cd = disposal.SpatialCooldown(seconds=120, distance=60)
+        cand = self.candidate()
+        self.fire(cand, scoring.VIOLATION, at(MON, 5), cd=cd)
+        row = self.row()
+        self.assertTrue(row.image_url)
+        self.assertEqual(cd.alert_at(cand.center, 10.0), (row.pk, scoring.MONITORING))
+
+    def test_the_candidate_is_held_until_after_the_window_closes(self):
+        cand = self.candidate()
+        self.fire(cand, scoring.VIOLATION, at(MON, 5), now=10.0)
+        # 2 h to 07:00 plus two presence checks.
+        self.assertEqual(cand.hold_until, 10.0 + 2 * 3600 + 2 * self.cmd.presence_seconds)
+
+    def test_the_active_settings_are_logged_with_the_alert(self):
+        self.fire(self.candidate(), scoring.VIOLATION, at(MON, 5))
+        logged = self.row().cues["settings"]
+        self.assertEqual(logged["disposal_collection_start"], "04:00")
+        self.assertEqual(logged["disposal_collection_end"], "07:00")
+        self.assertEqual(logged["disposal_collection_days"], "0,1,2,3,4,5")
+        self.assertTrue(logged["disposal_collection_enabled"])
+        self.assertNotIn("cues", self.row().cues, "still no score breakdown")
+
+    # -- outside the window --------------------------------------------------
+
+    def test_after_the_window_it_alerts_normally(self):
+        self.fire(self.candidate(), scoring.VIOLATION, at(MON, 8))
+        self.assertEqual(self.row().level, scoring.VIOLATION)
+        self.assertNotIn("collection window", self.row().description)
+
+    def test_before_the_window_it_alerts_normally(self):
+        self.fire(self.candidate(), scoring.WARNING, at(MON, 3, 59))
+        self.assertEqual(self.row().level, scoring.WARNING)
+
+    def test_sunday_morning_alerts_normally(self):
+        self.fire(self.candidate(), scoring.VIOLATION, at(SUN, 5))
+        self.assertEqual(self.row().level, scoring.VIOLATION)
+
+    def test_with_no_clock_the_rule_is_skipped(self):
+        self.fire(self.candidate(), scoring.VIOLATION, None)
+        self.assertEqual(self.row().level, scoring.VIOLATION)
+
+    def test_switched_off_it_alerts_normally(self):
+        cfg = SystemSettings.load()
+        cfg.disposal_collection_enabled = False
+        cfg.save()
+        self.fire(self.candidate(), scoring.VIOLATION, at(MON, 5))
+        self.assertEqual(self.row().level, scoring.VIOLATION)
+
+    def test_a_changed_window_is_honoured(self):
+        cfg = SystemSettings.load()
+        cfg.disposal_collection_start, cfg.disposal_collection_end = _dt.time(5, 0), _dt.time(6, 0)
+        cfg.disposal_collection_days = "6"
+        cfg.save()
+        self.fire(self.candidate(), scoring.VIOLATION, at(SUN, 5, 30))
+        self.assertEqual(self.row().level, scoring.MONITORING)
+        self.assertIn("5:00–6:00 AM", self.row().description)
+
+    # -- when the window closes ----------------------------------------------
+
+    def test_a_held_confirmed_bag_rises_to_likely_after_07(self):
+        cand = self.candidate()
+        self.fire(cand, scoring.VIOLATION, at(MON, 5))
+        self.assertTrue(self.fire(cand, scoring.VIOLATION, at(MON, 7, 1), now=7300.0))
+        row = self.row()
+        self.assertEqual(row.level, scoring.VIOLATION)
+        self.assertEqual(row.peak_level, scoring.VIOLATION)
+        self.assertFalse(cand.window_held)
+        self.assertNotIn("collection window", row.description)
+        self.assertEqual(Alert.objects.filter(type__code="disposal").count(), 1)
+
+    def test_a_held_weak_bag_rises_to_possible_after_07(self):
+        cand = self.candidate()
+        self.fire(cand, scoring.WARNING, at(MON, 5))
+        self.fire(cand, scoring.WARNING, at(MON, 7, 1), now=7300.0)
+        self.assertEqual(self.row().level, scoring.WARNING)
+
+    def test_a_replacement_candidate_for_a_held_bag_is_held_too(self):
+        cd = disposal.SpatialCooldown(seconds=120, distance=60)
+        first = self.candidate(1)
+        self.fire(first, scoring.VIOLATION, at(MON, 5), cd=cd)
+        again = self.candidate(2)
+        self.fire(again, scoring.VIOLATION, at(MON, 5, 1), now=70.0, cd=cd)
+        self.assertEqual(again.alert_pk, first.alert_pk)
+        self.assertEqual(self.row().level, scoring.MONITORING)
+        self.assertTrue(again.window_held)
+
+    def test_a_replacement_candidate_raises_the_held_row_after_07(self):
+        cd = disposal.SpatialCooldown(seconds=120, distance=60)
+        first = self.candidate(1)
+        self.fire(first, scoring.VIOLATION, at(MON, 5), cd=cd)
+        # The main loop re-arms the place every frame a live candidate owns the row.
+        cd.remember(first.center, 7390.0, first.alert_pk, scoring.MONITORING)
+        again = self.candidate(2)
+        self.fire(again, scoring.VIOLATION, at(MON, 7, 2), now=7400.0, cd=cd)
+        self.assertEqual(self.row().level, scoring.VIOLATION)
+
+    def test_a_row_already_at_likely_is_not_walked_back_down(self):
+        cand = self.candidate()
+        self.fire(cand, scoring.VIOLATION, at(MON, 3))          # before the window
+        self.fire(cand, scoring.VIOLATION, at(MON, 5), now=7200.0)
+        self.assertEqual(self.row().level, scoring.VIOLATION)
+        self.assertFalse(cand.window_held)
+
+    def test_release_restarts_the_pin_clock(self):
+        cand = self.candidate()
+        self.fire(cand, scoring.VIOLATION, at(MON, 5))
+        cand.pinned_since = 100.0
+        self.fire(cand, scoring.VIOLATION, at(MON, 7, 1), now=7300.0)
+        self.assertEqual(cand.pinned_since, 7300.0)
+
+    def test_a_dry_run_writes_nothing_but_still_marks_the_hold(self):
+        self.cmd.dry_run = True
+        cand = self.candidate()
+        self.fire(cand, scoring.VIOLATION, at(MON, 5))
+        self.assertFalse(Alert.objects.filter(type__code="disposal").exists())
+
+
+class CollectionClockTests(TestCase):
+    """Where the time of day comes from -- the same rule as the holdup E20."""
+
+    def cmd(self, source_path, clock_start):
+        from core.management.commands import watch_disposal
+        cmd = watch_disposal.Command()
+        cmd._source_path = source_path
+        cmd.clock_start = clock_start
+        self.lines = []
+        cmd.stdout = types.SimpleNamespace(write=self.lines.append)
+        cmd.style = types.SimpleNamespace(WARNING=lambda m: m)
+        return cmd
+
+    def test_a_file_reads_the_clock_plus_its_position(self):
+        # setUpModule stubs the clock for every other suite; these want the real method.
+        cmd = self.cmd("clip.mp4", at(MON, 4, 59))
+        self.assertEqual(_REAL_COLLECTION_CLOCK(cmd, 90.0), at(MON, 5, 0) + _dt.timedelta(seconds=30))
+
+    def test_a_file_without_clock_has_no_time_and_warns_once(self):
+        cmd = self.cmd("clip.mp4", None)
+        self.assertIsNone(_REAL_COLLECTION_CLOCK(cmd, 1.0))
+        self.assertIsNone(_REAL_COLLECTION_CLOCK(cmd, 2.0))
+        self.assertEqual(len(self.lines), 1)
+        self.assertIn("--clock", self.lines[0])
+
+    def test_a_live_stream_reads_the_wall_clock_in_manila_time(self):
+        cmd = self.cmd(None, at(MON, 5))        # --clock is ignored for live
+        got = _REAL_COLLECTION_CLOCK(cmd, 123.0)
+        self.assertEqual(str(got.tzinfo), "Asia/Manila")
+        self.assertLess(abs((got - _dt.datetime.now(got.tzinfo)).total_seconds()), 5)
+
+    def test_clock_is_a_command_option_and_is_parsed(self):
+        from core.management.commands import watch_disposal
+        parser = watch_disposal.Command().create_parser("manage.py", "watch_disposal")
+        ns = parser.parse_args(["--source", "clip.mp4", "--clock", "2026-10-26 05:00"])
+        self.assertEqual(ns.clock, "2026-10-26 05:00")
+
+
+class CollectionWindowWiringTests(TestCase):
+    def test_the_recheck_pass_is_wired_into_the_main_loop(self):
+        from core.management.commands import watch_disposal
+        source = inspect.getsource(watch_disposal.Command._run_stream)
+        self.assertIn("due_for_window_recheck", source)
+        self.assertIn("record_window_recheck", source)
+
+    def test_uploaded_disposal_clips_pass_the_clock_through(self):
+        from core import views
+        segment = (inspect.getsource(views)
+                   .split("if recorded_at and camera is None and violation_type in (")[1]
+                   .split('cascade_args += ["--clock"')[0])
+        self.assertIn('"disposal"', segment)
+
+
+class CollectionSettingsApiTests(TestCase):
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        from rest_framework.test import APIClient
+        user = get_user_model().objects.create_user(
+            username="adm", password="x", role="admin")
+        self.client = APIClient()
+        self.client.force_authenticate(user)
+
+    def test_the_settings_are_published_with_their_spec_defaults(self):
+        data = self.client.get("/api/settings/").json()
+        self.assertEqual(data["disposal_collection_start"][:5], "04:00")
+        self.assertEqual(data["spec_defaults"]["disposal_collection_end"][:5], "07:00")
+        self.assertEqual(data["spec_defaults"]["disposal_collection_days"], "0,1,2,3,4,5")
+
+    def test_they_can_be_changed(self):
+        r = self.client.patch("/api/settings/", {
+            "disposal_collection_start": "05:00", "disposal_collection_end": "08:00",
+            "disposal_collection_days": "0, 2,4", "disposal_collection_enabled": False,
+        }, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        cfg = SystemSettings.load()
+        self.assertEqual(cfg.disposal_collection_days, "0,2,4")
+        self.assertFalse(cfg.disposal_collection_enabled)
+
+    def test_an_end_before_the_start_is_refused(self):
+        r = self.client.patch("/api/settings/", {
+            "disposal_collection_start": "07:00", "disposal_collection_end": "04:00"},
+            format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("disposal_collection_end", r.json())
+
+    def test_a_partial_update_is_checked_against_the_stored_other_half(self):
+        r = self.client.patch("/api/settings/", {"disposal_collection_end": "03:00"},
+                              format="json")
+        self.assertEqual(r.status_code, 400)
+
+    def test_bad_days_are_refused(self):
+        r = self.client.patch("/api/settings/", {"disposal_collection_days": "1,9"},
+                              format="json")
+        self.assertEqual(r.status_code, 400)
+
+    def test_reset_to_defaults_restores_the_window(self):
+        cfg = SystemSettings.load()
+        cfg.disposal_collection_enabled = False
+        cfg.disposal_collection_start, cfg.disposal_collection_end = _dt.time(9, 0), _dt.time(10, 0)
+        cfg.disposal_collection_days = "6"
+        cfg.save()
+        r = self.client.post("/api/settings/reset/", {"violation": "disposal"}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        cfg = SystemSettings.load()
+        self.assertTrue(cfg.disposal_collection_enabled)
+        self.assertEqual(cfg.disposal_collection_start, _dt.time(4, 0))
+        self.assertEqual(cfg.disposal_collection_end, _dt.time(7, 0))
+        self.assertEqual(cfg.disposal_collection_days, "0,1,2,3,4,5")

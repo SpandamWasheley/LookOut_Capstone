@@ -44,6 +44,7 @@ import is lazy for the same reason -- importing this module costs cv2 and
 numpy only.
 """
 
+import datetime
 import hashlib
 import os
 import time
@@ -355,6 +356,17 @@ class Candidate:
         # int and a string that mean nothing to it.)
         self.alert_pk = None
         self.alert_level = ""
+        # --- waste-collection window hold -----------------------------------
+        # `window_held`: the row is parked at Monitoring ONLY because the bag
+        # was set out inside the barangay's collection hours. `hold_until` is
+        # the detector-clock instant this candidate may not be dropped before:
+        # the window's close plus two presence checks, so a bag set out at
+        # 05:00 is still being tracked when 07:00 arrives. The pin's usual
+        # 30 minute cap would otherwise forget it two hours too early.
+        self.window_held = False
+        self.hold_until = None
+        self.window_misses = 0
+        self.last_window_check = None
 
     @property
     def center(self):
@@ -379,6 +391,10 @@ class Candidate:
         re-confirming a no.
         """
         return self.confirmed or self.weak
+
+    def hold_active(self, now):
+        """Is a collection-window hold keeping this candidate alive at `now`?"""
+        return self.hold_until is not None and now <= self.hold_until
 
     def pinned_for(self, now):
         """Seconds this candidate has been held with no stage-1 support."""
@@ -517,6 +533,76 @@ PRESENCE_RECHECK_SECONDS = 15.0     # how often a pinned candidate is re-asked
 # wrong instant, and the cost of being wrong is asymmetric: a premature release
 # restarts the whole still-timer, while one extra 15s hold costs one pass.
 PIN_MISS_LIMIT = 2
+
+
+# --- waste-collection window ------------------------------------------------
+# Barangay Tetuan only lets garbage be set out for collection between 04:00 and
+# 07:00, Monday to Saturday; there is no collection on Sunday. A bag set out
+# inside that window is allowed, so it is parked at Monitoring instead of
+# alerting, and re-checked once the window closes. This class is only the
+# calendar arithmetic -- WHICH clock supplies `when` (wall clock live, --clock
+# for a file) is the command's business, as it is for the holdup time block.
+DEFAULT_COLLECTION_DAYS = (0, 1, 2, 3, 4, 5)        # Monday = 0 ... Saturday = 5
+
+
+def parse_days(text):
+    """"0,1,2" -> (0, 1, 2). Monday = 0, Sunday = 6. Raises ValueError if malformed."""
+    if isinstance(text, (tuple, list, set, frozenset)):
+        raw = list(text)
+    else:
+        raw = [p for p in str(text or "").replace(" ", "").split(",") if p != ""]
+    try:
+        days = sorted({int(p) for p in raw})
+    except ValueError:
+        raise ValueError(f"Days must be numbers 0-6 separated by commas, got {text!r}.")
+    if any(d < 0 or d > 6 for d in days):
+        raise ValueError(f"Days must be 0 (Monday) to 6 (Sunday), got {text!r}.")
+    return tuple(days)
+
+
+def _clock12(t):
+    hour = t.hour % 12 or 12
+    return f"{hour}:{t.minute:02d} {'AM' if t.hour < 12 else 'PM'}"
+
+
+class CollectionWindow:
+    """The hours (and weekdays) rubbish may be put out for collection.
+
+    A window that does not span midnight: `start` < `end`. Anything else is
+    refused rather than guessed at -- the settings serializer enforces the
+    same, so a bad row can only arrive by editing the database by hand.
+    """
+
+    def __init__(self, start, end, days=DEFAULT_COLLECTION_DAYS):
+        if not start < end:
+            raise ValueError("The collection window must end after it starts.")
+        self.start = start
+        self.end = end
+        self.days = frozenset(parse_days(days))
+
+    @classmethod
+    def from_settings(cls, cfg):
+        """The window in `cfg`, or None when the rule is switched off."""
+        if not getattr(cfg, "disposal_collection_enabled", False):
+            return None
+        return cls(cfg.disposal_collection_start, cfg.disposal_collection_end,
+                   cfg.disposal_collection_days)
+
+    def contains(self, when):
+        """Is `when` (a datetime, local time) inside the window on a collection day?"""
+        return when.weekday() in self.days and self.start <= when.time() < self.end
+
+    def seconds_until_close(self, when):
+        """Seconds from `when` to today's closing time (0 once it has passed)."""
+        close = datetime.datetime.combine(when.date(), self.end)
+        return max(0.0, (close - when.replace(tzinfo=None)).total_seconds())
+
+    def label(self):
+        """"4:00-7:00 AM" -- the form a reviewer reads on the alert."""
+        a, b = _clock12(self.start), _clock12(self.end)
+        if a[-2:] == b[-2:]:
+            a = a[:-3]
+        return f"{a}–{b}"
 
 
 def _coverage(blob, box):
@@ -840,7 +926,10 @@ class StaticObjectDetector:
                 continue
             if cand.pinned_since is None and cand.engaged:
                 cand.pinned_since = now
-            if cand.pinned and cand.pinned_for(now) <= self.pin_max_seconds:
+            # A window-held candidate outlives the usual cap: it has to still
+            # be here when the collection window closes. See hold_until.
+            if cand.pinned and (cand.pinned_for(now) <= self.pin_max_seconds
+                                or cand.hold_active(now)):
                 kept.append(cand)
         self.candidates = kept
         return born
@@ -910,6 +999,45 @@ class StaticObjectDetector:
                 continue
             out.append(cand)
         return out
+
+    def due_for_window_recheck(self, now, interval=PRESENCE_RECHECK_SECONDS):
+        """Window-held candidates that stage 1 can still see, due their look.
+
+        The window closing is a clock event, not something the picture shows:
+        a CONFIRMED candidate is never offered to stage 2 again and, while the
+        blob is still visible, is not pinned either, so nothing would ask it
+        the question that raises its row. Pinned candidates are left out --
+        due_for_presence already re-asks them, and a second pass on the same
+        crop would only let the two answers disagree.
+        """
+        out = []
+        for cand in self.candidates:
+            if not cand.window_held or cand.pinned or cand.occluded_since is not None:
+                continue
+            if (cand.last_window_check is not None
+                    and now - cand.last_window_check < interval):
+                continue
+            out.append(cand)
+        return out
+
+    def record_window_recheck(self, cand, present, now):
+        """One post-close answer. Returns True while the hold should continue.
+
+        A candidate that is NOT garbage on `pin_miss_limit` consecutive looks
+        is let go and its row stays at Monitoring: the bag was collected (or
+        was never one), and raising a row for rubbish that is no longer there
+        would be an alert nobody can act on.
+        """
+        cand.last_window_check = now
+        if present:
+            cand.window_misses = 0
+            return True
+        cand.window_misses += 1
+        if cand.window_misses >= self.pin_miss_limit:
+            cand.window_held = False
+            cand.hold_until = None
+            return False
+        return True
 
     def record_presence(self, cand, present, now):
         """Record one presence answer for a pinned candidate.

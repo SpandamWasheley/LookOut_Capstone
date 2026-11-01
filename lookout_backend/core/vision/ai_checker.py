@@ -11,7 +11,8 @@ Pieces, in the order a call uses them:
 
     FrameRing        rolling buffer of FULL-RESOLUTION frames (JPEG-compressed in
                      memory) plus the tracked box of every subject per frame
-    select_frames    8-12 frames bunched around the trigger moment
+    select_frames    8-12 frames: the ones where the object was seen, plus an even
+                     spread over the whole window (AI_SPREAD_FRAMES)
     crop_for         the per-violation crop, cut from the full-res frame and then
                      resized (so the person keeps their pixels)
     build_messages   shared instructions + the violation's block, {system_note} filled
@@ -51,9 +52,13 @@ MAX_TOKENS = 400           # the reply is a small JSON object; no reasoning budg
 
 FRAMES_MIN, FRAMES_MAX = 8, 12
 FRAMES_DEFAULT = 8         # chosen by benchmark: 2B-instruct, 8 frames, ctx 10240, ~9-11 s/call, 100% GPU
-FRAMES_BEFORE = 2.5        # seconds of footage before the trigger that may be used
+FRAMES_BEFORE = 5.0        # seconds of footage before the trigger that may be used
 FRAMES_AFTER = 1.0         # seconds after the trigger to wait for (the checker runs async)
-RING_SECONDS = 6.0
+RING_SECONDS = 7.0         # must exceed FRAMES_BEFORE + FRAMES_AFTER
+AI_SPREAD_FRAMES = True    # False = the old selection: the n frames nearest the trigger moment
+OBJECT_FRAME_SHARE = 0.5   # at most this share of the frames are ones where the object was seen
+OBJECT_FRAME_GAP = 0.3     # seconds: two "object seen" frames are never closer than this
+OBJECT_CLASSES = ("cigarette", "bottle", "knife")
 RING_MIN_GAP = 0.15        # never store two frames closer than this (processed fps is 4-6)
 SEND_EDGE = 640            # longest edge of each crop after resizing
 MIN_EDGE = 0               # crops smaller than this are upscaled to it (0 = never); set after benchmarking
@@ -116,6 +121,7 @@ using a phone, or wiping the face;
 "unclear" = you cannot tell.""",
     "holdup": """{
 "observations": "one sentence, under 20 words, only what you see",
+"people_count": integer,
 "object_pointed_at_a_person": true/false,
 "victim_response_visible": true/false,
 "holdup_likelihood": "likely" | "possible" | "unlikely",
@@ -124,6 +130,9 @@ using a phone, or wiping the face;
 }
 Definitions:
 - observations: the people, the object, and how they act toward each other. No conclusions.
+- people_count: the number of distinct real people you can see in the frames, as a whole number.
+Shadows, reflections, posters and mannequins are not people. Count a person once even if they
+appear in several frames.
 - object_pointed_at_a_person: a knife or sharp object is pointed or held toward another person.
 - victim_response_visible: a person raising their hands, handing over items, or backing away.
 - holdup_likelihood: how likely it is that one person is robbing or threatening another.
@@ -161,8 +170,11 @@ def response_schema(kind):
     use a value outside the spec's options. observations is first so the model
     describes before it judges."""
     props = {"observations": {"type": "string"}}
-    for field in ai_status.REQUIRED_FIELDS[kind]:
+    for field in ai_status.schema_fields(kind):
         if field == "observations":
+            continue
+        if field == "people_count":
+            props[field] = {"type": "integer", "minimum": 0}
             continue
         if field in ("drinking_likelihood", "holdup_likelihood", "hand_to_mouth_activity", "confidence"):
             props[field] = {"type": "string", "enum": _ENUMS[field]}
@@ -171,7 +183,7 @@ def response_schema(kind):
         else:
             props[field] = {"type": "boolean"}
     return {"type": "object", "properties": props,
-            "required": list(ai_status.REQUIRED_FIELDS[kind])}
+            "required": list(ai_status.schema_fields(kind))}
 
 
 def system_note(kind, *, puff_only=False, people=None, minutes=None, puffs=None, stationary=False, extra=""):
@@ -190,12 +202,23 @@ def system_note(kind, *, puff_only=False, people=None, minutes=None, puffs=None,
         note = (f"hand reached the mouth {times}; no smoking item detected" if puff_only
                 else "smoking item detected" + (f"; hand reached the mouth {times}" if n else ""))
     else:
+        # Holdup is asked UNPRIMED (v6.2.4): build_messages() does not send this note to the model, so a false
+        # "two people" from the detectors cannot be echoed back. It is still stored with the alert for the record.
         note = "knife detected" + ("; two people standing still close together" if people else "")
     return note + (f"; {extra}" if extra else "")
 
 
+# Holdup gets the same instructions WITHOUT the "System detections" line: the model must count the people itself.
+UNPRIMED_KINDS = ("holdup",)
+UNPRIMED_INSTRUCTIONS = "\n".join(line for line in SHARED_INSTRUCTIONS.splitlines()
+                                  if not line.startswith("System detections"))
+
+
 def build_messages(kind, note, images_b64):
-    prompt = SHARED_INSTRUCTIONS.format(system_note=note) + "\n\n" + BLOCKS[kind]
+    if kind in UNPRIMED_KINDS:
+        prompt = UNPRIMED_INSTRUCTIONS + "\n\n" + BLOCKS[kind]
+    else:
+        prompt = SHARED_INSTRUCTIONS.format(system_note=note) + "\n\n" + BLOCKS[kind]
     return [{"role": "user", "content": prompt, "images": list(images_b64)}]
 
 
@@ -215,7 +238,7 @@ class FrameRing:
     def __init__(self, seconds=RING_SECONDS, min_gap=RING_MIN_GAP):
         self.seconds = seconds
         self.min_gap = min_gap
-        self._items = deque()          # (ts, jpeg_bytes, {key: box})
+        self._items = deque()          # (ts, jpeg_bytes, {key: box, ("obj", key): object confidence})
         self._lock = threading.Lock()
         self._pending_boxes = {}
         self._clean = None
@@ -243,6 +266,12 @@ class FrameRing:
         if box is not None:
             self._pending_boxes[key] = tuple(int(v) for v in box)
 
+    def note_object(self, key, conf):
+        """Record that the event's object (cigarette / bottle / knife) was detected on subject
+        `key` in THIS frame, with its confidence; stored with the next add() under ("obj", key)."""
+        if conf is not None and conf > 0:
+            self._pending_boxes[("obj", key)] = float(conf)
+
     def add(self, frame, ts):
         boxes, self._pending_boxes = self._pending_boxes, {}
         if frame is None or cv2 is None:
@@ -269,12 +298,41 @@ class FrameRing:
         return len(self._items)
 
 
-def select_frames(items, t0, n=FRAMES_MAX, minimum=FRAMES_MIN):
-    """Pick up to `n` items nearest the trigger time `t0` (bunched, not evenly
-    spread), returned in time order. Fewer than `minimum` frames is still
-    returned (a short clip): the caller decides whether that is enough."""
-    near = sorted(items, key=lambda it: abs(it[0] - t0))[:n]
-    return sorted(near, key=lambda it: it[0])
+def object_conf(boxes, keys):
+    """Confidence of the event's object in one ring item's note (0.0 = not detected there)."""
+    return max((boxes.get(("obj", k), 0.0) for k in keys or ()), default=0.0)
+
+
+def select_frames(items, t0, n=FRAMES_MAX, minimum=FRAMES_MIN, keys=None):
+    """Pick up to `n` ring items, returned in time order. Fewer than `minimum` frames is still
+    returned (a short clip): the caller decides whether that is enough.
+
+    AI_SPREAD_FRAMES (default): the frame nearest the trigger `t0` is always in; then up to
+    n * OBJECT_FRAME_SHARE frames where the object was detected on the subject `keys`
+    (highest confidence first, at least OBJECT_FRAME_GAP seconds apart); the rest fill the
+    gaps so the whole window is covered evenly (each pick is the frame farthest in time from
+    everything already chosen). Off: the `n` frames nearest `t0`."""
+    items = sorted(items, key=lambda it: it[0])
+    if len(items) <= n:
+        return items
+    if not AI_SPREAD_FRAMES:
+        near = sorted(items, key=lambda it: abs(it[0] - t0))[:n]
+        return sorted(near, key=lambda it: it[0])
+    chosen = [min(range(len(items)), key=lambda i: abs(items[i][0] - t0))]
+    quota = int(n * OBJECT_FRAME_SHARE)
+    seen = {i for i, it in enumerate(items) if object_conf(it[2], keys) > 0}
+    objects = 1 if chosen[0] in seen else 0
+    for i in sorted(seen, key=lambda i: -object_conf(items[i][2], keys)):
+        if objects >= quota:
+            break
+        if i in chosen or any(abs(items[i][0] - items[c][0]) < OBJECT_FRAME_GAP for c in chosen):
+            continue
+        chosen.append(i)
+        objects += 1
+    while len(chosen) < n:
+        rest = [i for i in range(len(items)) if i not in chosen]
+        chosen.append(max(rest, key=lambda i: min(abs(items[i][0] - items[c][0]) for c in chosen)))
+    return [items[i] for i in sorted(chosen)]
 
 
 # --- crops ---------------------------------------------------------------------
@@ -476,7 +534,7 @@ def check_async(client, ring, kind, keys, t0, note, on_done, save_dir=None, labe
     def _run():
         try:
             time.sleep(FRAMES_AFTER)
-            items = select_frames(ring.window(t0), t0, n=frames)
+            items = select_frames(ring.window(t0), t0, n=frames, keys=keys)
             images = prepare_images(kind, items, keys, edge=edge)
             files = []
             if save_dir and images:

@@ -60,15 +60,15 @@
   --surface-raised: #ffffff;
 
   /* violation-type chips (Violator Log). Smoking used a slate/gray that read
-     as "disabled or unknown" rather than its own identity — now amber, the
-     same accent watch_smoking.py and the upload modal already use for it.
+     as "disabled or unknown" rather than its own identity — now smoke blue
+     (#6b8cae), the same accent the detection/settings pickers use for it.
      Theft is rust/terracotta, not red — this page's Active pills, active
      count and header badge already use #ef4444 for STATUS, so a red
      violation icon here would read as a status indicator instead. */
-  --violation-smoking-bg: #f59e0b1f;
-  --violation-smoking-text: #b45309;
-  --violation-smoking-border: #f59e0b40;
-  --violation-smoking-dot: #f59e0b;
+  --violation-smoking-bg: #6b8cae1f;
+  --violation-smoking-text: #3f5f80;
+  --violation-smoking-border: #6b8cae40;
+  --violation-smoking-dot: #6b8cae;
 
   --violation-drinking-bg: #8b5cf61f;
   --violation-drinking-text: #7c3aed;
@@ -111,6 +111,18 @@
   --avatar-4-text: #4338ca;
   --avatar-5-bg: #06b6d41f;
   --avatar-5-text: #0e7490;
+  --avatar-6-bg: #f973161f;
+  --avatar-6-text: #c2410c;
+  --avatar-7-bg: #a855f71f;
+  --avatar-7-text: #7e22ce;
+  --avatar-8-bg: #84cc161f;
+  --avatar-8-text: #4d7c0f;
+  --avatar-9-bg: #0ea5e91f;
+  --avatar-9-text: #0369a1;
+  --avatar-10-bg: #eab3081f;
+  --avatar-10-text: #a16207;
+  --avatar-11-bg: #d946ef1f;
+  --avatar-11-text: #a21caf;
 }
 
 /* ── Dark ─────────────────────────────────────────────────────────────────── */
@@ -161,11 +173,11 @@
   --surface-raised: #0f2030;
 
   /* violation-type chips (Violator Log) — see the light block above for why
-     smoking is amber (not gray) and theft is rust (not red). */
-  --violation-smoking-bg: #f59e0b33;
-  --violation-smoking-text: #fde68a;
-  --violation-smoking-border: #f59e0b59;
-  --violation-smoking-dot: #fbbf24;
+     smoking is smoke blue (not gray) and theft is rust (not red). */
+  --violation-smoking-bg: #6b8cae33;
+  --violation-smoking-text: #bcd0e4;
+  --violation-smoking-border: #6b8cae59;
+  --violation-smoking-dot: #8fb0d0;
 
   --violation-drinking-bg: #8b5cf633;
   --violation-drinking-text: #c4b5fd;
@@ -207,6 +219,18 @@
   --avatar-4-text: #a5b4fc;
   --avatar-5-bg: #06b6d433;
   --avatar-5-text: #67e8f9;
+  --avatar-6-bg: #f9731633;
+  --avatar-6-text: #fdba74;
+  --avatar-7-bg: #a855f733;
+  --avatar-7-text: #d8b4fe;
+  --avatar-8-bg: #84cc1633;
+  --avatar-8-text: #bef264;
+  --avatar-9-bg: #0ea5e933;
+  --avatar-9-text: #7dd3fc;
+  --avatar-10-bg: #eab30833;
+  --avatar-10-text: #fde047;
+  --avatar-11-bg: #d946ef33;
+  --avatar-11-text: #f0abfc;
 }
 
 /* ── Scrollbar — hidden until hover ──────────────────────────────────────── */

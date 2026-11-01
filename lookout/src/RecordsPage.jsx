@@ -51,7 +51,6 @@ export function RecordsPage({ user }) {
     const matchSearch =
       !search ||
       typeLabel.toLowerCase().includes(search.toLowerCase()) ||
-      a.cameraZone.toLowerCase().includes(search.toLowerCase()) ||
       a.id.toLowerCase().includes(search.toLowerCase()) ||
       a.officersAssignedNames.some((name) => name.toLowerCase().includes(search.toLowerCase()));
     return matchFilter && matchSearch;
@@ -99,7 +98,7 @@ export function RecordsPage({ user }) {
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search by type, zone, officer, or ID…"
+              placeholder="Search by type, officer, or ID…"
               className="w-full pl-9 pr-3 py-2 rounded-lg text-sm outline-none"
               style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
             />
@@ -133,7 +132,7 @@ export function RecordsPage({ user }) {
           <div
             className="grid px-4 py-2.5 text-[13px] font-semibold sticky top-0"
             style={{
-              gridTemplateColumns: "2fr 2fr 1.5fr 1fr 0.5fr",
+              gridTemplateColumns: "1.6fr 2.4fr 1.5fr 1fr 0.5fr",
               color: "var(--muted-foreground)",
               background: "var(--card)",
               borderBottom: "1px solid var(--border)",
@@ -141,7 +140,7 @@ export function RecordsPage({ user }) {
             }}
           >
             <span>Violation</span>
-            <span>Zone · Timestamp</span>
+            <span>Details</span>
             <span>Officer</span>
             <span>Outcome</span>
             <span />
@@ -157,7 +156,7 @@ export function RecordsPage({ user }) {
                 onClick={() => setSelected(alert)}
                 className="grid px-4 py-3 items-center cursor-pointer transition-colors group hover:bg-white/[0.02]"
                 style={{
-                  gridTemplateColumns: "2fr 2fr 1.5fr 1fr 0.5fr",
+                  gridTemplateColumns: "1.6fr 2.4fr 1.5fr 1fr 0.5fr",
                   borderBottom: idx < records.length - 1 ? "1px solid var(--border)" : "none",
                   background: "var(--card)",
                 }}

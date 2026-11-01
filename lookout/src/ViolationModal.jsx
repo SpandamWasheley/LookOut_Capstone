@@ -324,6 +324,7 @@ export function RecordingPlayer({ alert, timeline = false }) {
             <Download size={11} /> Save clip
           </a>
         </div>
+        <TriggeredBy alert={alert} />
       </div>
     </div>
   );
@@ -840,7 +841,7 @@ const STATUS_TOOLTIP = (
     Shows how strongly the detected evidence points to a violation. It&rsquo;s based only on
     what the system detected (objects, movement, duration, and time), not on the AI.
     <div className="mt-1.5">
-      <b>Monitoring:</b> An object linked to a violation was detected. Watch the scene.<br />
+      <b>Monitoring:</b> An object or indicator linked to a violation was identified or noticed. Watch the scene.<br />
       <b>Possible:</b> Some signs of a violation, but not enough to be sure. Review the alert before acting.<br />
       <b>Likely:</b> Strong evidence of a violation. Review and respond.
     </div>
@@ -1145,6 +1146,21 @@ const HOLDUP_INDICATOR_LABELS = {
   E11E12: "E11→E12 Approach then freeze",
   E20: "E20 Time of day",
 };
+
+// Who the detector was following when it raised this alert (the boxed person in the annotated clip), and which indicators
+// fired for them. Older alerts carry no `trigger`, so nothing is shown for them.
+function TriggeredBy({ alert }) {
+  const t = alert.cues?.trigger;
+  if (!t || t.track_id == null) return null;
+  const cues = (t.cues || []).map((i) => `${i.name} ${i.points}`).join(", ");
+  return (
+    <div className="mt-3 text-[13px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+      <span style={{ color: "var(--foreground)" }}>Triggered by:</span> ID {t.track_id}
+      {t.partner_track_id != null && <> · partner ID {t.partner_track_id}</>}
+      {cues && <> · {cues}</>}
+    </div>
+  );
+}
 
 function ScoreBreakdown({ alert }) {
   const c = alert.cues || {};

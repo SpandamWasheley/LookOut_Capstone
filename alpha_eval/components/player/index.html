@@ -1,0 +1,63 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { margin:0; font-family: system-ui, sans-serif; font-size:13px; color:#222; }
+  video { width:100%; max-height:420px; background:#000; border-radius:6px; }
+  .bar { display:flex; gap:8px; align-items:center; margin:6px 0; flex-wrap:wrap; }
+  button { border:1px solid #bbb; background:#f4f4f6; border-radius:5px; padding:4px 10px; cursor:pointer; font-size:12px; }
+  button:hover { background:#e6e8f0; }
+  .chips { display:flex; flex-wrap:wrap; gap:5px; margin-top:4px; }
+  .chip { padding:2px 8px; border-radius:11px; border:1px solid; font-size:11px; cursor:pointer; background:#fff; }
+  .key { border-color:#b8860b; color:#7a5a00; }
+  .ev  { border-color:#c0392b; color:#8e2a20; }
+  .cur { font-variant-numeric: tabular-nums; font-weight:600; }
+  @media (prefers-color-scheme: dark) { body{color:#ddd} button{background:#2b2d36;color:#ddd;border-color:#555} .chip{background:#1d1f26} }
+</style>
+</head>
+<body>
+<video id="v" controls preload="metadata"></video>
+<div class="bar">
+  <span>Time: <span class="cur" id="cur">0:00.0</span></span>
+  <button id="back">-5 s</button><button id="fwd">+5 s</button>
+  <button id="use" style="display:none">Use current time</button>
+  <span id="msg" style="color:#2e7d32"></span>
+</div>
+<div class="chips" id="chips"></div>
+<script>
+  const v = document.getElementById('v'), cur = document.getElementById('cur'), chips = document.getElementById('chips');
+  const use = document.getElementById('use'), msg = document.getElementById('msg');
+  let src = null, counter = 0;
+  const fmt = s => { const m = Math.floor(s/60); const r = s - m*60; return m + ':' + (r<10?'0':'') + r.toFixed(1); };
+  const send = (type, extra) => window.parent.postMessage(Object.assign({isStreamlitMessage:true, type}, extra), '*');
+  v.addEventListener('timeupdate', () => { cur.textContent = fmt(v.currentTime); });
+  document.getElementById('back').onclick = () => { v.currentTime = Math.max(0, v.currentTime - 5); };
+  document.getElementById('fwd').onclick = () => { v.currentTime = v.currentTime + 5; };
+  use.onclick = () => {
+    counter += 1;
+    send('streamlit:setComponentValue', {value: {t: Math.round(v.currentTime*10)/10, n: counter}, dataType: 'json'});
+    msg.textContent = 'sent ' + fmt(v.currentTime); setTimeout(() => msg.textContent = '', 1800);
+  };
+  function render(args) {
+    if (args.src !== src) { src = args.src; v.src = src; }
+    use.style.display = args.mark ? '' : 'none';
+    chips.innerHTML = '';
+    (args.markers || []).forEach(m => {
+      const c = document.createElement('span');
+      c.className = 'chip ' + (m.kind === 'key' ? 'key' : 'ev');
+      c.textContent = m.label + ' ' + fmt(m.t);
+      c.onclick = () => { v.currentTime = m.t; v.play().catch(()=>{}); };
+      chips.appendChild(c);
+    });
+    if (args.seek !== undefined && args.seek !== null && args.seek_nonce !== window._lastNonce) {
+      window._lastNonce = args.seek_nonce; v.currentTime = args.seek;
+    }
+    send('streamlit:setFrameHeight', {height: document.body.scrollHeight + 8});
+  }
+  window.addEventListener('message', e => { if (e.data && e.data.type === 'streamlit:render') render(e.data.args || {}); });
+  v.addEventListener('loadedmetadata', () => send('streamlit:setFrameHeight', {height: document.body.scrollHeight + 8}));
+  send('streamlit:componentReady', {apiVersion: 1});
+</script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+clips/
+runs/
+exports/
+eval.db
+eval.db-wal
+eval.db-shm
+*.mp4
+*.avi
+*.mov
+*.mkv
+__pycache__/
+.pytest_cache/
+work/
+test_env/
+runner.log
+evidence/*.jpg

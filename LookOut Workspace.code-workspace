@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../CAPSTONE"
+		},
+		{
+			"path": "../Models_Train"
+		}
+	],
+	"settings": {}
+}
