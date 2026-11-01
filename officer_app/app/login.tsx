@@ -12,11 +12,11 @@ import {
   Text,
   TextInput,
   View,
-  useColorScheme,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useAuth } from "@/context/AuthContext";
+import { useTheme } from "@/context/ThemeContext";
 import { useColors } from "@/hooks/useColors";
 
 export default function LoginScreen() {
@@ -24,7 +24,10 @@ export default function LoginScreen() {
   const router = useRouter();
   const c = useColors();
   const insets = useSafeAreaInsets();
-  const scheme = useColorScheme();
+  // From the THEME CONTEXT, not react-native's useColorScheme: the officer's
+  // own light/dark choice has to reach the login screen too, or the app flips
+  // theme the moment they sign in.
+  const { scheme } = useTheme();
   const isDark = scheme === "dark";
 
   const [username, setUsername] = useState("");

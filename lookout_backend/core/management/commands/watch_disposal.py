@@ -64,6 +64,7 @@ with Spinner("Loading PyTorch", tty_only=True):
     from core.vision import debug_view                        # noqa: E402
     from core.vision import disposal as disposal_cv           # noqa: E402
     from core.vision import recognition                       # noqa: E402
+    from core.vision import zone_autodetect as autodetect     # noqa: E402
     from core.vision import scoring                           # noqa: E402
     from core.vision import trim as trimming                  # noqa: E402
 
@@ -93,6 +94,13 @@ class Command(BaseCommand):
             "--source", default="0",
             help="Video source: a webcam index (default 0), a stream URL or a "
                  "video file path. Use the RTSP URL for a real CCTV camera.",
+        )
+        parser.add_argument(
+            "--no-auto-area", action="store_true",
+            help="Do not work the watched area out from the footage when none "
+                 "is saved. Without this flag, a run with no area traces the "
+                 "road and its margins; with it, the whole frame is watched, "
+                 "which is what disposal did before the tracer existed.",
         )
         parser.add_argument(
             "--camera", default=DISPOSAL_CAMERA_CODE,
@@ -792,7 +800,10 @@ class Command(BaseCommand):
         if not requested:
             points = self._area_points_from_camera()
             if points is None:
-                return None, ""
+                # Nothing saved — work one out from the footage rather than
+                # falling straight back to the whole frame, which on a 4MP
+                # image raises a flood of noise blobs from trees and sky.
+                return self._auto_area(options)
             try:
                 return disposal_cv.Area(points), f"camera {self.camera.code}"
             except ValueError as exc:
@@ -813,6 +824,71 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING(
                 f"{path} is not a usable zone ({exc}); watching the whole frame."))
             return None, ""
+
+    def _auto_area(self, options):
+        """(Area, description) traced from the footage, or (None, "") for the
+        whole frame.
+
+        Built on the same tracer parking uses, but PADDED FAR WIDER, and that
+        difference is the whole point. Parking asks "is the vehicle on the
+        carriageway", so the traffic hull is the answer. Disposal asks "where
+        might rubbish be left" — and rubbish is left exactly where vehicles do
+        not drive: at the kerb, against a wall, on the verge. Handed the bare
+        hull, disposal would watch the one strip of ground nobody dumps on.
+        So the road is traced the same way and then grown past its edges to
+        take in the margins either side (DISPOSAL_PAD_FRACTION).
+
+        NEVER SAVED onto the camera, unlike parking's. Both detectors read the
+        same "zone" entry in Camera.edges, so persisting this wide area would
+        silently replace the no-parking polygon with one reaching across the
+        pavement — and parking would start reporting vehicles that were never
+        on the road. It is traced per run and thrown away.
+
+        Never fatal: every failure here returns "no area", which means watch
+        the whole frame, which is exactly what disposal did before this
+        existed.
+        """
+        if options.get("no_auto_area"):
+            return None, ""
+
+        source = options.get("source")
+        if not source:
+            return None, ""
+
+        self.stdout.write(
+            f"No area saved for {self.camera.code} — working one out from the "
+            f"footage (the road and its margins)...")
+        try:
+            points, report, frame = autodetect.trace_clip(
+                source,
+                lambda f: recognition.detect_vehicles(
+                    f, imgsz=autodetect.TRACE_IMGSZ),
+                max_samples=autodetect.MAX_SAMPLES,
+                pad_fraction=autodetect.DISPOSAL_PAD_FRACTION,
+            )
+        except Exception as exc:                                # noqa: BLE001
+            self.stdout.write(self.style.WARNING(
+                f"Could not trace an area ({exc}); watching the whole frame."))
+            return None, ""
+
+        if points is None:
+            self.stdout.write(self.style.WARNING(
+                f"  {report['reason']} Watching the whole frame."))
+            return None, ""
+
+        height, width = frame.shape[:2]
+        try:
+            area = disposal_cv.Area([[x / width, y / height] for x, y in points])
+        except ValueError as exc:
+            self.stdout.write(self.style.WARNING(
+                f"  The traced area is unusable ({exc}); watching the whole frame."))
+            return None, ""
+
+        self.stdout.write(self.style.SUCCESS(
+            f"  Traced a {len(points)}-point area from "
+            f"{report['ground_points']} sighting(s) of moving vehicles. "
+            "Not saved — it is this run's only."))
+        return area, "the footage (auto-traced)"
 
     def _area_points_from_camera(self):
         """The camera's drawn polygon as normalised (0-1) points, or None.

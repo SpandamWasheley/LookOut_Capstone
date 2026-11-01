@@ -1105,11 +1105,21 @@ def _opt_number(raw, cast):
         return None
 
 
-EDGE_REQUIRED = frozenset({"merged4"})
+# Nothing refuses for want of an area any more: watch_parking and
+# watch_merged_all both trace one from the footage when none is saved, and
+# disposal watches the whole frame. Kept as an empty set rather than deleted —
+# it is the hook a future detector with no such fallback would use, and the
+# create() check that reads it is the difference between a visible 400 and a
+# FAILED job with the reason buried in a subprocess log.
+EDGE_REQUIRED = frozenset()
 # "disposal" is capable but never required: an area narrows WHERE rubbish is
 # watched for (on a 4MP frame the whole-frame rule raises a flood of noise
 # blobs), but with none drawn it still watches everywhere, exactly as before.
-EDGE_CAPABLE = frozenset({"parking", "disposal"}) | EDGE_REQUIRED
+# Listed in full rather than derived from EDGE_REQUIRED, which it used to be
+# unioned with. The moment that set emptied, merged4 fell out of CAPABLE too --
+# and a merged4 run with an area drawn would have had it silently dropped on
+# the way to the detector.
+EDGE_CAPABLE = frozenset({"parking", "disposal", "merged4"})
 DETECTION_UPLOAD_EXTENSIONS = {".mp4", ".mkv", ".avi"}
 DETECTION_MAX_UPLOAD_BYTES = 1024 * 1024 * 1024  # 1GB
 

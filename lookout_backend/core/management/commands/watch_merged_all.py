@@ -52,6 +52,12 @@ class Command(MergedCommand):
     def add_arguments(self, parser):
         super().add_arguments(parser)
         parser.add_argument(
+            "--no-auto-zone", action="store_true",
+            help="Do not work the no-parking area out from the footage when "
+                 "none is saved. Without this flag, a run with no area traces "
+                 "one from where traffic drives instead of refusing to start.",
+        )
+        parser.add_argument(
             "--zone", default=None,
             help="Path to the obstruction polygon JSON written by "
                  "`python manage.py draw_zone`. Omit to use the area stored on "
@@ -118,10 +124,19 @@ class Command(MergedCommand):
         # resolves them: the camera record first, then a --zone file. Returns
         # None and prints why when there is no area to judge against, which
         # refuses the whole run — see this command's module docstring.
+        # Opt IN to tracing the area from the footage, exactly as
+        # watch_parking.handle does. It runs the SAME ObstructionZone rule on
+        # the same camera, so a polygon good enough for a parking run is good
+        # enough here; refusing instead was a hangover from before the tracer
+        # existed. Set explicitly rather than defaulted, because _load_zone is
+        # shared and a default of "trace one" would grant it to any future
+        # caller that inherits the method without meaning to.
+        cmd.auto_zone = not options.get("no_auto_zone", False)
         zone, where = cmd._load_zone(options)
         if zone is None:
-            return ("No no-parking area, so there is nothing to judge a vehicle "
-                    "against. Draw one first (Live Feeds -> Edge Zones, or "
+            return ("No no-parking area, and none could be traced from the "
+                    "footage, so there is nothing to judge a vehicle against. "
+                    "Draw one first (Live Feeds -> Edge Zones, or "
                     "`python manage.py draw_zone`), or use `watch_merged` for "
                     "the three person-based violations without parking.")
         cmd.zone = zone

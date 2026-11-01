@@ -761,11 +761,19 @@ class AutoZonePersistenceTests(TestCase):
         traced.assert_not_called()
         self.assertIsNone(zone)
 
-    def test_merged_all_keeps_refusing_without_an_area(self):
-        """It has no fallback on purpose — see its module docstring."""
+    def test_merged_all_switches_it_on_explicitly(self):
+        """It runs the same ObstructionZone rule, so it traces too — but it
+        SETS the flag rather than inheriting a default, so _load_zone can go on
+        being shared without granting the fallback to anyone who happens to
+        reuse it."""
+        import inspect
+        from core.management.commands import watch_merged_all
+        source = inspect.getsource(watch_merged_all.Command._setup_extra)
+        self.assertIn("cmd.auto_zone = not options.get(\"no_auto_zone\"", source)
+
+    def test_the_default_is_still_off_for_anyone_who_does_not_ask(self):
         from core.management.commands.watch_merged_all import Command as MergedAll
         cmd = MergedAll()
-        cmd.camera = Camera.objects.create(code="CAM-MERGED-X", name="M")
         self.assertFalse(getattr(cmd, "auto_zone", False))
 
     def test_footage_with_no_traffic_leaves_the_manual_route_open(self):
@@ -859,8 +867,123 @@ class ParkingStartsWithoutAnAreaTests(TestCase):
         self.assertEqual(cam.edges, drawn)
         self.assertEqual((cam.edges_width, cam.edges_height), (640, 480))
 
-    def test_merged4_still_refuses_without_an_area(self):
-        """It has no tracing fallback, so rejecting it here keeps a visible
-        error on the page instead of a FAILED job with the reason in a log."""
+    def test_merged4_starts_without_an_area_too(self):
+        """It runs the same ObstructionZone rule as parking, so it traces the
+        road from the footage rather than refusing."""
         res = self._start(violation_type="merged4", file=self._upload())
-        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.status_code, 201, res.content)
+
+
+class DisposalAutoAreaTests(TestCase):
+    """Disposal works its watched area out from the footage too — but it is a
+    different question from parking's, and the answer has a different shape."""
+
+    def _command(self, camera):
+        from core.management.commands import watch_disposal
+        cmd = watch_disposal.Command()
+        cmd.camera = camera
+        cmd.stdout = types.SimpleNamespace(write=lambda *a, **k: None)
+        cmd.style = types.SimpleNamespace(
+            SUCCESS=lambda m: m, WARNING=lambda m: m, ERROR=lambda m: m)
+        return cmd, watch_disposal
+
+    def _traced(self):
+        import numpy as np
+        points = [(100.0, 600.0), (900.0, 600.0), (900.0, 400.0), (100.0, 400.0)]
+        report = {"samples": 40, "detections": 90, "tracks": 6,
+                  "moving_tracks": 6, "ground_points": 88, "cloud": []}
+        return points, report, np.zeros((720, 1280, 3), dtype="uint8")
+
+    def test_it_traces_an_area_when_none_is_saved(self):
+        """Better than falling straight back to the whole frame, which on a
+        4MP image raises a flood of noise blobs from trees and sky."""
+        from unittest import mock
+        camera = Camera.objects.create(code="CAM-DISP-A", name="D")
+        cmd, mod = self._command(camera)
+        with mock.patch.object(mod.autodetect, "trace_clip",
+                               return_value=self._traced()):
+            area, note = cmd._load_area({"zone": "", "source": "clip.mp4"})
+        self.assertIsNotNone(area)
+        self.assertIn("auto-traced", note)
+
+    def test_it_is_padded_far_wider_than_parking_s(self):
+        """Parking asks "is the vehicle ON the carriageway". Disposal asks
+        "where might rubbish be left" — and rubbish is left where vehicles do
+        NOT drive. The bare hull would watch the one strip nobody dumps on."""
+        from core.vision import zone_autodetect as auto
+        self.assertGreater(auto.DISPOSAL_PAD_FRACTION, auto.PAD_FRACTION * 5)
+
+    def test_it_asks_for_that_wider_pad(self):
+        from unittest import mock
+        from core.vision import zone_autodetect as auto
+        camera = Camera.objects.create(code="CAM-DISP-B", name="D")
+        cmd, mod = self._command(camera)
+        with mock.patch.object(mod.autodetect, "trace_clip",
+                               return_value=self._traced()) as traced:
+            cmd._load_area({"zone": "", "source": "clip.mp4"})
+        self.assertEqual(traced.call_args.kwargs["pad_fraction"],
+                         auto.DISPOSAL_PAD_FRACTION)
+
+    def test_it_is_never_written_to_the_camera(self):
+        """THE one that matters. Both detectors read the same "zone" entry in
+        Camera.edges, so persisting disposal's wide area would replace the
+        no-parking polygon with one reaching across the pavement — and parking
+        would start reporting vehicles that were never on the road."""
+        from unittest import mock
+        camera = Camera.objects.create(code="CAM-DISP-C", name="D")
+        cmd, mod = self._command(camera)
+        with mock.patch.object(mod.autodetect, "trace_clip",
+                               return_value=self._traced()):
+            cmd._load_area({"zone": "", "source": "clip.mp4"})
+        camera.refresh_from_db()
+        self.assertEqual(camera.edges, {})
+        self.assertIsNone(camera.edges_width)
+
+    def test_a_saved_area_still_wins(self):
+        from unittest import mock
+        camera = Camera.objects.create(
+            code="CAM-DISP-D", name="D", edges_width=100, edges_height=100,
+            edges={"road": {"type": "zone", "points": [[1, 1], [90, 1], [90, 90]]}})
+        cmd, mod = self._command(camera)
+        with mock.patch.object(mod.autodetect, "trace_clip") as traced:
+            area, note = cmd._load_area({"zone": "", "source": "clip.mp4"})
+        traced.assert_not_called()
+        self.assertIsNotNone(area)
+        self.assertIn(camera.code, note)
+
+    def test_the_trace_can_be_switched_off(self):
+        from unittest import mock
+        camera = Camera.objects.create(code="CAM-DISP-E", name="D")
+        cmd, mod = self._command(camera)
+        with mock.patch.object(mod.autodetect, "trace_clip") as traced:
+            area, _note = cmd._load_area(
+                {"zone": "", "source": "clip.mp4", "no_auto_area": True})
+        traced.assert_not_called()
+        self.assertIsNone(area, "falls back to watching the whole frame")
+
+    def test_footage_with_no_traffic_falls_back_to_the_whole_frame(self):
+        """Never a refusal: disposal with no area watches everywhere, which is
+        exactly what it did before the tracer existed."""
+        from unittest import mock
+        camera = Camera.objects.create(code="CAM-DISP-F", name="D")
+        cmd, mod = self._command(camera)
+        report = {"samples": 40, "detections": 0, "tracks": 0, "moving_tracks": 0,
+                  "ground_points": 0, "cloud": [], "reason": "No vehicles."}
+        with mock.patch.object(mod.autodetect, "trace_clip",
+                               return_value=(None, report, None)):
+            area, _note = cmd._load_area({"zone": "", "source": "clip.mp4"})
+        self.assertIsNone(area)
+
+    def test_a_crash_in_the_tracer_is_not_fatal(self):
+        from unittest import mock
+        camera = Camera.objects.create(code="CAM-DISP-G", name="D")
+        cmd, mod = self._command(camera)
+        with mock.patch.object(mod.autodetect, "trace_clip",
+                               side_effect=RuntimeError("no weights")):
+            area, _note = cmd._load_area({"zone": "", "source": "clip.mp4"})
+        self.assertIsNone(area, "degrades to the whole frame, never raises")
+
+    def test_the_command_exposes_an_opt_out(self):
+        from core.management.commands import watch_disposal
+        parser = watch_disposal.Command().create_parser("manage.py", "watch_disposal")
+        self.assertIn("no_auto_area", {a.dest for a in parser._actions})

@@ -43,8 +43,11 @@ export const DETECTION_TYPES = [
 // without one. Leaving it out of this third set would make a drawn polygon a
 // precondition for starting a run that worked fine without one before.
 export const TYPES_WITH_EDGES = new Set(["parking", "merged4", "disposal"]);
-export const TYPES_REQUIRING_EDGES = new Set(["merged4"]);
-export const TYPES_WITH_OPTIONAL_EDGES = new Set(["disposal", "parking"]);
+// Empty: both detectors that use an area can now work one out from the
+// footage. Kept because it is what UploadDetectionModal filters on — an entry
+// point with no drawing step at all still needs a way to ask.
+export const TYPES_REQUIRING_EDGES = new Set([]);
+export const TYPES_WITH_OPTIONAL_EDGES = new Set(["disposal", "parking", "merged4"]);
 
 // Which detectors own the "inside the road %" and "for N minutes" boxes.
 //

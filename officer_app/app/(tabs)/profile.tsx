@@ -7,13 +7,24 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AutoScrollView } from "@/components/AutoScrollView";
 import { useAssignments } from "@/context/AssignmentContext";
 import { useAuth } from "@/context/AuthContext";
+import { useTheme, type ThemePreference } from "@/context/ThemeContext";
 import { useColors } from "@/hooks/useColors";
 import * as api from "@/lib/api";
+
+// The three choices, in the order they are offered. "System" FIRST and
+// default: a phone that dims itself at dusk should take the app with it, and
+// an officer who never opens this setting gets that for free.
+const THEME_CHOICES: { value: ThemePreference; label: string; icon: keyof typeof Feather.glyphMap }[] = [
+  { value: "system", label: "System", icon: "smartphone" },
+  { value: "light", label: "Light", icon: "sun" },
+  { value: "dark", label: "Dark", icon: "moon" },
+];
 
 export default function ProfileScreen() {
   const { officer: authOfficer, logout } = useAuth();
   const { assignments } = useAssignments();
   const c = useColors();
+  const { preference, setPreference } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
 
@@ -136,6 +147,54 @@ export default function ProfileScreen() {
           ))}
         </View>
 
+        <View style={[styles.section, { backgroundColor: c.card, borderColor: c.border }]}>
+          <Text style={[styles.sectionTitle, { color: c.mutedForeground }]}>APPEARANCE</Text>
+          {/* A segmented control, not a switch: "follow the phone" is a real
+              third option and a two-position switch cannot say it. Whichever
+              way such a switch booted, the first tap would silently pin the
+              app to one theme for good. */}
+          <View style={[styles.themeRow, { borderColor: c.border }]}>
+            {THEME_CHOICES.map((choice) => {
+              const active = preference === choice.value;
+              return (
+                <Pressable
+                  key={choice.value}
+                  onPress={() => setPreference(choice.value)}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected: active }}
+                  accessibilityLabel={`${choice.label} theme`}
+                  style={({ pressed }) => [
+                    styles.themeOption,
+                    {
+                      backgroundColor: active ? c.primary : "transparent",
+                      opacity: pressed && !active ? 0.6 : 1,
+                    },
+                  ]}
+                >
+                  <Feather
+                    name={choice.icon}
+                    size={15}
+                    color={active ? c.primaryForeground : c.mutedForeground}
+                  />
+                  <Text
+                    style={[
+                      styles.themeLabel,
+                      { color: active ? c.primaryForeground : c.mutedForeground },
+                    ]}
+                  >
+                    {choice.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          <Text style={[styles.themeHint, { color: c.mutedForeground }]}>
+            {preference === "system"
+              ? "Following your phone's light and dark setting."
+              : `Always ${preference}, whatever the phone is set to.`}
+          </Text>
+        </View>
+
         <Pressable
           onPress={handleLogout}
           style={({ pressed }) => [styles.logoutBtn, { borderColor: c.destructive, opacity: pressed ? 0.7 : 1 }]}
@@ -167,6 +226,10 @@ const styles = StyleSheet.create({
   section: { borderRadius: 16, borderWidth: 1, paddingHorizontal: 16, paddingVertical: 20, gap: 12 },
   sectionTitle: { fontSize: 11, fontFamily: "Inter_600SemiBold", letterSpacing: 0.8 },
   detailRow: { flexDirection: "row", alignItems: "flex-start", gap: 12, paddingBottom: 12, borderBottomWidth: 1 },
+  themeRow: { flexDirection: "row", borderRadius: 12, borderWidth: 1, padding: 4, gap: 4 },
+  themeOption: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 10, borderRadius: 9 },
+  themeLabel: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
+  themeHint: { fontSize: 12, fontFamily: "Inter_400Regular", lineHeight: 17 },
   detailText: { flex: 1 },
   detailLabel: { fontSize: 11, fontFamily: "Inter_400Regular", textTransform: "uppercase", letterSpacing: 0.5 },
   detailValue: { fontSize: 14, fontFamily: "Inter_500Medium", marginTop: 2 },

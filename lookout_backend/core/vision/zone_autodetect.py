@@ -130,6 +130,21 @@ MIN_POLYGON_POINTS = 3      # what ObstructionZone / the editor require
 # gutter. At 2% the boundary tracks the kerb.
 PAD_FRACTION = 0.02
 
+# Disposal's area is a different question and needs a different shape.
+#
+# Parking asks "is the vehicle ON the carriageway", so the traffic hull IS the
+# answer. Disposal asks "where might rubbish be left", and rubbish is left
+# precisely where vehicles do NOT drive — at the kerb, against a wall, on the
+# verge. Handing disposal the bare hull would confine it to the one strip of
+# ground nobody dumps on, which is worse than its current default of watching
+# the whole frame.
+#
+# So the road is traced the same way and then grown well past its edges, to
+# cover the margins either side. Still an improvement on the whole frame,
+# which on a 4MP image raises a flood of noise blobs from trees and sky — the
+# reason the area exists at all.
+DISPOSAL_PAD_FRACTION = 0.35
+
 
 def ground_point(box):
     """Bottom-CENTRE of a box.

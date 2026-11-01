@@ -9,10 +9,12 @@ import { Stack, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import React, { useEffect } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { AssignmentProvider } from "@/context/AssignmentContext";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
+import { ThemeProvider, useTheme } from "@/context/ThemeContext";
 import { useColors } from "@/hooks/useColors";
 
 SplashScreen.preventAutoHideAsync();
@@ -51,9 +53,15 @@ function NavigationGuard() {
 
 function RootLayoutNav() {
   const c = useColors();
+  const { scheme } = useTheme();
   return (
     <>
       <NavigationGuard />
+      {/* Inverted against the background, and driven by the THEME rather than
+          the phone: on a forced-dark app under a light phone the OS would
+          otherwise keep drawing dark icons onto the dark header, where they
+          are invisible. */}
+      <StatusBar style={scheme === "dark" ? "light" : "dark"} />
       {/* contentStyle paints the scene background with the theme color so the
           stack push/pop transition doesn't flash the default (white) background
           before a screen renders — that flash read as a flicker when opening an
@@ -87,13 +95,17 @@ export default function RootLayout() {
 
   return (
     <SafeAreaProvider>
-      <AuthProvider>
-        <AssignmentProvider>
-          <GestureHandlerRootView style={{ flex: 1 }}>
-            <RootLayoutNav />
-          </GestureHandlerRootView>
-        </AssignmentProvider>
-      </AuthProvider>
+      {/* Outermost of the three: the login and forgot-password screens are
+          rendered before there is a session, and they need a palette too. */}
+      <ThemeProvider>
+        <AuthProvider>
+          <AssignmentProvider>
+            <GestureHandlerRootView style={{ flex: 1 }}>
+              <RootLayoutNav />
+            </GestureHandlerRootView>
+          </AssignmentProvider>
+        </AuthProvider>
+      </ThemeProvider>
     </SafeAreaProvider>
   );
 }

@@ -45,7 +45,10 @@ def _options(**over):
     """The options dict a real run hands _setup_extra."""
     base = {"zone": None, "inside_pct": None, "alert_score": None,
             "moving_weight": 0.0, "parking_confidence": None,
-            "tracker": "bytetrack"}
+            "tracker": "bytetrack",
+            # No source by default: most of these exercise the zone rule, not
+            # the tracer, and a real trace needs footage and weights.
+            "source": None, "no_auto_zone": False}
     base.update(over)
     return base
 
@@ -114,11 +117,41 @@ class SetupExtraTests(TestCase):
             setattr(self.camera, key, value)
         self.camera.save()
 
-    def test_it_refuses_when_no_area_is_drawn(self):
+    def test_it_refuses_when_there_is_no_area_and_nothing_to_trace_from(self):
+        """No drawn area AND no source to work one out of. The message has to
+        name both, or an operator reads "draw an area" and never learns the
+        trace was attempted."""
         refused = self.cmd._setup_extra(_options())
         self.assertIsNotNone(refused)
         self.assertIn("no-parking area", refused)
+        self.assertIn("traced", refused)
         self.assertIn("Edge Zones", refused)
+
+    def test_it_traces_an_area_from_the_footage_instead_of_refusing(self):
+        """merged4 runs the SAME ObstructionZone rule on the same camera, so a
+        polygon good enough for a parking run is good enough here. Refusing
+        was a hangover from before the tracer existed."""
+        from unittest import mock
+        import numpy as np
+        from core.management.commands import watch_parking
+        traced = ([(100.0, 600.0), (900.0, 600.0), (900.0, 400.0), (100.0, 400.0)],
+                  {"samples": 40, "detections": 90, "tracks": 6,
+                   "moving_tracks": 6, "ground_points": 88, "cloud": []},
+                  np.zeros((720, 1280, 3), dtype="uint8"))
+        with mock.patch.object(watch_parking.autodetect, "trace_clip",
+                               return_value=traced):
+            refused = self.cmd._setup_extra(_options(source="clip.mp4"))
+        self.assertIsNone(refused, "should have traced one, not refused")
+        self.assertEqual(len(self.cmd.parking.zone.points_norm), 4)
+
+    def test_the_trace_can_be_switched_off(self):
+        from unittest import mock
+        from core.management.commands import watch_parking
+        with mock.patch.object(watch_parking.autodetect, "trace_clip") as traced:
+            refused = self.cmd._setup_extra(
+                _options(source="clip.mp4", no_auto_zone=True))
+        traced.assert_not_called()
+        self.assertIsNotNone(refused)
 
     def test_a_road_zone_on_the_camera_is_enough_to_start(self):
         self._zone()
@@ -126,6 +159,9 @@ class SetupExtraTests(TestCase):
         self.assertEqual(len(self.cmd.parking.zone.points_norm), 4)
 
     def test_old_kerb_lines_are_not_usable_by_the_zone_rule(self):
+        """An open path is not a closed shape. With nothing to trace from
+        either, the run is still refused rather than silently running on a
+        half-plane."""
         self.camera.edges = EDGE_SPEC
         self.camera.save()
         self.assertIsNotNone(self.cmd._setup_extra(_options()))
@@ -310,10 +346,19 @@ class ObstructionEndToEndTests(TestCase):
 
 
 class RegistrationTests(TestCase):
-    def test_merged4_runs_watch_merged_all_and_requires_an_area(self):
+    def test_merged4_runs_watch_merged_all_and_may_use_an_area(self):
+        """It no longer REQUIRES one: watch_merged_all traces the road from the
+        footage when none is saved, the same way watch_parking does."""
         self.assertEqual(DETECTION_COMMANDS["merged4"], "watch_merged_all")
-        self.assertIn("merged4", EDGE_REQUIRED)
         self.assertIn("merged4", EDGE_CAPABLE)
+        self.assertNotIn("merged4", EDGE_REQUIRED)
+
+    def test_nothing_requires_an_area_any_more(self):
+        """Kept as an empty set rather than deleted — it is the hook a future
+        detector with no tracing fallback would use, and the check that reads
+        it is the difference between a visible 400 and a FAILED job with the
+        reason buried in a subprocess log."""
+        self.assertEqual(EDGE_REQUIRED, frozenset())
 
     def test_parking_may_use_an_area_but_does_not_require_one(self):
         self.assertIn("parking", EDGE_CAPABLE)
@@ -343,10 +388,14 @@ class LiveCameraRejectionTests(TestCase):
     def post(self, **body):
         return self.c.post("/api/detection-jobs/", body)
 
-    def test_merged4_on_a_camera_with_no_area_is_rejected(self):
-        r = self.post(violation_type="merged4", camera_id=self.camera.pk)
-        self.assertEqual(r.status_code, 400, r.content)
-        self.assertIn("Edge Zones", r.json()["detail"])
+    def test_merged4_on_a_camera_with_no_area_now_starts(self):
+        """It watches the stream for a while and traces the road from the
+        traffic, instead of refusing at the door. The subprocess is stopped
+        before it launches — this asserts the gate lets it through, not that a
+        detector can run in a test."""
+        with mock.patch("subprocess.Popen", side_effect=OSError("not launched here")):
+            with self.assertRaises(OSError):
+                self.post(violation_type="merged4", camera_id=self.camera.pk)
 
     def test_parking_on_the_same_camera_is_allowed(self):
         # Stopped before the subprocess actually launches: this asserts the
