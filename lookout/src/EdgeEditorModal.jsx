@@ -34,6 +34,18 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
   const [edgeSpec, setEdgeSpec] = useState({});
   const [canSave, setCanSave] = useState(false);
 
+  // Two independent areas: parking's no-parking road polygon and improper
+  // disposal's watch area. Both canvases stay mounted (the inactive one is just
+  // hidden) because EdgeCanvas owns its points — unmounting on a tab switch
+  // would throw away a half-drawn shape.
+  const [tab, setTab] = useState("parking");
+  const [disposalPrefill, setDisposalPrefill] = useState([]);
+  const [disposalSpec, setDisposalSpec] = useState({});
+  const [disposalPoints, setDisposalPoints] = useState(0);
+  // What each canvas first reported, to tell "edited" from "just opened".
+  const [parkingInitial, setParkingInitial] = useState(null);
+  const [disposalInitial, setDisposalInitial] = useState(null);
+
   const [pct, setPct] = useState(camera.obstruction_pct ?? 35);
   const [minutes, setMinutes] = useState(camera.obstruction_minutes ?? 2);
 
@@ -97,6 +109,17 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
       points: zoneSpec ? scale(zoneSpec.points) : [],
       legacyKerbs,
     });
+
+    const disposalZone = Object.values(camera.disposal_edges || {}).find(
+      (spec) => spec && spec.type === "zone" && Array.isArray(spec.points) && spec.points.length >= 3,
+    );
+    const dW = camera.disposal_edges_width, dH = camera.disposal_edges_height;
+    setDisposalPrefill(disposalZone
+      ? disposalZone.points.map(([x, y]) => ({
+        x: x * (dW ? nextFrame.width / dW : 1),
+        y: y * (dH ? nextFrame.height / dH : 1),
+      }))
+      : []);
   };
 
   // Try a live snapshot first; fall back to "upload a clip" if the camera
@@ -205,28 +228,54 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
     try { await cancelCameraZoneTrace(camera.dbId); } catch { /* the poll reports the outcome */ }
   };
 
+  // Only the area(s) actually changed are sent, so saving a disposal edit does
+  // not restart parking (and vice versa) — the server swaps one process per
+  // area that arrives.
+  const parkingDirty = JSON.stringify(edgeSpec) !== parkingInitial
+    || Number(pct) !== Number(camera.obstruction_pct ?? 35)
+    || Number(minutes) !== Number(camera.obstruction_minutes ?? 2);
+  const disposalDirty = JSON.stringify(disposalSpec) !== disposalInitial;
+  const savable = (parkingDirty || disposalDirty) && (!parkingDirty || canSave);
+
   const handleSave = async () => {
-    if (!canSave || !frame) return;
+    if (!savable || !frame) return;
     setSaving(true);
     setSaveError("");
     try {
-      const updated = await updateCamera(camera.dbId, {
-        edges: edgeSpec,
-        edges_width: frame.width,
-        edges_height: frame.height,
-        obstruction_pct: Number(pct),
-        obstruction_minutes: Number(minutes),
-      });
+      const body = {};
+      if (parkingDirty) {
+        Object.assign(body, {
+          edges: edgeSpec,
+          edges_width: frame.width,
+          edges_height: frame.height,
+          obstruction_pct: Number(pct),
+          obstruction_minutes: Number(minutes),
+        });
+      }
+      if (disposalDirty) {
+        Object.assign(body, {
+          disposal_edges: disposalSpec,
+          disposal_edges_width: frame.width,
+          disposal_edges_height: frame.height,
+        });
+      }
+      const updated = await updateCamera(camera.dbId, body);
       onSaved?.(updated);
-      // Parking reads its zone once at start; the server swaps only the parking
+      // Each detector reads its area once at start; the server swaps only that
       // process when monitoring is running (CameraViewSet.update). Say so
       // instead of closing, so the admin knows the new zone is being applied.
-      const note = {
-        restarting: "Saved. Parking is restarting to use the new zone — the other detectors keep running.",
-        started: "Saved. Parking is starting now that the camera has a zone.",
-        stopped: "Saved. The zone was cleared, so parking is switched off.",
-      }[updated?.zone_applied];
-      if (note) setApplyNote(note);
+      const notes = [
+        {
+          restarting: "Parking is restarting to use the new zone — the other detectors keep running.",
+          started: "Parking is starting now that the camera has a zone.",
+          stopped: "The zone was cleared, so parking is switched off.",
+        }[updated?.zone_applied],
+        {
+          restarting: "Improper disposal is restarting to use its new area.",
+          started: "Improper disposal is starting with its new area.",
+        }[updated?.disposal_zone_applied],
+      ].filter(Boolean);
+      if (notes.length) setApplyNote(`Saved. ${notes.join(" ")}`);
       else onClose();
     } catch (err) {
       setSaveError(err.message || "Could not save.");
@@ -250,7 +299,7 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
           style={{ borderBottom: "1px solid var(--border)" }}>
           <div>
             <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>
-              Road-edge obstruction zones
+              Edge zones
             </div>
             <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>
               {camera.name} ({camera.id})
@@ -335,6 +384,20 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
                   trace the road below and save to replace them.
                 </div>
               )}
+              <div className="flex gap-1.5">
+                {[["parking", "Parking (no-parking road)"], ["disposal", "Improper disposal"]].map(([key, text]) => (
+                  <button key={key} onClick={() => setTab(key)}
+                    className="px-3 py-1.5 rounded-xl text-[13px] font-medium"
+                    style={{
+                      background: tab === key ? "var(--foreground)" : "var(--secondary)",
+                      color: tab === key ? "var(--card)" : "var(--muted-foreground)",
+                      border: "1px solid var(--border)",
+                    }}>
+                    {text}
+                  </button>
+                ))}
+              </div>
+              <div className={tab === "parking" ? "space-y-3.5" : "hidden"}>
               <div className="flex items-center gap-2 flex-wrap">
                 <button
                   onClick={handleTrace}
@@ -388,10 +451,41 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
                 minutes={minutes}
                 onMinutesChange={setMinutes}
                 onChange={(spec, can) => {
+                  setParkingInitial((prev) => prev ?? JSON.stringify(spec));
                   setEdgeSpec(spec); setCanSave(can);
                   setEdgePoints(spec.road?.points?.length ?? 0);
                 }}
               />
+              </div>
+
+              <div className={tab === "disposal" ? "space-y-3.5" : "hidden"}>
+                <div className="flex items-start gap-2 text-[13px] px-3 py-2.5 rounded-xl"
+                  style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--muted-foreground)" }}>
+                  <Info size={13} className="flex-shrink-0 mt-0.5" />
+                  <span>
+                    Optional, and separate from the parking road zone. Draw it over where
+                    rubbish is dumped (footpath, kerb, corner). Leave it empty to watch the whole frame.
+                  </span>
+                </div>
+                <EdgeCanvas
+                  frame={frame}
+                  initialPoints={disposalPrefill}
+                  showThresholds={false}
+                  label="DISPOSAL AREA"
+                  colour="#22c55e"
+                  hint="Click around the ground where abandoned rubbish should be reported. A bag counts when it rests inside, judged by the point where it meets the ground."
+                  onChange={(spec) => {
+                    setDisposalInitial((prev) => prev ?? JSON.stringify(spec));
+                    setDisposalSpec(spec);
+                    setDisposalPoints(spec.road?.points?.length ?? 0);
+                  }}
+                />
+                {disposalPoints === 0 && (
+                  <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>
+                    No area drawn — the whole frame is watched.
+                  </div>
+                )}
+              </div>
 
               {saveError && (
                 <div className="flex items-start gap-2 text-[14px] px-3 py-2.5 rounded-xl"
@@ -414,14 +508,14 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
             </button>
           )}
           <button
-            disabled={!canSave || saving || !!applyNote}
+            disabled={!savable || saving || !!applyNote}
             onClick={handleSave}
             className="flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-medium"
             style={{
               background: "#f59e0b",
               color: "#0c0f16",
-              cursor: (!canSave || saving) ? "not-allowed" : "pointer",
-              opacity: (!canSave || saving) ? 0.5 : 1,
+              cursor: (!savable || saving) ? "not-allowed" : "pointer",
+              opacity: (!savable || saving) ? 0.5 : 1,
             }}
           >
             {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}

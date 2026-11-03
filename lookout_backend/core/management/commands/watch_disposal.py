@@ -920,9 +920,10 @@ class Command(BaseCommand):
         existed. So an unusable or missing one is a warning, never a refusal:
         the detector still works, it just works everywhere.
 
-        Two sources, same order and same stored shape as watch_parking:
-        the camera record written by the dashboard's Edge Zones editor (pixels
-        plus the frame size they were drawn at), then a draw_zone file.
+        Two sources: the camera's own disposal area, written by the dashboard's
+        Edge Zones editor (pixels plus the frame size they were drawn at), then
+        a draw_zone file. It is NOT parking's no-parking polygon -- that covers
+        the carriageway, and rubbish lies beside it.
         """
         requested = options.get("zone") or ""
         if not requested:
@@ -953,18 +954,18 @@ class Command(BaseCommand):
     def _area_points_from_camera(self):
         """The camera's drawn polygon as normalised (0-1) points, or None.
 
-        Reads the same "zone" spec parking does, so one area drawn in Edge
-        Zones serves both rules rather than asking an operator to trace the
-        same patch of road twice. Older kerb-line edges (open paths, no "type")
-        are not closed shapes and read as "no area".
+        Reads Camera.disposal_edges only. It used to share parking's `edges`,
+        which silently confined disposal to the road the moment a no-parking
+        zone (or a traced one) was saved.
         """
-        stored = self.camera.edges or {}
+        stored = self.camera.disposal_edges or {}
         spec = next((s for s in stored.values()
                      if isinstance(s, dict) and s.get("type") == "zone"
                      and len(s.get("points") or []) >= 3), None)
         if spec is None:
             return None
-        width, height = self.camera.edges_width, self.camera.edges_height
+        width = self.camera.disposal_edges_width
+        height = self.camera.disposal_edges_height
         if not (width and height):
             self.stdout.write(self.style.WARNING(
                 f"{self.camera.code} has a saved area but no record of the frame size "

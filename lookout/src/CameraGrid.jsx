@@ -4,6 +4,7 @@ import { getAlerts, getCameras, getCameraSnapshotUrl, getDetectionJobs, cancelDe
 import { UploadDetectionModal } from "./UploadDetectionModal";
 import { DetectionJobHistoryModal } from "./DetectionJobHistoryModal";
 import { useTestingTools } from "./useTestingTools";
+import { LiveMonitor } from "./LiveMonitor";
 import { EdgeEditorModal } from "./EdgeEditorModal";
 import { CameraStreamModal } from "./CameraStreamModal";
 import { detectionLabel } from "./constants/detectionTypes";
@@ -90,6 +91,10 @@ function mapCamera(raw) {
     edges_height: raw.edges_height,
     obstruction_pct: raw.obstruction_pct,
     obstruction_minutes: raw.obstruction_minutes,
+    // Improper disposal's own watch area (separate from the parking zone).
+    disposal_edges: raw.disposal_edges,
+    disposal_edges_width: raw.disposal_edges_width,
+    disposal_edges_height: raw.disposal_edges_height,
   };
 }
 
@@ -665,28 +670,6 @@ export function CameraGrid({ compact = false, isAdmin: isAdminRole = false }) {
         </div>
 
         <div className="flex items-center gap-2">
-          {testingTools && (
-            <button
-              onClick={() => setShowUpload(true)}
-              className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[14px] transition-colors"
-              style={{ border: "1px solid var(--border)", background: "var(--card)", color: "var(--foreground)" }}
-            >
-              <Upload size={14} />
-              <span>Upload Video</span>
-            </button>
-          )}
-
-          {testingTools && (
-            <button
-              onClick={() => setShowHistory(true)}
-              className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[14px] transition-colors"
-              style={{ border: "1px solid var(--border)", background: "var(--card)", color: "var(--foreground)" }}
-            >
-              <History size={14} />
-              <span>History</span>
-            </button>
-          )}
-
           <div className="relative" ref={menuRef}>
           <button
             onClick={() => setMenuOpen((o) => !o)}
@@ -755,6 +738,31 @@ export function CameraGrid({ compact = false, isAdmin: isAdminRole = false }) {
           );
         })}
       </div>
+
+      {isAdmin && (
+        <LiveMonitor
+          actions={testingTools ? (
+            <>
+              <button
+                onClick={() => setShowUpload(true)}
+                className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[14px] transition-colors"
+                style={{ border: "1px solid var(--border)", background: "var(--card)", color: "var(--foreground)" }}
+              >
+                <Upload size={14} />
+                <span>Upload Video</span>
+              </button>
+              <button
+                onClick={() => setShowHistory(true)}
+                className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[14px] transition-colors"
+                style={{ border: "1px solid var(--border)", background: "var(--card)", color: "var(--foreground)" }}
+              >
+                <History size={14} />
+                <span>History</span>
+              </button>
+            </>
+          ) : null}
+        />
+      )}
 
       {expanded && (
         <ExpandedCamera cam={expanded} alert={getAlert(expanded.id)} onClose={() => setExpanded(null)}

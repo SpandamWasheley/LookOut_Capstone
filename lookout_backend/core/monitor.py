@@ -162,21 +162,51 @@ class LiveMonitor:
         except Exception:                                   # noqa: BLE001
             pass     # bookkeeping must never stop the relaunch that follows
 
+    def apply_disposal_zone(self, camera):
+        """Make a just-saved improper-disposal area take effect. -> outcome string.
+
+        The same swap apply_zone does for parking, on the disposal process:
+        watch_disposal reads the camera's area once at start, and only that
+        process is replaced so the other detectors keep running. Outcomes match
+        apply_zone's, except a cleared area does not stop disposal -- no area
+        means "watch the whole frame", so it is relaunched ("restarting").
+        """
+        from core.models import SystemSettings
+        with self._lock:
+            if not self._want or not self._procs:
+                return "not_running"
+            old = self._procs.pop("disposal", None)
+            had_old = old is not None
+        ready = SystemSettings.load().disposal_enabled and bool(camera.resolved_stream_url)
+        if not ready:
+            self._swap_thread = threading.Thread(
+                target=self._retire if old is not None else (lambda *_: None),
+                args=(old,), daemon=True, name="disposal-retire")
+            self._swap_thread.start()
+            return "stopped" if had_old else "not_running"
+        self._swap_thread = threading.Thread(target=self._swap, args=("disposal", camera, old),
+                                             daemon=True, name="disposal-swap")
+        self._swap_thread.start()
+        return "restarting" if had_old else "started"
+
     def _swap_parking(self, camera, old):
+        self._swap("parking", camera, old)
+
+    def _swap(self, name, camera, old):
         from core.models import DetectionJob
         if old is not None:
             self._retire(old)
         with self._lock:
             if not self._want:
                 return
-        proc, job_id = self._spawn("parking", camera)
+        proc, job_id = self._spawn(name, camera)
         with self._lock:
             if not self._want:
                 self._kill(proc)
                 DetectionJob.objects.filter(pk=job_id).update(
                     status=DetectionJob.Status.CANCELLED, finished_at=timezone.now())
                 return
-            self._procs["parking"] = proc
+            self._procs[name] = proc
             self._job_ids.append(job_id)
 
     @staticmethod

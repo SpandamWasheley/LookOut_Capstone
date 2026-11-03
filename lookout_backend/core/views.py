@@ -689,12 +689,14 @@ class CameraViewSet(viewsets.ModelViewSet):
     def update(self, request, *args, **kwargs):
         """Saving a changed zone also applies it to the running live monitor."""
         response = super().update(request, *args, **kwargs)
-        if "edges" in request.data and response.status_code == 200:
+        if response.status_code == 200 and getattr(django_settings, "DETECTION_ENABLED", True):
             camera = self.get_object()
-            if getattr(django_settings, "DETECTION_ENABLED", True):
-                from core.monitor import CAMERA_CODE, monitor
-                if camera.code == CAMERA_CODE:
+            from core.monitor import CAMERA_CODE, monitor
+            if camera.code == CAMERA_CODE:
+                if "edges" in request.data:
                     response.data["zone_applied"] = monitor.apply_zone(camera)
+                if "disposal_edges" in request.data:
+                    response.data["disposal_zone_applied"] = monitor.apply_disposal_zone(camera)
         return response
 
     @action(detail=True, methods=["post"], url_path="edge-frame",

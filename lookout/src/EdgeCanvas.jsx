@@ -89,6 +89,12 @@ export function EdgeCanvas({
   // containment test — showing "Inside the road %" next to a garbage area
   // would offer a dial that changes nothing.
   showThresholds = true,
+  // Defaults describe parking's road zone. A detector with its own area
+  // (improper disposal) passes its own wording and colour, so the operator is
+  // never told to trace a road when they are marking where rubbish is watched.
+  label = "ROAD ZONE",
+  colour = ZONE_COLOUR,
+  hint = null,
 }) {
   const [points, setPoints] = useState(() => initialPoints ?? []);
 
@@ -103,7 +109,7 @@ export function EdgeCanvas({
     canvas.height = frame.height;
     const ctx = canvas.getContext("2d");
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-    drawZone(ctx, points, ZONE_COLOUR);
+    drawZone(ctx, points, colour);
   }
 
   // Loads the frame image once per `frame.src`, then redraws.
@@ -145,14 +151,22 @@ export function EdgeCanvas({
       <div className="rounded-xl p-3" style={{ background: "rgba(11,84,113,0.06)", border: "1px solid rgba(11,84,113,0.2)" }}>
         <span className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>
           Tracing the{" "}
-          <span className="font-semibold" style={{ color: ZONE_COLOUR }}>ROAD ZONE</span>
-          {" "}— {count} point{count === 1 ? "" : "s"}. Click around the edge of the road to enclose it;
-          any vehicle standing inside counts as an obstruction.
-          {" "}{count >= ZONE_MIN_POINTS
-            ? "The shape closes automatically — add more points where the road bends."
-            : `At least ${ZONE_MIN_POINTS} points needed.`}
-          {" "}Follow the road as it narrows into the distance rather than drawing a rectangle — a camera
-          sees the carriageway as a trapezium, not a box.
+          <span className="font-semibold" style={{ color: colour }}>{label}</span>
+          {" "}— {count} point{count === 1 ? "" : "s"}.{" "}
+          {hint ?? (
+            <>
+              Click around the edge of the road to enclose it;
+              any vehicle standing inside counts as an obstruction.
+              {" "}{count >= ZONE_MIN_POINTS
+                ? "The shape closes automatically — add more points where the road bends."
+                : `At least ${ZONE_MIN_POINTS} points needed.`}
+              {" "}Follow the road as it narrows into the distance rather than drawing a rectangle — a camera
+              sees the carriageway as a trapezium, not a box.
+            </>
+          )}
+          {hint && (count >= ZONE_MIN_POINTS
+            ? " The shape closes automatically."
+            : ` At least ${ZONE_MIN_POINTS} points needed.`)}
         </span>
       </div>
 
