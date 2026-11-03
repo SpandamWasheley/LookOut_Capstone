@@ -40,12 +40,28 @@ function mapDispatcher(raw) {
   };
 }
 
-const formatPhone = (raw) => {
-  const d = raw.replace(/\D/g, "").slice(0, 11);
-  if (d.length <= 4) return d;
-  if (d.length <= 7) return `${d.slice(0, 4)}-${d.slice(4)}`;
-  return `${d.slice(0, 4)}-${d.slice(4, 7)}-${d.slice(7)}`;
+// Philippine mobile numbers, normalized to the 10 national digits (917 123 4567).
+// The three ways an operator writes the same number — 0917…, +63917…, 63917… —
+// all reduce to that, so the field accepts a pasted number in any of them and
+// still displays one format. The trunk 0 is dropped before the 63 so a pasted
+// "0063…" normalizes too.
+const toNationalPhone = (raw) => {
+  let d = String(raw).replace(/\D/g, "");
+  d = d.replace(/^0+/, "");                 // the trunk 0, or the 00 of an IDD prefix
+  if (d.startsWith("63")) d = d.slice(2);   // country code
+  return d.slice(0, 10);
 };
+
+// "+63 917 123 4567". Grows as it is typed: the +63 appears with the first
+// digit, so the shape of what's wanted is visible before the number is whole.
+const formatPhone = (raw) => {
+  const d = toNationalPhone(raw);
+  if (!d) return "";
+  return `+63 ${[d.slice(0, 3), d.slice(3, 6), d.slice(6, 10)].filter(Boolean).join(" ")}`;
+};
+
+// Every PH mobile prefix is 9xx, and the national number is exactly 10 digits.
+const isValidPhone = (raw) => /^9\d{9}$/.test(toNationalPhone(raw));
 const blockNumbers = (v) => v.replace(/[0-9]/g, "");
 
 function generateUsername(firstName, lastName) {
@@ -117,7 +133,12 @@ function AddAccountModal({ role, onAdd, onClose }) {
 
   const isValidEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim());
 
-  const step1Valid = form.firstName.trim() && form.lastName.trim() && form.username.trim() && (!cfg.requirePhone || form.phone.trim());
+  // Shown only once something has been typed — an empty required field is
+  // already reported by the disabled Next button, and flagging it as "invalid"
+  // the moment the modal opens would be scolding the operator for not starting.
+  const phoneInvalid = cfg.requirePhone && form.phone.trim() !== "" && !isValidPhone(form.phone);
+
+  const step1Valid = form.firstName.trim() && form.lastName.trim() && form.username.trim() && (!cfg.requirePhone || isValidPhone(form.phone));
   const step2Valid = form.emailVerified;
   const step3Valid = form.password.trim().length >= 8;
 
@@ -259,9 +280,21 @@ function AddAccountModal({ role, onAdd, onClose }) {
               {cfg.requirePhone && (
                 <div>
                   <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>Phone *</label>
-                  <input value={form.phone} onChange={(e) => set("phone", formatPhone(e.target.value))} placeholder="0951-853-2146"
+                  <input value={form.phone} onChange={(e) => set("phone", formatPhone(e.target.value))} placeholder="+63 917 123 4567"
+                    inputMode="tel" autoComplete="tel" aria-invalid={phoneInvalid}
+                    aria-describedby={phoneInvalid ? "officer-phone-error" : undefined}
                     className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
-                    style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
+                    style={{
+                      background: "var(--secondary)",
+                      border: `1px solid ${phoneInvalid ? "rgba(239,68,68,0.4)" : "var(--border)"}`,
+                      color: "var(--foreground)",
+                    }} />
+                  {phoneInvalid && (
+                    <p id="officer-phone-error" className="flex items-center gap-1.5 text-[13px] mt-1.5" style={{ color: "#ef4444" }}>
+                      <AlertTriangle size={11} className="flex-shrink-0" />
+                      Enter a mobile number as +63 917 123 4567.
+                    </p>
+                  )}
                 </div>
               )}
             </>

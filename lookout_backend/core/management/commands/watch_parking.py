@@ -227,7 +227,14 @@ class Command(BaseCommand):
         self.far = not options["fast"]
         self.preprocess = options["preprocess"]
         self.sharpen = options["sharpen"]
-        self.tracker_name = f"{options['tracker']}.yaml"
+        # Our own config when one exists for the chosen tracker, else
+        # ultralytics' stock file by bare name. Parking watches a fixed camera
+        # for vehicles that are not moving, which wants a far longer lost-track
+        # buffer than the general-purpose default — see the yaml.
+        local_tracker = (settings.BASE_DIR / "core" / "vision" / "trackers"
+                         / f"{options['tracker']}.yaml")
+        self.tracker_name = (str(local_tracker) if local_tracker.is_file()
+                             else f"{options['tracker']}.yaml")
 
         # The zone is the ONLY rule this command runs. There used to be two
         # others — a plain dwell timer ("parked in frame at all for 60s") and
@@ -708,21 +715,28 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS("Stopped."))
 
     def _schedule_clip(self, alert, video_name, now):
-        """Defer the annotated clip if this run drains; otherwise save it now.
+        """Queue a SECOND save of the annotated clip, once its post-roll plays.
 
-        The immediate path is the OLD behaviour, pre-roll only — correct for a
-        caller that never drains, and far better than scheduling a clip nobody
-        will ever write.
+        The first save already happened in _create_alert, before the row was
+        written — that one is the guarantee: every alert has both an annotated
+        and a raw clip from the instant it exists, so the player always offers
+        the pair, and a run cancelled a second later still leaves usable
+        evidence. Deferring the only save meant a window with no annotated
+        clip at all, and a STOPPED run never wrote one, because SIGTERM ends
+        the process before the flush in `finally` can run.
+
+        This one is the improvement, not the evidence: by the time it fires
+        the recorder holds the detection with `post_seconds` of footage after
+        it, so the clip is centred on the violation instead of ending on it.
+        _drain_pending overwrites video_url with that better copy. Losing it
+        costs centring, never the clip.
         """
-        path = self.violations_dir / video_name
-        when = now if now is not None else time.time()
         if self.pending is None:
-            if self.clip.save(path):
-                Alert.objects.filter(pk=alert.pk).update(
-                    video_url=violation_media_path(video_name))
             return
-        self.pending.schedule(alert.pk, self.clip, path, when,
-                              recognition.RAW_CLIP_POST_SECONDS)
+        self.pending.schedule(
+            alert.pk, self.clip, self.violations_dir / video_name,
+            now if now is not None else time.time(),
+            recognition.RAW_CLIP_POST_SECONDS)
 
     def _drain_pending(self, now, final=False):
         """Write any annotated clips whose post-roll has played, onto their rows.
@@ -737,9 +751,14 @@ class Command(BaseCommand):
         for alert_pk, path, offset in (
                 self.pending.flush(now) if final else self.pending.due(now)):
             fields = {"video_url": violation_media_path(path.name)}
-            # Only for a LIVE run. On a file the raw clip is cut from the source
-            # and carries the truer offset; overwriting it with the annotated
-            # clip's would mark the wrong clip's moment.
+            # The ANNOTATED clip's own offset. It has its own field because the
+            # two clips are different lengths — writing this into clip_offset
+            # would mark the raw clip at the wrong frame.
+            if offset is not None:
+                fields["annotated_offset"] = offset
+            # clip_offset belongs to the raw clip, which on a FILE run is cut
+            # from the source and already carries the truer number. Only a live
+            # run, whose "raw" clip is this same rolling buffer, shares it.
             if offset is not None and self._source_path is None:
                 fields["clip_offset"] = offset
             Alert.objects.filter(pk=alert_pk).update(**fields)
@@ -837,9 +856,19 @@ class Command(BaseCommand):
                 {"name": "stopped" if state.stationary else "moving",
                  "points": int(round(state.score / max(self.zone.alert_score, 1e-6) * 100))},
             ]
+            # Says out loud that a handover happened, so "the timer restarted"
+            # and "the tracker renumbered it and the seconds carried over" stop
+            # looking identical on screen.
+            if state.inherited_from is not None:
+                indicators.append({"name": f"inherited from #{state.inherited_from}",
+                                   "points": int(round(state.inherited_seconds))})
             self.debug_pub.note(
-                key=("parking", state.track_id), violation="parking",
-                ident=state.track_id, box=state.box, status=status, score_pct=pct,
+                # display_id, not track_id: a vehicle that came back under a
+                # new tracker id is the SAME subject and must not appear as a
+                # second one starting from zero. Keyed on it too, or the view
+                # would hold both the dead id and the live one.
+                key=("parking", state.display_id), violation="parking",
+                ident=state.display_id, box=state.box, status=status, score_pct=pct,
                 indicators=indicators, multipliers={}, momentum=round(state.score, 1),
                 kind="vehicle",
             )
@@ -857,7 +886,7 @@ class Command(BaseCommand):
         # Panel view filters it out — so an operator still sees only what is
         # being judged, while the Testing view shows what was seen and passed
         # over. Which is the difference between "not watched" and "not found".
-        watched = {st.track_id for st in self.zone.states.values()}
+        watched = {st.display_id for st in self.zone.states.values()}
         for tid, box, label, conf in dets:
             if tid is None or tid in watched:
                 continue
@@ -899,9 +928,22 @@ class Command(BaseCommand):
         video_name = f"{ts_label}_parking_{tag}.mp4"
         # Empty on the row at first: _drain_pending fills it in once the
         # post-roll has played and the clip actually exists.
+        # Saved BEFORE the row is written, so the row never exists without
+        # its annotated clip even for an instant. It is saved again later,
+        # centred on the detection — see _schedule_clip.
         video_url = ""
+        annotated_offset = None
+        clip_path = self.violations_dir / video_name
         if self.clip is not None:
             self.clip.add(frame, now if now is not None else time.time())
+            if self.clip.save(clip_path):
+                video_url = violation_media_path(video_name)
+                # This first copy is pre-roll only, so the detection is its
+                # LAST frame. Recorded rather than left null: the marker then
+                # sits at the end, which is the truth and explains why there
+                # is no aftermath to watch. _drain_pending moves it once the
+                # centred copy replaces this one.
+                annotated_offset = self.clip.span()
 
         # RAW (unannotated, full source frame rate/resolution) clip. File
         # sources cut straight from the source file (best quality, real fps);
@@ -949,6 +991,7 @@ class Command(BaseCommand):
             video_url=video_url,
             raw_video_url=raw_video_url,
             clip_offset=clip_offset,
+            annotated_offset=annotated_offset,
             suspect=label,
         )
         # Filled in by _drain_pending once the post-roll has played. A raw clip

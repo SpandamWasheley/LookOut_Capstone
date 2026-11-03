@@ -451,9 +451,13 @@ export const cancelCameraZoneTrace = (id) =>
 // and the caller owns showing that. A 422 means the clip was readable but had
 // no traffic to trace from; err.data.detail is a sentence to show the operator,
 // not a status code to translate.
-export const traceZoneFromStaged = (stagedToken) => {
+export const traceZoneFromStaged = (stagedToken, kind = "zone") => {
   const formData = new FormData();
   formData.append("staged_token", stagedToken);
+  // Which area is wanted. Parking's is the carriageway (a tight hull);
+  // disposal's is where rubbish gets left, which is off the carriageway, so
+  // the server grows the same hull well past the road's edges.
+  formData.append("kind", kind);
   return apiUpload("/detection-jobs/trace-zone/", formData);
 };
 
@@ -551,16 +555,23 @@ export const startStagedDetectionJob = (
     formData.append("edges", JSON.stringify(edges));
     formData.append("edges_width", edgesWidth);
     formData.append("edges_height", edgesHeight);
-    // Only when they exist. FormData.append stringifies undefined to the
-    // literal "undefined", which the server then reads as a present value and
-    // tries to parse as a number — disposal draws an area but has no
-    // thresholds, so appending these unconditionally sent it "undefined".
-    if (obstructionPct !== undefined && obstructionPct !== null) {
-      formData.append("obstruction_pct", obstructionPct);
-    }
-    if (obstructionMinutes !== undefined && obstructionMinutes !== null) {
-      formData.append("obstruction_minutes", obstructionMinutes);
-    }
+  }
+  // OUTSIDE the `edges` block, and that is the whole point: parking's
+  // thresholds are its RULE ("how much of the vehicle", "for how long"), not
+  // a property of a polygon. They were nested inside it, so once parking
+  // started tracing its own area and operators stopped drawing one, the two
+  // boxes silently stopped being sent at all and every run used whatever was
+  // last stored on the camera. The form said five minutes and the detector
+  // used thirty seconds.
+  //
+  // Still guarded individually: FormData.append stringifies undefined to the
+  // literal "undefined", which the server reads as a present value and tries
+  // to parse as a number — disposal has an area but no thresholds.
+  if (obstructionPct !== undefined && obstructionPct !== null) {
+    formData.append("obstruction_pct", obstructionPct);
+  }
+  if (obstructionMinutes !== undefined && obstructionMinutes !== null) {
+    formData.append("obstruction_minutes", obstructionMinutes);
   }
   return apiUpload("/detection-jobs/", formData);
 };

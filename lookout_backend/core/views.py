@@ -1133,6 +1133,10 @@ DETECTION_COMMANDS = {
     # violation class at all (dual background subtraction + a zero-shot bag
     # check), so it has nothing to share a model forward pass with.
     "disposal": "watch_disposal",
+    # Every violation in scope, over one clip. NOT a wider merged pass -- see
+    # DETECTION_COMPANIONS: it is watch_merged_all plus watch_disposal, run
+    # side by side, which is what "all five" actually costs.
+    "everything": "watch_merged_all",
 }
 # Detectors that judge vehicles against a marked no-parking area. Two tiers,
 # because the two mean different things to a caller:
@@ -1173,7 +1177,24 @@ EDGE_REQUIRED = frozenset()
 # unioned with. The moment that set emptied, merged4 fell out of CAPABLE too --
 # and a merged4 run with an area drawn would have had it silently dropped on
 # the way to the detector.
-EDGE_CAPABLE = frozenset({"parking", "disposal", "merged4"})
+EDGE_CAPABLE = frozenset({"parking", "disposal", "merged4", "everything"})
+# Detectors launched ALONGSIDE the primary one, as their own processes.
+#
+# "Merged" means one shared YOLO pass over merged_v2.pt, routed to four rule
+# layers. Disposal cannot join that: it runs no trained violation class at all
+# (dual background subtraction, then a zero-shot crop check), so there is
+# nothing for it to share and adding it to the merged command would buy only
+# the appearance of one detector. core/monitor.py already runs it as its own
+# process for the live camera; this is the same arrangement for an upload.
+#
+# A companion runs HEADLESS: the live processing view is one directory per job
+# (monitor.job_dir), so a second publisher would overwrite the first's frames
+# and subjects. The page therefore shows the merged four tracking, while
+# disposal files its alerts without appearing there.
+DETECTION_COMPANIONS = {
+    "everything": ("watch_disposal",),
+}
+
 DETECTION_UPLOAD_EXTENSIONS = {".mp4", ".mkv", ".avi"}
 DETECTION_MAX_UPLOAD_BYTES = 1024 * 1024 * 1024  # 1GB
 
@@ -1243,13 +1264,23 @@ def _tail_log(path, max_chars=4000):
         return ""
 
 
-def _watch_detection_job(job_id, proc, log_path, source_path):
+def _watch_detection_job(job_id, proc, log_path, source_path, extras=()):
     """Runs in a daemon thread per launched job — blocks on the subprocess's
     exit code (liveness alone can't tell success from failure) and updates the
     DB row once it's known. No task queue: this assumes a single long-lived
     `runserver` process, which is what this project actually runs; it wouldn't
     generalise to a multi-worker WSGI deployment without a real queue."""
     returncode = proc.wait()
+    # Companions have to finish before the row is closed and the clip deleted:
+    # disposal commonly outlives the merged pass (it holds pinned candidates
+    # and defers its evidence clips), and removing the source out from under a
+    # still-running detector loses whatever it had not written yet.
+    for extra in extras:
+        try:
+            if extra.wait() != 0:
+                returncode = returncode or extra.returncode
+        except Exception:                                       # noqa: BLE001
+            pass
     job = DetectionJob.objects.filter(id=job_id).first()
     if job is None:
         return
@@ -1755,9 +1786,20 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
             return recognition.detect_vehicles(
                 frame, imgsz=autodetect.TRACE_IMGSZ)
 
+        # WHICH area is being traced, because the two want very different
+        # shapes from the same point cloud. Parking's is the carriageway, so a
+        # tight hull is right. Disposal's is where rubbish gets LEFT — off the
+        # carriageway by definition — so the same hull is grown well past the
+        # road's edges. Tracing a tight shape into a canvas that means "watch
+        # here for rubbish" would hand the operator the one area nobody dumps
+        # on, and it would look plausible.
+        kind = request.data.get("kind") or "zone"
+        pad = (autodetect.DISPOSAL_PAD_FRACTION if kind == "disposal"
+               else autodetect.PAD_FRACTION)
         try:
             points, report, preview = autodetect.trace_clip(
-                source, detect, max_samples=autodetect.WEB_MAX_SAMPLES)
+                source, detect, max_samples=autodetect.WEB_MAX_SAMPLES,
+                pad_fraction=pad)
         except Exception as exc:                                # noqa: BLE001
             logger.exception("Zone auto-trace failed")
             return Response({"detail": f"Could not trace a zone: {exc}"}, status=500)
@@ -1779,6 +1821,7 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
 
         height, width = preview.shape[:2]
         return Response({
+            "kind": kind,
             "points": [[round(x, 1), round(y, 1)] for x, y in points],
             # The resolution the points are in, so a caller drawing them over a
             # frame it obtained separately can check the two agree rather than
@@ -2063,14 +2106,36 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
                 job.save(update_fields=["status", "finished_at"])
                 raise
             job.pid = proc.pid
-            job.save(update_fields=["pid"])
+
+            # Companions, each its own process on the same source. Deliberately
+            # WITHOUT LOOKOUT_DEBUG_DIR: see DETECTION_COMPANIONS.
+            extras = []
+            companion_env = {k: v for k, v in env.items() if k != "LOOKOUT_DEBUG_DIR"}
+            for companion in DETECTION_COMPANIONS.get(violation_type, ()):
+                try:
+                    extra = subprocess.Popen(
+                        [sys.executable, "manage.py", companion,
+                         "--source", source_arg, "--camera", camera_code],
+                        cwd=str(django_settings.BASE_DIR),
+                        stdout=log_file, stderr=subprocess.STDOUT,
+                        env=companion_env,
+                    )
+                except OSError:
+                    # The primary is already running and will still produce
+                    # alerts. Losing a companion narrows the run; failing the
+                    # whole thing would throw away the part that works.
+                    logger.exception("Could not launch companion %s", companion)
+                    continue
+                extras.append(extra)
+            job.extra_pids = [e.pid for e in extras]
+            job.save(update_fields=["pid", "extra_pids"])
         finally:
             # The child inherits its own duplicated handle — safe to close ours.
             log_file.close()
 
         threading.Thread(
             target=_watch_detection_job,
-            args=(job.id, proc, log_path, source_arg),
+            args=(job.id, proc, log_path, source_arg, extras),
             daemon=True,
         ).start()
 
@@ -2113,6 +2178,14 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
         job.finished_at = timezone.now()
         job.save(update_fields=["status", "finished_at"])
 
+        for extra_pid in (job.extra_pids or []):
+            # Before the primary, and failures ignored: a companion left alive
+            # would go on writing alerts against a job the operator has just
+            # stopped, and one that has already exited is not an error.
+            try:
+                psutil.Process(extra_pid).terminate()
+            except Exception:                                   # noqa: BLE001
+                pass
         if job.pid:
             try:
                 proc = psutil.Process(job.pid)

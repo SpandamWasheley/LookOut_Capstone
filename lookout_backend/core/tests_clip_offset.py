@@ -117,11 +117,14 @@ class ClipOffsetMarkerTests(TestCase):
         return (pathlib.Path(settings.BASE_DIR).parent / "lookout" / "src"
                 / "ViolationModal.jsx").read_text(encoding="utf-8")
 
-    def test_the_marker_is_only_drawn_on_the_raw_clip(self):
-        """The annotated clip is a pre-roll buffer — its detection is the last
-        frame, so a marker there says nothing a viewer cannot see."""
+    def test_the_marker_follows_whichever_clip_is_showing(self):
+        """It used to be raw-only, because the annotated clip was a pre-roll
+        buffer whose detection was its last frame. Deferring that clip's save
+        put the moment in its middle, and the marker has to follow — each clip
+        carries its own offset, since they are different lengths."""
         source = self._player()
-        self.assertIn("showingRaw && alert.clipOffset != null", source)
+        self.assertIn("showingRaw ? alert.clipOffset : alert.annotatedOffset",
+                      source)
 
     def test_the_bar_can_be_dragged_not_just_clicked(self):
         source = self._player()
@@ -140,3 +143,82 @@ class ClipOffsetMarkerTests(TestCase):
         model = (pathlib.Path(settings.BASE_DIR).parent / "lookout" / "src"
                  / "alertModel.js").read_text(encoding="utf-8")
         self.assertIn("clipOffset: raw.clip_offset", model)
+
+
+class AnnotatedOffsetTests(TestCase):
+    """The annotated clip carries its own detection point.
+
+    It has to be a second field. The two clips are different lengths — the raw
+    one is cut from the source with a fixed lead-in, the annotated one is
+    whatever the rolling buffer held — so marking the raw clip's moment on the
+    annotated one points at the wrong frame.
+    """
+
+    def test_the_field_exists_and_is_optional(self):
+        field = Alert._meta.get_field("annotated_offset")
+        self.assertTrue(field.null)
+        self.assertTrue(field.blank)
+
+    def test_it_is_separate_from_the_raw_clip_s_offset(self):
+        self.assertIsNotNone(Alert._meta.get_field("clip_offset"))
+        self.assertIsNotNone(Alert._meta.get_field("annotated_offset"))
+
+    def test_the_serializer_publishes_it(self):
+        from core.serializers import AlertSerializer
+        self.assertIn("annotated_offset", AlertSerializer.Meta.fields)
+
+    def test_it_reaches_the_browser_model(self):
+        import pathlib
+        from django.conf import settings
+        model = (pathlib.Path(settings.BASE_DIR).parent / "lookout" / "src"
+                 / "alertModel.js").read_text(encoding="utf-8")
+        self.assertIn("annotatedOffset: raw.annotated_offset", model)
+
+    def test_the_player_marks_whichever_clip_is_showing(self):
+        """The bug this closes: the marker was raw-only, left over from when
+        the annotated clip was pre-roll and its detection was the last frame.
+        Deferring that clip put the moment in its middle, and the marker never
+        followed."""
+        import pathlib
+        from django.conf import settings
+        source = (pathlib.Path(settings.BASE_DIR).parent / "lookout" / "src"
+                  / "ViolationModal.jsx").read_text(encoding="utf-8")
+        self.assertIn("showingRaw ? alert.clipOffset : alert.annotatedOffset",
+                      source)
+        self.assertNotIn("showingRaw && alert.clipOffset != null", source)
+
+    def test_both_detectors_record_it_on_the_first_save(self):
+        """Pre-roll only at that point, so the detection is the last frame —
+        recorded rather than left null, because "the marker is at the end" is
+        the truth and explains the missing aftermath."""
+        import inspect
+        from importlib import import_module
+        for name in ("watch_parking", "watch_disposal"):
+            with self.subTest(watcher=name):
+                source = inspect.getsource(
+                    import_module(f"core.management.commands.{name}"))
+                self.assertIn("annotated_offset = self.clip.span()", source)
+                self.assertIn("annotated_offset=annotated_offset", source)
+
+    def test_both_detectors_move_it_when_the_centred_copy_lands(self):
+        import inspect
+        from importlib import import_module
+        for name in ("watch_parking", "watch_disposal"):
+            with self.subTest(watcher=name):
+                source = inspect.getsource(
+                    import_module(f"core.management.commands.{name}"))
+                self.assertIn('fields["annotated_offset"] = offset', source)
+
+    def test_a_file_run_does_not_overwrite_the_raw_clip_s_offset(self):
+        """On a file the raw clip is cut from the source and carries the truer
+        number; the annotated clip's belongs only to the annotated clip."""
+        import inspect
+        from importlib import import_module
+        for name in ("watch_parking", "watch_disposal"):
+            with self.subTest(watcher=name):
+                source = inspect.getsource(
+                    import_module(f"core.management.commands.{name}"))
+                guarded = 'if offset is not None and self._source_path is None:'
+                self.assertIn(guarded, source)
+                after = source[source.index(guarded):]
+                self.assertIn('fields["clip_offset"] = offset', after[:200])

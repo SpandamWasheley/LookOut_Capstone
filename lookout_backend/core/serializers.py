@@ -315,7 +315,7 @@ class AlertSerializer(serializers.ModelSerializer):
             # is (or is not) there, when the owner walked off, and where in
             # an uploaded clip this sits -- `timestamp` is wall clock.
             "suspect_image_url", "suspect_status", "owner_left_at", "footage_offset",
-            "clip_offset",
+            "clip_offset", "annotated_offset",
             # Weighted-sum scoring (core/vision/scoring.py). `level` is what the
             # dashboard should badge on -- `confidence` is now a violation
             # likelihood, so a bare percentage badge reads differently than it
@@ -334,7 +334,7 @@ class AlertSerializer(serializers.ModelSerializer):
             # training data after the fact.
             "level", "level_label", "peak_level", "peak_level_label", "last_seen_at",
             "object_confidence", "cues", "ai_context", "timeline",
-            "suspect_status", "owner_left_at", "footage_offset", "clip_offset",
+            "suspect_status", "owner_left_at", "footage_offset", "clip_offset", "annotated_offset",
             # Who reviewed it is recorded FROM the authenticated request, so a
             # client cannot name somebody else as the reviewer.
             "reviewed_by", "reviewed_by_name", "reviewed_at",

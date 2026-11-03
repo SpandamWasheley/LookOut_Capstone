@@ -1,6 +1,26 @@
 import { useState } from "react";
-import { Mail, Lock, Eye, EyeOff, KeyRound, Loader2, CheckCircle, ArrowLeft } from "lucide-react";
+import { Mail, Lock, Eye, EyeOff, KeyRound, Loader2, CheckCircle, ArrowLeft, AlertTriangle } from "lucide-react";
 import { sendForgotPasswordCode, resetForgotPassword } from "./api";
+
+// Colors come from the theme tokens in index.css (--background/--card/--primary/…),
+// the same ones LoginPage reads, so this screen is the system's light theme by
+// default and follows the sidebar's toggle instead of staying hardcoded dark.
+const INPUT_CLASS =
+  "w-full rounded-xl text-sm outline-none transition focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--ring)]";
+const INPUT_STYLE = {
+  background: "var(--secondary)",
+  border: "1px solid var(--border)",
+  color: "var(--foreground)",
+};
+const PRIMARY_STYLE = {
+  background: "var(--primary)",
+  color: "var(--primary-foreground)",
+};
+const PRIMARY_BUTTON_CLASS =
+  "w-full flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-medium transition hover:brightness-110 disabled:opacity-60";
+const LINK_BUTTON_CLASS =
+  "w-full flex items-center justify-center gap-1.5 text-xs font-medium transition hover:underline";
+const LABEL_CLASS = "block text-xs font-medium";
 
 export default function ForgotPasswordPage({ onBackToLogin }) {
   const [step, setStep] = useState(1); // 1: email, 2: code + new password, 3: done
@@ -56,17 +76,42 @@ export default function ForgotPasswordPage({ onBackToLogin }) {
     }
   };
 
+  // Same red as the login screen's error strip — a status color, so it stays
+  // literal rather than following the theme.
+  const errorBox = error ? (
+    <div
+      className="flex items-center gap-2 px-3 py-2.5 rounded-xl text-sm"
+      style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", color: "#ef4444" }}
+    >
+      <AlertTriangle size={13} className="flex-shrink-0" />
+      {error}
+    </div>
+  ) : null;
+
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-950 px-4">
-      <div className="w-full max-w-md rounded-[32px] bg-slate-900 border border-slate-700/70 p-8 shadow-2xl shadow-black/50">
+    <div
+      className="min-h-screen flex items-center justify-center px-4"
+      style={{ background: "var(--background)" }}
+    >
+      <div
+        className="w-full max-w-md rounded-2xl p-8"
+        style={{
+          background: "var(--card)",
+          border: "1px solid var(--border)",
+          boxShadow: "0 12px 40px rgba(11, 30, 44, 0.10)",
+        }}
+      >
         <div className="mb-8 text-center">
-          <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-3xl bg-amber-400 text-slate-950">
+          <div
+            className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl"
+            style={PRIMARY_STYLE}
+          >
             <KeyRound size={24} />
           </div>
-          <h1 className="text-2xl font-semibold text-slate-50">
+          <h1 className="text-2xl font-semibold" style={{ color: "var(--foreground)" }}>
             {step === 3 ? "Password reset" : "Forgot your password?"}
           </h1>
-          <p className="mt-2 text-sm text-slate-300">
+          <p className="mt-2 text-sm" style={{ color: "var(--muted-foreground)" }}>
             {step === 1 && "Enter the email you registered with — we'll send a reset code to it."}
             {step === 2 && `Enter the code sent to ${email}, then choose a new password.`}
             {step === 3 && "You can now sign in with your new password."}
@@ -75,28 +120,29 @@ export default function ForgotPasswordPage({ onBackToLogin }) {
 
         {step === 1 && (
           <form onSubmit={handleSendCode} className="space-y-5">
-            <div className="space-y-2">
-              <label className="block text-sm font-medium text-slate-200">Email</label>
+            <div className="space-y-1.5">
+              <label className={LABEL_CLASS} style={{ color: "var(--muted-foreground)" }}>Email</label>
               <div className="relative">
-                <Mail size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <Mail
+                  size={14}
+                  className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2"
+                  style={{ color: "var(--muted-foreground)" }}
+                />
                 <input
                   type="email"
                   value={email}
                   onChange={(e) => { setEmail(e.target.value); setError(""); }}
                   placeholder="you@example.com"
                   autoComplete="email"
-                  className="w-full rounded-3xl border border-slate-700 bg-slate-950 placeholder:text-slate-500 px-11 py-3 text-sm text-slate-50 outline-none transition focus:border-amber-400 focus:ring-2 focus:ring-amber-400/20"
+                  className={`${INPUT_CLASS} pl-9 pr-3 py-2.5`}
+                  style={INPUT_STYLE}
                 />
               </div>
             </div>
 
-            {error && <div className="rounded-3xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">{error}</div>}
+            {errorBox}
 
-            <button
-              type="submit"
-              disabled={sending}
-              className="w-full flex items-center justify-center gap-2 rounded-3xl bg-amber-500 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-amber-400 disabled:opacity-60"
-            >
+            <button type="submit" disabled={sending} className={PRIMARY_BUTTON_CLASS} style={PRIMARY_STYLE}>
               {sending ? <Loader2 size={15} className="animate-spin" /> : null}
               {sending ? "Sending…" : "Send reset code"}
             </button>
@@ -104,7 +150,8 @@ export default function ForgotPasswordPage({ onBackToLogin }) {
             <button
               type="button"
               onClick={onBackToLogin}
-              className="w-full flex items-center justify-center gap-1.5 text-sm text-slate-300 hover:text-amber-300 transition"
+              className={LINK_BUTTON_CLASS}
+              style={{ color: "var(--primary)" }}
             >
               <ArrowLeft size={14} /> Back to login
             </button>
@@ -113,62 +160,69 @@ export default function ForgotPasswordPage({ onBackToLogin }) {
 
         {step === 2 && (
           <form onSubmit={handleReset} className="space-y-5">
-            <div className="space-y-2">
-              <label className="block text-sm font-medium text-slate-200">Reset code</label>
+            <div className="space-y-1.5">
+              <label className={LABEL_CLASS} style={{ color: "var(--muted-foreground)" }}>Reset code</label>
               <input
                 value={code}
                 onChange={(e) => { setCode(e.target.value); setError(""); }}
                 placeholder="6-digit code"
                 maxLength={6}
-                className="w-full rounded-3xl border border-slate-700 bg-slate-950 placeholder:text-slate-500 px-5 py-3 text-sm tracking-widest text-slate-50 outline-none transition focus:border-amber-400 focus:ring-2 focus:ring-amber-400/20"
-                style={{ fontFamily: "'DM Mono', monospace" }}
+                className={`${INPUT_CLASS} px-4 py-2.5 tracking-widest`}
+                style={{ ...INPUT_STYLE, fontFamily: "'DM Mono', monospace" }}
               />
             </div>
 
-            <div className="space-y-2">
-              <label className="block text-sm font-medium text-slate-200">New password</label>
+            <div className="space-y-1.5">
+              <label className={LABEL_CLASS} style={{ color: "var(--muted-foreground)" }}>New password</label>
               <div className="relative">
-                <Lock size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <Lock
+                  size={14}
+                  className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2"
+                  style={{ color: "var(--muted-foreground)" }}
+                />
                 <input
                   type={showPassword ? "text" : "password"}
                   value={password}
                   onChange={(e) => { setPassword(e.target.value); setError(""); }}
                   placeholder="At least 8 characters"
                   autoComplete="new-password"
-                  className="w-full rounded-3xl border border-slate-700 bg-slate-950 placeholder:text-slate-500 px-11 py-3 pr-14 text-sm text-slate-50 outline-none transition focus:border-amber-400 focus:ring-2 focus:ring-amber-400/20"
+                  className={`${INPUT_CLASS} pl-9 pr-10 py-2.5`}
+                  style={INPUT_STYLE}
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword((v) => !v)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 transition-colors"
+                  style={{ color: "var(--muted-foreground)" }}
                 >
-                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                  {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
                 </button>
               </div>
             </div>
 
-            <div className="space-y-2">
-              <label className="block text-sm font-medium text-slate-200">Confirm new password</label>
+            <div className="space-y-1.5">
+              <label className={LABEL_CLASS} style={{ color: "var(--muted-foreground)" }}>Confirm new password</label>
               <div className="relative">
-                <Lock size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <Lock
+                  size={14}
+                  className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2"
+                  style={{ color: "var(--muted-foreground)" }}
+                />
                 <input
                   type={showPassword ? "text" : "password"}
                   value={confirm}
                   onChange={(e) => { setConfirm(e.target.value); setError(""); }}
                   placeholder="Re-enter new password"
                   autoComplete="new-password"
-                  className="w-full rounded-3xl border border-slate-700 bg-slate-950 placeholder:text-slate-500 px-11 py-3 text-sm text-slate-50 outline-none transition focus:border-amber-400 focus:ring-2 focus:ring-amber-400/20"
+                  className={`${INPUT_CLASS} pl-9 pr-3 py-2.5`}
+                  style={INPUT_STYLE}
                 />
               </div>
             </div>
 
-            {error && <div className="rounded-3xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">{error}</div>}
+            {errorBox}
 
-            <button
-              type="submit"
-              disabled={resetting}
-              className="w-full flex items-center justify-center gap-2 rounded-3xl bg-amber-500 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-amber-400 disabled:opacity-60"
-            >
+            <button type="submit" disabled={resetting} className={PRIMARY_BUTTON_CLASS} style={PRIMARY_STYLE}>
               {resetting ? <Loader2 size={15} className="animate-spin" /> : null}
               {resetting ? "Resetting…" : "Reset password"}
             </button>
@@ -176,7 +230,8 @@ export default function ForgotPasswordPage({ onBackToLogin }) {
             <button
               type="button"
               onClick={() => setStep(1)}
-              className="w-full flex items-center justify-center gap-1.5 text-sm text-slate-300 hover:text-amber-300 transition"
+              className={LINK_BUTTON_CLASS}
+              style={{ color: "var(--primary)" }}
             >
               <ArrowLeft size={14} /> Use a different email
             </button>
@@ -185,13 +240,15 @@ export default function ForgotPasswordPage({ onBackToLogin }) {
 
         {step === 3 && (
           <div className="space-y-5 text-center">
-            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-emerald-500/10">
-              <CheckCircle size={24} className="text-emerald-400" />
-            </div>
-            <button
-              onClick={onBackToLogin}
-              className="w-full rounded-3xl bg-amber-500 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-amber-400"
+            {/* --chart-4 is the theme's green (deep in light, bright in dark), so the
+                success mark reads on both grounds without a hardcoded emerald. */}
+            <div
+              className="mx-auto flex h-12 w-12 items-center justify-center rounded-full"
+              style={{ background: "color-mix(in srgb, var(--chart-4) 14%, transparent)" }}
             >
+              <CheckCircle size={24} style={{ color: "var(--chart-4)" }} />
+            </div>
+            <button onClick={onBackToLogin} className={PRIMARY_BUTTON_CLASS} style={PRIMARY_STYLE}>
               Back to login
             </button>
           </div>

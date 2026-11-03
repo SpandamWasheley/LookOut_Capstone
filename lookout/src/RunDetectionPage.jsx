@@ -5,7 +5,7 @@ import {
   traceZoneFromStaged,
 } from "./api";
 import { discardUpload, listPendingUploads, uploadClipInChunks } from "./chunkedUpload";
-import { DETECTION_TYPES, TYPES_WITH_EDGES, TYPES_WITH_OPTIONAL_EDGES, TYPES_WITH_AREA_THRESHOLDS,
+import { DETECTION_TYPES, TYPES_WITH_EDGES, TYPES_WITH_OPTIONAL_EDGES, TYPES_WITH_AREA_THRESHOLDS, edgeKind,
          edgeHeading, edgeCameraNote } from "./constants/detectionTypes";
 import { ClipTrimmer } from "./ClipTrimmer";
 import { EdgeCanvas } from "./EdgeCanvas";
@@ -253,7 +253,7 @@ export function RunDetectionPage() {
     setTraceError("");
     setTraced(null);
     try {
-      const res = await traceZoneFromStaged(staged.stagedToken);
+      const res = await traceZoneFromStaged(staged.stagedToken, edgeKind(violationType));
       // Both read frame 0 of the same clip at native resolution, so the points
       // are already in the canvas's coordinates. Checked rather than assumed:
       // a silent mismatch would put the zone somewhere plausible and wrong.
@@ -585,7 +585,8 @@ export function RunDetectionPage() {
                   </div>
                 )}
 
-                <EdgeCanvas key={canvasKey} frame={staged.frame} initialPoints={tracedPoints}
+                <EdgeCanvas key={canvasKey} kind={edgeKind(violationType)}
+                  frame={staged.frame} initialPoints={tracedPoints}
                   pct={pct} onPctChange={setPct} minutes={minutes}
                   onMinutesChange={setMinutes} showThresholds={hasAreaThresholds}
                   onChange={(spec, can) => { setEdgeSpec(spec); setCanSaveEdges(can); }} />

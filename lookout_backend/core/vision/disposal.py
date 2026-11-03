@@ -103,6 +103,127 @@ OWNER_MAX_HOLD = 3.0        # ... but never hold longer than this in total
 # step is "gone"; too large and a passerby inherits the owner's identity.
 OWNER_TRACK_GATE = 120
 
+# --- did anything actually ARRIVE? -----------------------------------------
+# The gap this closes is the one stage 1 cannot see on its own.
+#
+# Stage 1 asks "is there foreground the fast model has forgotten?", which is a
+# question about MOTION, not about arrival. On night footage a headlight sweep,
+# a reflection off wet tarmac or a shadow swinging across a shutter all answer
+# yes for a second or two and then revert, leaving the scene exactly as it was.
+# Nothing was dumped; the detector had no way to say so, because by the time it
+# looked, the only evidence either way -- what this spot looked like BEFORE --
+# was already absorbed into the background models it was comparing against.
+#
+# So the reference is kept explicitly: a ring of downscaled grey frames, and at
+# the moment a candidate is born it keeps the one from ARRIVAL_LOOKBACK seconds
+# earlier, cropped to its own patch of ground. From then on the question is not
+# "is there foreground here" but "does this spot still look DIFFERENT from how
+# it looked before the object turned up". Rubbish answers yes for as long as it
+# lies there; a light that moved answers no the moment it has moved on.
+#
+# Two guards keep that honest:
+#
+#   * the ring. A patch grown to twice the object's size is compared too, and a
+#     change confined to the object must beat the change in the ground around
+#     it by ARRIVAL_MIN_MARGIN. A camera's auto-exposure lifting, a cloud, or a
+#     vehicle's headlights washing the whole street move both equally -- that is
+#     the scene changing, not something landing in it.
+#   * consecutive looks, with NO latch. The counter resets on any failing look,
+#     so the test is "this spot has looked different for the last few looks",
+#     asked again every ARRIVAL_INTERVAL. A transient cannot bank a pass early
+#     and coast on it, which a one-shot test taken at birth would let it do.
+ARRIVAL_LOOKBACK = 6.0      # s before the blob was born that the reference comes from
+ARRIVAL_SAMPLE_INTERVAL = 0.5   # s between kept reference frames
+ARRIVAL_REF_SECONDS = 10.0  # how far back the reference ring reaches
+ARRIVAL_PAD = 0.5           # ring is the box grown by 50% of its size each way
+ARRIVAL_DIFF = 25           # grey levels a pixel must move to count as changed
+ARRIVAL_MIN_CHANGE = 0.18   # share of the object's box that must have changed
+ARRIVAL_MIN_MARGIN = 0.10   # ... and by this much more than the ground around it
+ARRIVAL_INTERVAL = 0.25     # s between looks
+ARRIVAL_CONFIRM_LOOKS = 3   # consecutive passing looks before the gate opens
+
+# --- arrival and owner are EVIDENCE, not gates ------------------------------
+# Both of these are proxies for "something was dumped here", and both of them
+# can be wrong about a real dump:
+#
+#   * the arrival test measures changed PIXELS, so a dark sack on dark asphalt
+#     at night can genuinely move fewer of them than the floor asks for;
+#   * the owner rule needs a person detection, and yolov8n at distance, at
+#     night, or on somebody with their back turned does not always give one.
+#
+# They were briefly used as GATES -- a candidate that failed either was
+# withheld from the bag check -- and that was a mistake worth recording. A
+# wrong answer from a gate is final and silent: a violation in plain view that
+# the detector has decided never to look at, indistinguishable on screen from
+# the rubbish having been cleared. Reported from footage: a person visibly
+# left a sack and nothing was ever flagged, because the carrier was never
+# detected.
+#
+# So they are cues now, scored in scoring.DISPOSAL_WEIGHTS. A missing person
+# detection costs 0.35 of 1.00 instead of costing the whole violation, and the
+# object route (object + arrival = 0.60) reaches Possible without any person
+# evidence at all. Nothing here withholds anything; `cues_for` turns these
+# measurements into the cue set and the shared scoring layer decides.
+
+# How far back person detections are remembered when a new candidate latches
+# its owner.
+#
+# `claim_owners` reads the people standing over an object AS IT APPEARS, and
+# "as it appears" is later than it sounds: the fast background model has to
+# forget the carrier before the object they set down shows up as static
+# foreground, so by the time the blob exists the person who left it is
+# routinely a second or two gone. Asking only about the current frame therefore
+# misses the owner of the great majority of real dumps -- which matters a lot
+# more now that having one is a REQUIREMENT, not just a reason to wait.
+OWNER_LOOKBACK = 6.0
+
+
+def _region(box, shape, pad=ARRIVAL_PAD):
+    """`box` grown by `pad` of its own size, clamped to the frame, as ints.
+
+    Returns None for a region too small to measure anything in.
+    """
+    gx, gy, gw, gh = _padded(box, pad)
+    x0 = max(0, int(round(gx)))
+    y0 = max(0, int(round(gy)))
+    x1 = min(int(shape[1]), int(round(gx + gw)))
+    y1 = min(int(shape[0]), int(round(gy + gh)))
+    if x1 - x0 < 2 or y1 - y0 < 2:
+        return None
+    return (x0, y0, x1 - x0, y1 - y0)
+
+
+def arrival_change(before, now_patch, inner, diff=ARRIVAL_DIFF):
+    """How much of `inner` changed since `before`, and how much around it did.
+
+    `before` and `now_patch` are the SAME region of the frame in greyscale, one
+    taken before the object arrived and one taken now; `inner` is the object's
+    own box as (x, y, w, h) WITHIN that region. Returns
+    (inner_fraction, ring_fraction), each 0-1.
+
+    Deliberately a count of changed PIXELS rather than a mean difference: a
+    small bright object and a large dim shift can produce the same average, and
+    it is coverage -- how much of this patch of ground is no longer the ground
+    -- that distinguishes them.
+    """
+    if before is None or now_patch is None or before.shape != now_patch.shape:
+        return 0.0, 0.0
+    changed = cv2.absdiff(before, now_patch) > diff
+    x, y, w, h = inner
+    inner_mask = changed[y:y + h, x:x + w]
+    if inner_mask.size == 0:
+        return 0.0, 0.0
+    inner_frac = float(inner_mask.mean())
+    ring_size = changed.size - inner_mask.size
+    if ring_size <= 0:
+        # The object fills its own padded region -- there is no ground left to
+        # compare against, so the lighting guard abstains rather than inventing
+        # a number. The coverage test still applies.
+        return inner_frac, 0.0
+    ring_frac = float((int(changed.sum()) - int(inner_mask.sum())) / ring_size)
+    return inner_frac, ring_frac
+
+
 # --- suspect crop ("likely dropped by") -------------------------------------
 # A bag on the pavement identifies nobody. The window either side of the
 # moment it APPEARED is the only part of the footage where whoever carried it
@@ -139,6 +260,128 @@ PROMPTS = ["plastic bag", "garbage bag", "trash bag", "pile of trash", "sack",
            "cardboard box", "rice sack", "styrofoam", "pile of plastic bottles"]
 REJECT = ["person", "dog", "cat", "motorcycle", "car", "bicycle", "chair",
           "trash can", "garbage bin", "bucket", "potted plant"]
+
+# --- the trained detector outranks the prompt ------------------------------
+# Four of the eleven REJECT prompts name things the stock yolov8n already
+# detects properly, and that pass is ALREADY running every 0.5s for
+# `ignore_boxes`. So for those classes there are two opinions available: a
+# zero-shot head reading a word off a crop, and a model trained on 200k labelled
+# instances of exactly that object.
+#
+# Reported from footage: rubbish against a fence came back "person 86%" with the
+# nearest person several metres away and no person box anywhere near it. Because
+# `classify` only asks whether garbage LED, one confident hallucinated reject
+# ended the candidate permanently -- Below Monitoring, every recheck, for the
+# whole clip, with the object cue unable to fire and therefore every other piece
+# of evidence irrelevant.
+#
+# So a reject class the trained detector positively says is NOT here does not
+# get a vote. This is deliberately asymmetric: absence is claimed only from a
+# pass that actually ran (`persons=None` means "no pass", which claims nothing),
+# and it never ADDS garbage confidence -- it only declines to accept a veto that
+# a better-qualified model contradicts. `dog` and `cat` are not on the list
+# because detect_scene does not return them, so nothing here can speak to them.
+TRUSTED_REJECTS = {"person": "person", "car": "vehicle",
+                   "motorcycle": "vehicle", "bicycle": "vehicle"}
+
+
+# --- the dumper is not a look-alike ----------------------------------------
+# `person` sat in REJECT from the beginning, and on this camera that was the
+# single biggest reason real violations never alerted. Measured on the
+# barangay's own footage:
+#
+#     #1 rejected: person 92% (best garbage: garbage bag 13%)
+#
+# The model found the bag. It also found the person standing over it -- who, on
+# a candidate whose owner was latched when it appeared, is the person who PUT
+# IT THERE. Their presence is half the offence; it is the thing `person` and
+# `left` are worth 0.35 between them for. Letting it also veto the object cue
+# meant the clearest possible dumping scene -- somebody beside fresh rubbish --
+# scored worse than rubbish nobody was seen to leave.
+#
+# The reject list is there to answer "that is a dog, not garbage". It was never
+# meant to answer "there is a human in this picture", and on a crop padded for
+# context there is very often a human in the picture.
+#
+# So `person` is discounted when this candidate HAS an owner. Narrow on purpose:
+#   * only `person` -- a dog, a bin, a chair or a bucket still rejects outright;
+#   * only with `had_owner`, which is latched once, at the moment the object
+#     appeared, from people within disposal_owner_radius -- a passer-by later
+#     cannot grant it;
+#   * the owner CAP still holds the status at Monitoring while they stand
+#     there, so this cannot alert on somebody holding their own bag; and
+#   * a standing person cannot be the candidate in the first place -- the
+#     ignore rule drops any blob half inside a person box before it gets an id.
+def dumper_rejects(cand):
+    """Reject classes this candidate's own owner makes meaningless.
+
+    Returns a frozenset to union with absent_rejects(). Empty when nobody was
+    seen beside the object as it appeared, which is the case this must not
+    change: rubbish with no owner is judged exactly as before.
+    """
+    return frozenset({"person"}) if cand.had_owner else frozenset()
+
+
+# --- a fixture cannot have arrived -----------------------------------------
+# "trash can", "garbage bin" and "bucket" were put in REJECT to stop the
+# detector firing on a CONTAINER that lives on the pavement and was never
+# dumped -- the thing a cardboard box is most often confused with.
+#
+# They were guarding against something that cannot happen. A permanent fixture
+# is learned into the background during warmup and never becomes a candidate at
+# all; everything that reaches stage 2 was watched arriving. So on a candidate
+# whose arrival has been independently MEASURED -- the spot demonstrably holds
+# something it did not hold before, by more than the ground around it changed
+# -- "that is a bin that lives here" is a claim our own evidence contradicts.
+#
+# Measured on the barangay's footage, this was the blocker left after the
+# dumper fix:
+#
+#     #12 rejected: trash can 39% (best garbage: cardboard box 21%)
+#
+# 21% is comfortably over the floor. A dumped box was being thrown out for
+# resembling the container it had been dumped beside.
+#
+# Gated on arrival_proven, not on mere candidacy, deliberately: the pixel test
+# is positive evidence, while "stage 1 raised it" is an inference we have
+# already seen go wrong on lighting transients. Where arrival cannot be proven
+# the old caution stands.
+#
+# "potted plant" is the same argument and is deliberately NOT included: it
+# never blocked a real detection here, and the narrower change is the one that
+# can be defended from the footage.
+FIXTURE_REJECTS = frozenset({"trash can", "garbage bin", "bucket"})
+
+
+def fixture_rejects(cand):
+    """Container classes this candidate's proven arrival makes impossible.
+
+    Empty when arrival could not be measured, so nothing changes on footage
+    where the reference frame was unusable.
+    """
+    return FIXTURE_REJECTS if cand.arrival_proven else frozenset()
+
+
+def absent_rejects(obj, persons=None, vehicles=None, pad=None):
+    """Reject class names the trained detector says are not at this object.
+
+    `obj` and the box lists are (x, y, w, h) in FULL-RESOLUTION pixels. A list
+    of None means that pass was unavailable, and nothing is claimed for the
+    classes it covers.
+
+    `pad` defaults to IGNORE_PAD, resolved at call time because that constant
+    belongs with the ignore rule further down and this needs to sit above the
+    Candidate class that uses it.
+    """
+    grown = _padded(obj, IGNORE_PAD if pad is None else pad)
+    absent = set()
+    for kind, boxes in (("person", persons), ("vehicle", vehicles)):
+        if boxes is None:
+            continue
+        if not any(_coverage(box, grown) > 0 for box in boxes):
+            absent |= {name for name, k in TRUSTED_REJECTS.items() if k == kind}
+    return frozenset(absent)
+
 
 # Zero-shot scores run low compared with a fine-tuned model's -- an open-vocab
 # head spreads probability over the whole prompt set, so a correct bag often
@@ -277,9 +520,33 @@ def combine_garbage(dets, iou=GROUP_IOU):
 DEFAULT_WORLD_MODEL = "yolov8s-worldv2.pt"   # auto-downloads on first use
 
 # --- defaults mirrored in SystemSettings ------------------------------------
-STATIC_SECONDS = 2.0        # must stay still this long before stage 2 runs
+# Seconds an object must sit STILL before stage 2 is spent on it.
+#
+# Was 2, which is barely longer than the fast background model takes to forget
+# anything at all -- so a headlight wash, a reflection off wet tarmac or a
+# shadow swinging across a shutter cleared the bar before it had even faded,
+# and the bag check was being asked about transients. On the barangay's night
+# footage that was most of what stage 1 raised.
+#
+# 12 is long enough that nothing which is merely PASSING survives it, and far
+# short of what dumped rubbish sits there for. The cost is twelve seconds of
+# delay on a real dump, which is nothing against a violation nobody is going
+# to go and clear for hours.
+STATIC_SECONDS = 12.0
 COOLDOWN_SECONDS = 120      # do not re-alert the same spot within this window
-COOLDOWN_DIST = 60          # px at PROC_WIDTH that counts as "the same spot"
+# px at PROC_WIDTH that counts as "the same spot".
+#
+# Was 60, which is about two bag-widths at this scale and roughly 160px on a
+# 2560-wide source -- so a second sack dropped BESIDE the first landed inside
+# the first one's place, adopted its alert, and never became a violation of
+# its own. Two separate dumps were reported as one.
+#
+# 30 is about one bag width. It still comfortably absorbs the case this radius
+# exists for -- stage 1 forgetting an object and re-finding it a few pixels off
+# -- because that re-detection lands within a few px of the original, not a
+# whole bag away. Lowering it further starts filing one bag twice when its box
+# shifts; this is the floor that keeps both behaviours.
+COOLDOWN_DIST = 30
 
 
 def garbage_class_ids():
@@ -322,6 +589,29 @@ class Candidate:
         self.had_owner = False
         self.owner_anchors = []
         self.last_owner_near_at = None
+        # Was person detection AVAILABLE when this candidate was born? The
+        # owner requirement can only be applied to a candidate whose owner
+        # could have been seen; with the mover pass switched off or broken,
+        # `had_owner` is False for everything and a gate on it would be a gate
+        # on nothing, blinding the detector instead of sharpening it.
+        self.owner_known = False
+        # --- arrival test -----------------------------------------------------
+        # `ref_patch` is this patch of ground as it looked before the object
+        # turned up, `ref_region` where it was cropped from and `ref_inner` the
+        # object's own box within it. None means no reference was available
+        # (the detector had only just started), which the test treats as
+        # unverifiable rather than as a failure. See ARRIVAL_LOOKBACK.
+        self.ref_region = None
+        self.ref_patch = None
+        self.ref_inner = None
+        self.arrival_inner = 0.0
+        self.arrival_ring = 0.0
+        self.arrival_passes = 0
+        self.arrival_checked_at = None
+        # How many times stage 2 has looked at this object and NOT said "that
+        # is a dog". Two or more means it was still there when the detector
+        # came back for another look, which is the `persisted` cue.
+        self.confirm_count = 0
         # --- suspect crop ----------------------------------------------------
         # The fast-model foreground blob that overlapped this object as it
         # arrived — whoever or whatever carried it. Fallback for when person
@@ -356,6 +646,10 @@ class Candidate:
         # int and a string that mean nothing to it.)
         self.alert_pk = None
         self.alert_level = ""
+        # When this candidate's row first reached Monitoring, or None if it is
+        # not there now. Reset on every move OFF Monitoring so the clock counts
+        # the CURRENT spell, not the total across a status that rose and fell.
+        self.monitoring_since = None
         # --- waste-collection window hold -----------------------------------
         # `window_held`: the row is parked at Monitoring ONLY because the bag
         # was set out inside the barangay's collection hours. `hold_until` is
@@ -375,6 +669,27 @@ class Candidate:
 
     def still_for(self, now):
         return now - self.first
+
+    def note_level(self, level, now):
+        """Record a status the row has just been written at, for the dwell cue.
+
+        Called by the command after the row is updated -- so the dwell cue
+        reads it on the NEXT evaluation, one cycle later. That lag is harmless
+        (rechecks are seconds apart) and it is what keeps the cue a pure
+        function of recorded state rather than of the decision in progress.
+        """
+        # NOT while the collection-window hold is what is keeping it at
+        # Monitoring. Rubbish set out legally between 04:00 and 07:00 is parked
+        # there on purpose, and letting the dwell clock run through that would
+        # convert a lawful hold into evidence -- every held bag would come out
+        # of the window one level higher than it went in. The clock restarts
+        # from zero when the hold ends, so the bag is then judged on its own
+        # merits exactly as an unheld one is.
+        if level == "monitoring" and not self.window_held:
+            if self.monitoring_since is None:
+                self.monitoring_since = now
+        else:
+            self.monitoring_since = None
 
     @property
     def pinned(self):
@@ -463,6 +778,100 @@ class Candidate:
         if not self.had_owner or self.last_owner_near_at is None:
             return None
         return max(0.0, now - self.last_owner_near_at)
+
+    # ---- arrival test ------------------------------------------------------
+
+    def arrival_verdict(self, min_change=ARRIVAL_MIN_CHANGE,
+                        min_margin=ARRIVAL_MIN_MARGIN):
+        """Does this spot look different from before, more than its surroundings?
+
+        One look. `arrival_proven` is what the cue reads; this is the
+        measurement that feeds it, split out so the thresholds can be tested
+        on their own.
+        """
+        return (self.arrival_inner >= min_change
+                and self.arrival_inner - self.arrival_ring >= min_margin)
+
+    @property
+    def arrival_proven(self):
+        """Has this spot been SHOWN to hold something that was not here before?
+
+        False when there was no reference frame to compare against, which is a
+        different thing from a failed comparison -- the question could not be
+        asked. As a gate that distinction had to read as "do not block"; as a
+        CUE it reads as "no points", which is the honest handling: an
+        unanswerable question is not evidence. The object cue and the owner
+        cues can still carry such a candidate to Possible on their own.
+        """
+        return (self.ref_patch is not None
+                and self.arrival_passes >= ARRIVAL_CONFIRM_LOOKS)
+
+
+# How long a row sits on the Monitoring watchlist before the dwell cue fires.
+#
+# Asked for off the footage: "when the monitoring reached 7-10 seconds it will
+# make as possible". 8 is the middle of that range. It is one constant rather
+# than a Settings column because it is a scoring weight's partner, not an
+# operator knob -- moving it changes what Possible MEANS, which is a decision
+# for the cue table and not for a shift.
+#
+# Measured from the moment the row reached Monitoring, not from when the object
+# arrived, so it answers "this has been sitting unattended and nobody has dealt
+# with it" rather than restating the still-timer that already gated the check.
+MONITORING_DWELL_SECONDS = 8.0
+
+
+def behaviour_only(cand, confirmed, cues):
+    """Is this the weak-object, full-behaviour case?
+
+    True when the bag check LED every look-alike but fell short of the floor,
+    and everything else is there: something arrived at this spot, a person was
+    beside it, and they left. Admitted and capped at Possible by the caller.
+
+    `cand.weak` and not `rejected` is the precise condition -- a REJECTED
+    candidate is one the model gave a positive answer about ("that is a dog"),
+    and no amount of behaviour should talk us past that.
+    """
+    from core.vision import scoring          # local: keeps this module importable alone
+    return (not confirmed and cand.weak and not cand.rejected
+            and scoring.DISPOSAL_BEHAVIOUR_CUES <= cues)
+
+
+def cues_for(cand, confirmed, now, away_seconds=OWNER_AWAY_SECONDS,
+             dwell_seconds=MONITORING_DWELL_SECONDS):
+    """Which disposal cues this candidate fires, as a set of names.
+
+    Pure: a candidate, a verdict and a clock in, cue names out. No weights, no
+    thresholds beyond the ones already on the candidate, and no Django -- the
+    arithmetic lives in scoring.DISPOSAL_WEIGHTS and the decision in
+    scoring.Score, exactly as it does for the other four detectors.
+
+    `confirmed` is stage 2's CONFIRMED verdict (garbage led every reject class
+    AND cleared the floor), which is the gate cue. A weak lead fires nothing
+    at all here -- it leaves the candidate with no gate, so `Score` reports
+    NONE and nothing is written. That is the floor still doing its job.
+    """
+    cues = set()
+    if confirmed:
+        cues.add("object")
+    if cand.arrival_proven:
+        cues.add("arrival")
+    if cand.had_owner:
+        cues.add("person")
+        away = cand.owner_away_for(now)
+        # The ordinance's actual test. `away_seconds` is the same setting the
+        # old owner HOLD used, so "long enough to count as walked away" means
+        # one thing in both places.
+        if away is not None and away >= away_seconds:
+            cues.add("left")
+    if cand.confirm_count >= 2:
+        cues.add("persisted")
+    # Time on the watchlist. CONDITIONAL on `object`, so this escalates a row
+    # that already means something and cannot conjure one out of waiting.
+    if (cand.monitoring_since is not None
+            and now - cand.monitoring_since >= dwell_seconds):
+        cues.add("dwell")
+    return cues
 
 
 # --- ignoring people and vehicles ------------------------------------------
@@ -677,7 +1086,11 @@ class StaticObjectDetector:
                  match_dist=MATCH_DIST, candidate_grace=CANDIDATE_GRACE,
                  area=None, owner_radius=OWNER_RADIUS, suspect_window=True,
                  occlusion_hold=OCCLUSION_HOLD_SECONDS,
-                 pin_max_seconds=PIN_MAX_SECONDS, pin_miss_limit=PIN_MISS_LIMIT):
+                 pin_max_seconds=PIN_MAX_SECONDS, pin_miss_limit=PIN_MISS_LIMIT,
+                 arrival_lookback=ARRIVAL_LOOKBACK, arrival_pad=ARRIVAL_PAD,
+                 arrival_interval=ARRIVAL_INTERVAL,
+                 arrival_ref_seconds=ARRIVAL_REF_SECONDS,
+                 owner_lookback=OWNER_LOOKBACK):
         self.area = area
         self.proc_width = proc_width
         self.warmup_seconds = warmup_seconds
@@ -689,6 +1102,11 @@ class StaticObjectDetector:
         self.occlusion_hold = occlusion_hold
         self.pin_max_seconds = pin_max_seconds
         self.pin_miss_limit = pin_miss_limit
+        self.arrival_lookback = arrival_lookback
+        self.arrival_pad = arrival_pad
+        self.arrival_interval = arrival_interval
+        self.arrival_ref_seconds = arrival_ref_seconds
+        self.owner_lookback = owner_lookback
         # Off for the stage-1 unit tests, which have no use for JPEG encoding
         # a synthetic rectangle four times a second.
         self.lookback = SuspectLookback() if suspect_window else None
@@ -710,6 +1128,13 @@ class StaticObjectDetector:
         self.fg_short = None    # fast-model foreground, for the carrier fallback
         self._next_id = 1
         self._t0 = None
+        # [(t, grey frame)] and [(t, [centre, ...])], both trimmed every frame.
+        # Greyscale and already downscaled to PROC_WIDTH, so a 960x540 frame is
+        # ~0.5 MB and the ring holds ARRIVAL_REF_SECONDS / ARRIVAL_SAMPLE_INTERVAL
+        # of them -- about 10 MB, which is why the window is only a little
+        # longer than the lookback it has to cover rather than generous.
+        self._refs = []
+        self._person_seen = []
 
     def update(self, frame, now=None, ignore_boxes=None, person_boxes=None):
         """Process one frame. Returns the current candidate list (empty while warming).
@@ -739,6 +1164,17 @@ class StaticObjectDetector:
         else:
             small = frame.copy()
         blur = cv2.GaussianBlur(small, (5, 5), 0)
+        grey = cv2.cvtColor(blur, cv2.COLOR_BGR2GRAY)
+
+        # Kept BEFORE the warming return, for the same reason the suspect
+        # lookback is: an object dumped in the first second after warmup still
+        # needs a picture of the ground it landed on, and the only frames that
+        # old are warmup frames. They are also the best references this
+        # detector ever gets -- warmup is by definition the empty scene.
+        if not self._refs or now - self._refs[-1][0] >= ARRIVAL_SAMPLE_INTERVAL:
+            self._refs.append((now, grey))
+            cutoff = now - self.arrival_ref_seconds
+            self._refs = [ref for ref in self._refs if ref[0] >= cutoff]
 
         # While warming, BOTH models learn fast -- the point is to converge on
         # the empty scene quickly. The slow/fast split only starts afterwards,
@@ -799,6 +1235,7 @@ class StaticObjectDetector:
         # HIDDEN behind one from a candidate that has actually been taken away.
         born = self._match(blobs, now, scaled)
         self._owners_and_suspects(born, now, frame, person_boxes)
+        self._look_for_arrival(grey, now)
         return self.candidates
 
     # ---- owner proximity + suspect window ----------------------------------
@@ -811,8 +1248,18 @@ class StaticObjectDetector:
         """
         centres = [((x + w / 2.0) * self.scale, (y + h / 2.0) * self.scale)
                    for x, y, w, h in (person_boxes or [])]
+        if person_boxes is not None:
+            self._person_seen.append((now, centres))
+        cutoff = now - self.owner_lookback
+        self._person_seen = [seen for seen in self._person_seen if seen[0] >= cutoff]
+        # Everyone seen in the last few seconds, not just this frame -- the
+        # carrier is usually already walking away by the time their load shows
+        # up as static foreground. See OWNER_LOOKBACK.
+        recent = [centre for _t, seen in self._person_seen for centre in seen]
         for cand in born:
-            cand.claim_owners(centres, now, self.owner_radius)
+            cand.owner_known = person_boxes is not None
+            cand.claim_owners(recent, now, self.owner_radius)
+            cand.ref_region, cand.ref_patch, cand.ref_inner =                 self._reference_patch(cand.box, now)
             cand.carrier_box = self._carrier_box(cand.box)
             if self.lookback is not None:
                 # The pre-window is already gone by the time anything is known
@@ -829,6 +1276,72 @@ class StaticObjectDetector:
                 latest = self.lookback.window(cand.first, now)
                 have = {t for t, _j in cand.suspect_frames}
                 cand.suspect_frames += [(t, j) for t, j in latest if t not in have]
+
+    # ---- arrival test ------------------------------------------------------
+
+    def _reference_patch(self, box, now):
+        """How this spot looked BEFORE the object turned up.
+
+        Returns (region, patch, inner) in PROC_WIDTH coordinates, or three
+        Nones when there is no usable reference.
+        """
+        if not self._refs:
+            return None, None, None
+        target = now - self.arrival_lookback
+        chosen = None
+        for t, grey in self._refs:
+            if t > target:
+                break
+            chosen = grey          # the latest frame at or before the target
+        if chosen is None:
+            # Nothing that old yet: the run has only just started. The oldest
+            # frame there IS still a frame from before this object arrived,
+            # which is the only property the test needs -- it is merely a
+            # closer one. Using it is what keeps the seconds right after
+            # warmup from being a blind spot.
+            chosen = self._refs[0][1]
+        region = _region(box, chosen.shape, self.arrival_pad)
+        if region is None:
+            return None, None, None
+        rx, ry, rw, rh = region
+        x, y, w, h = box
+        ix = max(0, min(int(round(x)) - rx, rw - 1))
+        iy = max(0, min(int(round(y)) - ry, rh - 1))
+        inner = (ix, iy, max(1, min(int(round(w)), rw - ix)),
+                 max(1, min(int(round(h)), rh - iy)))
+        return region, chosen[ry:ry + rh, rx:rx + rw].copy(), inner
+
+    def _look_for_arrival(self, grey, now):
+        """Re-ask every unproven candidate whether its spot still looks changed.
+
+        Throttled to `arrival_interval`, and the pass counter is CONSECUTIVE --
+        a failing look sends it back to zero. That is the difference between
+        "something arrived here" and "something flickered here once": a
+        transient cannot bank passes early and coast on them to the check,
+        which is exactly what a single test taken at birth would let it do.
+        """
+        for cand in self.candidates:
+            if cand.ref_patch is None:
+                continue
+            # Hidden is not gone, here as everywhere else in this module. The
+            # patch of a person standing over the object says nothing about
+            # whether the object arrived, and letting that answer reset the
+            # streak would cost a bag on a busy road its progress every time
+            # traffic went past -- the same hole OCCLUSION_HOLD_SECONDS closes
+            # for the still-timer.
+            if cand.occluded_since is not None:
+                continue
+            if (cand.arrival_checked_at is not None
+                    and now - cand.arrival_checked_at < self.arrival_interval):
+                continue
+            cand.arrival_checked_at = now
+            rx, ry, rw, rh = cand.ref_region
+            cand.arrival_inner, cand.arrival_ring = arrival_change(
+                cand.ref_patch, grey[ry:ry + rh, rx:rx + rw], cand.ref_inner)
+            if cand.arrival_verdict():
+                cand.arrival_passes += 1
+            else:
+                cand.arrival_passes = 0
 
     def _carrier_box(self, cand_box):
         """Largest fast-foreground blob overlapping this object as it appeared.
@@ -1077,21 +1590,94 @@ class StaticObjectDetector:
                 and c.held_by_owner(now, owner_away_seconds, owner_max_hold)]
 
 
-def crop_full_res(frame, box, scale, *, pad_frac=CROP_PAD, min_crop=MIN_CROP):
-    """Map a PROC_WIDTH box back to full resolution and crop it with padding.
+# --- keeping bystanders out of the crop -------------------------------------
+# The padding below is what makes a distant bag legible, and it is also how a
+# bystander gets classified instead of the rubbish.
+#
+# Reported from footage twice: rubbish against a fence with two people standing
+# a metre away came back "person 88%" and sat at Below Monitoring for the whole
+# clip. The reject side of `confirm` is a plain maximum, so one confident person
+# detection beats any combination of garbage prompts, and the object cue can
+# never fire. On this barangay's camera that is not an edge case -- rubbish is
+# routinely set down at somebody's feet, and those are the very scenes where a
+# dump is most likely to have just happened.
+#
+# So the padding is TRADEABLE and the object box is not. `shrink_away` pulls the
+# padded rectangle's edges back until the bystander is outside it, never past
+# the object's own edges. The boxes come from the person/vehicle pass the
+# detector already runs for `ignore_boxes`, so this costs no inference.
+#
+# A bystander who OVERLAPS the object cannot be excluded without cropping the
+# object out, so those are left alone -- the model is then genuinely looking at
+# a person holding something, and "person" is the honest answer. That is also
+# why this cannot resurrect a standing person as a candidate: `ignore_boxes`
+# already stopped a blob inside a person box from ever being one.
+def shrink_away(rect, obj, avoid):
+    """`rect` pulled in to exclude each box in `avoid`, never inside `obj`.
 
-    Padded because an open-vocabulary head classifies a crop by what the whole
-    crop looks like; a tight box around a white bag is just a white rectangle,
-    while the same bag against visible pavement reads as a bag.
+    All three are (x1, y1, x2, y2) in full-resolution pixels. A box in `avoid`
+    that overlaps `obj` is skipped; one that only eats into the padding is
+    excluded by moving the one edge that is between it and the object.
     """
-    height, width = frame.shape[:2]
+    x1, y1, x2, y2 = rect
+    ox1, oy1, ox2, oy2 = obj
+    for ax1, ay1, ax2, ay2 in avoid:
+        # No overlap with the padded rect at all -- nothing to do.
+        if ax2 <= x1 or ax1 >= x2 or ay2 <= y1 or ay1 >= y2:
+            continue
+        # Overlaps the object itself: excluding it would crop the object.
+        if ax2 > ox1 and ax1 < ox2 and ay2 > oy1 and ay1 < oy2:
+            continue
+        # Entirely on one side of the object -> pull that edge back to meet it.
+        if ax1 >= ox2:
+            x2 = min(x2, max(ox2, ax1))
+        elif ax2 <= ox1:
+            x1 = max(x1, min(ox1, ax2))
+        if ay1 >= oy2:
+            y2 = min(y2, max(oy2, ay1))
+        elif ay2 <= oy1:
+            y1 = max(y1, min(oy1, ay2))
+    return x1, y1, x2, y2
+
+
+def crop_rect_full_res(shape, box, scale, *, pad_frac=CROP_PAD,
+                       min_crop=MIN_CROP, avoid=None):
+    """The (x1, y1, x2, y2) crop_full_res would cut, in full-resolution pixels.
+
+    Split out from the crop itself so the command can LOG what it asked for
+    without re-deriving the arithmetic -- a diagnostic that recomputes the
+    geometry can only ever confirm its own copy of it.
+    """
+    height, width = shape[:2]
     x, y, w, h = [v / scale for v in box]
     pad = pad_frac * max(w, h)
     side_w = max(w + 2 * pad, min_crop)
     side_h = max(h + 2 * pad, min_crop)
     cx, cy = x + w / 2.0, y + h / 2.0
-    x1, y1 = int(max(0, cx - side_w / 2)), int(max(0, cy - side_h / 2))
-    x2, y2 = int(min(width, cx + side_w / 2)), int(min(height, cy + side_h / 2))
+    x1, y1 = max(0.0, cx - side_w / 2), max(0.0, cy - side_h / 2)
+    x2, y2 = min(float(width), cx + side_w / 2), min(float(height), cy + side_h / 2)
+    if avoid:
+        x1, y1, x2, y2 = shrink_away(
+            (x1, y1, x2, y2), (x, y, x + w, y + h),
+            [(bx, by, bx + bw, by + bh) for bx, by, bw, bh in avoid])
+    return int(x1), int(y1), int(x2), int(y2)
+
+
+def crop_full_res(frame, box, scale, *, pad_frac=CROP_PAD, min_crop=MIN_CROP,
+                  avoid=None):
+    """Map a PROC_WIDTH box back to full resolution and crop it with padding.
+
+    Padded because an open-vocabulary head classifies a crop by what the whole
+    crop looks like; a tight box around a white bag is just a white rectangle,
+    while the same bag against visible pavement reads as a bag.
+
+    `avoid` is an optional list of (x, y, w, h) person/vehicle boxes in FULL
+    RESOLUTION -- the same ones the caller hands `update()` as `ignore_boxes`.
+    The padding is pulled back off them where it can be; see shrink_away.
+    """
+    x1, y1, x2, y2 = crop_rect_full_res(
+        frame.shape, box, scale, pad_frac=pad_frac, min_crop=min_crop,
+        avoid=avoid)
     return frame[y1:y2, x1:x2]
 
 
@@ -1307,7 +1893,8 @@ def load_world_model(weights=DEFAULT_WORLD_MODEL, *, cache_dir=None, log=None):
     return model
 
 
-def confirm(model, crop, garbage_ids=None, conf=CONFIRM_CONF, imgsz=640):
+def confirm(model, crop, garbage_ids=None, conf=CONFIRM_CONF, imgsz=640,
+            absent=frozenset()):
     """Stage 2. Garbage must clear the floor AND beat every reject class.
 
     Returns (is_garbage, (garbage_label, score), (reject_label, score)).
@@ -1320,6 +1907,10 @@ def confirm(model, crop, garbage_ids=None, conf=CONFIRM_CONF, imgsz=640):
     best reject class is what suppresses look-alikes: a bare floor would fire
     on a dog at 0.4 just as readily as a sack at 0.4, while requiring garbage
     to LEAD means the model has to prefer "sack" over "dog" on this crop.
+
+    `absent` is reject class names a better-qualified model says are not in
+    this crop (see absent_rejects). They are dropped from the comparison
+    entirely.
 
     `conf` then has to be applied here as well as handed to predict(). Passing
     it to the model only sets ultralytics' own NMS floor, which drops boxes
@@ -1344,6 +1935,12 @@ def confirm(model, crop, garbage_ids=None, conf=CONFIRM_CONF, imgsz=640):
         name = result.names[int(cls)]
         if int(cls) in garbage_ids:
             garbage_dets.append((name, float(score), tuple(box)))
+        elif name in absent:
+            # The trained detector says this class is not here; see
+            # TRUSTED_REJECTS. Skipped rather than scored down, because a
+            # reduced score would still be compared against the garbage and
+            # the point is that this opinion does not count.
+            continue
         elif score > best_r[1]:
             best_r = (name, float(score))
     # Synonyms on one object corroborate; see combine_garbage. With a single

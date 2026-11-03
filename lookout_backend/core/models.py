@@ -265,6 +265,16 @@ class Alert(models.Model):
     # which snaps to the preceding keyframe, so the real moment can sit a
     # little later in the file than this says.
     clip_offset = models.FloatField(null=True, blank=True)
+    # The same thing for the ANNOTATED clip, which is a different length and
+    # therefore a different number. One field cannot serve both: the raw clip
+    # is cut from the source with a fixed lead-in, while the annotated one is
+    # whatever the recorder's rolling buffer held when it was written.
+    #
+    # It also MOVES. The annotated clip is saved twice — once as the alert is
+    # filed, when the detection is its last frame, and again once the post-roll
+    # has played, when the detection sits in the middle. The second write
+    # replaces both the clip and this offset.
+    annotated_offset = models.FloatField(null=True, blank=True)
     # --- weighted-sum scoring (core/vision/scoring.py) ----------------------
     # `confidence` above is now the FINAL score for detectors that have been
     # ported to the scoring model — an estimate of "how likely is this a
@@ -444,6 +454,15 @@ class DetectionJob(models.Model):
                                related_name="detection_jobs")
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.RUNNING)
     pid = models.IntegerField(null=True, blank=True)
+    # PIDs of detectors running ALONGSIDE the primary one for this job.
+    #
+    # Only the "everything" option uses it today: disposal shares no model
+    # forward pass with the merged four, so running all five over one clip
+    # means two processes, not one wider detector. They are tracked on the one
+    # row because to an operator it was one Start — a second row would show as
+    # a second run they did not ask for, and cancelling one would leave the
+    # other going.
+    extra_pids = models.JSONField(default=list, blank=True)
     started_at = models.DateTimeField(auto_now_add=True)
     finished_at = models.DateTimeField(null=True, blank=True)
     # Tail of the subprocess's combined stdout/stderr log — only set on failure.
@@ -685,7 +704,13 @@ class SystemSettings(models.Model):
     # Seconds an object must sit STILL before the bag check runs at all. This
     # is the rule that makes it "disposal" rather than "a bag exists": rubbish
     # being carried past the camera never stops, so it never qualifies.
-    disposal_static_seconds = models.PositiveSmallIntegerField(default=2)
+    #
+    # Was 2, which is barely longer than the fast background model takes to
+    # forget anything at all, so night-time transients -- a headlight wash, a
+    # reflection off wet tarmac, a shadow crossing a shutter -- cleared it
+    # before they had faded and the bag check was being asked about nothing.
+    # See core/vision/disposal.STATIC_SECONDS.
+    disposal_static_seconds = models.PositiveSmallIntegerField(default=12)
     # Seconds before the same SPOT may alert again. Place-keyed rather than
     # track-keyed, because a static-blob candidate is dropped after a couple of
     # unseen seconds and its replacement starts with a clean timer -- the same
@@ -696,7 +721,7 @@ class SystemSettings(models.Model):
     # drinking_cooldown_center_dist: the seconds were already tunable while the
     # distance they applied over was not, so a camera looking down a long
     # street could not widen it.
-    disposal_cooldown_dist = models.PositiveSmallIntegerField(default=60)
+    disposal_cooldown_dist = models.PositiveSmallIntegerField(default=30)
     # --- what counts as an object at all (stage 1) -------------------------
     # Size bounds as a PERCENT of the frame. These are the two that decide how
     # much stage 1 raises in the first place, and on a 4MP frame the defaults

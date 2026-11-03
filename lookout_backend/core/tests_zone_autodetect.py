@@ -336,8 +336,10 @@ class SpecTests(TestCase):
         from django.conf import settings
         source = (Path(settings.BASE_DIR).parent / "lookout" / "src"
                   / "EdgeCanvas.jsx").read_text(encoding="utf-8")
-        self.assertIn('type: "zone"', source)
-        self.assertIn("road:", source)
+        # Parameterised now: one canvas serves the no-parking area and the
+        # rubbish area, and writes whichever type it was told.
+        self.assertIn("type: kind", source)
+        self.assertIn('kind === "disposal" ? "disposal" : "road"', source)
 
 
 class PurityTests(TestCase):
@@ -987,3 +989,208 @@ class DisposalAutoAreaTests(TestCase):
         from core.management.commands import watch_disposal
         parser = watch_disposal.Command().create_parser("manage.py", "watch_disposal")
         self.assertIn("no_auto_area", {a.dest for a in parser._actions})
+
+
+class TwoAreasTests(TestCase):
+    """Parking's area and disposal's are different questions and must be
+    stored distinguishably.
+
+    Both detectors used to read any entry typed "zone", so one drawn polygon
+    meant two things at once — and a tight no-parking shape silently confined
+    the hunt for rubbish to the carriageway, which is where rubbish is least
+    likely to be left.
+    """
+
+    ZONE = {"road": {"type": "zone", "points": [[10, 10], [90, 10], [90, 90]]}}
+    RUBBISH = {"disposal": {"type": "disposal",
+                            "points": [[1, 1], [99, 1], [99, 99], [1, 99]]}}
+
+    def _disposal(self, camera):
+        from core.management.commands import watch_disposal
+        cmd = watch_disposal.Command()
+        cmd.camera = camera
+        cmd.stdout = types.SimpleNamespace(write=lambda *a, **k: None)
+        cmd.style = types.SimpleNamespace(
+            SUCCESS=lambda m: m, WARNING=lambda m: m, ERROR=lambda m: m)
+        return cmd
+
+    def _parking(self, camera):
+        from core.management.commands import watch_parking
+        cmd = watch_parking.Command()
+        cmd.camera = camera
+        cmd.stdout = types.SimpleNamespace(write=lambda *a, **k: None)
+        cmd.style = types.SimpleNamespace(
+            SUCCESS=lambda m: m, WARNING=lambda m: m, ERROR=lambda m: m)
+        return cmd
+
+    def _camera(self, code, edges):
+        return Camera.objects.create(code=code, name="C", edges=edges,
+                                     edges_width=100, edges_height=100)
+
+    def test_parking_ignores_a_rubbish_area(self):
+        """THE one this exists for. Drawing where rubbish goes must not move
+        the line vehicles are judged against."""
+        cam = self._camera("CAM-TWO-A", dict(self.RUBBISH))
+        self.assertIsNone(self._parking(cam)._zone_points_from_camera())
+
+    def test_disposal_uses_a_rubbish_area_when_there_is_one(self):
+        cam = self._camera("CAM-TWO-B", dict(self.RUBBISH))
+        points = self._disposal(cam)._area_points_from_camera()
+        self.assertEqual(len(points), 4)
+
+    def test_disposal_prefers_its_own_over_the_no_parking_one(self):
+        cam = self._camera("CAM-TWO-C", {**self.ZONE, **self.RUBBISH})
+        points = self._disposal(cam)._area_points_from_camera()
+        self.assertEqual(len(points), 4, "the 4-point rubbish area, not the 3-point zone")
+
+    def test_disposal_still_falls_back_to_an_older_shared_zone(self):
+        """Cameras drawn before the two were distinguishable keep working."""
+        cam = self._camera("CAM-TWO-D", dict(self.ZONE))
+        points = self._disposal(cam)._area_points_from_camera()
+        self.assertEqual(len(points), 3)
+
+    def test_parking_still_reads_its_own(self):
+        cam = self._camera("CAM-TWO-E", dict(self.ZONE))
+        self.assertEqual(len(self._parking(cam)._zone_points_from_camera()), 3)
+
+    def test_the_two_can_coexist_on_one_camera(self):
+        cam = self._camera("CAM-TWO-F", {**self.ZONE, **self.RUBBISH})
+        self.assertEqual(len(self._parking(cam)._zone_points_from_camera()), 3)
+        self.assertEqual(len(self._disposal(cam)._area_points_from_camera()), 4)
+
+
+class EdgeKindTests(TestCase):
+    """Which rule the one canvas on screen is drawing for."""
+
+    def _constants(self):
+        from pathlib import Path
+        from django.conf import settings
+        return (Path(settings.BASE_DIR).parent / "lookout" / "src" / "constants"
+                / "detectionTypes.js").read_text(encoding="utf-8")
+
+    def test_an_all_five_run_draws_the_rubbish_area(self):
+        """Parking traces its own on that run, so the canvas is free to mean
+        the thing tracing does worst."""
+        source = self._constants()
+        self.assertIn("(key === \"disposal\" || key === \"everything\") ? \"disposal\"",
+                      source)
+
+    def test_a_parking_or_merged4_run_draws_the_no_parking_area(self):
+        source = self._constants()
+        block = source[source.index("export const edgeKind"):]
+        self.assertIn(': "zone"', block[:300])
+
+    def test_the_canvas_writes_the_type_it_was_told(self):
+        from pathlib import Path
+        from django.conf import settings
+        source = (Path(settings.BASE_DIR).parent / "lookout" / "src"
+                  / "EdgeCanvas.jsx").read_text(encoding="utf-8")
+        self.assertIn("function toSpec(points, kind =", source)
+        self.assertIn("type: kind", source)
+
+    def test_the_page_passes_it_to_the_canvas_and_the_tracer(self):
+        from pathlib import Path
+        from django.conf import settings
+        source = (Path(settings.BASE_DIR).parent / "lookout" / "src"
+                  / "RunDetectionPage.jsx").read_text(encoding="utf-8")
+        self.assertIn("kind={edgeKind(violationType)}", source)
+        self.assertIn("edgeKind(violationType))", source)
+
+
+class TraceKindTests(TestCase):
+    """The tracer has to produce the shape the canvas is going to mean."""
+
+    URL = "/api/detection-jobs/trace-zone/"
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+        from core.models import User
+        self.admin = User.objects.create_user(
+            username="adm3", password="x", role="admin", display_name="A")
+        self.c = APIClient()
+        self.c.force_authenticate(self.admin)
+
+    def _call(self, **data):
+        from unittest import mock
+        import numpy as np
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        traced = ([(10.0, 20.0), (600.0, 30.0), (600.0, 400.0)],
+                  {"samples": 40, "detections": 90, "tracks": 6,
+                   "moving_tracks": 6, "ground_points": 88, "cloud": []},
+                  np.zeros((480, 640, 3), dtype="uint8"))
+        payload = {"file": SimpleUploadedFile("c.mp4", b"x", content_type="video/mp4")}
+        payload.update(data)
+        with mock.patch("core.vision.zone_autodetect.trace_clip",
+                        return_value=traced) as traced_mock:
+            res = self.c.post(self.URL, payload, format="multipart")
+        return res, traced_mock
+
+    def test_a_rubbish_trace_is_padded_far_wider(self):
+        """Tracing a tight carriageway into a canvas that means "watch here
+        for rubbish" would hand the operator the one area nobody dumps on —
+        and it would look plausible."""
+        from core.vision import zone_autodetect as auto
+        res, traced = self._call(kind="disposal")
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(traced.call_args.kwargs["pad_fraction"],
+                         auto.DISPOSAL_PAD_FRACTION)
+
+    def test_a_no_parking_trace_stays_tight(self):
+        from core.vision import zone_autodetect as auto
+        _res, traced = self._call(kind="zone")
+        self.assertEqual(traced.call_args.kwargs["pad_fraction"], auto.PAD_FRACTION)
+
+    def test_it_defaults_to_the_no_parking_shape(self):
+        from core.vision import zone_autodetect as auto
+        _res, traced = self._call()
+        self.assertEqual(traced.call_args.kwargs["pad_fraction"], auto.PAD_FRACTION)
+
+    def test_the_reply_says_which_it_traced(self):
+        """The page seeds it into a canvas with its own idea of kind; a silent
+        mismatch would store the wrong type."""
+        res, _traced = self._call(kind="disposal")
+        self.assertEqual(res.data["kind"], "disposal")
+
+
+class ThresholdsAreSentTests(TestCase):
+    """Parking's two boxes have to reach the detector.
+
+    They are its RULE — "how much of the vehicle" and "for how long" — not a
+    property of the polygon. The client nested them inside its `edges` block,
+    so once parking started tracing its own area and operators stopped drawing
+    one, the boxes silently stopped being sent and every run used whatever was
+    last stored on the camera: the form said five minutes and the detector
+    used thirty seconds.
+    """
+
+    def _api(self):
+        from pathlib import Path
+        from django.conf import settings
+        return (Path(settings.BASE_DIR).parent / "lookout" / "src"
+                / "api.js").read_text(encoding="utf-8")
+
+    def test_they_are_not_nested_in_the_edges_block(self):
+        source = self._api()
+        edges_at = source.index('formData.append("edges", JSON.stringify(edges))')
+        pct_at = source.index('formData.append("obstruction_pct"')
+        # The `edges` block closes between the two.
+        between = source[edges_at:pct_at]
+        self.assertIn("\n  }", between,
+                      "the thresholds must sit outside the `if (edges)` block")
+
+    def test_each_is_still_guarded_individually(self):
+        """FormData stringifies undefined to the literal "undefined", which the
+        server reads as present and tries to parse — disposal draws an area and
+        has no thresholds."""
+        source = self._api()
+        self.assertIn("obstructionPct !== undefined && obstructionPct !== null", source)
+        self.assertIn("obstructionMinutes !== undefined && obstructionMinutes !== null",
+                      source)
+
+    def test_the_server_stages_them_without_an_area(self):
+        """The other half of the same fix, already in place: the view writes
+        them whether or not `edges` came with them."""
+        import inspect
+        from core import views
+        source = inspect.getsource(views.DetectionJobViewSet.create)
+        self.assertIn("if edges is not None or obstruction_pct is not None", source)

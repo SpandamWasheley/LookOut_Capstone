@@ -19,6 +19,13 @@ Rules (spec sections 3-4):
     (3+ puffs, no item), which is capped at Possible and tagged.
   * Holdup needs a second person NEAR the knife holder to go above
     Monitoring; a knife alone, or with nobody near it, is Monitoring only.
+  * Disposal needs the object cue (a bag check that leads every look-alike
+    AND clears the floor); while the owner is still standing over it the
+    status is capped at Monitoring, because it is not abandoned yet.
+    The exception mirrors smoking's puff-only path: a bag check that leads but
+    is UNDER the floor still opens the event when the full behaviour is there
+    (something arrived, a person was beside it, they left) -- capped at
+    Possible, because the one cue that says WHAT it is was unsure.
   * Hysteresis: Possible / Likely are left only when the score falls 5 points
     below the threshold that admitted them. Rising is immediate.
 
@@ -33,8 +40,9 @@ import datetime
 # v6.2.5 = holdup E12 is "stayed close" with pass-through rejection; v6.2.8 = far-range puff counted from the cigarette's own
 # movement in the person box; v6.2.10 = scene-baseline seed fix, zoomed pose feeds the gesture counter, E20 only with a clip time,
 # E12 walking tests in raw box-heights/s (docs/specs/V6_2_LOCATION_MOMENTUM.md).
-# The weights and thresholds are unchanged from v6.
-SCORING_SPEC_VERSION = "v6.2.11"
+# v6.3 = improper disposal joins the scored detectors (DISPOSAL_WEIGHTS). The weights and
+# thresholds of the original four are unchanged from v6.
+SCORING_SPEC_VERSION = "v6.3"
 
 
 # --- statuses ----------------------------------------------------------------
@@ -269,6 +277,60 @@ SMOKING_WEIGHTS = {             # total 1.10, capped at 1.00
     "near_mouth":    0.15,   # smoking item at the mouth (needs the item)
 }
 
+# Improper disposal. UNLIKE the three tables above, these weights are OURS --
+# calibrated on this barangay's own footage, not taken from a published study.
+# That difference is stated here rather than glossed, because a panel asking
+# "where did 0.20 come from" deserves the true answer: the CUE STRUCTURE is the
+# standard abandoned-object formulation that benchmarks like PETS2006 and
+# AVSS/i-LIDS are built around -- an object is abandoned when a person brought
+# it, it became static, and that person then left it -- while the numbers
+# against each cue are a tuned evidence split, re-tunable in Settings.
+#
+# Disposal used to carry no table at all, on the argument that inventing
+# weights to look like the scored detectors would present a guess as a
+# measurement. What changed is that the alternative turned out to be worse:
+# the same evidence was being used as BOOLEAN GATES, so a missed person
+# detection -- routine at distance, at night, or on somebody walking away --
+# withheld a real violation entirely instead of merely weakening its case. A
+# weight that is honestly labelled as tuned is a better instrument than a veto
+# that is wrong in silence.
+#
+# The split, and why:
+#   object     the gate. No bag, no event -- same rule as bottle / cigarette /
+#              E14. Worth the most because it is the only cue that says WHAT
+#              the thing is; everything else only says how it got there.
+#   arrival    this patch of ground changed, by more than the ground around it
+#              did. The system's own evidence that something was PUT here,
+#              independent of whether anyone was seen doing it.
+#   person     somebody was beside it as it appeared. Deliberately small: a
+#              person near rubbish is the commonest innocent scene there is.
+#   left       ... and then walked away from it. The largest of the three
+#              behaviour cues because it is the ordinance's actual test --
+#              this is the cue that separates "a sack is on the pavement" from
+#              "a sack was LEFT on the pavement".
+#   persisted  still there when the bag check was re-run later. Small, because
+#              it is corroboration rather than new evidence.
+#
+# `person` + `left` are deliberately not worth more together than object +
+# arrival: both die together when the person pass misses, so the object route
+# has to reach Possible on its own (0.40 + 0.20 = 0.60). That is the whole
+# repair, and it is why `person` is only 0.10.
+#   dwell      it has been sitting on the Monitoring watchlist for
+#              MONITORING_DWELL_SECONDS and is still there. Time alone is the
+#              weakest evidence in the table, which is why it is worth exactly
+#              enough to lift a confirmed bag (0.40) over the Possible line and
+#              no more -- and why it can only ever ESCALATE a row that already
+#              has a gate cue, never open one. A shadow that lingers all
+#              afternoon has no gate and still scores nothing.
+DISPOSAL_WEIGHTS = {            # total 1.15, capped at 1.00 (as SMOKING_WEIGHTS is)
+    "object":    0.40,   # GATE -- garbage leads every reject class AND clears the floor
+    "arrival":   0.20,   # the spot changed, more than its surroundings did
+    "person":    0.10,   # somebody was beside it as it appeared
+    "left":      0.25,   # ... and then walked away (needs `person`)
+    "persisted": 0.05,   # still there at a later re-check
+    "dwell":     0.15,   # still on the watchlist N seconds later (needs `object`)
+}
+
 HOLDUP_WEIGHTS = {              # total 0.75 (theft.py E-codes)
     "E14": 0.45,   # knife / weapon present -- GATE
     "E12": 0.20,   # two people frozen close together
@@ -283,6 +345,7 @@ GATE_CUES = {
     "drinking": "bottle",
     "smoking": "cigarette",
     "holdup": "E14",        # weapon present
+    "disposal": "object",   # the bag check led and cleared the floor
 }
 
 # Dependent cues score only when their partner fired: an object AT THE MOUTH
@@ -291,7 +354,29 @@ CONDITIONAL_CUES = {
     "drinking": {"at_mouth": "bottle"},
     "smoking": {"near_mouth": "cigarette"},
     "holdup": {},
+    # You cannot walk away from something you were never beside. Without this,
+    # an object with no owner detected at all would score the departure cue on
+    # the vacuously-true reading of "no owner is near it".
+    # `dwell` needs `object` for the same reason: time is an escalation of an
+    # existing claim, not a claim of its own. Without this, a candidate parked
+    # at Monitoring by the collection-window rule -- or any row whose object
+    # cue later weakened -- would climb to Possible purely by waiting.
+    "disposal": {"left": "person", "dwell": "object"},
 }
+
+# Disposal's capped path, the exact analogue of the puff-only one above: the
+# behaviour cues alone, when the bag check led but could not clear the floor.
+# Someone brought something, set it down and walked away from it -- which is
+# the abandoned-object definition in full -- and the only thing missing is
+# confidence about WHAT was left. That is worth telling a reviewer about, and
+# it is not worth calling Likely.
+#
+# The cap is defensive rather than load-bearing today: without the gate's 0.40
+# the behaviour cues sum to 0.60 at most, so this path cannot reach Likely by
+# arithmetic either. Both are deliberate -- a later re-weighting must not be
+# able to quietly promote a weak object match to a full alert.
+DISPOSAL_BEHAVIOUR_CUES = frozenset({"arrival", "person", "left"})
+DISPOSAL_BEHAVIOUR_TAG = "Weak match on the object — reported on the behaviour"
 
 # The smoking cue that opens the capped puff-only path.
 PUFF_ONLY_CUE = "puff_pattern"
@@ -427,6 +512,13 @@ class Score:
         "E10": "Someone loitering first",
         "E11E12": "Approach, then freeze (E11→E12)",
         "E20": "Time of day",
+        # disposal
+        "object": "Looks like dumped rubbish",
+        "arrival": "This spot changed — something was put here",
+        "person": "Somebody was beside it as it appeared",
+        "left": "That person walked away and left it",
+        "persisted": "Still there when checked again",
+        "dwell": "Left sitting there, unattended",
     }
     MULTIPLIER_LABELS = {"E20": "Time of day"}
 
