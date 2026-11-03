@@ -646,6 +646,14 @@ GESTURE_KP_MIN_CONF = 0.5           # nose and the wrist used must both reach th
 GESTURE_EYE_MIN_CONF = 0.4          # at least one eye must reach this, else the person is facing away
 GESTURE_MIN_PERSON_HEIGHT_PX = 120  # native-resolution person box height under which no gesture is scored
 GESTURE_MIN_SHOULDER_PX = 25        # native-resolution shoulder width under which no gesture is scored
+# Side-on person (profile): the shoulder line foreshortens to a few pixels, so "shoulder widths" stops being a usable ruler (a hand
+# at the chin read 2-3 widths away, or the frame was dropped as "small person"). For a person box at least
+# GESTURE_PROFILE_MIN_HEIGHT_PX tall whose shoulders are under GESTURE_PROFILE_SHOULDER_FRAC of that height, the ruler becomes
+# GESTURE_PROFILE_BODY_SHOULDER_FRAC of the height (a front-on shoulder width), so the 0.9 / 1.0 thresholds mean the same thing.
+# Nose, eye, wrist and shoulder confidences are still required. Smaller (far) people keep the old rule untouched.
+GESTURE_PROFILE_MIN_HEIGHT_PX = 250
+GESTURE_PROFILE_SHOULDER_FRAC = 0.15
+GESTURE_PROFILE_BODY_SHOULDER_FRAC = 0.26
 
 
 def load_yolo():
@@ -736,26 +744,41 @@ def hand_to_mouth_ratio(kpts):
 
 
 def gesture_ratio(kpts, person_height=None):
-    """(ratio, reason) for the hand-to-mouth GESTURE counter.
+    """(ratio, reason) for the hand-to-mouth GESTURE counter. See gesture_ratio_ex, which also says whether the
+    side-on ruler was used."""
+    ratio, why, _ = gesture_ratio_ex(kpts, person_height)
+    return ratio, why
+
+
+def gesture_ratio_ex(kpts, person_height=None):
+    """(ratio, reason, side_on) for the hand-to-mouth GESTURE counter. `side_on` is True when the ratio was measured against
+    the person's height because their shoulders are foreshortened (GESTURE_PROFILE_*): a sip from a bottle looks exactly like a
+    draw from a vape in that pose, so the caller must not trust such a ratio on a person holding a Bottle.
 
     `ratio` is hand_to_mouth_ratio's wrist-to-nose distance in shoulder-widths, but only from keypoints the
     counter can trust; otherwise it is None and `reason` says why, so the caller leaves the hand state alone
     (an unknown frame neither raises nor lowers it) and can count the skip:
       "small person"     person box shorter than GESTURE_MIN_PERSON_HEIGHT_PX, or shoulders narrower than GESTURE_MIN_SHOULDER_PX
+                         (a side-on person at least GESTURE_PROFILE_MIN_HEIGHT_PX tall is measured against their height instead)
       "facing away"      nose under GESTURE_KP_MIN_CONF, or neither eye reaching GESTURE_EYE_MIN_CONF
       "keypoints unsure" a shoulder under KP_MIN_CONF, or no wrist reaching GESTURE_KP_MIN_CONF
     Only wrists at GESTURE_KP_MIN_CONF compete for "the closest wrist"."""
     if person_height is not None and person_height < GESTURE_MIN_PERSON_HEIGHT_PX:
-        return None, "small person"
+        return None, "small person", False
     nose = kpts[KP_NOSE]
     if nose[2] < GESTURE_KP_MIN_CONF or max(kpts[KP_LEYE][2], kpts[KP_REYE][2]) < GESTURE_EYE_MIN_CONF:
-        return None, "facing away"
+        return None, "facing away", False
     ls, rs = kpts[KP_LSHOULDER], kpts[KP_RSHOULDER]
     if ls[2] < KP_MIN_CONF or rs[2] < KP_MIN_CONF:
-        return None, "keypoints unsure"
+        return None, "keypoints unsure", False
     shoulder_w = ((ls[0] - rs[0]) ** 2 + (ls[1] - rs[1]) ** 2) ** 0.5
-    if shoulder_w < GESTURE_MIN_SHOULDER_PX:
-        return None, "small person"
+    side_on = False
+    if (person_height is not None and person_height >= GESTURE_PROFILE_MIN_HEIGHT_PX
+            and shoulder_w < GESTURE_PROFILE_SHOULDER_FRAC * person_height):
+        shoulder_w = GESTURE_PROFILE_BODY_SHOULDER_FRAC * person_height      # side-on: measure against the body, not the shoulder line
+        side_on = True
+    elif shoulder_w < GESTURE_MIN_SHOULDER_PX:
+        return None, "small person", False
     best = None
     for w in (kpts[KP_LWRIST], kpts[KP_RWRIST]):
         if w[2] < GESTURE_KP_MIN_CONF:
@@ -764,8 +787,8 @@ def gesture_ratio(kpts, person_height=None):
         if best is None or d < best:
             best = d
     if best is None:
-        return None, "keypoints unsure"
-    return best, ""
+        return None, "keypoints unsure", False
+    return best, "", side_on
 
 
 def smoking_model_available():

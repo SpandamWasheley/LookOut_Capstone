@@ -52,12 +52,21 @@ class GateTests(unittest.TestCase):
         self.run_gate(g, 1.0, 1.0, zone=True)
         self.assertTrue(g.sip_ok)
 
-    def test_two_short_dips_to_the_mouth_do_not_add_up_to_a_sip(self):
+    def test_short_dips_do_not_add_up_to_a_sip_under_the_old_rule(self):
+        # superseded by the separate-sip count (tests_solo_sip_count.py); the switch restores this behaviour
+        with mock.patch.object(solo_sip, "SIP_COUNT_ENABLED", False):
+            g = solo_sip.SoloSipGate()
+            for start in (0.0, 2.0, 4.0):
+                self.run_gate(g, start, start + 0.5, zone=True)
+                self.run_gate(g, start + 0.75, start + 1.75, zone=False)
+            self.assertFalse(g.sip_ok)
+
+    def test_separate_half_second_dips_count_as_sips_under_the_new_rule(self):
         g = solo_sip.SoloSipGate()
         for start in (0.0, 2.0, 4.0):
             self.run_gate(g, start, start + 0.5, zone=True)
             self.run_gate(g, start + 0.75, start + 1.75, zone=False)
-        self.assertFalse(g.sip_ok)
+        self.assertTrue(g.sip_ok)
 
     def test_a_sip_needs_a_confident_bottle(self):
         g = solo_sip.SoloSipGate()

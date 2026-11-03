@@ -9,7 +9,7 @@ const DOT = { running: "#22c55e", starting: "#f59e0b", unreachable: "#ef4444", s
 // Live monitoring of the camera, started and stopped from Live Feeds (admin only, and only while "Show testing tools" is on).
 // One live monitor for the whole system. The server restarts the detector by itself if it stops or
 // the stream drops, and shows a warning here while that is happening.
-export function LiveMonitor() {
+export function LiveMonitor({ actions = null }) {
   const testingTools = useTestingTools(true);
   const [status, setStatus] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -46,7 +46,7 @@ export function LiveMonitor() {
     : "";
 
   return (
-    <div className="mb-4 space-y-3">
+    <div className="mt-4 space-y-3">
       <div className="rounded-xl px-4 py-3 flex flex-wrap items-center gap-3"
         style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
         <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: DOT[status.state] ?? DOT.stopped }} />
@@ -59,6 +59,7 @@ export function LiveMonitor() {
           </div>
         </div>
         <div className="flex items-center gap-2 ml-auto">
+          {actions}
           {!stopped && (
             <button onClick={() => setShowView((v) => !v)}
               className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[13px]"

@@ -445,6 +445,35 @@ Why (D Far.mkv, from the testing view): the person stayed in one spot but the tr
 
 Not verified on clips: whether D Far now alerts, or the effect on the accuracy set.
 
+## S. Smoking: side-on gesture ruler and draw carry-over across track IDs (unit tests only, no clip runs)
+
+Why: (a) a person seen in profile has a foreshortened shoulder line, so "shoulder widths" stops being a usable ruler and a hand at the chin read 2-3 widths away or the frame was dropped as "small person"; (b) the tracker re-issues IDs to a person who walks, turns or is briefly hidden, and the hand-to-mouth counter lives on the track, so each new ID restarted from zero (one draw under ID 1 + one under ID 15 never reached the two draws the puff-only path needs).
+
+1. Side-on ruler: `recognition.gesture_ratio_ex` (new; `gesture_ratio` is now a wrapper returning the same pair). For a person box at least `GESTURE_PROFILE_MIN_HEIGHT_PX` = 250 tall whose shoulders are under `GESTURE_PROFILE_SHOULDER_FRAC` = 0.15 of that height, the ruler becomes `GESTURE_PROFILE_BODY_SHOULDER_FRAC` = 0.26 of the height, so the existing 0.9 / 1.0 thresholds mean the same thing. Nose, eye, wrist and shoulder confidences are still required. Smaller (far) people keep the old rule. `watch_smoking._count_gesture` receives `side_on`.
+2. Draw carry-over: new `core/vision/gesture_handover.py` (pure bookkeeping, no Django). A new track with no counted draws adopts them from an old track only if the old one has vanished (not matched for `MIN_GAP_S` = 0.25 s, so a live track is never robbed), was last matched at most `MAX_GAP_S` = 1.5 s ago, and the new box's centre lies inside the old last box grown by `MARGIN_X` / `MARGIN_Y`. A track older than `YOUNG_TRACK_S` = 3 s never adopts; each old track is adopted once; `watch_smoking` refuses anyone a Bottle is associated with. Wired in `watch_smoking._carry_draws_over`. Switch: `GESTURE_HANDOVER` (False = old behaviour). With stable IDs nothing is ever adopted.
+3. Tests: core/tests_gesture_handover.py, core/tests_false_alarm_fixes.py.
+
+Not verified on clips. Regression replays still owed are listed in REMINDERS.md; look for any NEW smoking alert (a false alarm).
+
+## T. Drinking: separate short sips count; alert cooldown only held by notifying rows (unit tests only, no clip runs)
+
+1. Sip count (`solo_sip.py`): besides one continuous `SIP_MIN_HOLD_SECONDS` hold, `SIPS_NEEDED` = 2 separate holds of at least `SIP_MIN_EACH_SECONDS` = 0.5 s (a gap over `RUN_GAP_SECONDS` apart) inside `SIP_WINDOW_SECONDS` = 30 s also qualify, for a person who sips in short bursts. One accidental hold still cannot qualify. Switch: `SIP_COUNT_ENABLED` (False = the old single-hold rule).
+2. Gate handover (section R) loosened: `HANDOVER_MAX_GAP_S` 1.5 -> 4.0 s and the box-overlap (IoU >= 0.5) test replaced by "the new box's centre lies inside the old last box" (nearest centre wins), because a person who moves while the ID is re-issued no longer overlaps their old box enough. The testing view also shows "sips 1/2" while separate short sips are being counted.
+3. Cooldown (`_incidents.py`): only a row that notifies (`scoring.NOTIFY_LEVELS`) holds a spot's cooldown. A Monitoring row is the quiet watchlist and is often discarded as a flicker; letting it block meant the same spot reaching Possible inside the cooldown was suppressed and never alerted. A row that opens quiet and later rises to notify starts the cooldown at that moment.
+4. `watch_thief`: the fps readout uses `time.time()` (cosmetic).
+5. Tests: core/tests_solo_sip_count.py, core/tests_solo_sip.py, core/tests_solo_gate_handover.py, core/tests_false_alarm_fixes.py.
+
+## U. Improper disposal gets its own watch area; dashboard tidy-ups
+
+Why: `watch_disposal` read the camera's `edges`, the same polygon as parking's no-parking area. Parking's is the carriageway (and `trace_zone` builds it from where vehicles MOVED), so saving or tracing it silently confined rubbish detection to the road, when rubbish lies on the footpath and kerb beside it.
+
+1. Storage: `Camera.disposal_edges` + `disposal_edges_width` / `disposal_edges_height` (migration 0066), same `{"key": {"type": "zone", "points": [...]}}` shape as `edges`. `watch_disposal._area_points_from_camera` reads only these. Empty = the whole frame is watched (unchanged default). `--zone <file>` still works. Parking and `trace_zone` are untouched and never write it.
+2. Dashboard: Edge Zones (`EdgeEditorModal`) has a second tab, "Improper disposal" (green, no thresholds, optional). Both canvases stay mounted so switching tabs does not lose a half-drawn shape. `EdgeCanvas` takes `label` / `colour` / `hint`. `CameraGrid` passes the three new fields through.
+3. Saving sends only the area that changed (parking: shape, % and minutes; disposal: shape). `CameraViewSet.update` then calls `monitor.apply_zone` for `edges` and the new `monitor.apply_disposal_zone` for `disposal_edges`; each swaps only its own process, so the other detectors keep running. Response carries `zone_applied` / `disposal_zone_applied`. A cleared disposal area relaunches disposal (whole frame); it only stops if `disposal_enabled` is off.
+4. Upgrade note: a camera whose parking zone disposal was quietly using now watches the whole frame until a disposal area is drawn. Run `python manage.py migrate`.
+5. Alert cards: the "peaked at Likely/Possible" note was removed from `AlertFeed` and `ViolationModal`. `LiveMonitor` takes an `actions` prop and sits under the camera grid (`CameraGrid`) instead of being rendered by `admin_dashboard`.
+6. Tests: core/tests_disposal_zone.py.
+
 ## Tests
 
 New: `core/tests_false_alarm_fixes.py` (38 tests). Updated for the apex hold and the puff-only cap: `core/tests_incidents.py`, `core/tests_v6210.py`.

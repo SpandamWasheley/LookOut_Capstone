@@ -59,6 +59,23 @@ class GestureRatioRules(unittest.TestCase):
         self.assertEqual(recognition.gesture_ratio(kp(0.5), person_height=119), (None, "small person"))
         self.assertEqual(recognition.gesture_ratio(kp(0.5), person_height=120)[1], "")
 
+    def test_a_side_on_tall_person_is_measured_against_their_height(self):
+        # shoulders 10 px on a 400 px person (profile): scored on 0.26 x 400 = 104 px, not dropped and not read as 10 px
+        k = kp(0.5, shoulder_px=10.0)
+        ratio, why = recognition.gesture_ratio(k, 400)
+        self.assertEqual(why, "")
+        self.assertAlmostEqual(ratio, 0.5 * 10.0 / (0.26 * 400), places=2)
+
+    def test_a_far_person_with_narrow_shoulders_is_still_skipped(self):
+        self.assertEqual(recognition.gesture_ratio(kp(0.5, shoulder_px=10.0), 240), (None, "small person"))
+
+    def test_a_front_on_tall_person_keeps_the_shoulder_ruler(self):
+        ratio, _ = recognition.gesture_ratio(kp(0.5, shoulder_px=80.0), 400)
+        self.assertAlmostEqual(ratio, 0.5, places=2)
+
+    def test_a_side_on_person_still_needs_a_visible_face(self):
+        self.assertEqual(recognition.gesture_ratio(kp(0.5, shoulder_px=10.0, nose=0.3), 400), (None, "facing away"))
+
     def test_narrow_shoulders_are_skipped(self):
         self.assertEqual(recognition.gesture_ratio(kp(0.5, shoulder_px=24.0), 200), (None, "small person"))
         self.assertEqual(recognition.gesture_ratio(kp(0.5, shoulder_px=26.0), 200)[1], "")
@@ -174,6 +191,42 @@ class FeedPoseSkips(unittest.TestCase):
         end = self.run_cycle(t, lambda r: kp(r))
         self.assertEqual(t.gesture_count(end), 0)
         self.assertGreater(self.cmd.stats["gesture skipped: bottle on this person (drinking)"], 0)
+
+    # A side-on person is measured against their height (recognition.GESTURE_PROFILE_*). A sip from a bottle looks like a vape draw
+    # there, so those samples are not trusted while a real Bottle has been on the person (any run length) in the last 10 s.
+    def side_on(self, r):
+        """Keypoints for a 500 px person with 10 px shoulders: the height ruler is 0.26 x 500 = 130 px; r in height-ruler units."""
+        return kp(r * 130 / 10.0, shoulder_px=10.0)
+
+    def tall_person(self):
+        t = person(1, box=(100, 100, 260, 600))
+        t.ext_id = 7
+        return t
+
+    def test_a_side_on_cycle_counts_when_no_bottle_was_seen(self):
+        t = self.tall_person()
+        end = self.run_cycle(t, self.side_on)
+        self.assertEqual(t.gesture_count(end), 1)
+
+    def test_a_side_on_cycle_is_ignored_when_a_real_bottle_was_seen_even_briefly(self):
+        t = self.tall_person()
+        self.cmd.bottle_seen.append((7, tuple(t.box), -1.0))            # one sample: far under the 3 s stand-down run
+        self.assertFalse(self.cmd._bottle_standdown(t, 0.0))
+        end = self.run_cycle(t, self.side_on)
+        self.assertEqual(t.gesture_count(end), 0)
+        self.assertGreater(self.cmd.stats["gesture skipped: side-on, bottle seen on this person (drinking)"], 0)
+
+    def test_a_front_on_cycle_still_counts_with_a_brief_bottle_sample(self):
+        t = self.tall_person()
+        self.cmd.bottle_seen.append((7, tuple(t.box), -1.0))
+        end = self.run_cycle(t, lambda r: kp(r, shoulder_px=80.0))
+        self.assertEqual(t.gesture_count(end), 1)                       # the guard is for the side-on ruler only
+
+    def test_a_side_on_cycle_counts_again_once_the_bottle_is_old(self):
+        t = self.tall_person()
+        self.cmd.bottle_seen.append((7, tuple(t.box), -30.0))
+        end = self.run_cycle(t, self.side_on)
+        self.assertEqual(t.gesture_count(end), 1)
 
     def test_a_bottle_seen_for_under_three_seconds_does_not_stand_down(self):
         t = person(1)

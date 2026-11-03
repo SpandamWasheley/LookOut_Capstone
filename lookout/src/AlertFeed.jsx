@@ -204,17 +204,6 @@ function DismissModal({ alert, onConfirm, onClose }) {
 // ── Alert card ────────────────────────────────────────────────────────────────
 const THIN_CARD_H = 56;
 
-// "peaked at Likely": shown only when the event's highest status is not its current one (it reached
-// Possible/Likely and its cues faded). The list keeps such an alert on peak, so the card has to say why.
-function PeakNote({ alert }) {
-  if (!alert.peakLevelLabel || !alert.levelLabel || alert.peakLevelLabel === alert.levelLabel) return null;
-  return (
-    <span className="text-[12px] font-medium ml-1.5" style={{ color: levelColor(alert.peakLevelLabel) }}>
-      peaked at {alert.peakLevelLabel}
-    </span>
-  );
-}
-
 // A card that fails to render is skipped (and logged) instead of taking the whole list, and so the tab, down with it.
 function AlertCard(props) {
   return (
@@ -271,7 +260,6 @@ function AlertCardView({ alert, onView, thin = false, extraPad = 0 }) {
                 {alert.levelLabel && (
                   <span className="text-[12px] font-semibold flex-shrink-0" style={{ color: levelColor(alert.levelLabel) }}>
                     {alert.levelLabel}
-                    <PeakNote alert={alert} />
                   </span>
                 )}
               </div>
@@ -311,7 +299,6 @@ function AlertCardView({ alert, onView, thin = false, extraPad = 0 }) {
                     {alert.levelLabel}
                   </span>
                 )}
-                <PeakNote alert={alert} />
               </div>
               {/* Row 2: alert ID + time */}
               <div className="flex items-center gap-3 text-[13px]" style={{ color: "var(--muted-foreground)" }}>

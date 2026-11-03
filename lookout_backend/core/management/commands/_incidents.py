@@ -590,7 +590,10 @@ class IncidentMixin:
             if score.alerting:
                 inc.last_clip_at = now
             inc.last_row_write = now
-            if box is not None:
+            # Only a row that notifies holds the spot's cooldown. A Monitoring row is the quiet watchlist (and is
+            # often discarded as a flicker); letting it block meant the same spot reaching Possible inside the
+            # cooldown was suppressed and never alerted.
+            if box is not None and level in scoring.NOTIFY_LEVELS:
                 self._alert_log.append((tuple(box), now))
             self.stats[f"incident:{level}"] += 1
         elif self.dry_run:
@@ -600,6 +603,8 @@ class IncidentMixin:
                 self.stats[f"incident:{level}"] += 1
         else:
             alert = inc.alert
+            if rose and level in scoring.NOTIFY_LEVELS and previous not in scoring.NOTIFY_LEVELS and box is not None:
+                self._alert_log.append((tuple(box), now))     # it opened quiet and now notifies: the spot's cooldown starts here
             due = (level != previous) or (inc.last_row_write is None
                                            or now - inc.last_row_write >= ROW_UPDATE_SECONDS)
             if alert is not None and due:

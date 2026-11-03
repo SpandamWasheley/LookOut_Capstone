@@ -872,7 +872,7 @@ class Command(IncidentMixin, BaseCommand):
                 # few frames to land inside the window — below ~2 FPS that floor,
                 # not the dwell, is what decides how fast anything can alert.
                 if not fps_warned and self.stats["frames"] >= 30:
-                    fps = self.stats["frames"] / max(wall_now - started_at, 1e-6)
+                    fps = self.stats["frames"] / max(time.time() - started_at, 1e-6)
                     if fps < 2:
                         fps_warned = True
                         self.stdout.write(self.style.WARNING(

@@ -22,7 +22,7 @@ class Handover(unittest.TestCase):
 
     def test_the_constants(self):
         self.assertTrue(solo_sip.SOLO_GATE_HANDOVER)
-        self.assertEqual((solo_sip.HANDOVER_MAX_GAP_S, solo_sip.HANDOVER_MIN_GAP_S, solo_sip.HANDOVER_MIN_IOU), (1.5, 0.25, 0.5))
+        self.assertEqual((solo_sip.HANDOVER_MAX_GAP_S, solo_sip.HANDOVER_MIN_GAP_S), (4.0, 0.25))
 
     def test_a_new_id_at_the_same_spot_adopts_the_gate(self):
         got = self.h.adopt(2, (104, 102, 164, 302), 4.6)
@@ -41,14 +41,18 @@ class Handover(unittest.TestCase):
     def test_a_live_track_is_not_robbed(self):
         self.assertIsNone(self.h.adopt(2, BOX, 4.1))              # old seen 0.1 s ago < 0.25 s
 
+    def test_a_gap_up_to_4_seconds_is_fine(self):
+        self.assertIs(self.h.adopt(2, BOX, 7.5), self.gate)       # 3.5 s
+
     def test_too_long_a_gap(self):
-        self.assertIsNone(self.h.adopt(2, BOX, 6.0))              # 2.0 s > 1.5 s
+        self.assertIsNone(self.h.adopt(2, BOX, 8.5))              # 4.5 s > 4.0 s
 
     def test_a_different_place(self):
         self.assertIsNone(self.h.adopt(2, (400, 100, 460, 300), 4.6))
 
-    def test_a_barely_overlapping_box(self):
-        self.assertIsNone(self.h.adopt(2, (140, 100, 200, 300), 4.6))     # IoU 0.2
+    def test_the_new_centre_must_be_inside_the_old_box(self):
+        self.assertIsNone(self.h.adopt(2, (140, 100, 200, 300), 4.6))        # centre x 170 > 160: outside
+        self.assertIs(self.h.adopt(3, (120, 120, 180, 320), 4.6), self.gate)  # centre (150, 220): inside
 
     def test_the_switch_turns_it_off(self):
         with mock.patch.object(solo_sip, "SOLO_GATE_HANDOVER", False):

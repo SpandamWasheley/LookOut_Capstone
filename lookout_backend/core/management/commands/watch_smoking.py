@@ -12,7 +12,7 @@ from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
 from core.vision import trim as trimming
-from core.vision import recognition, scoring, tracking, ai_checker, location_momentum
+from core.vision import recognition, scoring, tracking, ai_checker, location_momentum, gesture_handover
 from ._incidents import IncidentMixin
 
 SMOKING_CAMERA_CODE = "CAM-SMOKE-01"
@@ -546,6 +546,9 @@ class Command(IncidentMixin, BaseCommand):
         """
         if not self.pose or not tracks:
             return
+        for t in tracks:                                           # a person re-issued a new ID keeps the draws the old ID counted
+            if not t.is_scene:
+                self._carry_draws_over(t, now_ts)
         self._pose_tick = getattr(self, "_pose_tick", -1) + 1
         if POSE_EVERY_N_FRAMES > 1 and self._pose_tick % POSE_EVERY_N_FRAMES:
             return
@@ -573,7 +576,7 @@ class Command(IncidentMixin, BaseCommand):
                     best, best_iou = track, iou
             if best is None or best_iou < POSE_MATCH_IOU:
                 continue
-            ratio, why = recognition.gesture_ratio(kpts, person_height=box[3] - box[1])
+            ratio, why, side_on = recognition.gesture_ratio_ex(kpts, person_height=box[3] - box[1])
             if ratio is None:
                 # Unknown frame: the hand state is left exactly as it was, but the person was resolved, so the
                 # zoomed-pose fallback below must not second-guess a back-turned / tiny person into a gesture.
@@ -581,7 +584,7 @@ class Command(IncidentMixin, BaseCommand):
                 self.stats[f"gesture skipped: {why}"] += 1
                 continue
             matched.add(best.id)
-            self._count_gesture(best, ratio, now_ts)
+            self._count_gesture(best, ratio, now_ts, side_on=side_on)
 
         # v6.2.10: a track the whole-frame pass found no usable pose for (far people) gets its zoomed pose instead.
         if location_momentum.GESTURE_FROM_ZOOM and location_momentum.LOCATION_AWARE_MOMENTUM:
@@ -592,12 +595,12 @@ class Command(IncidentMixin, BaseCommand):
                 kp = location_momentum.ensure_keypoints(self, track, now_ts)
                 if kp is None:
                     continue
-                ratio, why = recognition.gesture_ratio(kp, person_height=track.box[3] - track.box[1])
+                ratio, why, side_on = recognition.gesture_ratio_ex(kp, person_height=track.box[3] - track.box[1])
                 if ratio is None:
                     self.stats[f"gesture skipped: {why}"] += 1
                     continue
                 self.stats["gesture counter fed by zoomed pose"] += 1
-                self._count_gesture(track, ratio, now_ts)
+                self._count_gesture(track, ratio, now_ts, side_on=side_on)
 
     def _absorb_object_puffs(self, track, now_ts):
         """Pull this person's small-Bottle puffs (drinking's engine, tracking.VAPE_BOTTLE_MAX_FRAC) into their no-item draw
@@ -634,11 +637,55 @@ class Command(IncidentMixin, BaseCommand):
             longest = max(longest, t - run_start)
         return longest >= BOTTLE_STANDDOWN_MIN_RUN_SECONDS
 
-    def _count_gesture(self, track, ratio, now_ts):
-        """One person's wrist->nose ratio into their gesture counter (and the hi-res cigarette check on a new puff)."""
+    def _carry_draws_over(self, track, now_ts):
+        """A track the tracker has just re-issued to the same person inherits the draws its old ID counted
+        (vision/gesture_handover.py), unless the drinking engine has a real Bottle on that person: their draws are sips."""
+        if track.box is None:
+            return
+        handover = self.__dict__.setdefault("_gesture_handover", gesture_handover.GestureHandover())
+        # A re-issued ID is often born while the old one is still on screen for a moment (the old one vanishes a few frames
+        # later), so a young track with nothing counted yet keeps looking for HANDOVER_YOUNG_SECONDS rather than once.
+        if (not getattr(track, "_handover_done", False) and now_ts - track.first_seen <= gesture_handover.YOUNG_TRACK_S
+                and not (track.gestures or track.strong_draws) and not self._bottle_near_box(track.box, now_ts)):
+            old = handover.adopt(track, track.box, now_ts)
+            if old is not None:
+                track._handover_done = True
+                handover.carry(old, track)
+                self.stats["draws carried over to a re-issued track ID"] += 1
+        handover.note(track, track.box, track.last_seen)
+
+    def _bottle_near_box(self, box, now_ts):
+        """Any real Bottle association within BOTTLE_STANDDOWN_SECONDS whose box overlaps `box` (IoU or containment), whatever its ID."""
+        for ext, b, t in self.bottle_seen:
+            if now_ts - t <= BOTTLE_STANDDOWN_SECONDS and b is not None and recognition._iou(box, b) >= 0.3:
+                return True
+        return False
+
+    def _bottle_recent(self, track, now_ts):
+        """True when the drinking engine has associated ANY real Bottle (watch_merged keeps only conf >= BOTTLE_STANDDOWN_MIN_CONF and
+        a box >= tracking.VAPE_BOTTLE_MAX_FRAC of the person) with this person within the last BOTTLE_STANDDOWN_SECONDS.
+        Unlike _bottle_standdown there is no continuous-run requirement."""
+        for ext, box, t in self.bottle_seen:
+            if now_ts - t > BOTTLE_STANDDOWN_SECONDS:
+                continue
+            if track.ext_id is not None and ext is not None:
+                if track.ext_id == ext:
+                    return True
+            elif track.box is not None and box is not None and recognition._iou(track.box, box) >= BOTTLE_STANDDOWN_IOU:
+                return True
+        return False
+
+    def _count_gesture(self, track, ratio, now_ts, side_on=False):
+        """One person's wrist->nose ratio into their gesture counter (and the hi-res cigarette check on a new puff).
+        `side_on`: the ratio came from the side-on ruler (recognition.GESTURE_PROFILE_*). A sip looks like a vape draw in that
+        pose, so it is not trusted while a real Bottle has been on the person in the last BOTTLE_STANDDOWN_SECONDS."""
         if self._bottle_standdown(track, now_ts):
             track.reset_hand()
             self.stats["gesture skipped: bottle on this person (drinking)"] += 1
+            return
+        if side_on and self._bottle_recent(track, now_ts):
+            track.reset_hand()
+            self.stats["gesture skipped: side-on, bottle seen on this person (drinking)"] += 1
             return
         still = track.mostly_stationary(now_ts)
         close = track.box is not None and (track.box[3] - track.box[1]) >= tracking.STRONG_GESTURE_MIN_BOX_PX
