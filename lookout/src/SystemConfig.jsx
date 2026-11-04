@@ -35,6 +35,7 @@ const STATIC_DEFAULTS = {
   disposal_owner_radius: 80, disposal_owner_away_seconds: 3,
   disposal_owner_max_hold: 3, disposal_suspect_confidence: 25,
   alert_cooldown: 120, evidence_retention_days: 30, evidence_auto_purge: false, show_testing_tools: false, auto_start_detection: false,
+  sms_alerts_enabled: false,
   vlm_enabled: true, vlm_model: "qwen3-vl:2b-instruct", vlm_model_holdup: "qwen3-vl:4b-instruct", vlm_frames: 8,
 };
 
@@ -536,7 +537,7 @@ export function SystemConfig() {
     system: (
       <TwoCols
         left={
-          <Card title="Alerts and records" onReset={() => resetKeys(["alert_cooldown", "evidence_retention_days", "evidence_auto_purge", "auto_start_detection"])}>
+          <Card title="Alerts and records" onReset={() => resetKeys(["alert_cooldown", "evidence_retention_days", "evidence_auto_purge", "auto_start_detection", "sms_alerts_enabled"])}>
             <Slider label="Alert cooldown" value={form.alert_cooldown} min={30} max={600} unit=" sec"
               differs={differs("alert_cooldown")}
               desc="How long the system waits before reporting the same spot again."
@@ -557,6 +558,10 @@ export function SystemConfig() {
               desc="Shows Run Detection, and Upload Video and History on Feeds, for trying the system on recorded footage. Leave off for normal use. Applies right away on this computer only, so there is no need to press Save."
               value={testingTools} differs={testingTools}
               onChange={(v) => { writeTestingTools(v); setTestingTools(v); }} />
+            <Toggle label="SMS alerts"
+              desc="Off by default. The master switch for text messages: while this is off nobody is texted, whatever their own setting says. Who gets a text is set per person — their mobile number and SMS switch are on their account, in Personnel or under My account."
+              value={form.sms_alerts_enabled} differs={differs("sms_alerts_enabled")}
+              onChange={(v) => set("sms_alerts_enabled", v)} />
           </Card>
         }
         right={

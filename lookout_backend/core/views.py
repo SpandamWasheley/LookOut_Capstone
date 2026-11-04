@@ -52,6 +52,7 @@ from .models import (
     Violator,
     Zone,
     normalize_name,
+    normalize_ph_mobile,
 )
 from .permissions import CanEditOwnOpenCitation, IsAdmin, IsAdminOrReadOnly
 from .throttling import (
@@ -184,9 +185,23 @@ def health(request):
     )
 
 
-@api_view(["GET"])
+@api_view(["GET", "PATCH"])
 @permission_classes([permissions.IsAuthenticated])
 def me(request):
+    """The caller's own account.
+
+    PATCH is self-service for the two fields a user is expected to keep
+    current themselves -- their mobile number and whether they want text
+    notification. Everything else on the account is read-only here
+    (UserSerializer.read_only_fields): an admin grants a role, an account does
+    not grant itself one. Both clients use this, so a dispatcher on the web and
+    an officer on the phone change their number the same way.
+    """
+    if request.method == "PATCH":
+        serializer = UserSerializer(request.user, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
     return Response(UserSerializer(request.user).data)
 
 
@@ -300,6 +315,15 @@ def _validate_new_account_fields(data, *, require_phone=False):
             errors[field] = "Required."
     if require_phone and not fields["phone"]:
         errors["phone"] = "Required."
+    elif fields["phone"]:
+        # Normalised here, at the edge, so the account is created holding the
+        # same E.164 string a later edit through either serializer would
+        # produce -- the stored number must not depend on which route set it.
+        # Optional for a dispatcher-only account, but still checked if given.
+        try:
+            fields["phone"] = normalize_ph_mobile(fields["phone"])
+        except ValueError as exc:
+            errors["phone"] = str(exc)
     if errors:
         return fields, errors
 
@@ -360,6 +384,12 @@ def register_personnel(request):
             username=fields["username"], email=fields["email"], password=fields["password"],
             role=_PERSONNEL_ROLES[role_key], display_name=display_name,
             must_change_password=True,
+            # On the account for every role, not just the ones that get an
+            # Officer row: a dispatcher has no officer record and is exactly
+            # who needs reaching. sms_alerts is left at its default (off) --
+            # the admin turns it on, giving the number and the consent to use
+            # it two separate deliberate acts.
+            phone=fields["phone"],
         )
         officer = None
         if needs_officer_record:
@@ -759,7 +789,9 @@ class CameraViewSet(viewsets.ModelViewSet):
 
 
 class OfficerViewSet(viewsets.ModelViewSet):
-    queryset = Officer.objects.all()
+    # select_related("user"): every row serialises email, username and
+    # sms_alerts off the account, which is one query per officer without this.
+    queryset = Officer.objects.select_related("user").all()
     serializer_class = OfficerSerializer
     filterset_fields = ["status"]
     permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
@@ -774,7 +806,12 @@ class OfficerViewSet(viewsets.ModelViewSet):
 class DispatcherViewSet(viewsets.ModelViewSet):
     queryset = User.objects.filter(role__in=[User.Role.DISPATCHER, User.Role.BOTH])
     serializer_class = DispatcherSerializer
-    http_method_names = ["get", "delete", "head", "options"]
+    # PATCH, but no POST: an account is created by register_personnel, which
+    # will not make one without a verified email. PATCH is how the admin keeps
+    # a dispatcher's contact details current -- the web client has been calling
+    # it since the Edit Credentials modal was added, and without it here that
+    # modal could only ever answer 405.
+    http_method_names = ["get", "patch", "delete", "head", "options"]
     permission_classes = [permissions.IsAuthenticated, IsAdmin]
 
     def perform_destroy(self, instance):

@@ -23,6 +23,37 @@ def normalize_name(first_name, middle_name, last_name):
     return _WHITESPACE_RE.sub(" ", no_punct).strip().lower()
 
 
+_PH_MOBILE_RE = re.compile(r"^9\d{9}$")
+
+
+def normalize_ph_mobile(raw):
+    """Reduce any way a Philippine mobile number gets written to one E.164 form.
+
+    0917..., +63917..., 63917... and 0063917... are the same number. Which one
+    an operator types depends on where they copied it from, so the digits are
+    canonicalised on the way IN -- a number is stored once, the way a gateway
+    wants it, instead of every future reader having to re-guess the spelling.
+
+    Blank stays blank: having no number on file is the normal state of an
+    account, not an error. A non-empty value that is not a PH mobile raises
+    ValueError, so a typo surfaces as a 400 at the serializer rather than as a
+    row that can never receive anything.
+    """
+    # Only a genuinely empty value reads as "no number". Text that contained
+    # SOMETHING but no usable digits is a typo, and falls through to the
+    # rejection below -- treating it as blank would quietly delete a number
+    # that was already on file.
+    if not str(raw or "").strip():
+        return ""
+    digits = re.sub(r"\D", "", str(raw))
+    digits = digits.lstrip("0")               # trunk 0, or the 00 of an IDD prefix
+    if digits.startswith("63"):               # country code
+        digits = digits[2:]
+    if not _PH_MOBILE_RE.match(digits):
+        raise ValueError("Enter a valid Philippine mobile number, e.g. 0917 123 4567.")
+    return f"+63{digits}"
+
+
 class User(AbstractUser):
     class Role(models.TextChoices):
         ADMIN = "admin", "Administrator"
@@ -33,6 +64,35 @@ class User(AbstractUser):
     role = models.CharField(max_length=20, choices=Role.choices, default=Role.OFFICER)
     display_name = models.CharField(max_length=150, blank=True)
     must_change_password = models.BooleanField(default=False)
+    # Mobile number for out-of-band notification, held in E.164 (+639XXXXXXXXX)
+    # by normalize_ph_mobile.
+    #
+    # It lives on the ACCOUNT, not only on Officer, because an admin and a
+    # dispatcher have no Officer row at all and they are the accounts that see
+    # an alert first. `Officer.phone` predates this column and is kept for
+    # officers with no account (`Officer.user` is nullable); wherever an account
+    # does exist, THIS is the number that counts -- set_account_phone is the one
+    # writer of either, so the two cannot drift apart.
+    # max_length matches Officer.phone, so a legacy value that reaches here
+    # unparsed cannot be truncated on the way across.
+    phone = models.CharField(max_length=30, blank=True)
+    # Opt-IN, per account. Off by default, and a blank `phone` means nothing is
+    # sent whatever this says: an outbound channel billed per message should
+    # start silent and be switched on deliberately for a known number, not
+    # inherited by every account that happens to exist.
+    sms_alerts = models.BooleanField(default=False)
+
+    def set_account_phone(self, raw):
+        """The only place a user's number is written. Normalizes, then mirrors
+        the result onto the linked Officer row so the personnel roster can
+        never show a number the account itself no longer has."""
+        self.phone = normalize_ph_mobile(raw)
+        self.save(update_fields=["phone"])
+        officer = getattr(self, "officer_profile", None)
+        if officer is not None and officer.phone != self.phone:
+            officer.phone = self.phone
+            officer.save(update_fields=["phone"])
+        return self.phone
 
     def __str__(self):
         return self.display_name or self.username
@@ -185,6 +245,17 @@ class Officer(models.Model):
 
     class Meta:
         ordering = ["code"]
+
+    @property
+    def sms_alerts(self):
+        """Whether this officer has opted in to text notification.
+
+        Read-only and derived: the switch belongs to the ACCOUNT (an officer
+        with no login cannot have consented to anything), so there is one
+        answer for an officer however it is reached. Writing it goes through
+        the user -- see OfficerSerializer.update.
+        """
+        return bool(self.user_id and self.user.sms_alerts)
 
     def save(self, *args, **kwargs):
         if not self.code:
@@ -908,6 +979,19 @@ class SystemSettings(models.Model):
     # default and never turned on by code: an operator enables it deliberately,
     # because the purge deletes files.
     evidence_auto_purge = models.BooleanField(default=False)
+
+    # Master switch for text notification, system-wide.
+    #
+    # This is NOT the removed `sms_alerts` column, and not a per-person
+    # preference either: who gets texted is `User.sms_alerts`, set per account.
+    # This gates all of it at once, so an admin can stop every message —
+    # credits exhausted, a detector misfiring at 2am, a provider outage —
+    # without clearing anybody's number or their choice to be reached.
+    #
+    # OFF by default, like evidence_auto_purge above and for the same reason:
+    # a switch whose consequence is outbound and billed should be turned on
+    # deliberately, never inherited by a fresh install.
+    sms_alerts_enabled = models.BooleanField(default=False)
 
     updated_at = models.DateTimeField(auto_now=True)
 

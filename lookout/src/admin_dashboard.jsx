@@ -1,5 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { AlertTriangle, Camera, CalendarDays, Zap, ArrowUpRight, Radio } from "lucide-react";
+import { mapAlert } from "./alertModel";
+import { NotificationBell } from "./NotificationBell";
+import { AlertToast } from "./AlertToast";
+import { useAlertToaster } from "./useAlertToaster";
 import { AlertFeed } from "./AlertFeed";
 import { CameraGrid } from "./CameraGrid";
 import { LiveMonitor } from "./LiveMonitor";
@@ -10,17 +14,29 @@ import { SystemConfig } from "./SystemConfig";
 import { ResidentLog } from "./ResidentLog";
 import { RunDetectionPage } from "./RunDetectionPage";
 import { AboutPage } from "./AboutPage";
+import { AccountPage } from "./AccountPage";
 import { useTestingTools } from "./useTestingTools";
 import { getAlerts, getCameras, getOfficers } from "./api";
 
-function useLiveOverviewData() {
+// `onAlerts` is handed each polled alert list so arrivals can be spotted where
+// they actually arrive — in the response — rather than by an effect trying to
+// work out what changed between two renders of the same array.
+function useLiveOverviewData(onAlerts) {
   const [alerts, setAlerts] = useState([]);
   const [cameras, setCameras] = useState([]);
   const [officers, setOfficers] = useState([]);
 
+  // Kept in a ref so a new callback identity cannot restart the poll.
+  const onAlertsRef = useRef(onAlerts);
+  useEffect(() => { onAlertsRef.current = onAlerts; }, [onAlerts]);
+
   useEffect(() => {
     const refresh = () => {
-      getAlerts().then((res) => setAlerts(res.results ?? res)).catch(() => {});
+      getAlerts().then((res) => {
+        const list = res.results ?? res;
+        setAlerts(list);
+        onAlertsRef.current?.(list);
+      }).catch(() => {});
       getCameras().then((res) => setCameras(res.results ?? res)).catch(() => {});
       getOfficers().then((res) => setOfficers(res.results ?? res)).catch(() => {});
     };
@@ -32,11 +48,13 @@ function useLiveOverviewData() {
   return { alerts, cameras, officers };
 }
 
+// "account" is on every role: it holds the mobile number an alert would be
+// texted to, and each role is responsible for its own.
 const ROLE_PAGES = {
-  admin:      ["dashboard", "cameras", "alerts", "records", "residentlog", "rundetection", "officers", "config", "about"],
-  dispatcher: ["dashboard", "cameras", "alerts", "records", "residentlog", "about"],
-  officer:    ["cameras", "alerts", "records", "about"],
-  both:       ["dashboard", "cameras", "alerts", "records", "about"],
+  admin:      ["dashboard", "cameras", "alerts", "records", "residentlog", "rundetection", "officers", "config", "account", "about"],
+  dispatcher: ["dashboard", "cameras", "alerts", "records", "residentlog", "account", "about"],
+  officer:    ["cameras", "alerts", "records", "account", "about"],
+  both:       ["dashboard", "cameras", "alerts", "records", "account", "about"],
 };
 
 function LiveClock() {
@@ -71,7 +89,12 @@ function AdminDashboard({ user, onLogout }) {
   const [activePage, setActivePage] = useState(allowed[0]);
   const safePage = allowed.includes(activePage) ? activePage : allowed[0];
 
-  const { alerts } = useLiveOverviewData();
+  const { toast, dismiss, handleAlerts, setSuppressed } = useAlertToaster();
+  const { alerts } = useLiveOverviewData(handleAlerts);
+
+  // No toasts on the Violations tab: the list there already shows every
+  // arrival, so a popup would be covering the thing it is announcing.
+  useEffect(() => { setSuppressed(safePage === "alerts"); }, [safePage, setSuppressed]);
 
   const activeAlerts = alerts.filter((a) => a.status === "active");
   const dispatchedAlerts = alerts.filter((a) => a.status === "dispatched");
@@ -126,10 +149,12 @@ function AdminDashboard({ user, onLogout }) {
                 </div>
               </div>
               <div className="flex items-center gap-6">
-                <div className="flex items-center gap-1.5 text-xs" style={{ color: "var(--muted-foreground)" }}>
-                  {statusDot("#10b981")}
-                  <span>AI running · YOLOv8</span>
-                </div>
+                {/* mapAlert because the bell works in the UI shape, not raw
+                    API rows — see NotificationBell. */}
+                <NotificationBell
+                  alerts={activeAlerts.map(mapAlert)}
+                  onOpenAlerts={() => setActivePage("alerts")}
+                />
                 <LiveClock />
               </div>
             </div>
@@ -226,7 +251,11 @@ function AdminDashboard({ user, onLogout }) {
 
         {safePage === "alerts" && <div className="h-full"><AlertFeed showFilters user={user} /></div>}
 
-        {safePage === "records" && <div className="h-full"><RecordsPage user={user} /></div>}
+        {safePage === "records" && (
+          <div className="h-full">
+            <RecordsPage user={user} onOpenAlerts={() => setActivePage("alerts")} />
+          </div>
+        )}
 
         {safePage === "cameras" && (
           <div className="flex flex-col h-full overflow-hidden">
@@ -245,11 +274,32 @@ function AdminDashboard({ user, onLogout }) {
 
         {safePage === "rundetection" && <RunDetectionPage />}
         {safePage === "about" && <div className="h-full"><AboutPage /></div>}
-        {safePage === "officers" && <div className="h-full"><OfficersPage /></div>}
+        {safePage === "account" && <div className="h-full"><AccountPage /></div>}
+        {safePage === "officers" && (
+          <div className="h-full">
+            <OfficersPage
+              alerts={activeAlerts.map(mapAlert)}
+              onOpenAlerts={() => setActivePage("alerts")}
+            />
+          </div>
+        )}
         {safePage === "config" && <div className="h-full"><SystemConfig /></div>}
-        {safePage === "residentlog" && <div className="h-full"><ResidentLog /></div>}
+        {safePage === "residentlog" && (
+          <div className="h-full">
+            <ResidentLog
+              alerts={activeAlerts.map(mapAlert)}
+              onOpenAlerts={() => setActivePage("alerts")}
+            />
+          </div>
+        )}
 
       </main>
+
+      <AlertToast
+        toast={toast}
+        onOpen={() => { dismiss(); setActivePage("alerts"); }}
+        onDismiss={dismiss}
+      />
     </div>
   );
 }

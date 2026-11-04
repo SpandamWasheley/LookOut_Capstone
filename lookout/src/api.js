@@ -368,6 +368,13 @@ export const resetSpecDefaults = (violation) =>
 export const saveSettings = (payload) =>
   apiFetch("/settings/", { method: "PATCH", body: JSON.stringify(payload) });
 
+// The caller's own account. Used by the My Account page so a dispatcher can
+// keep their mobile number current without going through an admin — only the
+// number and the SMS switch are writable here (see views.me).
+export const getMe = () => apiFetch("/auth/me/");
+export const updateMe = (payload) =>
+  apiFetch("/auth/me/", { method: "PATCH", body: JSON.stringify(payload) });
+
 export const getOfficers = () => apiFetch("/officers/");
 export const updateOfficer = (id, payload) =>
   apiFetch(`/officers/${id}/`, { method: "PATCH", body: JSON.stringify(payload) });

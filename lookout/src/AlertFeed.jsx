@@ -19,8 +19,30 @@ function formatTime(ts) {
 // "Oct 12, 3:58 PM" -- alerts from different days need the date to tell apart.
 function formatDateTime(ts) {
   const d = new Date(ts);
+  // Under a minute old, the clock time is less useful than the fact that it
+  // just happened — "11:00 AM" makes a dispatcher work out whether that is now.
+  if (Date.now() - d.getTime() < 60 * 1000) return "just now";
   const date = d.toLocaleDateString("en-PH", { month: "short", day: "numeric" });
   return `${date}, ${formatTime(ts)}`;
+}
+
+// How long an alert wears the NEW badge.
+//
+// Both halves of `isNewAlert` matter. Recency alone would badge an alert a
+// dispatcher assigned thirty seconds ago, which is not news — it is already
+// being handled. Unreviewed alone would badge an hour-old alert nobody has
+// touched, which is a backlog, not an arrival; the red "N to review" count in
+// the panel header is what speaks to that.
+//
+// Nothing schedules a re-render to clear it: the list re-polls every 4s, so a
+// card stops being new within a tick of the window closing.
+const NEW_ALERT_WINDOW_MS = 5 * 60 * 1000;
+
+function isNewAlert(alert) {
+  if (alert.status !== "active") return false;
+  // A negative age means the server clock is ahead of the browser's, which
+  // only happens on an alert that has just been filed — still new.
+  return Date.now() - new Date(alert.timestamp).getTime() < NEW_ALERT_WINDOW_MS;
 }
 
 // Lightweight fuzzy match: every character of the query must appear in order
@@ -203,11 +225,26 @@ function DismissModal({ alert, onConfirm, onClose }) {
 // ── Alert card ────────────────────────────────────────────────────────────────
 const THIN_CARD_H = 56;
 
+// Sits before the violation name, where it is read first. `flex-shrink-0`
+// because the title beside it truncates and the badge must not be what gives
+// way on a narrow panel.
+function NewBadge() {
+  return (
+    <span
+      className="text-[10px] font-bold tracking-wide px-1.5 py-0.5 rounded flex-shrink-0 leading-none"
+      style={{ background: "#ef4444", color: "#fff" }}
+    >
+      NEW
+    </span>
+  );
+}
+
 function AlertCard({ alert, onView, thin = false, extraPad = 0 }) {
   const vcfg = violationDisplay(alert.type);
   const VIcon = vcfg.icon;
   const officerCount = alert.officersAssignedNames.length;
   const assigned = alert.status === "dispatched";
+  const isNew = isNewAlert(alert);
 
   return (
     <div
@@ -215,15 +252,21 @@ function AlertCard({ alert, onView, thin = false, extraPad = 0 }) {
       data-alert-card
       className={`group rounded-2xl cursor-pointer transition-all duration-150 overflow-hidden flex flex-shrink-0 ${thin ? "mb-1.5 h-[56px]" : "mb-3 min-h-[56px]"}`}
       style={{
-        background: "var(--card)",
-        border: "1px solid var(--border)",
+        // A just-arrived alert is tinted and outlined as well as badged, so it
+        // reads as new from across the room rather than only on close reading.
+        background: isNew ? "rgba(239,68,68,0.06)" : "var(--card)",
+        border: `1px solid ${isNew ? "rgba(239,68,68,0.45)" : "var(--border)"}`,
         // Compact panel only: grows the card past its base 56px to soak up
         // leftover space that wouldn't otherwise fit another card — inline
         // style wins over the Tailwind h-[56px] class above.
         ...(thin && extraPad > 0 ? { height: THIN_CARD_H + extraPad } : {}),
       }}
       onMouseEnter={(e) => { e.currentTarget.style.borderColor = vcfg.border; }}
-      onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border)"; }}
+      // Back to the NEW outline, not the default one — hovering a new alert
+      // and moving away must not quietly strip its highlight.
+      onMouseLeave={(e) => {
+        e.currentTarget.style.borderColor = isNew ? "rgba(239,68,68,0.45)" : "var(--border)";
+      }}
     >
       {/* Left color stripe */}
       <div className="flex-shrink-0 w-1 rounded-l-2xl" style={{ background: vcfg.color }} />
@@ -244,6 +287,7 @@ function AlertCard({ alert, onView, thin = false, extraPad = 0 }) {
                   the list stays the same height regardless of title length
                   (e.g. "Parking Obstruction in Road" vs "Smoking"). */}
               <div className="flex items-center gap-2">
+                {isNew && <NewBadge />}
                 <span className="text-[15px] font-semibold truncate" style={{ color: "var(--foreground)" }}>
                   {vcfg.label}
                 </span>
@@ -279,6 +323,7 @@ function AlertCard({ alert, onView, thin = false, extraPad = 0 }) {
             <div className="flex-1 min-w-0">
               {/* Row 1: title + status */}
               <div className="flex items-center gap-2 flex-wrap mb-0.5">
+                {isNew && <NewBadge />}
                 <span className="text-[15px] font-semibold" style={{ color: "var(--foreground)" }}>
                   {vcfg.label}
                 </span>
@@ -894,9 +939,6 @@ export function AlertFeed({ showFilters = false, user }) {
                 </span>
               )}
             </div>
-            <span className="text-[14px]" style={{ color: "var(--muted-foreground)" }}>
-              AI-detected · evidence captured · human review required
-            </span>
           </div>
         );
       })()}

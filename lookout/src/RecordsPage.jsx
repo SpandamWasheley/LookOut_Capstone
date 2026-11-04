@@ -3,6 +3,7 @@ import { CheckCircle, X, MapPin, Clock, Shield, Search, FileText } from "lucide-
 import { violationDisplay } from "./constants/violationTypes";
 import { ViolationModal } from "./ViolationModal";
 import { mapAlert } from "./alertModel";
+import { NotificationBell } from "./NotificationBell";
 import { getAlerts, updateAlert } from "./api";
 
 const outcomeConfig = {
@@ -17,8 +18,11 @@ function formatFull(ts) {
   });
 }
 
-export function RecordsPage({ user }) {
-  const [finishedAlerts, setFinishedAlerts] = useState([]);
+export function RecordsPage({ user, onOpenAlerts = () => {} }) {
+  // Every alert, not only the finished ones: the header's notification bell
+  // needs the ones still waiting to be reviewed. Filtering one polled list two
+  // ways beats polling the same endpoint twice, and it cannot drift.
+  const [allAlerts, setAllAlerts] = useState([]);
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState(null);
@@ -26,24 +30,21 @@ export function RecordsPage({ user }) {
   useEffect(() => {
     const refresh = () => {
       getAlerts()
-        .then((res) =>
-          setFinishedAlerts(
-            (res.results ?? res)
-              .map(mapAlert)
-              .filter((a) => a.status === "acknowledged" || a.status === "resolved")
-              // Newest first. Sorted here rather than trusted from the API:
-              // the list is paginated and re-fetched on a poll, and relying on
-              // server order means the page silently reorders itself the day
-              // someone adds an `ordering` parameter upstream.
-              .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-          )
-        )
+        .then((res) => setAllAlerts((res.results ?? res).map(mapAlert)))
         .catch(() => {});
     };
     refresh();
     const interval = setInterval(refresh, 4000);
     return () => clearInterval(interval);
   }, []);
+
+  const finishedAlerts = allAlerts
+    .filter((a) => a.status === "acknowledged" || a.status === "resolved")
+    // Newest first. Sorted here rather than trusted from the API: the list is
+    // paginated and re-fetched on a poll, and relying on server order means
+    // the page silently reorders itself the day someone adds an `ordering`
+    // parameter upstream.
+    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
   const records = finishedAlerts.filter((a) => {
     const matchFilter = filter === "all" || a.status === filter;
@@ -68,10 +69,10 @@ export function RecordsPage({ user }) {
           <h1 className="text-xl font-bold" style={{ color: "var(--foreground)" }}>Records</h1>
           <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>Completed violations archive</span>
         </div>
-        <div className="flex items-center gap-4 text-xs" style={{ color: "var(--muted-foreground)" }}>
-          <span style={{ color: "#10b981" }}>{resolvedCount} resolved</span>
-          <span style={{ color: "#64748b" }}>{dismissedCount} dismissed</span>
-        </div>
+        {/* The resolved/dismissed tallies that used to sit here are the two
+            KPI cards immediately below, so this is the bell instead: what is
+            still waiting to be reviewed, which an archive page cannot show. */}
+        <NotificationBell alerts={allAlerts} onOpenAlerts={onOpenAlerts} />
       </div>
 
       <div className="flex-1 overflow-hidden flex flex-col px-6 py-5 gap-4">
