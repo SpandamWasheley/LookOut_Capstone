@@ -467,12 +467,24 @@ Not verified on clips. Regression replays still owed are listed in REMINDERS.md;
 
 Why: `watch_disposal` read the camera's `edges`, the same polygon as parking's no-parking area. Parking's is the carriageway (and `trace_zone` builds it from where vehicles MOVED), so saving or tracing it silently confined rubbish detection to the road, when rubbish lies on the footpath and kerb beside it.
 
-1. Storage: `Camera.disposal_edges` + `disposal_edges_width` / `disposal_edges_height` (migration 0066), same `{"key": {"type": "zone", "points": [...]}}` shape as `edges`. `watch_disposal._area_points_from_camera` reads only these. Empty = the whole frame is watched (unchanged default). `--zone <file>` still works. Parking and `trace_zone` are untouched and never write it.
-2. Dashboard: Edge Zones (`EdgeEditorModal`) has a second tab, "Improper disposal" (green, no thresholds, optional). Both canvases stay mounted so switching tabs does not lose a half-drawn shape. `EdgeCanvas` takes `label` / `colour` / `hint`. `CameraGrid` passes the three new fields through.
-3. Saving sends only the area that changed (parking: shape, % and minutes; disposal: shape). `CameraViewSet.update` then calls `monitor.apply_zone` for `edges` and the new `monitor.apply_disposal_zone` for `disposal_edges`; each swaps only its own process, so the other detectors keep running. Response carries `zone_applied` / `disposal_zone_applied`. A cleared disposal area relaunches disposal (whole frame); it only stops if `disposal_enabled` is off.
+1. Storage (SUPERSEDED, see section V): first built as `Camera.disposal_edges` + `disposal_edges_width` / `disposal_edges_height` (migration 0066). Those columns are gone; the area is now the `"disposal"` entry of `Camera.edges`.
+2. Dashboard: Edge Zones (`EdgeEditorModal`) has a second tab, "Improper disposal" (green, no thresholds, optional). Both canvases stay mounted so switching tabs does not lose a half-drawn shape. `EdgeCanvas` now takes `kind` instead (section V); `CameraGrid` no longer passes extra fields.
+3. Saving sends only the area that changed (parking: shape, % and minutes; disposal: shape). `CameraViewSet.update` then calls `monitor.apply_zone` / `monitor.apply_disposal_zone` (section V says when); each swaps only its own process, so the other detectors keep running. Response carries `zone_applied` / `disposal_zone_applied`. A cleared disposal area relaunches disposal (whole frame); it only stops if `disposal_enabled` is off.
 4. Upgrade note: a camera whose parking zone disposal was quietly using now watches the whole frame until a disposal area is drawn. Run `python manage.py migrate`.
 5. Alert cards: the "peaked at Likely/Possible" note was removed from `AlertFeed` and `ViolationModal`. `LiveMonitor` takes an `actions` prop and sits under the camera grid (`CameraGrid`) instead of being rendered by `admin_dashboard`.
 6. Tests: core/tests_disposal_zone.py.
+
+## V. Merge of Sam's `general-feature`: one storage field and one drawing flow for the disposal zone
+
+Why: this branch and Sam's both separated disposal's area from parking's road, in parallel. Sam's keeps both in `Camera.edges` under different types; mine added `disposal_edges*` columns. Only Sam's also worked for an uploaded clip (the Run Detection polygon is staged onto the `-TEST` camera's `edges`, which the dedicated columns never saw). Sam's is the base; the useful parts of this one were ported.
+
+1. `core/zones.py` (pure, unit-tested): `road_entries` / `disposal_entries` / `has_road` / `has_disposal` / `with_road` / `with_disposal` / `rescaled`. `monitor.has_road_edge` and the EDGE_REQUIRED check use `has_road`, so a disposal entry is never a road. `watch_parking`'s auto-save and `trace_zone --save` replace only the road side and carry the disposal area across, rescaled to the new frame size (the two share `edges_width`/`edges_height`).
+2. Editing: `EdgeEditorModal` keeps its second tab, now writing the `"disposal"` entry; a save always sends both areas in one `edges` object (sending one would delete the other). `CameraViewSet.update` compares each area to what was stored and restarts only the detector whose area changed (`zone_applied` / `disposal_zone_applied`); re-saving unchanged areas restarts nothing. `EdgeCanvas` points can now be dragged and right-click removed, so a traced shape is a starting point rather than take-it-or-leave-it.
+3. A trace only fills in an area nobody saved: `watch_parking` traces only when `zones.has_road` is false and never onto a `-TEST` camera, so an edited trace survives every later run.
+4. Migrations: 0066_camera_disposal_edges (kept) and Sam's 0066..0073 are joined by 0074 (merge); 0075 copies any area drawn in the old columns into `edges["disposal"]` and then removes `disposal_edges`, `disposal_edges_width`, `disposal_edges_height`.
+5. Dropped: the three columns, their serializer fields, the `CameraGrid` mapping, `_area_points_from_camera`'s separate-column read, and `EdgeCanvas`'s `label`/`colour`/`hint` props.
+6. Not done: on an Everything run the one Run Detection canvas is the rubbish area (parking's road is traced inside the run and not shown first). Review/adjust a road beforehand by running Parking alone or in Live Feeds → Edge Zones.
+7. Tests: core/tests_zones.py (guard, per-kind restart, trace → edit → rerun keeps the edit, migration copy), core/tests_disposal_zone.py.
 
 ## Tests
 
