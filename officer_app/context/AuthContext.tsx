@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
 
 import * as api from "@/lib/api";
+import { forgetDevice } from "@/lib/notifications";
 
 export interface Officer {
   username: string;
@@ -59,6 +60,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const logout = async () => {
+    // First, and only here: withdrawing this phone's push token needs a
+    // working access token, which api.logout is about to destroy. Skipping it
+    // would leave a handset passed to the next officer on shift still
+    // receiving the previous one's assignments.
+    await forgetDevice();
     // api.logout, not api.clearAuth: the refresh token has to be revoked
     // server-side, or it stays usable until it expires even though the officer
     // signed out. It clears local storage either way.

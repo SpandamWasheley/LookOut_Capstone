@@ -89,6 +89,11 @@ def _width(box):
     return max(1.0, box[2] - box[0])
 
 
+def _area(box):
+    x1, y1, x2, y2 = box
+    return max(0.0, x2 - x1) * max(0.0, y2 - y1)
+
+
 def _centre_dist(a, b):
     """Centre distance in units of the larger box width (near/far invariant)."""
     (ax, ay), (bx, by) = _centre(a), _centre(b)
@@ -136,6 +141,19 @@ def _iou(a, b):
 class VehicleState:
     def __init__(self, track_id, t):
         self.track_id = track_id
+        # The identity a PERSON sees. Normally the tracker's own id, but it is
+        # inherited along with the banked seconds when a vehicle comes back
+        # under a new one — see _absorb_lost.
+        #
+        # Separate from track_id because the two answer different questions.
+        # track_id is whatever ByteTrack is calling this detection right now,
+        # and it must stay that to key association. display_id is "which
+        # vehicle is this", which does not change because a tracker dropped a
+        # frame. Showing the raw id made one parked motorcycle look like a
+        # succession of different ones, each apparently starting from zero,
+        # which reads as the timer being lost even when the seconds carried
+        # over perfectly.
+        self.display_id = track_id
         self.score = 0.0
         self.last_t = t          # last time the score was updated
         self.last_seen = t       # last time the vehicle was detected
@@ -147,7 +165,35 @@ class VehicleState:
         self.stationary = False
         self.alerted = False
         self.adopted = False     # has already absorbed a lost track's score
+        # What this track took over, for the Testing view. Without them an
+        # absorb is invisible: the seconds simply appear, and a FAILED absorb
+        # looks identical to one that never had a candidate.
+        self.inherited_from = None
+        self.inherited_seconds = 0.0
         self.history = deque()   # (t, cx, cy)
+        # The biggest box seen while this vehicle was STATIONARY — its
+        # unoccluded shape. `box` above is merely the latest one, and the
+        # latest box of a vehicle disappearing behind another is a clipped
+        # sliver of it: the detector sees only the part still showing. That
+        # clipped box is what _absorb_lost used to match the returning vehicle
+        # against, so the comparison was against a corrupted memory and the
+        # overlap test failed on exactly the occlusions it exists to survive.
+        self.clean_box = None
+
+    def remember_clean(self, box):
+        """Keep the largest stationary box: the view with least of it hidden.
+
+        Largest rather than most recent, because occlusion only ever subtracts
+        from a parked vehicle's box — it does not move, so a bigger box is
+        strictly a better look at the same object.
+        """
+        if self.clean_box is None or _area(box) > _area(self.clean_box):
+            self.clean_box = box
+
+    @property
+    def match_box(self):
+        """What a returning vehicle should be compared against."""
+        return self.clean_box or self.box
 
     def push(self, t, box):
         """Record position; return True if the vehicle is stopped."""
@@ -255,6 +301,8 @@ class ObstructionZone:
             st.last_seen = t
             st.box, st.label, st.conf = box, label, conf
             st.stationary = st.push(t, box)
+            if st.stationary:
+                st.remember_clean(box)
             st.inside = inside
             st.fraction = fraction
             # Claim a lost track's banked seconds — AFTER `stationary` is known,
@@ -333,9 +381,14 @@ class ObstructionZone:
                 continue
             if lost.score <= 0 or t - lost.last_seen > FORGET_AFTER:
                 continue
-            if _centre_dist(st.box, lost.box) > ADOPT_DIST:
+            # Against the lost vehicle's UNOCCLUDED box, not its last one —
+            # see VehicleState.clean_box. Matching a returning vehicle against
+            # the sliver that was visible as it vanished is what made this
+            # test fail on partial occlusions.
+            target = lost.match_box
+            if _centre_dist(st.box, target) > ADOPT_DIST:
                 continue
-            overlap = _iou(st.box, lost.box)
+            overlap = _iou(st.box, target)
             if overlap < ADOPT_MIN_IOU:
                 continue
             if best is None or overlap > best:
@@ -344,6 +397,11 @@ class ObstructionZone:
             return
         lost = self.states.pop(best_key)
         st.score = max(st.score, lost.score)
+        # The name goes with the seconds: this is the same vehicle, and the
+        # operator should not have to work that out from the numbers.
+        st.display_id = lost.display_id
+        st.inherited_from = lost.display_id
+        st.inherited_seconds = lost.score
         # Carried so a vehicle that already alerted under its old id cannot be
         # reported a second time for the same stay just by changing identity.
         st.alerted = st.alerted or lost.alerted
@@ -380,7 +438,7 @@ class ObstructionZone:
             gx, gy = (int(v) for v in _ground_point(st.box))
             cv2.circle(frame, (gx, gy), max(3, w // 500), color, -1)
             if st.inside or st.alerted:
-                tag = f"#{st.track_id} {st.score:.0f}/{self.alert_score:.0f}s"
+                tag = f"#{st.display_id} {st.score:.0f}/{self.alert_score:.0f}s"
                 if st.stationary:
                     tag += " STOP"
                 cv2.putText(frame, tag, (x1, max(15, y1 - 6)),

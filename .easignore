@@ -1,0 +1,37 @@
+# What EAS Build is allowed to upload.
+#
+# EAS archives from the GIT REPOSITORY ROOT, not from officer_app/ — that is
+# its monorepo support, and this repo holds three apps. Without this file it
+# falls back to .gitignore, which correctly excludes venv/ (1.4 GB),
+# lookout_backend/media/ (3.4 GB) and node_modules/ — but says nothing about
+# .git, because nothing ever gitignores its own repository. That directory is
+# 451 MB here (the tracked .pt weights have a long history), so every build
+# was uploading 451 MB of git history plus 54 MB of source: a 506 MB tarball,
+# of which the build needs about 2 MB. On a home connection that upload does
+# not reliably finish — it fails with ECONNRESET part-way through.
+#
+# NOTE: .easignore REPLACES .gitignore for EAS. Anything that must stay out
+# has to be named here, even if .gitignore already covers it.
+
+# Ignore everything at the top level...
+/*
+
+# ...except the one app EAS actually builds. Its eas.json, app.json and
+# package.json all live in here, and it imports nothing from outside it.
+!/officer_app
+
+# Inside it, drop what the build either regenerates or installs itself.
+officer_app/node_modules/
+officer_app/dist/
+officer_app/web-build/
+officer_app/.expo/
+officer_app/android/
+officer_app/ios/
+
+# Local-only files that would otherwise ride along.
+officer_app/.env
+officer_app/expo-qr.png
+**/__pycache__/
+**/*.log
+.DS_Store
+Thumbs.db

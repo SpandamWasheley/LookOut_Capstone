@@ -2,11 +2,14 @@ import { useEffect, useState } from "react";
 import {
   UserPlus, UserCog, Users, Radio, CheckCircle, Clock, X, Shield, MapPin, Edit2, Trash2,
   Mail, Lock, Shuffle, Loader2, ChevronRight, ChevronLeft, ChevronDown, AlertTriangle,
+  Smartphone, MessageSquare, Info,
 } from "lucide-react";
 import {
   getOfficers, updateOfficer, deleteOfficer, sendOfficerCode, verifyOfficerCode, registerPersonnel,
   getDispatchers, updateDispatcher, deleteDispatcher,
 } from "./api";
+import { formatPhone, isValidPhone } from "./phone";
+import { NotificationBell } from "./NotificationBell";
 
 const statusConfig = {
   "on-duty":    { label: "On duty",    color: "#10b981", bg: "rgba(16,185,129,0.1)",  icon: CheckCircle },
@@ -23,6 +26,7 @@ function mapOfficer(raw) {
     status: raw.status,
     location: raw.location,
     phone: raw.phone,
+    smsAlerts: raw.sms_alerts,
     email: raw.email,
     username: raw.username,
     joinedDate: raw.joined_date,
@@ -35,18 +39,77 @@ function mapDispatcher(raw) {
     dbId: raw.id,
     name: raw.display_name || raw.username,
     email: raw.email,
+    phone: raw.phone,
+    smsAlerts: raw.sms_alerts,
     username: raw.username,
     role: raw.role,
   };
 }
 
-const formatPhone = (raw) => {
-  const d = raw.replace(/\D/g, "").slice(0, 11);
-  if (d.length <= 4) return d;
-  if (d.length <= 7) return `${d.slice(0, 4)}-${d.slice(4)}`;
-  return `${d.slice(0, 4)}-${d.slice(4, 7)}-${d.slice(7)}`;
-};
 const blockNumbers = (v) => v.replace(/[0-9]/g, "");
+
+const SMS_HINT = "Turn on/off SMS Message Notification";
+const SMS_HINT_NO_PHONE = "Add a mobile number first, then SMS Message Notification can be turned on";
+const SMS_HINT_NO_ACCOUNT = "This officer has no login account, so there is nothing to notify";
+
+// The per-person SMS switch, flipped straight from the roster.
+//
+// Inline rather than only inside the edit dialog because this is the one
+// setting an admin changes on its own — silencing one officer should not mean
+// opening a form that also holds their email and number.
+//
+// It cannot be switched ON for somebody with no number: the row would store a
+// preference that can never be acted on. Switching OFF is always allowed, so a
+// number being cleared can never strand an account in a state it cannot leave.
+//
+// `hasAccount` is the other half. The switch lives on the USER, and an Officer
+// row may have no user at all (Officer.user is nullable — the seeded roster is
+// exactly that). Without this the toggle would accept a click, send a PATCH
+// the server has nowhere to apply, and flip back on the next refresh with no
+// explanation.
+function SmsToggle({ on, phone, hasAccount = true, onToggle }) {
+  const [busy, setBusy] = useState(false);
+  const hasPhone = Boolean(phone);
+  const disabled = busy || !hasAccount || (!on && !hasPhone);
+  const hint = !hasAccount ? SMS_HINT_NO_ACCOUNT : hasPhone || on ? SMS_HINT : SMS_HINT_NO_PHONE;
+
+  const handleClick = async (e) => {
+    e.stopPropagation();
+    if (disabled) return;
+    setBusy(true);
+    try {
+      await onToggle(!on);
+    } catch (err) {
+      alert(`Failed to update SMS alerts: ${err.message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <span className="flex items-center gap-1.5">
+      <button
+        type="button"
+        onClick={handleClick}
+        disabled={disabled}
+        role="switch"
+        aria-checked={on}
+        aria-label="SMS Message Notification"
+        title={hint}
+        className="w-8 h-[18px] rounded-full relative transition-colors flex-shrink-0 disabled:opacity-40"
+        style={{ background: on ? "var(--primary)" : "var(--border)" }}
+      >
+        <span className="absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-all"
+          style={{ left: on ? "1rem" : "0.125rem" }} />
+      </button>
+      {/* The tooltip lives on a wrapping span: a `title` attribute on an <svg>
+          is not what browsers show a tooltip for. */}
+      <span title={hint} className="flex items-center flex-shrink-0 cursor-help">
+        <Info size={11} style={{ color: "var(--muted-foreground)" }} />
+      </span>
+    </span>
+  );
+}
 
 function generateUsername(firstName, lastName) {
   const base = `${firstName}.${lastName}`.replace(/[^a-zA-Z.]/g, "").toLowerCase();
@@ -117,7 +180,15 @@ function AddAccountModal({ role, onAdd, onClose }) {
 
   const isValidEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim());
 
-  const step1Valid = form.firstName.trim() && form.lastName.trim() && form.username.trim() && (!cfg.requirePhone || form.phone.trim());
+  // Shown only once something has been typed — an empty required field is
+  // already reported by the disabled Next button, and flagging it as "invalid"
+  // the moment the modal opens would be scolding the operator for not starting.
+  // Checked for every role, not only the ones that require it: a dispatcher's
+  // number is optional to GIVE, but a half-typed one is still wrong.
+  const phoneInvalid = form.phone.trim() !== "" && !isValidPhone(form.phone);
+
+  const step1Valid = form.firstName.trim() && form.lastName.trim() && form.username.trim()
+    && (cfg.requirePhone ? isValidPhone(form.phone) : !phoneInvalid);
   const step2Valid = form.emailVerified;
   const step3Valid = form.password.trim().length >= 8;
 
@@ -170,7 +241,9 @@ function AddAccountModal({ role, onAdd, onClose }) {
         email: form.email.trim(),
         password: form.password,
         code: form.code.trim(),
-        ...(cfg.requirePhone ? { phone: form.phone.trim() } : {}),
+        // Sent whenever one was typed -- required for an officer, accepted
+        // for a dispatcher, omitted only when the field was left empty.
+        ...(form.phone.trim() ? { phone: form.phone.trim() } : {}),
       });
       onAdd(created);
     } catch (err) {
@@ -256,14 +329,29 @@ function AddAccountModal({ role, onAdd, onClose }) {
                   </button>
                 </div>
               </div>
-              {cfg.requirePhone && (
-                <div>
-                  <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>Phone *</label>
-                  <input value={form.phone} onChange={(e) => set("phone", formatPhone(e.target.value))} placeholder="0951-853-2146"
-                    className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
-                    style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
-                </div>
-              )}
+              {/* Shown for every role. A dispatcher has no officer record, so this
+                  field is the only place their number can be recorded -- and they
+                  are among the accounts that review an alert first. */}
+              <div>
+                <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>
+                  {cfg.requirePhone ? "Mobile number *" : "Mobile number"}
+                </label>
+                <input value={form.phone} onChange={(e) => set("phone", formatPhone(e.target.value))} placeholder="+63 917 123 4567"
+                  inputMode="tel" autoComplete="tel" aria-invalid={phoneInvalid}
+                  aria-describedby={phoneInvalid ? "officer-phone-error" : undefined}
+                  className="w-full px-3 py-2.5 rounded-xl text-sm outline-none"
+                  style={{
+                    background: "var(--secondary)",
+                    border: `1px solid ${phoneInvalid ? "rgba(239,68,68,0.4)" : "var(--border)"}`,
+                    color: "var(--foreground)",
+                  }} />
+                {phoneInvalid && (
+                  <p id="officer-phone-error" className="flex items-center gap-1.5 text-[13px] mt-1.5" style={{ color: "#ef4444" }}>
+                    <AlertTriangle size={11} className="flex-shrink-0" />
+                    Enter a mobile number as +63 917 123 4567.
+                  </p>
+                )}
+              </div>
             </>
           )}
 
@@ -394,21 +482,32 @@ function AddAccountModal({ role, onAdd, onClose }) {
   );
 }
 
-function EditCredentialsModal({ target, onSaved, onClose }) {
-  // target: { type: "officer" | "dispatcher", dbId, name, email }
+function EditContactModal({ target, onSaved, onClose }) {
+  // target: { type: "officer" | "dispatcher", dbId, name, email, phone, smsAlerts }
   const [email, setEmail] = useState(target.email || "");
+  const [phone, setPhone] = useState(formatPhone(target.phone || ""));
+  const [smsAlerts, setSmsAlerts] = useState(Boolean(target.smsAlerts));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
+  const phoneInvalid = phone.trim() !== "" && !isValidPhone(phone);
+  // The number is what makes the switch mean anything, so the two are checked
+  // together. Opting an account in with nothing to send to is not a saveable
+  // state: refusing it here is clearer than storing a setting that would
+  // silently do nothing.
+  const smsWithoutNumber = smsAlerts && phone.trim() === "";
+  const blocked = !email.trim() || phoneInvalid || smsWithoutNumber;
+
   const handleSave = async () => {
-    if (!email.trim()) return;
+    if (blocked) return;
     setError("");
     setSaving(true);
+    const payload = { email: email.trim(), phone: phone.trim(), sms_alerts: smsAlerts };
     try {
       if (target.type === "officer") {
-        await updateOfficer(target.dbId, { email: email.trim() });
+        await updateOfficer(target.dbId, payload);
       } else {
-        await updateDispatcher(target.dbId, { email: email.trim() });
+        await updateDispatcher(target.dbId, payload);
       }
       onSaved();
     } catch (err) {
@@ -428,7 +527,7 @@ function EditCredentialsModal({ target, onSaved, onClose }) {
         style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
         <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: "1px solid var(--border)" }}>
           <div>
-            <div className="text-sm font-semibold text-white">Edit Credentials</div>
+            <div className="text-sm font-semibold text-white">Edit Contact Details</div>
             <div className="text-[13px] mt-0.5" style={{ color: "var(--muted-foreground)" }}>{target.name}</div>
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg"
@@ -455,6 +554,63 @@ function EditCredentialsModal({ target, onSaved, onClose }) {
             </div>
           </div>
 
+          <div>
+            <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--muted-foreground)" }}>
+              Mobile number
+            </label>
+            <div className="flex gap-2 items-center px-3 py-2.5 rounded-xl"
+              style={{
+                background: "var(--secondary)",
+                border: `1px solid ${phoneInvalid ? "rgba(239,68,68,0.4)" : "var(--border)"}`,
+              }}>
+              <Smartphone size={13} style={{ color: "var(--muted-foreground)", flexShrink: 0 }} />
+              <input
+                value={phone}
+                onChange={(e) => setPhone(formatPhone(e.target.value))}
+                placeholder="+63 917 123 4567"
+                inputMode="tel"
+                autoComplete="tel"
+                aria-invalid={phoneInvalid}
+                className="flex-1 bg-transparent text-sm outline-none"
+                style={{ color: "var(--foreground)" }}
+              />
+            </div>
+            {phoneInvalid && (
+              <p className="flex items-center gap-1.5 text-[13px] mt-1.5" style={{ color: "#ef4444" }}>
+                <AlertTriangle size={11} className="flex-shrink-0" />
+                Enter a mobile number as +63 917 123 4567.
+              </p>
+            )}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setSmsAlerts((v) => !v)}
+            aria-pressed={smsAlerts}
+            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left"
+            style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}
+          >
+            <MessageSquare size={13} style={{ color: "var(--muted-foreground)", flexShrink: 0 }} />
+            <span className="flex-1">
+              <span className="block text-sm" style={{ color: "var(--foreground)" }}>SMS alerts</span>
+              <span className="block text-[12px]" style={{ color: "var(--muted-foreground)" }}>
+                Text this number when an alert comes in
+              </span>
+            </span>
+            <span className="w-9 h-5 rounded-full flex-shrink-0 transition-colors relative"
+              style={{ background: smsAlerts ? "var(--primary)" : "var(--border)" }}>
+              <span className="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all"
+                style={{ left: smsAlerts ? "1.125rem" : "0.125rem" }} />
+            </span>
+          </button>
+
+          {smsWithoutNumber && (
+            <p className="flex items-center gap-1.5 text-[13px]" style={{ color: "#f59e0b" }}>
+              <AlertTriangle size={11} className="flex-shrink-0" />
+              Add a mobile number to turn on SMS alerts.
+            </p>
+          )}
+
           {error && (
             <div className="text-[13px] px-3 py-2 rounded-lg" style={{ background: "rgba(239,68,68,0.08)", color: "#ef4444" }}>
               {error}
@@ -468,7 +624,7 @@ function EditCredentialsModal({ target, onSaved, onClose }) {
             style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}>
             Cancel
           </button>
-          <button onClick={handleSave} disabled={!email.trim() || saving}
+          <button onClick={handleSave} disabled={blocked || saving}
             className="flex-1 py-2 rounded-xl text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50"
             style={{ background: "rgba(245,158,11,0.15)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.25)" }}>
             {saving ? <Loader2 size={13} className="animate-spin" /> : <Mail size={13} />}
@@ -480,7 +636,10 @@ function EditCredentialsModal({ target, onSaved, onClose }) {
   );
 }
 
-export function OfficersPage() {
+// `alerts` and `onOpenAlerts` feed the header's notification bell. Passed in
+// rather than fetched here: the dashboard already polls /alerts/ for every
+// page, and this page has no other reason to know about alerts at all.
+export function OfficersPage({ alerts = [], onOpenAlerts = () => {} }) {
   const [officers, setOfficers] = useState([]);
   const [dispatchers, setDispatchers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -582,63 +741,51 @@ export function OfficersPage() {
         <div className="flex items-center gap-3">
           <h1 className="text-xl font-bold" style={{ color: "var(--foreground)" }}>Personnel</h1>
         </div>
-        <div className="relative">
-          <button
-            onClick={() => setAddMenuOpen((v) => !v)}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
-            style={{ background: "var(--primary)", color: "var(--primary-foreground)" }}
-          >
-            <UserPlus size={12} /> Add Personnel
-            <ChevronDown size={12} style={{ transform: addMenuOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
-          </button>
+        <div className="flex items-center gap-3">
+          <NotificationBell alerts={alerts} onOpenAlerts={onOpenAlerts} />
 
-          {addMenuOpen && (
-            <>
-              <div className="fixed inset-0 z-40" onClick={() => setAddMenuOpen(false)} />
-              <div className="absolute right-0 top-full mt-2 w-64 rounded-xl overflow-hidden shadow-2xl z-50"
-                style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
-                {ADD_PERSONNEL_OPTIONS.map((opt) => (
-                  <button
-                    key={opt.role}
-                    onClick={() => { setShowAdd(opt.role); setAddMenuOpen(false); }}
-                    className="w-full flex items-center gap-3 px-3.5 py-3 text-left transition-colors"
-                    style={{ borderBottom: "1px solid var(--border)" }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = "var(--secondary)")}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-                  >
-                    <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
-                      style={{ background: "rgba(11,84,113,0.12)", color: "var(--primary)" }}>
-                      <opt.icon size={15} />
-                    </div>
-                    <div className="min-w-0">
-                      <div className="text-[15px] font-medium text-white">{opt.label}</div>
-                      <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>{opt.desc}</div>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
+          <div className="relative">
+            <button
+              onClick={() => setAddMenuOpen((v) => !v)}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
+              style={{ background: "var(--primary)", color: "var(--primary-foreground)" }}
+            >
+              <UserPlus size={12} /> Add Personnel
+              <ChevronDown size={12} style={{ transform: addMenuOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
+            </button>
+
+            {addMenuOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setAddMenuOpen(false)} />
+                <div className="absolute right-0 top-full mt-2 w-64 rounded-xl overflow-hidden shadow-2xl z-50"
+                  style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
+                  {ADD_PERSONNEL_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.role}
+                      onClick={() => { setShowAdd(opt.role); setAddMenuOpen(false); }}
+                      className="w-full flex items-center gap-3 px-3.5 py-3 text-left transition-colors"
+                      style={{ borderBottom: "1px solid var(--border)" }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = "var(--secondary)")}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                    >
+                      <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+                        style={{ background: "rgba(11,84,113,0.12)", color: "var(--primary)" }}>
+                        <opt.icon size={15} />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-[15px] font-medium text-white">{opt.label}</div>
+                        <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>{opt.desc}</div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </div>
 
       <div className="flex-1 overflow-y-auto flex flex-col px-6 py-5 gap-4">
-        {/* KPIs */}
-        <div className="grid grid-cols-4 gap-3 flex-shrink-0">
-          {[
-            { label: "Total",      value: officers.length,                                        color: "#f59e0b" },
-            { label: "On Duty",    value: officers.filter((o) => o.status === "on-duty").length,    color: "#10b981" },
-            { label: "Responding", value: officers.filter((o) => o.status === "responding").length, color: "#f59e0b" },
-            { label: "Off Duty",   value: officers.filter((o) => o.status === "off-duty").length,   color: "#64748b" },
-          ].map((s) => (
-            <div key={s.label} className="rounded-xl p-4 text-center"
-              style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-              <div className="text-2xl font-semibold leading-none" style={{ color: s.color }}>{s.value}</div>
-              <div className="text-[13px] mt-1.5" style={{ color: "var(--muted-foreground)" }}>{s.label}</div>
-            </div>
-          ))}
-        </div>
-
         {/* Filter tabs */}
         <div className="flex items-center gap-1.5 flex-shrink-0">
           {["all", "on-duty", "responding", "off-duty"].map((s) => (
@@ -663,7 +810,7 @@ export function OfficersPage() {
           <div
             className="grid px-4 py-2.5 text-[13px] font-semibold sticky top-0"
             style={{
-              gridTemplateColumns: "2fr 1fr 1fr 1fr 0.5fr",
+              gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr",
               color: "var(--muted-foreground)",
               background: "var(--card)",
               borderBottom: "1px solid var(--border)",
@@ -674,7 +821,7 @@ export function OfficersPage() {
             <span>Status</span>
             <span>Username</span>
             <span>Email</span>
-            <span />
+            <span className="text-right">SMS</span>
           </div>
 
           {loading ? (
@@ -697,7 +844,7 @@ export function OfficersPage() {
                   key={officer.id}
                   className="grid px-4 py-3 items-center transition-colors hover:bg-white/[0.02] group"
                   style={{
-                    gridTemplateColumns: "2fr 1fr 1fr 1fr 0.5fr",
+                    gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr",
                     borderBottom: idx < filtered.length - 1 ? "1px solid var(--border)" : "none",
                     background: "var(--card)",
                   }}
@@ -711,7 +858,7 @@ export function OfficersPage() {
                     <div>
                       <div className="text-[15px] font-medium text-white">{officer.name}</div>
                       <div className="text-[12px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
-                        {officer.badge} · {formatPhone(officer.phone ?? "")}
+                        {officer.badge} · {formatPhone(officer.phone ?? "") || "—"}
                       </div>
                     </div>
                   </div>
@@ -738,8 +885,22 @@ export function OfficersPage() {
 
                   {/* Actions */}
                   <div className="flex items-center gap-1 justify-end">
+                    <SmsToggle
+                      on={Boolean(officer.smsAlerts)}
+                      phone={officer.phone}
+                      // An empty username is how the serializer reports an
+                      // officer with no linked account.
+                      hasAccount={Boolean(officer.username)}
+                      onToggle={async (next) => {
+                        await updateOfficer(officer.dbId, { sms_alerts: next });
+                        await refreshOfficers();
+                      }}
+                    />
                     <button
-                      onClick={() => setEditTarget({ type: "officer", dbId: officer.dbId, name: officer.name, email: officer.email })}
+                      onClick={() => setEditTarget({
+                        type: "officer", dbId: officer.dbId, name: officer.name,
+                        email: officer.email, phone: officer.phone, smsAlerts: officer.smsAlerts,
+                      })}
                       className="p-1.5 rounded-lg transition-all" style={{ color: "var(--muted-foreground)" }}
                       onMouseEnter={(e) => { e.currentTarget.style.color = "var(--foreground)"; e.currentTarget.style.background = "var(--secondary)"; }}
                       onMouseLeave={(e) => { e.currentTarget.style.color = "var(--muted-foreground)"; e.currentTarget.style.background = "transparent"; }}
@@ -774,9 +935,11 @@ export function OfficersPage() {
         </div>
         <div className="rounded-xl overflow-hidden flex-shrink-0" style={{ border: "1px solid var(--border)" }}>
           <div className="grid px-4 py-2.5 text-[13px] font-semibold rounded-t-xl"
-            style={{ gridTemplateColumns: "2fr 2fr 1fr", color: "var(--muted-foreground)", background: "var(--card)", borderBottom: "1px solid var(--border)" }}>
+            style={{ gridTemplateColumns: "2fr 2fr 1.4fr 0.8fr 1fr", color: "var(--muted-foreground)", background: "var(--card)", borderBottom: "1px solid var(--border)" }}>
             <span>Name</span>
             <span>Email</span>
+            <span>Mobile</span>
+            <span>SMS</span>
             <span />
           </div>
           {!loading && dispatchers.length === 0 ? (
@@ -787,7 +950,7 @@ export function OfficersPage() {
           ) : (
             dispatchers.map((d, idx) => (
               <div key={d.id} className="grid px-4 py-3 items-center transition-colors hover:bg-white/[0.02] group"
-                style={{ gridTemplateColumns: "2fr 2fr 1fr", borderBottom: idx < dispatchers.length - 1 ? "1px solid var(--border)" : "none", background: "var(--card)" }}>
+                style={{ gridTemplateColumns: "2fr 2fr 1.4fr 0.8fr 1fr", borderBottom: idx < dispatchers.length - 1 ? "1px solid var(--border)" : "none", background: "var(--card)" }}>
                 <div className="flex items-center gap-3">
                   <div className="w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold flex-shrink-0"
                     style={{ background: "rgba(245,158,11,0.15)", color: "#f59e0b" }}>
@@ -806,9 +969,25 @@ export function OfficersPage() {
                   </div>
                 </div>
                 <div className="text-[13px] truncate" style={{ color: "var(--muted-foreground)" }}>{d.email || "—"}</div>
+                <div className="text-[13px] truncate" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+                  {d.phone ? formatPhone(d.phone) : "—"}
+                </div>
+                <div className="flex items-center">
+                  <SmsToggle
+                    on={Boolean(d.smsAlerts)}
+                    phone={d.phone}
+                    onToggle={async (next) => {
+                      await updateDispatcher(d.dbId, { sms_alerts: next });
+                      await refreshDispatchers();
+                    }}
+                  />
+                </div>
                 <div className="flex items-center gap-1 justify-end">
                   <button
-                    onClick={() => setEditTarget({ type: "dispatcher", dbId: d.dbId, name: d.name, email: d.email })}
+                    onClick={() => setEditTarget({
+                      type: "dispatcher", dbId: d.dbId, name: d.name,
+                      email: d.email, phone: d.phone, smsAlerts: d.smsAlerts,
+                    })}
                     className="p-1.5 rounded-lg transition-all" style={{ color: "var(--muted-foreground)" }}
                     onMouseEnter={(e) => { e.currentTarget.style.color = "var(--foreground)"; e.currentTarget.style.background = "var(--secondary)"; }}
                     onMouseLeave={(e) => { e.currentTarget.style.color = "var(--muted-foreground)"; e.currentTarget.style.background = "transparent"; }}
@@ -906,7 +1085,7 @@ export function OfficersPage() {
       {showAdd && <AddAccountModal role={showAdd} onAdd={handleAdd} onClose={() => setShowAdd(null)} />}
 
       {editTarget && (
-        <EditCredentialsModal
+        <EditContactModal
           target={editTarget}
           onSaved={async () => {
             await Promise.all([refreshOfficers(), refreshDispatchers()]);

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Undo2, Trash2 } from "lucide-react";
 
-// The drawing canvas for the parking no-parking area. Extracted out of
+// The drawing canvas for an area a detector judges against. Extracted out of
 // EdgeEditorModal so both it (per-camera areas, live snapshot or an uploaded
 // clip) and RunDetectionPage (upload -> draw -> detect) share one
 // implementation of the geometry instead of forking it.
@@ -20,6 +20,26 @@ import { Undo2, Trash2 } from "lucide-react";
 // pavement. A polygon only ever means the ground inside it.
 const ZONE_COLOUR = "#ff5f56";
 const ZONE_MIN_POINTS = 3;
+
+// What the operator is told they are drawing. It changes with `kind`, because
+// the same canvas serves two rules and the wrong sentence is worse than none:
+// somebody marking where rubbish gets left should not read that vehicles
+// standing inside count as an obstruction.
+const KIND_COPY = {
+  zone: {
+    name: "ROAD ZONE",
+    what: "Click around the edge of the road to enclose it; any vehicle standing inside counts as an obstruction.",
+    hint: "Follow the road as it narrows into the distance rather than drawing a rectangle — a camera sees the carriageway as a trapezium, not a box.",
+  },
+  disposal: {
+    name: "RUBBISH AREA",
+    what: "Click around the ground to watch for dumped rubbish; anything left inside it is checked.",
+    // The opposite advice to the road zone's, and deliberately so: rubbish is
+    // left where vehicles do not drive, so an area traced tightly around the
+    // carriageway is the one shape that misses it.
+    hint: "Include the kerb, verge and wall line, not just the carriageway — rubbish is left off the road, not on it.",
+  },
+};
 
 function drawVertices(ctx, points, colour) {
   ctx.fillStyle = colour;
@@ -57,11 +77,22 @@ function drawZone(ctx, points, colour) {
 // shape: core/vision/obstruction.py's build_edge defaults a MISSING type to
 // EDGE, so dropping it would silently turn every polygon into an open path
 // along its own outline. watch_merged_all still runs that code.
-function toSpec(points) {
+// `kind` decides WHICH rule the polygon belongs to, and the two must stay
+// distinguishable in storage. Both detectors used to read any entry typed
+// "zone", so one drawn shape meant two different things at once: a tight
+// no-parking area also became disposal's search area, confining the hunt for
+// rubbish to the carriageway — where rubbish is least likely to be left.
+//
+// "zone"     the no-parking area. Parking (and Merged All 4/5) judge vehicles
+//            against it; watch_parking traces one from traffic when absent.
+// "disposal" where to watch for dumped rubbish. Only disposal reads it, so
+//            drawing one leaves parking's own area alone.
+function toSpec(points, kind = "zone") {
   if (points.length < ZONE_MIN_POINTS) return {};
+  const key = kind === "disposal" ? "disposal" : "road";
   return {
-    road: {
-      type: "zone",
+    [key]: {
+      type: kind,
       points: points.map((p) => [Math.round(p.x), Math.round(p.y)]),
     },
   };
@@ -79,6 +110,9 @@ function toSpec(points) {
  */
 export function EdgeCanvas({
   frame,
+  // Which rule the polygon is for — see toSpec. Defaults to the no-parking
+  // area, which is what every caller but the All 5 run wants.
+  kind = "zone",
   initialPoints,
   pct,
   onPctChange,
@@ -124,7 +158,7 @@ export function EdgeCanvas({
   // Redraws whenever the geometry changes, and reports the current spec up.
   useEffect(() => {
     redraw();
-    onChange?.(toSpec(points), points.length >= ZONE_MIN_POINTS);
+    onChange?.(toSpec(points, kind), points.length >= ZONE_MIN_POINTS);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [points]);
 
@@ -145,28 +179,19 @@ export function EdgeCanvas({
   if (!frame) return null;
 
   const count = points.length;
+  const copy = KIND_COPY[kind] ?? KIND_COPY.zone;
 
   return (
     <>
       <div className="rounded-xl p-3" style={{ background: "rgba(11,84,113,0.06)", border: "1px solid rgba(11,84,113,0.2)" }}>
         <span className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>
           Tracing the{" "}
-          <span className="font-semibold" style={{ color: colour }}>{label}</span>
-          {" "}— {count} point{count === 1 ? "" : "s"}.{" "}
-          {hint ?? (
-            <>
-              Click around the edge of the road to enclose it;
-              any vehicle standing inside counts as an obstruction.
-              {" "}{count >= ZONE_MIN_POINTS
-                ? "The shape closes automatically — add more points where the road bends."
-                : `At least ${ZONE_MIN_POINTS} points needed.`}
-              {" "}Follow the road as it narrows into the distance rather than drawing a rectangle — a camera
-              sees the carriageway as a trapezium, not a box.
-            </>
-          )}
-          {hint && (count >= ZONE_MIN_POINTS
-            ? " The shape closes automatically."
-            : ` At least ${ZONE_MIN_POINTS} points needed.`)}
+          <span className="font-semibold" style={{ color: ZONE_COLOUR }}>{copy.name}</span>
+          {" "}— {count} point{count === 1 ? "" : "s"}. {copy.what}
+          {" "}{count >= ZONE_MIN_POINTS
+            ? "The shape closes automatically — add more points where it bends."
+            : `At least ${ZONE_MIN_POINTS} points needed.`}
+          {" "}{copy.hint}
         </span>
       </div>
 
@@ -187,7 +212,7 @@ export function EdgeCanvas({
         <button onClick={() => setPoints([])}
           className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-[14px] font-medium"
           style={{ background: "var(--secondary)", color: "var(--foreground)", border: "1px solid var(--border)" }}>
-          <Trash2 size={13} /> Clear zone
+          <Trash2 size={13} /> Clear area
         </button>
       </div>
 

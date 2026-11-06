@@ -28,13 +28,14 @@ const STATIC_DEFAULTS = {
   thief_enabled: true, thief_confidence: 30,
   drinking_enabled: true, drinking_confidence: 35,
   drinking_mouth_proximity: 3.0, drinking_cooldown_center_dist: 1.5,
-  disposal_enabled: true, disposal_confidence: 15, disposal_static_seconds: 2, disposal_cooldown: 120,
-  disposal_cooldown_dist: 60, disposal_min_area: 0.08, disposal_max_area: 8,
+  disposal_enabled: true, disposal_confidence: 15, disposal_static_seconds: 12, disposal_cooldown: 120,
+  disposal_cooldown_dist: 30, disposal_min_area: 0.08, disposal_max_area: 8,
   disposal_ignore_movers: true,
   disposal_warmup_seconds: 5, disposal_recheck_seconds: 10,
   disposal_owner_radius: 80, disposal_owner_away_seconds: 3,
   disposal_owner_max_hold: 3, disposal_suspect_confidence: 25,
   alert_cooldown: 120, evidence_retention_days: 30, evidence_auto_purge: false, show_testing_tools: false, auto_start_detection: false,
+  sms_alerts_enabled: false,
   vlm_enabled: true, vlm_model: "qwen3-vl:2b-instruct", vlm_model_holdup: "qwen3-vl:4b-instruct", vlm_frames: 8,
 };
 
@@ -412,11 +413,11 @@ export function SystemConfig() {
       <TwoCols
         left={detection("disposal", "Improper disposal detection",
           "Flag rubbish that is dumped and then left behind.",
-          "Where the line between Possible and Likely falls. A left-behind object that looks more like a garbage bag than like anything else is reported either way: under this number it is filed as Possible, for somebody to settle from the clip, and at or above it as Likely. Raise this to send more to Possible and keep Likely for the clear-cut ones. This detector reads low numbers on purpose — it recognises bags by description rather than from trained examples, so a correct match usually scores 15-25%, and one far down the street can score as little as 10%.")}
+          "How sure the system must be that a left-behind object is rubbish before it counts at all. Below this number nothing is recorded. At or above it, recognising the rubbish is worth 40 of the 100 points — the rest comes from the evidence that it was DUMPED: the spot visibly changing, somebody being beside it, and that person walking away. So this is the control for what gets considered, and the Possible and Likely lines decide what gets reported. This detector reads low numbers on purpose — it recognises bags by description rather than from trained examples, so a correct match usually scores 15-25%, and one far down the street can score as little as 10%.")}
         right={
           <Card title="Timings" onReset={() => resetKeys(["disposal_static_seconds", "disposal_cooldown"])}>
             <Row label="Time before it counts as left behind"
-              desc="How long something must sit completely still before the system checks whether it is garbage. Rubbish being carried past the camera never stops, so it never reaches this."
+              desc="How long something must sit completely still before the system checks whether it is garbage. Rubbish being carried past the camera never stops, so it never reaches this. Keep this generous at night: headlights, reflections off wet road and moving shadows all sit still for a second or two."
               differs={differs("disposal_static_seconds")}>
               <DurationBox seconds={form.disposal_static_seconds} version={version}
                 onChange={(s) => set("disposal_static_seconds", Math.round(s))} />
@@ -442,7 +443,7 @@ export function SystemConfig() {
             <Row label="Same-spot radius"
               desc="How close a second piece of rubbish must be to count as the same place, and so the same violation. Anything further away is reported separately — rubbish on the left and rubbish on the right are two things to go and clear."
               differs={differs("disposal_cooldown_dist")}>
-              <NumberBox value={form.disposal_cooldown_dist} min={10} max={300} step={10} unit="px"
+              <NumberBox value={form.disposal_cooldown_dist} min={10} max={300} step={5} unit="px"
                 onChange={(v) => set("disposal_cooldown_dist", v)} />
             </Row>
             <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>{TIMINGS_FOOTER}</div>
@@ -536,7 +537,7 @@ export function SystemConfig() {
     system: (
       <TwoCols
         left={
-          <Card title="Alerts and records" onReset={() => resetKeys(["alert_cooldown", "evidence_retention_days", "evidence_auto_purge", "auto_start_detection"])}>
+          <Card title="Alerts and records" onReset={() => resetKeys(["alert_cooldown", "evidence_retention_days", "evidence_auto_purge", "auto_start_detection", "sms_alerts_enabled"])}>
             <Slider label="Alert cooldown" value={form.alert_cooldown} min={30} max={600} unit=" sec"
               differs={differs("alert_cooldown")}
               desc="How long the system waits before reporting the same spot again."
@@ -557,6 +558,10 @@ export function SystemConfig() {
               desc="Shows Run Detection, and Upload Video and History on Feeds, for trying the system on recorded footage. Leave off for normal use. Applies right away on this computer only, so there is no need to press Save."
               value={testingTools} differs={testingTools}
               onChange={(v) => { writeTestingTools(v); setTestingTools(v); }} />
+            <Toggle label="SMS alerts"
+              desc="Off by default. The master switch for text messages: while this is off nobody is texted, whatever their own setting says. Who gets a text is set per person — their mobile number and SMS switch are on their account, in Personnel or under My account."
+              value={form.sms_alerts_enabled} differs={differs("sms_alerts_enabled")}
+              onChange={(v) => set("sms_alerts_enabled", v)} />
           </Card>
         }
         right={

@@ -105,6 +105,11 @@ class DeferredClipWiringTests(TestCase):
     their clips already carry footage from after the alert."""
 
     WATCHERS = ("watch_parking", "watch_disposal")
+    # Every detector that writes an Alert, for the clip-before-row guarantee
+    # below. smoking/drinking/thief never deferred, so they always had it —
+    # the point of checking all five is that it stays true of all five.
+    ALL_WATCHERS = ("watch_parking", "watch_disposal", "watch_smoking",
+                    "watch_drinking", "watch_thief")
 
     def _source(self, name):
         from importlib import import_module
@@ -126,15 +131,35 @@ class DeferredClipWiringTests(TestCase):
                 self.assertIn("self._drain_pending(now_ts)", source)
                 self.assertIn("final=True", source)
 
-    def test_deferral_is_off_unless_the_caller_drains(self):
+    def test_every_alert_has_its_clip_before_the_row_exists(self):
+        """The guarantee, and the thing deferring the only save broke: the
+        annotated clip is written BEFORE Alert.objects.create, so a row never
+        exists without one — not for an instant, not if the run is cancelled a
+        second later, and not if SIGTERM ends the process before the flush in
+        `finally` can run."""
+        import re
+        for name in self.ALL_WATCHERS:
+            with self.subTest(watcher=name):
+                source = self._source(name)
+                # Either the recorder is saved inline, or via the shared
+                # _save_clips helper — whichever, it has to come first.
+                saved = min(m.start() for m in
+                            re.finditer(r"clip\.save\(|_save_clips\(base", source))
+                created = source.index("Alert.objects.create(")
+                self.assertLess(saved, created,
+                                "save the clip, then write the row")
+
+    def test_deferral_only_ever_adds_the_centred_copy(self):
         """watch_merged_all builds a parking Command and runs its OWN loop, so
-        it never drains. Scheduling there would lose every annotated clip;
-        falling back to the immediate save keeps the old, correct behaviour."""
+        it never drains. That must now cost only the centring, never the clip
+        — which is why the first save no longer lives behind this check."""
         from core.management.commands.watch_parking import Command as Parking
         self.assertIsNone(Parking().pending)
         source = inspect.getsource(Parking._schedule_clip)
         self.assertIn("if self.pending is None:", source)
-        self.assertIn("self.clip.save(path)", source)
+        self.assertIn("return", source)
+        self.assertNotIn("Alert.objects.filter", source,
+                         "the row is written with the clip already on it")
 
     def test_a_file_run_keeps_the_raw_clip_s_own_offset(self):
         """The raw clip is cut from the source and spans both sides of the

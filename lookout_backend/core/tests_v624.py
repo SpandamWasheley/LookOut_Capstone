@@ -124,7 +124,9 @@ class HoldupQwenTests(unittest.TestCase):
         self.assertIn({"field": "people_count", "label": "Distinct real people seen", "value": 2}, ctx["checklist"])
 
     def test_spec_version(self):
-        self.assertEqual(scoring.SCORING_SPEC_VERSION, "v6.2.11")
+        # v6.3 added DISPOSAL_WEIGHTS. The v6.2.x behaviour this file covers
+        # is unchanged by that -- the original four tables did not move.
+        self.assertEqual(scoring.SCORING_SPEC_VERSION, "v6.3")
 
 
 if __name__ == "__main__":

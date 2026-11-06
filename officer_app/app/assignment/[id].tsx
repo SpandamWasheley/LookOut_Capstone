@@ -9,7 +9,6 @@ import * as ScreenOrientation from "expo-screen-orientation";
 import { useVideoPlayer, VideoView } from "expo-video";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ActivityIndicator,
   Animated,
   KeyboardAvoidingView,
   Modal,
@@ -29,6 +28,7 @@ import { AutoScrollView } from "@/components/AutoScrollView";
 import { getViolationIconName } from "@/constants/violationIcons";
 import { Assignment, useAssignments } from "@/context/AssignmentContext";
 import { useAuth } from "@/context/AuthContext";
+import { Spinner } from "@/components/ui/Spinner";
 import { useColors } from "@/hooks/useColors";
 import * as api from "@/lib/api";
 
@@ -109,7 +109,7 @@ function DismissModal({ visible, onClose, onConfirm }: DismissModalProps) {
             </View>
           </View>
 
-          <Text style={[styles.modalSectionLabel, { color: c.mutedForeground }]}>REASON</Text>
+          <Text style={[styles.modalSectionLabel, { color: c.foreground }]}>Reason</Text>
           <View style={styles.reasonGrid}>
             {DISMISS_REASONS.map((reason) => {
               const selected = selectedReason === reason;
@@ -136,7 +136,7 @@ function DismissModal({ visible, onClose, onConfirm }: DismissModalProps) {
             })}
           </View>
 
-          <Text style={[styles.modalSectionLabel, { color: c.mutedForeground, marginTop: 16 }]}>WHY? (OPTIONAL)</Text>
+          <Text style={[styles.modalSectionLabel, { color: c.foreground, marginTop: 16 }]}>Why? (optional)</Text>
           <TextInput
             style={[styles.modalInput, { color: c.foreground, borderColor: c.border, backgroundColor: c.muted }]}
             placeholder="Describe why this is being dismissed..."
@@ -170,17 +170,140 @@ function DismissModal({ visible, onClose, onConfirm }: DismissModalProps) {
   );
 }
 
-// Scope is exactly these four codes — enforced here on the client, not
+// Scope is exactly these five codes — enforced here on the client, not
 // assumed from the API response. A stale row (e.g. a leftover curfew
 // ViolationType in some environment's DB) must not render as selectable.
-const IN_SCOPE_VIOLATION_CODES = ["smoking", "drinking", "parking", "theft"];
+//
+// "disposal" was missing while the detector that raises it was being built, so
+// an officer dispatched to a disposal alert reached a slip with nothing on it
+// they could tick — the alert was citable in principle and uncitable in fact.
+const IN_SCOPE_VIOLATION_CODES = ["smoking", "drinking", "parking", "theft", "disposal"];
 
+// What the SLIP calls a violation, where that differs from what the system
+// calls it. The detector's name describes the thing it watches for; a citation
+// has to name the offence the way the ordinance does, and the officer handing
+// it over reads it out loud.
+//
+// Deliberately a display-only override: the code, the colour, the icon and
+// every other screen are untouched, so an alert is still "Improper Disposal"
+// in the dashboard and the two cannot disagree about WHICH violation this is.
+const SLIP_LABELS: Record<string, string> = {
+  disposal: "Abandoned Waste",
+};
+
+const slipLabel = (type: { code: string; label: string }) =>
+  SLIP_LABELS[type.code] ?? type.label;
+
+// Every barangay of Zamboanga City, District I (West Coast) and District II
+// (East Coast). MUST stay identical to core/constants.py's ZAMBOANGA_BARANGAYS:
+// the API validates `violator_barangay` against it as model choices, so an
+// option offered here but missing there is a form the officer can fill in and
+// cannot submit. The two projects share no code, so tests_barangays.py compares
+// this list against the backend's instead.
+//
+// A picker, not free text -- a typo'd barangay is the same class of problem as
+// a duplicate violator record (name-matching downstream breaks on it). The
+// sheet filters as you type, which is what makes a list this long usable.
 const BARANGAY_OPTIONS = [
-  { value: "TUGBUNGAN", label: "Tugbungan" },
-  { value: "TETUAN", label: "Tetuan" },
-  { value: "MERCEDES", label: "Mercedes" },
+  { value: "ARENA_BLANCO", label: "Arena Blanco" },
+  { value: "AYALA", label: "Ayala" },
+  { value: "BALIWASAN", label: "Baliwasan" },
+  { value: "BALUNO", label: "Baluno" },
+  { value: "BOALAN", label: "Boalan" },
+  { value: "BOLONG", label: "Bolong" },
+  { value: "BUENAVISTA", label: "Buenavista" },
+  { value: "BUNGUIAO", label: "Bunguiao" },
+  { value: "BUSAY", label: "Busay" },
+  { value: "CABALUAY", label: "Cabaluay" },
+  { value: "CABATANGAN", label: "Cabatangan" },
+  { value: "CACAO", label: "Cacao" },
+  { value: "CALABASA", label: "Calabasa" },
+  { value: "CALARIAN", label: "Calarian" },
+  { value: "CAMINO_NUEVO", label: "Camino Nuevo" },
+  { value: "CAMPO_ISLAM", label: "Campo Islam" },
+  { value: "CANELAR", label: "Canelar" },
+  { value: "CAPISAN", label: "Capisan" },
+  { value: "CAWIT", label: "Cawit" },
+  { value: "CULIANAN", label: "Culianan" },
+  { value: "CURUAN", label: "Curuan" },
+  { value: "DITA", label: "Dita" },
+  { value: "DIVISORIA", label: "Divisoria" },
+  { value: "DULIAN_PASONANCA", label: "Dulian – Pasonanca" },
+  { value: "DULIAN_UPPER_BUNGUIAO", label: "Dulian (Upper Bunguiao)" },
+  { value: "GUISAO", label: "Guisao" },
+  { value: "GUIWAN", label: "Guiwan" },
+  { value: "KASANYANGAN", label: "Kasanyangan" },
+  { value: "LABUAN", label: "Labuan" },
+  { value: "LAMISAHAN", label: "Lamisahan" },
+  { value: "LANDANG_GUA", label: "Landang Gua" },
+  { value: "LANDANG_LAUM", label: "Landang Laum" },
+  { value: "LANZONES", label: "Lanzones" },
+  { value: "LAPAKAN", label: "Lapakan" },
+  { value: "LATUAN", label: "Latuan" },
+  { value: "LA_PAZ", label: "La Paz" },
+  { value: "LICOMO", label: "Licomo" },
+  { value: "LIMAONG", label: "Limaong" },
+  { value: "LIMPAPA", label: "Limpapa" },
+  { value: "LUBIGAN", label: "Lubigan" },
+  { value: "LUMAYANG", label: "Lumayang" },
+  { value: "LUMBANGAN", label: "Lumbangan" },
   { value: "LUNZURAN", label: "Lunzuran" },
+  { value: "MAASIN", label: "Maasin" },
+  { value: "MALAGUTAY", label: "Malagutay" },
+  { value: "MAMPANG", label: "Mampang" },
+  { value: "MANAHPA", label: "Manahpa" },
+  { value: "MANGUSU", label: "Mangusu" },
+  { value: "MANICAHAN", label: "Manicahan" },
+  { value: "MARIKI", label: "Mariki" },
+  { value: "MERCEDES", label: "Mercedes" },
+  { value: "MUTI", label: "Muti" },
+  { value: "PAMUCUTAN", label: "Pamucutan" },
+  { value: "PANGAPUYAN", label: "Pangapuyan" },
+  { value: "PANUBIGAN", label: "Panubigan" },
+  { value: "PASHIMANTA", label: "Pashimanta" },
+  { value: "PASOBOLONG", label: "Pasobolong" },
+  { value: "PASONANCA", label: "Pasonanca" },
+  { value: "PATALON", label: "Patalon" },
+  { value: "PUTIK", label: "Putik" },
+  { value: "QUINIPUT", label: "Quiniput" },
+  { value: "RECODO", label: "Recodo" },
+  { value: "RIO_HONDO", label: "Rio Hondo" },
+  { value: "SALAAN", label: "Salaan" },
+  { value: "SANGAH", label: "Sangah" },
+  { value: "SAN_JOSE_CAWA_CAWA", label: "San Jose – Cawa-Cawa" },
+  { value: "SAN_JOSE_GUSU", label: "San Jose – Gusu" },
+  { value: "SAN_ROQUE", label: "San Roque" },
+  { value: "SIBULAO", label: "Sibulao" },
+  { value: "SINUBUNG", label: "Sinubung" },
+  { value: "SINUNUC", label: "Sinunuc" },
+  { value: "STA_BARBARA", label: "Sta. Barbara" },
+  { value: "STA_CATALINA", label: "Sta. Catalina" },
+  { value: "STA_MARIA", label: "Sta. Maria" },
+  { value: "STO_NINO", label: "Sto. Niño" },
+  { value: "TAGASILAY", label: "Tagasilay" },
+  { value: "TAGUITI", label: "Taguiti" },
+  { value: "TALABAAN", label: "Talabaan" },
+  { value: "TALISAYAN", label: "Talisayan" },
+  { value: "TALON_TALON", label: "Talon-talon" },
+  { value: "TALUKSANGAY", label: "Taluksangay" },
+  { value: "TETUAN", label: "Tetuan" },
+  { value: "TICTAPUL", label: "Tictapul" },
+  { value: "TIGBALABAG", label: "Tigbalabag" },
+  { value: "TIGTABON", label: "Tigtabon" },
+  { value: "TOLOSA", label: "Tolosa" },
+  { value: "TUGBUNGAN", label: "Tugbungan" },
+  { value: "TULUNGATUNG", label: "Tulungatung" },
   { value: "TUMAGA", label: "Tumaga" },
+  { value: "TUMALUTAB", label: "Tumalutab" },
+  { value: "TUMITUS", label: "Tumitus" },
+  { value: "VICTORIA", label: "Victoria" },
+  { value: "VITALI", label: "Vitali" },
+  { value: "ZAMBOWOOD", label: "Zambowood" },
+  { value: "ZONE_I", label: "Zone I" },
+  { value: "ZONE_II", label: "Zone II" },
+  { value: "ZONE_III", label: "Zone III" },
+  { value: "ZONE_IV", label: "Zone IV" },
+  { value: "UNKNOWN", label: "Unknown / outside Zamboanga City" },
 ];
 
 // A picker, not free text — a typo'd suffix is the same class of problem as a
@@ -288,6 +411,10 @@ function ResolveModal({
   const [notes, setNotes] = useState("");
 
   const [barangaySheetVisible, setBarangaySheetVisible] = useState(false);
+  // What the officer has typed into the barangay sheet's filter. There are
+  // ninety-nine of them; scrolling that on a phone to reach "Talon-talon" is
+  // not a thing anyone should be asked to do mid-report.
+  const [barangayQuery, setBarangayQuery] = useState("");
   const [suffixSheetVisible, setSuffixSheetVisible] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [reviewState, setReviewState] = useState<{ action: "finish" | "another"; duplicateName: string | null } | null>(null);
@@ -493,6 +620,16 @@ function ResolveModal({
 
   const hasFiledAny = existingCitations.length > 0;
   const selectedBarangayLabel = BARANGAY_OPTIONS.find((b) => b.value === violatorBarangay)?.label;
+  // Matched on the LABEL, which is what is on screen and what the officer is
+  // typing from. Case- and punctuation-insensitive, so "sto nino" finds
+  // "Sto. Niño" and "talon talon" finds "Talon-talon" — an officer should not
+  // have to reproduce a full stop or an n-tilde to find a barangay.
+  const barangayNeedle = barangayQuery.trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const barangayMatches = barangayNeedle
+    ? BARANGAY_OPTIONS.filter((b) =>
+        b.label.normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+          .toLowerCase().replace(/[^a-z0-9]+/g, "").includes(barangayNeedle))
+    : BARANGAY_OPTIONS;
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
@@ -502,8 +639,8 @@ function ResolveModal({
           <View style={[rStyles.handle, { backgroundColor: c.border }]} />
 
           <View style={rStyles.header}>
-            <View style={[rStyles.iconWrap, { backgroundColor: "rgba(16,185,129,0.12)" }]}>
-              <Feather name="file-text" size={20} color="#10b981" />
+            <View style={[rStyles.iconWrap, { backgroundColor: c.secondary }]}>
+              <Feather name="file-text" size={20} color={c.primary} />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={[rStyles.title, { color: c.foreground }]}>
@@ -559,9 +696,11 @@ function ResolveModal({
               {officerName || "Officer"} · Tetuan (violation site) · {formatDate(assignment.dispatchedAt)}
             </Text>
 
-            <Text style={[cfStyles.sectionLabel, { color: c.mutedForeground }]}>VIOLATION TYPE(S)</Text>
+            <Text style={[cfStyles.sectionLabel, { color: c.foreground }]}>Violation types</Text>
             {typesLoading ? (
-              <ActivityIndicator color={c.primary} style={{ marginVertical: 12 }} accessibilityLabel="Loading violation types" />
+              <View style={{ marginVertical: 12, alignItems: "center" }}>
+                <Spinner label="Loading violation types" />
+              </View>
             ) : !typesExpanded ? (
               <View>
                 {violationTypes
@@ -569,7 +708,7 @@ function ResolveModal({
                   .map((t) => (
                     <View key={t.id} style={[cfStyles.confirmedTypeRow, { backgroundColor: `${t.color}18`, borderColor: t.color }]}>
                       <Feather name={getViolationIconName(t.icon)} size={16} color={t.color} />
-                      <Text style={[cfStyles.typeLabel, { color: t.color }]}>{t.label}</Text>
+                      <Text style={[cfStyles.typeLabel, { color: t.color }]}>{slipLabel(t)}</Text>
                       <Feather name="check" size={15} color={t.color} style={{ marginLeft: "auto" }} />
                     </View>
                   ))}
@@ -593,7 +732,7 @@ function ResolveModal({
                       onPress={() => toggleType(t.id)}
                       accessibilityRole="checkbox"
                       accessibilityState={{ checked }}
-                      accessibilityLabel={t.label}
+                      accessibilityLabel={slipLabel(t)}
                       style={({ pressed }) => [
                         cfStyles.typeRow,
                         {
@@ -604,7 +743,7 @@ function ResolveModal({
                       ]}
                     >
                       <Feather name={getViolationIconName(t.icon)} size={18} color={checked ? t.color : c.mutedForeground} />
-                      <Text style={[cfStyles.typeLabel, { color: checked ? t.color : c.foreground }]}>{t.label}</Text>
+                      <Text style={[cfStyles.typeLabel, { color: checked ? t.color : c.foreground }]}>{slipLabel(t)}</Text>
                       {checked && <Feather name="check" size={16} color={t.color} style={{ marginLeft: "auto" }} />}
                     </Pressable>
                   );
@@ -612,7 +751,7 @@ function ResolveModal({
               </View>
             )}
 
-            <Text style={[cfStyles.sectionLabel, { color: c.mutedForeground, marginTop: 18 }]}>VIOLATOR NAME</Text>
+            <Text style={[cfStyles.sectionLabel, { color: c.foreground, marginTop: 18 }]}>Violator name</Text>
             <UnderlineInput label="First name" required value={firstName} onChangeText={setFirstName} />
             <UnderlineInput label="Middle name" value={middleName} onChangeText={setMiddleName} />
             <UnderlineInput label="Last name" required ref={lastNameRef} value={lastName} onChangeText={setLastName} />
@@ -631,7 +770,7 @@ function ResolveModal({
               </Pressable>
             </View>
 
-            <Text style={[cfStyles.sectionLabel, { color: c.mutedForeground, marginTop: 18 }]}>VIOLATOR&apos;S HOME BARANGAY</Text>
+            <Text style={[cfStyles.sectionLabel, { color: c.foreground, marginTop: 18 }]}>Violator&apos;s home barangay</Text>
             <Pressable
               onPress={() => setBarangaySheetVisible(true)}
               style={[cfStyles.underlineInput, cfStyles.underlinePicker, { borderBottomColor: c.border }]}
@@ -650,7 +789,7 @@ function ResolveModal({
               <Feather name="chevron-right" size={16} color={c.mutedForeground} />
             </Pressable>
 
-            <Text style={[cfStyles.sectionLabel, { color: c.mutedForeground, marginTop: 18 }]}>NOTES (OPTIONAL)</Text>
+            <Text style={[cfStyles.sectionLabel, { color: c.foreground, marginTop: 18 }]}>Notes (optional)</Text>
             <TextInput
               style={[cfStyles.notesInput, { color: c.foreground, borderColor: c.border, backgroundColor: c.muted }]}
               placeholder="e.g. two others fled on approach"
@@ -690,14 +829,14 @@ function ResolveModal({
               accessibilityLabel={editing
                 ? "Save the correction to this citation"
                 : "Save and finish, resolving this assignment"}
-              style={[cfStyles.primaryBtn, { backgroundColor: "#10b981", opacity: !canSubmit ? 0.5 : 1 }]}
+              style={[cfStyles.primaryBtn, { backgroundColor: c.primary, opacity: !canSubmit ? 0.5 : 1 }]}
             >
               {submitting ? (
-                <ActivityIndicator color="#fff" />
+                <Spinner size={18} color={c.primaryForeground} track={c.primaryForeground + "33"} />
               ) : (
                 <>
-                  <Feather name={editing ? "save" : "check-circle"} size={16} color="#fff" />
-                  <Text style={cfStyles.primaryBtnText}>
+                  <Feather name={editing ? "save" : "check-circle"} size={16} color={c.primaryForeground} />
+                  <Text style={[cfStyles.primaryBtnText, { color: c.primaryForeground }]}>
                     {editing ? "Save changes" : "Save & finish"}
                   </Text>
                 </>
@@ -707,30 +846,66 @@ function ResolveModal({
         </View>
       </KeyboardAvoidingView>
 
-      <Modal visible={barangaySheetVisible} animationType="slide" transparent onRequestClose={() => setBarangaySheetVisible(false)}>
-        <Pressable style={rStyles.overlay} onPress={() => setBarangaySheetVisible(false)} />
+      <Modal
+        visible={barangaySheetVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => { setBarangaySheetVisible(false); setBarangayQuery(""); }}
+      >
+        <Pressable
+          style={rStyles.overlay}
+          onPress={() => { setBarangaySheetVisible(false); setBarangayQuery(""); }}
+        />
         <View style={[cfStyles.barangaySheet, { backgroundColor: c.card, borderColor: c.border }]}>
           <View style={[rStyles.handle, { backgroundColor: c.border }]} />
           <Text style={[rStyles.title, { color: c.foreground, marginBottom: 10 }]}>Home barangay</Text>
-          {BARANGAY_OPTIONS.map((b) => (
-            <Pressable
-              key={b.value}
-              onPress={() => {
-                setViolatorBarangay(b.value);
-                setCarriedBarangay(false);
-                setBarangaySheetVisible(false);
-              }}
-              accessibilityRole="button"
-              accessibilityState={{ selected: violatorBarangay === b.value }}
-              style={[
-                cfStyles.barangayRow,
-                { backgroundColor: violatorBarangay === b.value ? c.successLight : c.secondary, borderColor: c.border },
-              ]}
-            >
-              <Text style={[cfStyles.barangayRowText, { color: c.foreground }]}>{b.label}</Text>
-              {violatorBarangay === b.value && <Feather name="check" size={16} color={c.success} />}
-            </Pressable>
-          ))}
+          <View style={[cfStyles.barangaySearch, { backgroundColor: c.secondary, borderColor: c.border }]}>
+            <Feather name="search" size={15} color={c.mutedForeground} />
+            <TextInput
+              value={barangayQuery}
+              onChangeText={setBarangayQuery}
+              placeholder="Search barangay"
+              placeholderTextColor={c.mutedForeground}
+              autoCorrect={false}
+              autoCapitalize="none"
+              style={[cfStyles.barangaySearchInput, { color: c.foreground }]}
+            />
+            {barangayQuery.length > 0 && (
+              <Pressable onPress={() => setBarangayQuery("")} accessibilityRole="button"
+                accessibilityLabel="Clear search" hitSlop={8}>
+                <Feather name="x" size={15} color={c.mutedForeground} />
+              </Pressable>
+            )}
+          </View>
+          {/* Scrolls, because ninety-nine rows do not fit a sheet. */}
+          <ScrollView keyboardShouldPersistTaps="handled" style={cfStyles.barangayList}>
+            {barangayMatches.map((b) => (
+              <Pressable
+                key={b.value}
+                onPress={() => {
+                  setViolatorBarangay(b.value);
+                  setCarriedBarangay(false);
+                  setBarangaySheetVisible(false);
+                  setBarangayQuery("");
+                }}
+                accessibilityRole="button"
+                accessibilityState={{ selected: violatorBarangay === b.value }}
+                style={[
+                  cfStyles.barangayRow,
+                  { backgroundColor: violatorBarangay === b.value ? c.successLight : c.secondary, borderColor: c.border },
+                ]}
+              >
+                <Text style={[cfStyles.barangayRowText, { color: c.foreground }]}>{b.label}</Text>
+                {violatorBarangay === b.value && <Feather name="check" size={16} color={c.success} />}
+              </Pressable>
+            ))}
+            {barangayMatches.length === 0 && (
+              <Text style={[cfStyles.barangayEmpty, { color: c.mutedForeground }]}>
+                No barangay matches “{barangayQuery.trim()}”. Pick “Unknown / outside
+                Zamboanga City” if they live elsewhere.
+              </Text>
+            )}
+          </ScrollView>
         </View>
       </Modal>
 
@@ -791,22 +966,22 @@ function ResolveModal({
             )}
 
             <View style={cfStyles.reviewBlock}>
-              <Text style={[cfStyles.reviewLabel, { color: c.mutedForeground }]}>VIOLATOR</Text>
+              <Text style={[cfStyles.reviewLabel, { color: c.mutedForeground }]}>Violator</Text>
               <Text style={[cfStyles.reviewValue, { color: c.foreground }]}>
                 {[firstName, middleName, lastName, suffix].filter(Boolean).join(" ")}
               </Text>
             </View>
             <View style={cfStyles.reviewBlock}>
-              <Text style={[cfStyles.reviewLabel, { color: c.mutedForeground }]}>VIOLATION TYPE(S)</Text>
+              <Text style={[cfStyles.reviewLabel, { color: c.mutedForeground }]}>Violation types</Text>
               <Text style={[cfStyles.reviewValue, { color: c.foreground }]}>
                 {violationTypes
                   .filter((t) => selectedTypeIds.has(t.id))
-                  .map((t) => t.label)
+                  .map(slipLabel)
                   .join(", ")}
               </Text>
             </View>
             <View style={cfStyles.reviewBlock}>
-              <Text style={[cfStyles.reviewLabel, { color: c.mutedForeground }]}>HOME BARANGAY</Text>
+              <Text style={[cfStyles.reviewLabel, { color: c.mutedForeground }]}>Home barangay</Text>
               <Text style={[cfStyles.reviewValue, { color: c.foreground }]}>{selectedBarangayLabel}</Text>
             </View>
 
@@ -814,9 +989,9 @@ function ResolveModal({
               <Pressable onPress={() => setReviewState(null)} style={[rStyles.cancelBtn, { borderColor: c.border }]}>
                 <Text style={[rStyles.cancelText, { color: c.mutedForeground }]}>Cancel</Text>
               </Pressable>
-              <Pressable onPress={confirmReview} style={rStyles.confirmBtn}>
-                <Feather name="check-circle" size={16} color="#fff" />
-                <Text style={rStyles.confirmText}>Confirm</Text>
+              <Pressable onPress={confirmReview} style={[rStyles.confirmBtn, { backgroundColor: c.primary }]}>
+                <Feather name="check-circle" size={16} color={c.primaryForeground} />
+                <Text style={[rStyles.confirmText, { color: c.primaryForeground }]}>Confirm</Text>
               </Pressable>
             </View>
           </Pressable>
@@ -972,7 +1147,7 @@ function RecordingPlayer({
         )}
         {showLoading && (
           <View style={rpStyles.centerOverlay}>
-            <ActivityIndicator color="#fff" />
+            <Spinner size={24} color="#ffffff" track="rgba(255,255,255,0.28)" label="Loading video" />
           </View>
         )}
         {showUnavailable && (
@@ -1026,7 +1201,7 @@ function RecordingPlayer({
             </Pressable>
             <Pressable onPress={handleSaveClip} disabled={!hasVideo || saving} style={rpStyles.saveClipBtn} hitSlop={8}>
               {saving
-                ? <ActivityIndicator size="small" color={c.mutedForeground} />
+                ? <Spinner size={14} color={c.mutedForeground} label="Saving clip" />
                 : <Feather name="download" size={11} color={hasVideo ? c.mutedForeground : c.border} />}
               <Text style={[rpStyles.saveClipText, { color: hasVideo ? c.mutedForeground : c.border }]}>Save clip</Text>
             </Pressable>
@@ -1059,9 +1234,9 @@ const rpStyles = StyleSheet.create({
   topOverlay: { position: "absolute", top: 0, left: 0, right: 0, flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 10, paddingVertical: 8 },
   recRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   recBadge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, backgroundColor: "rgba(239,68,68,0.85)" },
-  recText: { color: "#fff", fontSize: 9, fontFamily: "Inter_600SemiBold" },
-  overlayMono: { color: "rgba(255,255,255,0.8)", fontSize: 10, fontFamily: "Inter_500Medium" },
-  zoneLabel: { position: "absolute", bottom: 34, left: 10, color: "rgba(255,255,255,0.8)", fontSize: 10, fontFamily: "Inter_500Medium" },
+  recText: { color: "#fff", fontSize: 11, fontFamily: "Inter_600SemiBold" },
+  overlayMono: { color: "rgba(255,255,255,0.8)", fontSize: 11, fontFamily: "Inter_500Medium" },
+  zoneLabel: { position: "absolute", bottom: 34, left: 10, color: "rgba(255,255,255,0.8)", fontSize: 11, fontFamily: "Inter_500Medium" },
   controls: { paddingHorizontal: 14, paddingVertical: 10, gap: 8 },
   progressTrack: { height: 4, borderRadius: 2, position: "relative" },
   progressFill: { position: "absolute", left: 0, top: 0, height: "100%", borderRadius: 2 },
@@ -1069,8 +1244,8 @@ const rpStyles = StyleSheet.create({
   unavailableText: { color: "rgba(255,255,255,0.85)", fontSize: 11, fontFamily: "Inter_500Medium" },
   retryBtn: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, backgroundColor: "rgba(255,255,255,0.15)" },
   retryText: { color: "#fff", fontSize: 11, fontFamily: "Inter_600SemiBold" },
-  saveErrorText: { color: "#ef4444", fontSize: 10, fontFamily: "Inter_500Medium" },
-  saveSuccessText: { color: "#10b981", fontSize: 10, fontFamily: "Inter_500Medium" },
+  saveErrorText: { color: "#ef4444", fontSize: 11, fontFamily: "Inter_500Medium" },
+  saveSuccessText: { color: "#10b981", fontSize: 11, fontFamily: "Inter_500Medium" },
   controlsRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   controlsLeft: { flexDirection: "row", alignItems: "center", gap: 12 },
   controlsRight: { flexDirection: "row", alignItems: "center", gap: 14 },
@@ -1261,7 +1436,7 @@ export default function AssignmentDetailScreen() {
         </View>
 
         <View style={[styles.card, { backgroundColor: c.card, borderColor: c.border }]}>
-          <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>LOCATION</Text>
+          <Text style={[styles.cardLabel, { color: c.foreground }]}>Location</Text>
           <View style={[styles.infoRow, { borderBottomColor: c.border, borderBottomWidth: 0, paddingBottom: 0 }]}>
             <Feather name="map-pin" size={15} color={c.mutedForeground} />
             <View style={{ flex: 1 }}>
@@ -1276,7 +1451,7 @@ export default function AssignmentDetailScreen() {
         <View style={{ flexDirection: "row", gap: 10 }}>
           <View style={[styles.card, { flex: 1, backgroundColor: c.card, borderColor: c.border }]}>
             <View style={styles.cardTitleRow}>
-              <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>STATUS</Text>
+              <Text style={[styles.cardLabel, { color: c.foreground }]}>Status</Text>
               <Pressable onPress={() => setTip(tip === "status" ? null : "status")} hitSlop={8}>
                 <Feather name="info" size={13} color={c.mutedForeground} />
               </Pressable>
@@ -1287,7 +1462,7 @@ export default function AssignmentDetailScreen() {
           </View>
           <View style={[styles.card, { flex: 1, backgroundColor: c.card, borderColor: c.border }]}>
             <View style={styles.cardTitleRow}>
-              <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>OBJECT CONFIDENCE</Text>
+              <Text style={[styles.cardLabel, { color: c.foreground }]}>Object confidence</Text>
               <Pressable onPress={() => setTip(tip === "object" ? null : "object")} hitSlop={8}>
                 <Feather name="info" size={13} color={c.mutedForeground} />
               </Pressable>
@@ -1315,7 +1490,7 @@ export default function AssignmentDetailScreen() {
             null rather than an "unavailable" payload, so there is no card to draw. */}
         {assignment.ai && <View style={[styles.card, styles.aiCard, { backgroundColor: c.card, borderColor: c.border }]}>
           <View style={styles.aiHeader}>
-            <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>AI CONTEXT</Text>
+            <Text style={[styles.cardLabel, { color: c.foreground }]}>AI context</Text>
             <Text style={[styles.aiNote, { color: c.mutedForeground }]}>AI-generated · may be wrong</Text>
           </View>
           {assignment.ai?.state === "done" ? (
@@ -1343,14 +1518,14 @@ export default function AssignmentDetailScreen() {
             Dropped with the card above when there is no checker for this violation. */}
         {assignment.ai && <View style={[styles.card, styles.aiCard, { backgroundColor: c.card, borderColor: c.border }]}>
           <View style={styles.aiHeader}>
-            <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>STATUS WITH AI CONTEXT</Text>
+            <Text style={[styles.cardLabel, { color: c.foreground }]}>Status with AI context</Text>
             <Text style={[styles.aiNote, { color: c.mutedForeground }]}>suggestion only</Text>
           </View>
           <SuggestedStatus assignment={assignment} muted={c.mutedForeground} />
         </View>}
 
         <View style={[styles.card, { backgroundColor: c.card, borderColor: c.border }]}>
-          <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>ASSIGNMENT INFO</Text>
+          <Text style={[styles.cardLabel, { color: c.foreground }]}>Assignment info</Text>
           {[
             { icon: "clock" as const, label: "Detected", value: `${formatDate(assignment.dispatchedAt)} · ${timeSince(assignment.dispatchedAt)}` },
           ].map((row) => (
@@ -1365,8 +1540,8 @@ export default function AssignmentDetailScreen() {
         </View>
 
         <View style={[styles.card, { backgroundColor: c.card, borderColor: c.border }]}>
-          <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>
-            ASSIGNED OFFICERS{assignment.assignedOfficerNames.length > 0 ? ` (${assignment.assignedOfficerNames.length})` : ""}
+          <Text style={[styles.cardLabel, { color: c.foreground }]}>
+            Assigned officers{assignment.assignedOfficerNames.length > 0 ? ` (${assignment.assignedOfficerNames.length})` : ""}
           </Text>
           {assignment.assignedOfficerNames.length === 0 ? (
             <Text style={[styles.infoValue, { color: c.mutedForeground, marginTop: 0 }]}>None assigned</Text>
@@ -1388,8 +1563,8 @@ export default function AssignmentDetailScreen() {
         {/* Citations filed so far — the officer's working memory for a multi-person scene */}
         {citationsForAlert.length > 0 && (
           <View style={[styles.card, { backgroundColor: c.card, borderColor: c.border }]}>
-            <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>
-              CITATIONS FILED ({citationsForAlert.length})
+            <Text style={[styles.cardLabel, { color: c.foreground }]}>
+              Citations filed ({citationsForAlert.length})
             </Text>
             <View style={{ gap: 8 }}>
               {citationsForAlert.map((cit) => {
@@ -1421,8 +1596,8 @@ export default function AssignmentDetailScreen() {
               })}
             </View>
             {!sceneClosed && (
-              <Text style={[styles.cardLabel, { color: c.mutedForeground, marginTop: 10, marginBottom: 0 }]}>
-                TAP A NAME TO CORRECT IT
+              <Text style={[styles.cardLabel, { color: c.foreground, marginTop: 10, marginBottom: 0 }]}>
+                Tap a name to correct it
               </Text>
             )}
           </View>
@@ -1485,11 +1660,19 @@ export default function AssignmentDetailScreen() {
             ]}
           >
             {busy ? (
-              <ActivityIndicator color="#fff" />
+              <Spinner
+                size={20}
+                color={isUnassigned ? c.primaryForeground : "#ffffff"}
+                track="rgba(255,255,255,0.3)"
+              />
             ) : (
               <>
-                <Feather name={isUnassigned ? "log-in" : "check-circle"} size={18} color="#fff" />
-                <Text style={styles.advanceBtnText}>
+                <Feather
+                  name={isUnassigned ? "log-in" : "check-circle"}
+                  size={18}
+                  color={isUnassigned ? c.primaryForeground : "#ffffff"}
+                />
+                <Text style={[styles.advanceBtnText, isUnassigned && { color: c.primaryForeground }]}>
                   {isUnassigned
                     ? "Accept Assignment"
                     : citationsForAlert.length > 0
@@ -1535,18 +1718,25 @@ const rStyles = StyleSheet.create({
   footerBtns: { flexDirection: "row", gap: 10 },
   cancelBtn: { paddingHorizontal: 18, paddingVertical: 13, borderRadius: 12, borderWidth: 1, alignItems: "center", justifyContent: "center" },
   cancelText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
-  confirmBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 13, borderRadius: 12, backgroundColor: "#10b981" },
+  confirmBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 13, borderRadius: 12 },
   confirmText: { color: "#fff", fontSize: 14, fontFamily: "Inter_600SemiBold" },
 });
 
-const PILL: Record<string, { color: string; bg: string }> = {
-  Monitoring: { color: "#64748b", bg: "rgba(100,116,139,0.16)" },
-  Possible:   { color: "#d97706", bg: "rgba(245,158,11,0.16)" },
-  Likely:     { color: "#dc2626", bg: "rgba(220,38,38,0.12)" },
-};
+/** The level labels the pill can draw. This was a lookup into the PILL
+ *  colour table; the colours now come from the palette inside LevelPill,
+ *  so the set of known labels has to be stated on its own. */
+const LEVELS = new Set(["Monitoring", "Possible", "Likely"]);
 
 function LevelPill({ label }: { label?: string | null }) {
-  const st = (label && PILL[label]) || { color: "#64748b", bg: "rgba(100,116,139,0.16)" };
+  const c = useColors();
+  // Read from the palette rather than a module-level constant, which is
+  // what pinned these three pills to the same hexes in both themes.
+  const st =
+    label === "Likely"
+      ? { color: c.urgent, bg: c.urgentSoft }
+      : label === "Possible"
+        ? { color: c.pending, bg: c.pendingSoft }
+        : { color: c.mutedForeground, bg: c.muted };
   return (
     <View style={{ backgroundColor: st.bg, borderRadius: 999, paddingHorizontal: 9, paddingVertical: 3 }}>
       <Text style={{ color: st.color, fontSize: 12, fontFamily: "Inter_600SemiBold" }}>{label || "—"}</Text>
@@ -1574,7 +1764,7 @@ function SuggestedStatus({ assignment, muted }: { assignment: Assignment; muted:
       </View>
     );
   }
-  if (sug?.suggested && PILL[sug.suggested]) {
+  if (sug?.suggested && LEVELS.has(sug.suggested)) {
     const noChange = text.startsWith("No change");
     return (
       <View style={{ marginTop: 6, flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
@@ -1593,7 +1783,7 @@ const cfStyles = StyleSheet.create({
   filedBanner: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12, borderWidth: 1, marginBottom: 14 },
   filedBannerText: { fontSize: 12, fontFamily: "Inter_600SemiBold", flex: 1 },
   lockedLine: { fontSize: 12, fontFamily: "Inter_400Regular", marginBottom: 16 },
-  sectionLabel: { fontSize: 11, fontFamily: "Inter_600SemiBold", letterSpacing: 0.8, marginBottom: 8 },
+  sectionLabel: { fontSize: 13, lineHeight: 18, fontFamily: "Inter_600SemiBold", marginBottom: 8 },
   typeGrid: { gap: 8 },
   typeRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 14, paddingVertical: 14, borderRadius: 12, borderWidth: 1 },
   typeLabel: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
@@ -1623,9 +1813,15 @@ const cfStyles = StyleSheet.create({
   primaryBtnText: { color: "#fff", fontSize: 14, fontFamily: "Inter_600SemiBold" },
   barangaySheet: { position: "absolute", bottom: 0, left: 0, right: 0, borderTopLeftRadius: 24, borderTopRightRadius: 24, borderWidth: 1, borderBottomWidth: 0, padding: 20, paddingBottom: 36, gap: 8 },
   barangayRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingVertical: 16, borderRadius: 12, borderWidth: 1 },
+  barangaySearch: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12, borderWidth: 1, marginBottom: 4 },
+  barangaySearchInput: { flex: 1, fontSize: 15, padding: 0 },
+  // Capped so the sheet cannot grow past the screen on a long list, and so
+  // the rows scroll under a search box that stays put.
+  barangayList: { maxHeight: 360 },
+  barangayEmpty: { fontSize: 14, lineHeight: 20, paddingHorizontal: 4, paddingVertical: 18, textAlign: "center" },
   barangayRowText: { fontSize: 16, fontFamily: "Inter_600SemiBold" },
   reviewBlock: { marginTop: 12 },
-  reviewLabel: { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 0.6, marginBottom: 3 },
+  reviewLabel: { fontSize: 12, lineHeight: 16, fontFamily: "Inter_600SemiBold", marginBottom: 3 },
   reviewValue: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
 });
 
@@ -1650,7 +1846,7 @@ const styles = StyleSheet.create({
   statusPillText: { fontSize: 12, fontFamily: "Inter_600SemiBold" },
   scroll: { padding: 16, gap: 12 },
   card: { borderRadius: 14, borderWidth: 1, padding: 16, gap: 14 },
-  cardLabel: { fontSize: 11, fontFamily: "Inter_600SemiBold", letterSpacing: 0.8 },
+  cardLabel: { fontSize: 13, lineHeight: 18, fontFamily: "Inter_600SemiBold" },
   violationHeader: { flexDirection: "row", alignItems: "center", gap: 14 },
   iconCircle: { width: 56, height: 56, borderRadius: 16, alignItems: "center", justifyContent: "center" },
   violationType: { fontSize: 20, fontFamily: "Inter_700Bold" },
@@ -1693,7 +1889,7 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     fontStyle: "italic",
   },
-  infoLabel: { fontSize: 11, fontFamily: "Inter_400Regular", textTransform: "uppercase", letterSpacing: 0.5 },
+  infoLabel: { fontSize: 12, lineHeight: 16, fontFamily: "Inter_400Regular" },
   infoValue: { fontSize: 14, fontFamily: "Inter_500Medium", marginTop: 2 },
   actionBar: { flexDirection: "row", padding: 16, gap: 12, borderTopWidth: 1 },
   dismissBtn: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 16, paddingVertical: 14, borderRadius: 12, borderWidth: 1 },
@@ -1709,7 +1905,7 @@ const styles = StyleSheet.create({
   modalIconWrap: { width: 44, height: 44, borderRadius: 12, alignItems: "center", justifyContent: "center" },
   modalTitle: { fontSize: 17, fontFamily: "Inter_700Bold" },
   modalSubtitle: { fontSize: 13, fontFamily: "Inter_400Regular", marginTop: 2 },
-  modalSectionLabel: { fontSize: 11, fontFamily: "Inter_600SemiBold", letterSpacing: 0.8 },
+  modalSectionLabel: { fontSize: 13, lineHeight: 18, fontFamily: "Inter_600SemiBold" },
   reasonGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   reasonChip: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 20, borderWidth: 1 },
   reasonText: { fontSize: 13, fontFamily: "Inter_500Medium" },

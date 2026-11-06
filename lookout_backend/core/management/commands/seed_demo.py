@@ -7,6 +7,7 @@ from core.models import (
     Officer,
     User,
     ViolationType,
+    normalize_ph_mobile,
 )
 
 # Labels here must match the frontend's canonical VIOLATION_TYPES (see
@@ -35,10 +36,13 @@ def disposal_evidence_name(suspect):
     slug = "".join(ch if ch.isalnum() else "_" for ch in suspect.lower()).strip("_")
     return f"demo_disposal_{slug}_evidence.jpg"
 
+# `phone` seeds the account's mobile number. `sms_alerts` is deliberately NOT
+# seeded on: the switch is an opt-in everywhere else in the system, and a demo
+# that arrives with it already flipped would not show that it is a choice.
 USERS = [
-    {"username": "admin", "password": "admin123", "role": "admin", "display_name": "Brgy. Administrator", "is_staff": True, "is_superuser": True},
-    {"username": "dispatcher", "password": "dispatch123", "role": "dispatcher", "display_name": "Dispatch Officer"},
-    {"username": "officer", "password": "officer123", "role": "officer", "display_name": "PO2 Mangubat, Lisa"},
+    {"username": "admin", "password": "admin123", "role": "admin", "display_name": "Brgy. Administrator", "is_staff": True, "is_superuser": True, "phone": "+63 917 555 0101"},
+    {"username": "dispatcher", "password": "dispatch123", "role": "dispatcher", "display_name": "Dispatch Officer", "phone": "+63 917 555 0102"},
+    {"username": "officer", "password": "officer123", "role": "officer", "display_name": "PO2 Mangubat, Lisa", "phone": "+63 917 555 6921"},
 ]
 
 OFFICERS = [
@@ -234,6 +238,9 @@ class Command(BaseCommand):
                     username=u["username"], password=u["password"], role=u["role"],
                     display_name=u["display_name"], is_staff=u.get("is_staff", False),
                     is_superuser=u.get("is_superuser", False),
+                    # Normalised rather than taken literally, so seeded rows
+                    # hold the same E.164 spelling the API would store.
+                    phone=normalize_ph_mobile(u.get("phone", "")),
                 )
                 self.stdout.write(self.style.SUCCESS(f"Created user {user.username}"))
 
@@ -247,7 +254,8 @@ class Command(BaseCommand):
                 code=o["code"],
                 defaults={
                     "name": o["name"], "badge": o["badge"], "status": o["status"],
-                    "location": o["location"], "phone": o["phone"], "shift": o["shift"],
+                    "location": o["location"], "phone": normalize_ph_mobile(o["phone"]),
+                    "shift": o["shift"],
                     "joined_date": parse_date(o["joined_date"]),
                 },
             )

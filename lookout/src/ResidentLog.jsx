@@ -9,6 +9,7 @@ import {
   VIOLATION_TYPES, UNKNOWN_VIOLATION_TYPE, resolveViolationType, loadViolationTypeIndex, violationChipStyle,
 } from "./constants/violationTypes.js";
 import { TypeFilterDropdown } from "./TypeFilterDropdown";
+import { NotificationBell } from "./NotificationBell";
 
 function fmtDate(ts) {
   return new Date(ts).toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" });
@@ -600,7 +601,10 @@ function SkeletonRow() {
 }
 
 // ── Main page ─────────────────────────────────────────────────────────────────
-export function ResidentLog() {
+// `alerts` and `onOpenAlerts` feed the header's notification bell. They are
+// passed in rather than fetched here: the dashboard already polls /alerts/ for
+// every page, and a second poll on this one would only be a second answer.
+export function ResidentLog({ alerts = [], onOpenAlerts = () => {} }) {
   const [violators, setViolators] = useState([]);
   const [violationsByViolator, setViolationsByViolator] = useState(new Map());
   const [loading, setLoading] = useState(true);
@@ -730,10 +734,10 @@ export function ResidentLog() {
     <div className="flex flex-col h-full overflow-hidden">
       <div className="flex items-center justify-between px-6 h-14 flex-shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
         <h1 className="text-xl font-bold" style={{ color: "var(--foreground)" }}>Violator Log</h1>
-        <div className="text-right">
-          <div className="text-lg font-bold tabular-nums leading-none" style={{ color: "var(--foreground)" }}>{totalViolators}</div>
-          <div className="text-[12px] uppercase tracking-wide font-semibold mt-0.5" style={{ color: "var(--muted-foreground)" }}>On record</div>
-        </div>
+        {/* The "on record" tally that used to sit here is the "Total violators"
+            figure in the summary row immediately below, so this is the bell
+            instead: what is still waiting to be reviewed. */}
+        <NotificationBell alerts={alerts} onOpenAlerts={onOpenAlerts} />
       </div>
 
       <div className="flex-1 overflow-hidden flex flex-col px-6 py-4 gap-4">

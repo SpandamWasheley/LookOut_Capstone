@@ -1,4 +1,4 @@
-"""watch_disposal — improper disposal (rubbish dumped and left behind).
+﻿"""watch_disposal — improper disposal (rubbish dumped and left behind).
 
 Django glue around core/vision/disposal.py. The rule layer and the CV live
 there; this file owns the camera, the settings reload, the evidence files and
@@ -12,30 +12,53 @@ asks two cheaper questions in order: stage 1 finds what arrived and STOPPED
 MOVING (dual background subtraction, no training data at all), stage 2 asks an
 open-vocabulary model whether that thing is a bag and not a dog.
 
-Like parking, disposal therefore carries its OWN confirmation logic rather
-than the shared weighted-sum scoring layer, and for the same reason parking
-does: there is no cited cue table to sum. `confidence` on the alert is the
-zero-shot bag score, and `cues` stays empty, so the alert card shows Object
-confidence with no score breakdown -- exactly as parking's does. Inventing
-weights here to make it look like the scored detectors would be presenting a
-guess as a measurement.
+The cue table (scoring.DISPOSAL_WEIGHTS)
+----------------------------------------
+Disposal is a scored detector like the other four, and reaches its status the
+same way: SUM(weight * cue) against 0.55 (Possible) and 0.75 (Likely).
 
-What disposal DOES borrow from scoring is the two status names, because an
-operator has to be told about a maybe:
+    object     0.40  GATE -- the bag check led every look-alike AND cleared
+                     disposal_confidence
+    arrival    0.20  this patch of ground changed, more than its surroundings
+    person     0.10  somebody was beside it as it appeared
+    left       0.25  ... and then walked away (conditional on `person`)
+    persisted  0.05  still there when the bag check was re-run later
 
-    Possible (warning)    the bag check leads but is under the floor
-    Likely   (violation)  it leads AND clears the floor
+One difference from the other three tables has to be stated and not glossed:
+THESE WEIGHTS ARE OURS. Drinking, smoking and holdup take theirs from
+published work; this one is tuned on Barangay Tetuan's own footage. What IS
+standard is the cue structure -- "a person brought it, it went static, they
+left it" is the abandoned-object formulation the PETS2006 and AVSS/i-LIDS
+benchmarks are built around.
 
-Both are reported. A weak lead used to be held back from the dashboard
-entirely, which meant the one thing the detector was most unsure about was
-also the one thing nobody could look at -- and a reviewer with the footage in
-front of them settles a maybe in seconds, which is the whole point of putting
-a human on the end of this. The precision argument the floor exists to serve
-is kept by SAYING SO rather than by silence: a weak lead is badged amber
-Possible, and `disposal_confidence` is still what decides which side of that
-line a detection falls on. There is ONE row per dumped object either way --
-`Candidate.alert_pk` carries it -- so a Possible that later firms up is
-upgraded in place to Likely rather than filed again.
+Disposal carried no table at all for most of its life, on the argument that
+inventing weights to look like the scored detectors would present a guess as a
+measurement. What overturned that was trying the alternative: the same
+evidence was used as BOOLEAN GATES, and a gate that is wrong is wrong in
+silence. A missed person detection -- routine at distance, at night, or on
+somebody walking away from the camera -- withheld a real violation for its
+entire life, which on screen is indistinguishable from the street being clean.
+A weight honestly labelled as tuned is a better instrument than that.
+
+What the table changes, in both directions:
+
+  * a confirmed bag with nothing else known is 0.40, the watchlist, instead of
+    an instant Likely;
+  * a dump whose carrier was never detected still reaches 0.60 on the object
+    and arrival cues -- reported as Possible rather than silently dropped.
+
+No gate cue, no event. A weak bag check (leads but under the floor) fires
+nothing, so nothing is written and no evidence files are cut -- the same first
+rule every other detector obeys, and what keeps disposal_confidence meaningful.
+
+While the owner is still standing over it the status is CAPPED at Monitoring
+(it is not abandoned yet) while the score keeps accruing underneath, so it
+reports at full strength the moment they walk away. Same mechanism as
+smoking's puff gate.
+
+There is ONE row per dumped object -- `Candidate.alert_pk` carries it -- so a
+lead that firms up is upgraded in place rather than filed again, and
+`peak_level` never falls so an event a reviewer has seen cannot vanish.
 
 Waste-collection window
 -----------------------
@@ -61,6 +84,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import cv2
+import numpy as np
 from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.utils import timezone
@@ -79,6 +103,7 @@ with Spinner("Loading PyTorch", tty_only=True):
     from core.vision import debug_view                        # noqa: E402
     from core.vision import disposal as disposal_cv           # noqa: E402
     from core.vision import recognition                       # noqa: E402
+    from core.vision import zone_autodetect as autodetect     # noqa: E402
     from core.vision import scoring                           # noqa: E402
     from core.vision import trim as trimming                  # noqa: E402
 
@@ -116,6 +141,13 @@ class Command(BaseCommand):
             "--source", default="0",
             help="Video source: a webcam index (default 0), a stream URL or a "
                  "video file path. Use the RTSP URL for a real CCTV camera.",
+        )
+        parser.add_argument(
+            "--no-auto-area", action="store_true",
+            help="Do not work the watched area out from the footage when none "
+                 "is saved. Without this flag, a run with no area traces the "
+                 "road and its margins; with it, the whole frame is watched, "
+                 "which is what disposal did before the tracer existed.",
         )
         parser.add_argument(
             "--camera", default=DISPOSAL_CAMERA_CODE,
@@ -194,7 +226,12 @@ class Command(BaseCommand):
         # on a path that skipped the stream setup.
         self.debug_pub = debug_view.DebugPublisher.from_env()
         self._movers = []
-        self._persons = []
+        # None, not [] -- "the person pass has not run / is unavailable", which
+        # the owner rule has to be able to tell apart from "it ran and saw
+        # nobody". [] would make every candidate owner_known and so withhold
+        # every one of them the moment the detector was lost. See
+        # disposal.Candidate.owner_known.
+        self._persons = self._vehicles = None
         self._movers_at = -1e9
         self._mover_warned = False
 
@@ -390,11 +427,18 @@ class Command(BaseCommand):
                 # given, so this has to run on EVERY processed frame (the same
                 # place watch_parking does it) — feeding it only at alert time
                 # leaves one frame in the deque and writes a clip that is a
-                # single frozen image instead of the 30s lead-up. These frames
-                # are clean; _create_alert adds the annotated one last, so the
-                # clip ends on the boxed frame.
+                # single frozen image instead of the 30s lead-up.
+                #
+                # BOXED, not clean. These frames used to go in untouched, with
+                # a single annotated one appended at the end by _create_alert
+                # — so the "annotated" clip was the raw footage plus one
+                # marked frame, and once the save was deferred to centre the
+                # detection even that frame ended up buried in the middle.
+                # The two versions in the player were then indistinguishable.
+                # watch_parking has always buffered its drawn frames; this now
+                # does too.
                 if self.clip is not None:
-                    self.clip.add(frame, now_ts)
+                    self.clip.add(self._annotate_live(frame, detector), now_ts)
 
                 # Clean pixels for the live view, taken before anything draws.
                 # Nothing in this loop draws on `frame` in place (_annotate
@@ -462,35 +506,55 @@ class Command(BaseCommand):
                         frame, cand, detector.scale, conf)
 
                     if verdict == disposal_cv.REJECTED:
-                        cand.rejected, cand.weak = True, False
+                        cand.rejected, cand.weak, cand.confirmed = True, False, False
                         cand.label = f"{r_name} {r_conf:.0%}" if r_name else "not garbage"
                         stats["rejected"] += 1
+                        # A rejection is the one verdict that ends a candidate's
+                        # chances, and "person 86%" alone does not say whether a
+                        # person was IN the crop or the model called the rubbish
+                        # a person. Those need opposite fixes, so the numbers
+                        # that tell them apart are printed: what was cut, how
+                        # many bystanders were trimmed off it, and what the best
+                        # GARBAGE prompt managed against the winner.
+                        self.stdout.write(
+                            f"  #{cand.id} rejected: {r_name} {r_conf:.0%} "
+                            f"(best garbage: {g_name or 'none'} {g_conf:.0%}) "
+                            f"· {self._crop_note(frame, cand, detector.scale)}")
                         continue
 
+                    # Stage 2 looked and did not say "that is a dog". Counted
+                    # before the verdicts split, because the `persisted` cue
+                    # is about having been SEEN again, not about how sure the
+                    # second look was.
+                    cand.confirm_count += 1
+
                     if verdict == disposal_cv.WEAK:
-                        # Garbage led but fell short of the floor. REPORTED, as
-                        # Possible, and not a write-off either: it also stays in
-                        # the recheck queue (last_check above schedules the next
-                        # look), so the same object can be upgraded to Likely
-                        # later without being filed twice.
+                        # Garbage led every look-alike but fell short of the
+                        # floor, so the GATE cue does not fire -- and with no
+                        # gate there is no event, the same first rule every
+                        # other detector obeys. Nothing is written and no
+                        # evidence files are cut.
                         #
-                        # disposal_confidence is still a real control -- it is
-                        # what decides Possible from Likely, and so what an
-                        # operator triages on. What it no longer does is hide
-                        # the detector's maybes: a weak lead the dashboard never
-                        # showed could not be confirmed or dismissed by the one
-                        # thing that settles it, which is a person watching the
-                        # clip.
-                        cand.weak, cand.rejected = True, False
+                        # Not a write-off either: it stays in the recheck
+                        # queue (last_check above schedules the next look), so
+                        # the same object scores properly the moment the bag
+                        # check firms up. A zero-shot head ranks nine garbage
+                        # synonyms against eleven look-alikes on every crop it
+                        # is handed, so SOMETHING leads nearly always; a 9%
+                        # lead over an 8% reject is not the model saying
+                        # "bag, unsure", it is the model saying nothing.
+                        cand.weak, cand.rejected, cand.confirmed = True, False, False
                         cand.label, cand.score = g_name, g_conf
                         stats["weak"] += 1
                         self.stdout.write(
                             f"  {g_name} leads at {g_conf:.0%} but the floor is "
-                            f"{conf:.0%} — Possible, rechecking in "
+                            f"{conf:.0%} — no object cue, rechecking in "
                             f"{cfg.disposal_recheck_seconds}s.")
+                        # An object that ALREADY has a row has to be told its
+                        # evidence weakened; one that never had a row stays
+                        # unwritten. _alert makes that split.
                         if self._alert(cand, detector, frame, g_name, g_conf,
-                                       now_ts, cfg, cooldown, stats,
-                                       scoring.WARNING):
+                                       now_ts, cfg, cooldown, stats):
                             n_alerts += 1
                         continue
 
@@ -498,8 +562,7 @@ class Command(BaseCommand):
                     cand.label = g_name
                     cand.score = g_conf
                     if self._alert(cand, detector, frame, g_name, g_conf,
-                                   now_ts, cfg, cooldown, stats,
-                                   scoring.VIOLATION):
+                                   now_ts, cfg, cooldown, stats):
                         n_alerts += 1
 
                 # Is it STILL there? Pinned candidates are the ones both
@@ -514,6 +577,7 @@ class Command(BaseCommand):
                         cand.weak = verdict == disposal_cv.WEAK
                         cand.label, cand.score = g_name, g_conf
                         cand.confirmed = verdict == disposal_cv.CONFIRMED
+                        cand.confirm_count += 1
 
                     if first_look:
                         stats["pinned"] += 1
@@ -540,15 +604,13 @@ class Command(BaseCommand):
                     # Both engaged verdicts are sent, not just the firming-up
                     # one, because the row and the candidate's status have to
                     # agree in both directions -- a Likely that reads back as
-                    # a weak lead on the next look is downgraded to Possible,
-                    # the same way the scored detectors let a status fall.
-                    # _alert is a no-op when nothing changed, so this costs one
-                    # comparison per presence check.
+                    # a weak lead on the next look falls, the same way the
+                    # scored detectors let a status fall. _alert is a no-op
+                    # when nothing changed, so this costs one comparison per
+                    # presence check.
                     if cand.confirmed or cand.weak:
                         if self._alert(cand, detector, frame, g_name, g_conf,
-                                       now_ts, cfg, cooldown, stats,
-                                       scoring.VIOLATION if cand.confirmed
-                                       else scoring.WARNING):
+                                       now_ts, cfg, cooldown, stats):
                             n_alerts += 1
 
                 # The collection window closed on a bag stage 1 can still see.
@@ -566,10 +628,9 @@ class Command(BaseCommand):
                             cand.weak = verdict == disposal_cv.WEAK
                             cand.label, cand.score = g_name, g_conf
                             cand.confirmed = verdict == disposal_cv.CONFIRMED
+                            cand.confirm_count += 1
                             if self._alert(cand, detector, frame, g_name, g_conf,
-                                           now_ts, cfg, cooldown, stats,
-                                           scoring.VIOLATION if cand.confirmed
-                                           else scoring.WARNING):
+                                           now_ts, cfg, cooldown, stats):
                                 n_alerts += 1
                         if not detector.record_window_recheck(cand, present, now_ts):
                             self.stdout.write(
@@ -581,7 +642,7 @@ class Command(BaseCommand):
                 stats["ignored"] += len(detector.ignored)
                 self._publish_view(detector, candidates, now_ts, static_seconds,
                                    float(cfg.disposal_owner_away_seconds),
-                                   float(cfg.disposal_owner_max_hold), conf)
+                                   float(cfg.disposal_owner_max_hold), conf, cfg)
 
                 if debug:
                     if self._show(window, detector, candidates, now_ts, show_mask):
@@ -602,8 +663,9 @@ class Command(BaseCommand):
             f"Checked {stats['checked']} static object(s): "
             f"{stats['confirmed']} alerted as Likely, "
             f"{stats['possible']} as Possible "
-            f"({stats['upgraded']} later rose to Likely), "
-            f"{stats.get('held', 0)} held at Monitoring inside the collection window, "
+            f"({stats['upgraded']} later rose), "
+            f"{stats.get('held', 0)} left on the Monitoring watchlist "
+            f"(too little evidence to announce, or the collection window), "
             f"{stats['rejected']} rejected, "
             f"{stats['adopted']} re-joined a row already open at their spot, "
             f"{stats['cooldown']} suppressed as an already-reported spot. "
@@ -636,12 +698,39 @@ class Command(BaseCommand):
         ready = (self.pending.flush(now) if final else self.pending.due(now))
         for alert_pk, path, offset in ready:
             fields = {"video_url": violation_media_path(path.name)}
-            # Only for a LIVE run. On a file the raw clip is cut from the
-            # source and already carries the truer offset; overwriting it with
-            # the annotated clip's would mark the wrong clip's moment.
+            # The ANNOTATED clip's own offset. Its own field because the two
+            # clips are different lengths — writing this into clip_offset
+            # would mark the raw clip at the wrong frame.
+            if offset is not None:
+                fields["annotated_offset"] = offset
+            # clip_offset belongs to the raw clip, which on a FILE run is cut
+            # from the source and already carries the truer number. Only a live
+            # run, whose "raw" clip is this same rolling buffer, shares it.
             if offset is not None and self._source_path is None:
                 fields["clip_offset"] = offset
             Alert.objects.filter(pk=alert_pk).update(**fields)
+
+    def _crop_note(self, frame, cand, scale):
+        """One line describing the crop stage 2 was actually given.
+
+        Reported twice from footage as "why did it not alert", and twice I
+        guessed from a screenshot. The detector can simply say.
+        """
+        avoid = self._movers or []
+        wide = disposal_cv.crop_rect_full_res(frame.shape, cand.box, scale)
+        tight = disposal_cv.crop_rect_full_res(frame.shape, cand.box, scale,
+                                               avoid=avoid)
+        box = tuple(int(v / scale) for v in cand.box)
+        trimmed = "unchanged" if tight == wide else f"trimmed from {wide}"
+        # The arrival numbers ride along because they now decide which reject
+        # classes are even allowed to vote, and a rejection that turns on them
+        # is unreadable without them.
+        arrival = (f"arrival {cand.arrival_inner:.0%} vs ring "
+                   f"{cand.arrival_ring:.0%} "
+                   f"({'proven' if cand.arrival_proven else 'unproven'})")
+        return (f"object={box} crop={tight} ({trimmed}) "
+                f"avoid={len(avoid)} box(es) · {arrival} · "
+                f"owner={'yes' if cand.had_owner else 'no'}")
 
     def _ask_stage2(self, frame, cand, scale, conf):
         """One zero-shot pass on this candidate's crop.
@@ -652,17 +741,40 @@ class Command(BaseCommand):
         same crop, and only the meaning of the answer differs. Two copies of
         this would be two places for the crop padding or the floor to drift.
         """
-        crop = disposal_cv.crop_full_res(frame, cand.box, scale)
+        # The people and vehicles this frame, so the padding can be pulled off
+        # them. Reported twice from footage: rubbish with bystanders a metre
+        # away came back "person 88%" and could never fire the object cue.
+        # Same boxes stage 1 already has -- no extra inference. See shrink_away.
+        crop = disposal_cv.crop_full_res(frame, cand.box, scale,
+                                         avoid=self._movers)
+        # What the TRAINED detector says is not here. A zero-shot "person 86%"
+        # at a spot yolov8n sees no person at does not get to veto. See
+        # disposal.TRUSTED_REJECTS.
+        absent = disposal_cv.absent_rejects(
+            tuple(v / scale for v in cand.box),
+            persons=self._persons, vehicles=self._vehicles)
+        # ... plus the one this candidate's own owner makes meaningless. The
+        # person standing over rubbish they just put down is the dumper, not a
+        # look-alike. See disposal.dumper_rejects.
+        absent |= disposal_cv.dumper_rejects(cand)
+        # ... and the container classes a PROVEN arrival rules out. A bin that
+        # lives here would have been learned as background, never raised, and
+        # never measured as a change. See disposal.fixture_rejects.
+        absent |= disposal_cv.fixture_rejects(cand)
         _ok, best_g, best_r = disposal_cv.confirm(
-            self.world, crop, self.garbage_ids, conf)
+            self.world, crop, self.garbage_ids, conf, absent=absent)
         return disposal_cv.classify(best_g, best_r, conf), best_g, best_r
 
     def _alert(self, cand, detector, frame, g_name, g_conf, now, cfg, cooldown,
-               stats, level):
-        """Place gate, evidence and the Alert row. True if one was written.
+               stats):
+        """Score, place gate, evidence, Alert row. True if one was written.
 
-        `level` is scoring.WARNING (Possible) or scoring.VIOLATION (Likely) —
-        which of the two things the bag check concluded.
+        The level is WORKED OUT here, from `_score`, rather than handed in.
+        Every caller used to decide it for itself from the stage-2 verdict
+        alone, which is exactly the design this replaced: a confirmed bag went
+        straight to Likely however little else was known about it, and a weak
+        one was a flat watchlist row. The cue table (scoring.DISPOSAL_WEIGHTS)
+        weighs the arrival and owner evidence alongside the bag check instead.
 
         ONE ROW PER PLACE. The first verdict at a spot files the alert; every
         later verdict about that spot restates that same row, whether it
@@ -683,6 +795,19 @@ class Command(BaseCommand):
         """
         still = cand.still_for(now)
         away = cand.owner_away_for(now)
+        scored = self._score(cand, now, cfg,
+                             held=self._held_by_owner(cand, now, cfg))
+        level = scored.level
+
+        # No gate cue, so no event -- the first rule in the spec, and the one
+        # that keeps the confidence floor meaningful. A candidate with no row
+        # is simply not written. One that ALREADY has a row cannot vanish from
+        # the dashboard because a later look was weaker, so it falls to the
+        # watchlist floor instead; `peak_level` is what keeps it listed.
+        if level == scoring.NONE:
+            if cand.alert_pk is None and cooldown.alert_at(cand.center, now) is None:
+                return False
+            level = scoring.MONITORING
 
         # This candidate does not know a row yet — but its PLACE may already
         # have one. Stage 1 forgets an object a couple of unseen seconds after
@@ -707,8 +832,10 @@ class Command(BaseCommand):
         # place is held open first, then the row is brought up to date.
         if cand.alert_pk is not None:
             cooldown.remember(cand.center, now, cand.alert_pk, level)
-            return self._restate_alert(cand, detector, frame, g_name, g_conf,
-                                       still, description, level, stats)
+            changed = self._restate_alert(cand, detector, frame, g_name, g_conf,
+                                          still, description, level, stats, scored)
+            cand.note_level(level, now)
+            return changed
 
         # Reported, with no row to adopt: a dry run.
         if cooldown.blocks(cand.center, now):
@@ -731,9 +858,10 @@ class Command(BaseCommand):
         evidence = self._annotate(frame, cand, detector.scale, g_name, g_conf, still)
         alert = self._create_alert(
             g_conf, g_name, evidence, description, now=now,
-            cand=cand, scale=detector.scale, cfg=cfg, level=level)
+            cand=cand, scale=detector.scale, cfg=cfg, level=level, scored=scored)
         if alert is not None:
             cand.alert_pk, cand.alert_level = alert.pk, level
+            cand.note_level(level, now)
         # Claimed AFTER the row exists, so the place carries the pk a later
         # candidate for this same bag will adopt. A dry run claims the place
         # with no pk, which blocks rather than adopts — the nearest a run that
@@ -815,7 +943,7 @@ class Command(BaseCommand):
         return level, None
 
     def _restate_alert(self, cand, detector, frame, g_name, g_conf, still,
-                       description, level, stats):
+                       description, level, stats, scored=None):
         """Bring this candidate's existing row up to the latest verdict.
 
         True only when something actually moved, so the caller can keep
@@ -839,6 +967,11 @@ class Command(BaseCommand):
         fields = {"level": level, "confidence": g_conf,
                   "object_confidence": g_conf, "description": description,
                   "suspect": str(g_name), "last_seen_at": timezone.now()}
+        if scored is not None:
+            # The breakdown has to move WITH the status, or the card shows a
+            # Likely badge over the cue list that only justified a Possible.
+            row = Alert.objects.filter(pk=cand.alert_pk).values("cues").first() or {}
+            fields["cues"] = {**(row.get("cues") or {}), **scored.as_dict()}
         if rose:
             fields["peak_level"] = level
             # Re-shoot the still, because its caption carries the score: a card
@@ -854,8 +987,8 @@ class Command(BaseCommand):
         Alert.objects.filter(pk=cand.alert_pk).update(**fields)
         timeline.add(cand.alert_pk, "status", scoring.label_of(level))
         cand.alert_level = level
-        # Counted as an upgrade, NOT as another filing: `possible` and
-        # `confirmed` are "rows opened at this status", and adding to them here
+        # Counted as an upgrade, NOT as another filing: `confirmed` and
+        # `held` are "rows opened at this status", and adding to them here
         # would count one bag twice.
         if rose:
             stats["upgraded"] += 1
@@ -897,13 +1030,15 @@ class Command(BaseCommand):
                     f"Person/vehicle filter unavailable ({exc}); "
                     "watching without it."))
             self._movers = []
-            self._persons = []
+            self._persons = self._vehicles = None
             return self._movers
         # The PERSON subset is kept separately as well as merged. The ignore
         # rule does not care whether a blob is sitting inside a person or a
         # parked car; the owner rule only ever means a person. One pass, two
         # readings of it — adding a second detector for the owner rule would
         # be paying twice for detections already in hand.
+        self._vehicles = [(x1, y1, x2 - x1, y2 - y1)
+                          for x1, y1, x2, y2, *_rest in vehicles]
         self._persons = [(x1, y1, x2 - x1, y2 - y1)
                          for x1, y1, x2, y2, *_rest in persons]
         self._movers = self._persons + [(x1, y1, x2 - x1, y2 - y1)
@@ -929,7 +1064,10 @@ class Command(BaseCommand):
         if not requested:
             points = self._area_points_from_camera()
             if points is None:
-                return None, ""
+                # Nothing saved — work one out from the footage rather than
+                # falling straight back to the whole frame, which on a 4MP
+                # image raises a flood of noise blobs from trees and sky.
+                return self._auto_area(options)
             try:
                 return disposal_cv.Area(points), f"camera {self.camera.code}"
             except ValueError as exc:
@@ -951,6 +1089,71 @@ class Command(BaseCommand):
                 f"{path} is not a usable zone ({exc}); watching the whole frame."))
             return None, ""
 
+    def _auto_area(self, options):
+        """(Area, description) traced from the footage, or (None, "") for the
+        whole frame.
+
+        Built on the same tracer parking uses, but PADDED FAR WIDER, and that
+        difference is the whole point. Parking asks "is the vehicle on the
+        carriageway", so the traffic hull is the answer. Disposal asks "where
+        might rubbish be left" — and rubbish is left exactly where vehicles do
+        not drive: at the kerb, against a wall, on the verge. Handed the bare
+        hull, disposal would watch the one strip of ground nobody dumps on.
+        So the road is traced the same way and then grown past its edges to
+        take in the margins either side (DISPOSAL_PAD_FRACTION).
+
+        NEVER SAVED onto the camera, unlike parking's. Both detectors read the
+        same "zone" entry in Camera.edges, so persisting this wide area would
+        silently replace the no-parking polygon with one reaching across the
+        pavement — and parking would start reporting vehicles that were never
+        on the road. It is traced per run and thrown away.
+
+        Never fatal: every failure here returns "no area", which means watch
+        the whole frame, which is exactly what disposal did before this
+        existed.
+        """
+        if options.get("no_auto_area"):
+            return None, ""
+
+        source = options.get("source")
+        if not source:
+            return None, ""
+
+        self.stdout.write(
+            f"No area saved for {self.camera.code} — working one out from the "
+            f"footage (the road and its margins)...")
+        try:
+            points, report, frame = autodetect.trace_clip(
+                source,
+                lambda f: recognition.detect_vehicles(
+                    f, imgsz=autodetect.TRACE_IMGSZ),
+                max_samples=autodetect.MAX_SAMPLES,
+                pad_fraction=autodetect.DISPOSAL_PAD_FRACTION,
+            )
+        except Exception as exc:                                # noqa: BLE001
+            self.stdout.write(self.style.WARNING(
+                f"Could not trace an area ({exc}); watching the whole frame."))
+            return None, ""
+
+        if points is None:
+            self.stdout.write(self.style.WARNING(
+                f"  {report['reason']} Watching the whole frame."))
+            return None, ""
+
+        height, width = frame.shape[:2]
+        try:
+            area = disposal_cv.Area([[x / width, y / height] for x, y in points])
+        except ValueError as exc:
+            self.stdout.write(self.style.WARNING(
+                f"  The traced area is unusable ({exc}); watching the whole frame."))
+            return None, ""
+
+        self.stdout.write(self.style.SUCCESS(
+            f"  Traced a {len(points)}-point area from "
+            f"{report['ground_points']} sighting(s) of moving vehicles. "
+            "Not saved — it is this run's only."))
+        return area, "the footage (auto-traced)"
+
     def _area_points_from_camera(self):
         """The camera's drawn polygon as normalised (0-1) points, or None.
 
@@ -958,14 +1161,24 @@ class Command(BaseCommand):
         which silently confined disposal to the road the moment a no-parking
         zone (or a traced one) was saved.
         """
-        stored = self.camera.disposal_edges or {}
-        spec = next((s for s in stored.values()
-                     if isinstance(s, dict) and s.get("type") == "zone"
-                     and len(s.get("points") or []) >= 3), None)
+        stored = self.camera.edges or {}
+
+        def pick(kind):
+            return next((s for s in stored.values()
+                         if isinstance(s, dict) and s.get("type") == kind
+                         and len(s.get("points") or []) >= 3), None)
+
+        # A "disposal" area is this detector's own and wins outright. Falling
+        # back to the no-parking "zone" keeps every camera drawn before the two
+        # were distinguishable working exactly as it did -- but note what that
+        # fallback IS: the carriageway, which is where rubbish is least likely
+        # to be left. Drawing a disposal area, or letting this trace its own
+        # (padded far wider), is the better answer on any camera that has one.
+        spec = pick("disposal") or pick("zone")
         if spec is None:
             return None
-        width = self.camera.disposal_edges_width
-        height = self.camera.disposal_edges_height
+        width = self.camera.edges_width
+        height = self.camera.edges_height
         if not (width and height):
             self.stdout.write(self.style.WARNING(
                 f"{self.camera.code} has a saved area but no record of the frame size "
@@ -981,6 +1194,46 @@ class Command(BaseCommand):
         if self.conf_override is not None:
             return self.conf_override
         return cfg.disposal_confidence / 100.0
+
+    # The owner is still standing over it, so it is not abandoned YET. A cap
+    # rather than a withholding: the score keeps accruing and the status is
+    # held down, so the moment they walk away it reports at its real strength.
+    # Same mechanism smoking's puff gate uses.
+    OWNER_CAP_REASON = "owner still beside it"
+
+    def _score(self, cand, now, cfg, *, held=False):
+        """This candidate's scored verdict. The ONLY place disposal scores.
+
+        Both the alert path and the live processing view come through here, so
+        the status on the page and the status on the row cannot disagree --
+        which they could, and did, while each worked the level out for itself.
+        """
+        cues = disposal_cv.cues_for(
+            cand, cand.confirmed, now,
+            away_seconds=float(cfg.disposal_owner_away_seconds))
+        # The behaviour-only path. Without it the object cue is an absolute
+        # veto: a bag check one point under the floor meant nothing else could
+        # count, however completely the dumping itself had been observed.
+        behaviour = disposal_cv.behaviour_only(cand, cand.confirmed, cues)
+        cap, reason = None, ""
+        if held:
+            cap, reason = scoring.MONITORING, self.OWNER_CAP_REASON
+        elif behaviour:
+            cap, reason = scoring.WARNING, scoring.DISPOSAL_BEHAVIOUR_TAG
+        return scoring.Score(
+            "disposal", scoring.DISPOSAL_WEIGHTS, cues,
+            previous_level=cand.alert_level or None,
+            # `object_on` is what admits an event at all. The behaviour path
+            # opens it without the gate cue, exactly as the puff-only path does
+            # for smoking, and the cap above is what keeps it honest.
+            object_on=True if behaviour else None,
+            cap=cap, cap_reason=reason,
+            detail=cand.label or "")
+
+    def _held_by_owner(self, cand, now, cfg):
+        return cand.held_by_owner(now,
+                                  float(cfg.disposal_owner_away_seconds),
+                                  float(cfg.disposal_owner_max_hold))
 
     def _static_seconds(self, cfg):
         if self.static_override is not None:
@@ -1013,14 +1266,17 @@ class Command(BaseCommand):
     # PROGRESS: still-time across Monitoring, then a flat band for the two
     # WAITING states, then full once a verdict exists.
     #
-    MONITORING_MAX_PCT = 54     # 0-54 while the still-timer counts
-    POSSIBLE_MIN_PCT = 55       # 55-99 once still but unconfirmed
-    POSSIBLE_MAX_PCT = 99
+    # The bar is the REAL score now, on the same 0-100 scale as every other
+    # detector, so 55 means Possible here exactly as it does on a smoking
+    # card. The one exception is a candidate stage 2 has not been asked about
+    # yet: no cue has had the chance to fire, so a score of 0 would say
+    # "nothing here" when the truth is "not asked yet". Those show the
+    # still-timer's progress instead, capped below the Possible line.
+    STILL_MAX_PCT = 54          # 0-54 while the still-timer counts
 
-    # Sub-labels for the three ways a candidate can sit at Possible. Shown
-    # beside the status, because "Possible" alone cannot distinguish a rule
-    # that is waiting from a model that is unsure -- and those call for
-    # different things from whoever is watching.
+    # Sub-labels. Shown beside the status, because a status alone cannot
+    # distinguish a rule that is deliberately waiting from a model that is
+    # unsure -- and those call for different things from whoever is watching.
     DETAIL_OWNER = "Owner nearby"
     DETAIL_CHECKING = "Checking"
     # Stage 1 can no longer see this object; the bag check is what is keeping
@@ -1029,29 +1285,22 @@ class Command(BaseCommand):
     # stuck detector looks like.
     DETAIL_PINNED = "Still there"
 
-    def _possible_pct(self, cand, conf):
-        """Where in the 55-99 band a Possible candidate sits.
-
-        A weak match is placed by how close its score came to the floor, so an
-        object the model nearly accepted reads differently from one it barely
-        noticed. Waiting states sit at the bottom of the band: no score exists
-        yet, and inventing a position for one would be a guess drawn as a
-        measurement.
-        """
-        span = self.POSSIBLE_MAX_PCT - self.POSSIBLE_MIN_PCT
-        if not cand.weak or conf <= 0:
-            return self.POSSIBLE_MIN_PCT
-        return self.POSSIBLE_MIN_PCT + int(round(span * min(1.0, cand.score / conf)))
-
     def _publish_view(self, detector, candidates, now, static_seconds,
-                      owner_away_seconds=None, owner_max_hold=None, conf=None):
+                      owner_away_seconds=None, owner_max_hold=None, conf=None,
+                      cfg=None):
         if self.debug_pub is None:
             return
-        conf = self._confidence(SystemSettings.load()) if conf is None else conf
-        held = set()
-        if owner_away_seconds is not None:
-            held = {c.id for c in detector.held(now, static_seconds,
-                                                owner_away_seconds, owner_max_hold)}
+        cfg = SystemSettings.load() if cfg is None else cfg
+        conf = self._confidence(cfg) if conf is None else conf
+        # Asked per candidate rather than read off detector.held(), which
+        # excludes CONFIRMED ones -- it was built to answer "withheld from the
+        # bag check", and a confirmed bag is never re-offered. As the source of
+        # the owner CAP that exclusion is exactly backwards: a confirmed bag
+        # with its owner still standing over it is the one case the cap is for.
+        away_seconds = (float(cfg.disposal_owner_away_seconds)
+                        if owner_away_seconds is None else owner_away_seconds)
+        max_hold = (float(cfg.disposal_owner_max_hold)
+                    if owner_max_hold is None else owner_max_hold)
         for cand in candidates:
             # Candidate boxes live in PROC_WIDTH coordinates; the page scales
             # against the published frame's full-resolution dimensions, so they
@@ -1063,14 +1312,7 @@ class Command(BaseCommand):
                 {"name": "seconds still", "points": int(round(still))},
                 {"name": "needs", "points": int(round(static_seconds))},
             ]
-            if cand.confirmed:
-                status = scoring.label_of(scoring.VIOLATION)      # "Likely"
-                pct = 100
-                indicators.append({"name": cand.label or "garbage",
-                                   "points": int(round(cand.score * 100))})
-                if cand.pinned:
-                    detail = self.DETAIL_PINNED
-            elif cand.rejected:
+            if cand.rejected:
                 # Below Monitoring: the page draws these dashed and faded and
                 # the Panel view hides them. A look-alike that stage 2 threw
                 # out is exactly that — seen, judged, passed over — and showing
@@ -1080,34 +1322,50 @@ class Command(BaseCommand):
                 status = debug_view.BELOW
                 pct = 0
                 indicators.append({"name": cand.label or "not garbage", "points": 0})
-            elif still < static_seconds:
-                # Still counting. The only state where the bar is a real
-                # measurement of anything: progress toward the requirement.
+            elif cand.last_check is None:
+                # Never been asked. No cue has had its chance, so the bar
+                # tracks the still-timer rather than reporting a score of zero
+                # as though the evidence had been weighed and found wanting.
                 status = scoring.label_of(scoring.MONITORING)     # "Monitoring"
-                pct = int(min(self.MONITORING_MAX_PCT,
+                pct = int(min(self.STILL_MAX_PCT,
                               round(still / max(static_seconds, 1e-6)
-                                    * self.MONITORING_MAX_PCT)))
+                                    * self.STILL_MAX_PCT)))
+                detail = self.DETAIL_CHECKING
             else:
-                # Still long enough, not confirmed, not thrown out. Three ways
-                # to be here and the sub-label says which: waiting on an owner
-                # to leave, waiting on stage 2, or stage 2 said "bag" too
-                # quietly to act on. None of them writes an Alert.
-                status = scoring.label_of(scoring.WARNING)        # "Possible"
-                pct = self._possible_pct(cand, conf)
-                if cand.id in held:
+                # Scored, through the SAME call the alert path uses — so what
+                # the page shows and what the row says cannot disagree.
+                scored = self._score(
+                    cand, now, cfg,
+                    held=cand.held_by_owner(now, away_seconds, max_hold))
+                # NONE means no gate cue -- nothing is written for it. On the
+                # page it still has to read as something being watched, or a
+                # candidate the detector is actively re-checking every few
+                # seconds would be labelled "Not shown" while visibly boxed on
+                # the frame. Below Monitoring stays reserved for a candidate
+                # stage 2 actually threw out.
+                level = (scoring.MONITORING if scored.level == scoring.NONE
+                         else scored.level)
+                status = scoring.label_of(level)
+                pct = int(round(scored.score * 100))
+                indicators += debug_view.indicator_list(scored)
+                if scored.capped:
                     detail = self.DETAIL_OWNER
                     away = cand.owner_away_for(now)
                     indicators.append({"name": "owner away",
                                        "points": int(round(away)) if away else 0})
                 elif cand.weak:
+                    # No object cue: the bag check leads but is under the
+                    # floor. Said plainly, with the floor beside it, because
+                    # "Monitoring" alone does not tell an operator that the
+                    # one number they can tune is what is holding it back.
                     detail = (f"{self.DETAIL_PINNED} · weak {cand.score:.0%}"
                               if cand.pinned else f"Weak match {cand.score:.0%}")
                     indicators.append({"name": cand.label or "garbage",
                                        "points": int(round(cand.score * 100))})
                     indicators.append({"name": "needs",
                                        "points": int(round(conf * 100))})
-                else:
-                    detail = self.DETAIL_CHECKING
+                elif cand.pinned:
+                    detail = self.DETAIL_PINNED
             self.debug_pub.note(
                 key=("disposal", cand.id), violation="disposal", ident=cand.id,
                 box=box, status=status, score_pct=pct, indicators=indicators,
@@ -1154,6 +1412,49 @@ class Command(BaseCommand):
     # ---- evidence ----------------------------------------------------------
 
     EVIDENCE_GREEN = (94, 197, 34)   # BGR for #22c55e, the disposal chip colour
+
+    # Candidate colours for the rolling clip, BGR. Deliberately the same
+    # vocabulary the live processing view uses, so a reviewer who has watched
+    # a run recognises them: green is a confirmed bag, amber a weak lead,
+    # grey something the bag check threw out.
+    LIVE_CONFIRMED = (94, 197, 34)    # #22c55e
+    LIVE_WEAK = (11, 158, 245)        # #f59e0b
+    LIVE_REJECTED = (150, 150, 150)
+
+    def _annotate_live(self, frame, detector):
+        """A copy of `frame` with the watched area and every candidate drawn.
+
+        Copied, never in place: the caller's frame goes on to the debug view,
+        the stage-2 crops and the next iteration's detection, and none of them
+        want our rectangles burned in.
+
+        Cheap next to the inference it sits beside — a frame copy and a
+        handful of rectangles — and it is what makes the annotated clip worth
+        having as a separate thing from the raw one.
+        """
+        out = frame.copy()
+        height, width = out.shape[:2]
+
+        if detector.area is not None:
+            points = np.array([[int(x * width), int(y * height)]
+                               for x, y in detector.area.points_norm],
+                              dtype=np.int32)
+            cv2.polylines(out, [points], True, self.LIVE_CONFIRMED, 2)
+
+        for cand in detector.candidates:
+            if cand.rejected:
+                colour, tag = self.LIVE_REJECTED, cand.label or "not garbage"
+            elif cand.confirmed:
+                colour, tag = self.LIVE_CONFIRMED, f"{cand.label} {cand.score:.0%}"
+            elif cand.weak:
+                colour, tag = self.LIVE_WEAK, f"{cand.label} {cand.score:.0%}?"
+            else:
+                colour, tag = self.LIVE_WEAK, "checking"
+            x, y, w, h = [int(v / detector.scale) for v in cand.box]
+            cv2.rectangle(out, (x, y), (x + w, y + h), colour, 2)
+            cv2.putText(out, f"#{cand.id} {tag}", (x, max(20, y - 8)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, colour, 2)
+        return out
 
     def _annotate(self, frame, cand, scale, label, score, still):
         """A copy of `frame` with the confirmed object boxed and labelled.
@@ -1238,7 +1539,7 @@ class Command(BaseCommand):
         return violation_media_path(name)
 
     def _create_alert(self, score, label, frame, description, now=None,
-                      cand=None, scale=1.0, cfg=None, level=""):
+                      cand=None, scale=1.0, cfg=None, level="", scored=None):
         ts_label = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         tag = str(label).replace(" ", "_")
         image_url = self._save_still(frame, label, ts_label)
@@ -1248,11 +1549,18 @@ class Command(BaseCommand):
         # detection -- the approach, then nothing. It is scheduled below
         # instead, once the row exists to attach it to.
         video_name = f"{ts_label}_disposal_{tag}.mp4"
-        # Empty on the row at first: _drain_pending fills it in once the
-        # post-roll has played and the clip actually exists.
+        # Saved BEFORE the row is written, so an alert never exists without
+        # its annotated clip. Saved again later, centred on the detection —
+        # see watch_parking._schedule_clip for why both.
         video_url = ""
+        annotated_offset = None
         if self.clip is not None:
             self.clip.add(frame, now if now is not None else time.time())
+            if self.clip.save(self.violations_dir / video_name):
+                video_url = violation_media_path(video_name)
+                # Pre-roll only for now, so the detection is the last frame.
+                # _drain_pending moves it when the centred copy lands.
+                annotated_offset = self.clip.span()
 
         suspect_image_url, suspect_status = self._save_suspect(
             cand, scale, ts_label, tag, cfg)
@@ -1307,7 +1615,12 @@ class Command(BaseCommand):
             suspect_status=suspect_status,
             # Only the settings in force, as the scored detectors log them. No
             # `cues` vector inside it: disposal still has no score breakdown.
-            cues=({"settings": spec_settings.snapshot(cfg)} if cfg is not None else {}),
+            # The cue vector, same shape every other detector writes, so the
+            # alert card renders disposal's breakdown through the existing
+            # checklist path with no client change. `settings` rides alongside
+            # it as the audit snapshot, as it does elsewhere.
+            cues={**(scored.as_dict() if scored is not None else {}),
+                  **({"settings": spec_settings.snapshot(cfg)} if cfg is not None else {})},
             owner_left_at=owner_left_at,
             footage_offset=self._video_pos_sec if self._source_path is not None else None,
             type=self.disposal_type,
@@ -1332,22 +1645,17 @@ class Command(BaseCommand):
             video_url=video_url,
             raw_video_url=raw_video_url,
             clip_offset=clip_offset,
+            annotated_offset=annotated_offset,
             suspect=str(label),
         )
         # Filled in by _drain_pending once the post-roll has played. A raw clip
         # cut from a FILE already covers both sides of the detection, so it is
         # written above and only the annotated one waits.
-        if self.clip is not None:
-            path = self.violations_dir / video_name
-            when = now if now is not None else time.time()
-            if self.pending is None:
-                # No drain wired (nothing does this today, but a caller driving
-                # this Command from its own loop would) — save it now rather
-                # than schedule a clip nobody will write.
-                if self.clip.save(path):
-                    Alert.objects.filter(pk=alert.pk).update(
-                        video_url=violation_media_path(video_name))
-            else:
-                self.pending.schedule(alert.pk, self.clip, path, when,
-                                      recognition.RAW_CLIP_POST_SECONDS)
+        # The clip is already written (above); this only queues the centred
+        # replacement. Losing it costs centring, never the evidence.
+        if self.clip is not None and self.pending is not None:
+            self.pending.schedule(
+                alert.pk, self.clip, self.violations_dir / video_name,
+                now if now is not None else time.time(),
+                recognition.RAW_CLIP_POST_SECONDS)
         return alert

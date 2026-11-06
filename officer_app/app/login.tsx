@@ -2,20 +2,13 @@ import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import React, { useState } from "react";
-import {
-  ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-  useColorScheme,
-} from "react-native";
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { Button } from "@/components/ui/Button";
+import { Field } from "@/components/ui/Field";
+import { Notice } from "@/components/ui/Notice";
+import { GUTTER, radius, space, type as T } from "@/constants/theme";
 import { useAuth } from "@/context/AuthContext";
 import { useColors } from "@/hooks/useColors";
 
@@ -24,22 +17,19 @@ export default function LoginScreen() {
   const router = useRouter();
   const c = useColors();
   const insets = useSafeAreaInsets();
-  const scheme = useColorScheme();
-  const isDark = scheme === "dark";
 
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
   const handleLogin = async () => {
     if (!username.trim()) {
-      setError("Enter your username");
+      setError("Enter your username.");
       return;
     }
     if (!password.trim()) {
-      setError("Enter your password");
+      setError("Enter your password.");
       return;
     }
     setError("");
@@ -50,7 +40,7 @@ export default function LoginScreen() {
     if (result.ok) {
       router.replace("/(tabs)");
     } else {
-      setError(result.error ?? "Invalid username or password.");
+      setError(result.error ?? "That username and password don't match.");
       if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     }
   };
@@ -62,97 +52,79 @@ export default function LoginScreen() {
     >
       <ScrollView
         contentContainerStyle={[
-          styles.container,
+          styles.scroll,
           {
-            paddingTop: insets.top + (Platform.OS === "web" ? 40 : 60),
-            paddingBottom: insets.bottom + 40,
+            paddingTop: insets.top + (Platform.OS === "web" ? space.xxxl : 60),
+            paddingBottom: insets.bottom + space.xxxl,
           },
         ]}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
+        {/* The same eye as the launcher icon and the web dashboard's own logo,
+            so the home screen, the sign-in and the desk all carry one mark. */}
         <View style={styles.brand}>
-          <View style={[styles.logoWrap, { backgroundColor: c.primary }]}>
-            <Feather name="eye" size={36} color="#fff" />
+          <View style={[styles.mark, { backgroundColor: c.primary }]}>
+            <Feather name="eye" size={34} color={c.primaryForeground} />
           </View>
-          <Text style={[styles.appName, { color: c.foreground }]}>LookOut</Text>
-          <Text style={[styles.tagline, { color: c.mutedForeground }]}>
-            Barangay Enforcement System
-          </Text>
+          <Text style={[T.display, { color: c.foreground }]}>LookOut</Text>
+          <Text style={[T.meta, { color: c.mutedForeground }]}>Barangay enforcement</Text>
         </View>
 
-        <View style={[styles.card, { backgroundColor: c.card, borderColor: c.border }]}>
-          <Text style={[styles.cardTitle, { color: c.foreground }]}>Officer Sign In</Text>
-          <Text style={[styles.cardSubtitle, { color: c.mutedForeground }]}>
-            Enter your credentials to access the dispatch board
-          </Text>
-
-          <View style={styles.fields}>
-            <View>
-              <Text style={[styles.label, { color: c.mutedForeground }]}>Username</Text>
-              <View style={[styles.inputRow, { backgroundColor: c.muted, borderColor: c.border }]}>
-                <Feather name="shield" size={16} color={c.mutedForeground} />
-                <TextInput
-                  style={[styles.input, { color: c.foreground }]}
-                  placeholder="e.g. juan.delacruz123"
-                  placeholderTextColor={c.mutedForeground}
-                  value={username}
-                  onChangeText={(v) => { setUsername(v); setError(""); }}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  returnKeyType="next"
-                />
-              </View>
-            </View>
-
-            <View>
-              <Text style={[styles.label, { color: c.mutedForeground }]}>Password</Text>
-              <View style={[styles.inputRow, { backgroundColor: c.muted, borderColor: c.border }]}>
-                <Feather name="lock" size={16} color={c.mutedForeground} />
-                <TextInput
-                  style={[styles.input, { color: c.foreground }]}
-                  placeholder="Enter password"
-                  placeholderTextColor={c.mutedForeground}
-                  value={password}
-                  onChangeText={(v) => { setPassword(v); setError(""); }}
-                  secureTextEntry={!showPassword}
-                  returnKeyType="done"
-                  onSubmitEditing={handleLogin}
-                />
-                <Pressable onPress={() => setShowPassword((v) => !v)}>
-                  <Feather name={showPassword ? "eye-off" : "eye"} size={16} color={c.mutedForeground} />
-                </Pressable>
-              </View>
-            </View>
+        <View
+          style={[
+            styles.card,
+            { backgroundColor: c.card, borderColor: c.border, borderRadius: radius.card },
+            c.lift(1),
+          ]}
+        >
+          <View style={styles.head}>
+            <Text style={[T.heading, { color: c.foreground }]}>Sign in</Text>
+            <Text style={[T.body, { color: c.mutedForeground }]}>
+              Use the account your barangay admin set up for you.
+            </Text>
           </View>
 
-          {!!error && (
-            <View style={[styles.errorBox, { backgroundColor: isDark ? "#3b1219" : "#fed7d7" }]}>
-              <Feather name="alert-circle" size={14} color={c.primary} />
-              <Text style={[styles.errorText, { color: c.primary }]}>{error}</Text>
-            </View>
-          )}
+          <Field
+            label="Username"
+            icon="user"
+            placeholder="juan.delacruz123"
+            value={username}
+            onChangeText={(v) => {
+              setUsername(v);
+              setError("");
+            }}
+            autoCapitalize="none"
+            autoCorrect={false}
+            returnKeyType="next"
+          />
+          <Field
+            label="Password"
+            icon="lock"
+            placeholder="Your password"
+            value={password}
+            onChangeText={(v) => {
+              setPassword(v);
+              setError("");
+            }}
+            secret
+            returnKeyType="done"
+            onSubmitEditing={handleLogin}
+          />
+
+          {/* The old box was a literal #fed7d7 pink with its text in
+              c.primary — amber, back when amber was the brand. See Notice. */}
+          {!!error && <Notice tone="error" message={error} />}
+
+          <Button label="Sign in" onPress={handleLogin} icon="log-in" loading={loading} />
 
           <Pressable
-            style={({ pressed }) => [
-              styles.loginBtn,
-              { backgroundColor: c.primary, opacity: pressed || loading ? 0.8 : 1 },
-            ]}
-            onPress={handleLogin}
-            disabled={loading}
+            onPress={() => router.push("/forgot-password")}
+            accessibilityRole="button"
+            hitSlop={8}
+            style={({ pressed }) => [styles.forgot, { opacity: pressed ? 0.6 : 1 }]}
           >
-            {loading ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <>
-                <Feather name="log-in" size={18} color="#fff" />
-                <Text style={styles.loginBtnText}>Sign In</Text>
-              </>
-            )}
-          </Pressable>
-
-          <Pressable onPress={() => router.push("/forgot-password")} style={styles.forgotBtn}>
-            <Text style={[styles.forgotText, { color: c.primary }]}>Forgot password?</Text>
+            <Text style={[T.label, { color: c.primary }]}>Forgot your password?</Text>
           </Pressable>
         </View>
       </ScrollView>
@@ -162,104 +134,17 @@ export default function LoginScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  container: {
-    flexGrow: 1,
-    paddingHorizontal: 24,
-    gap: 28,
-  },
-  brand: {
-    alignItems: "center",
-    gap: 10,
-  },
-  logoWrap: {
-    width: 80,
-    height: 80,
-    borderRadius: 24,
+  scroll: { flexGrow: 1, paddingHorizontal: GUTTER, gap: space.xxl },
+  brand: { alignItems: "center", gap: space.sm },
+  mark: {
+    width: 76,
+    height: 76,
+    borderRadius: radius.card + 4,
     alignItems: "center",
     justifyContent: "center",
+    marginBottom: space.xs,
   },
-  appName: {
-    fontSize: 32,
-    fontFamily: "Inter_700Bold",
-    letterSpacing: -0.5,
-  },
-  tagline: {
-    fontSize: 13,
-    fontFamily: "Inter_400Regular",
-    textAlign: "center",
-  },
-  card: {
-    borderRadius: 16,
-    borderWidth: 1,
-    padding: 24,
-    gap: 20,
-  },
-  cardTitle: {
-    fontSize: 20,
-    fontFamily: "Inter_700Bold",
-  },
-  cardSubtitle: {
-    fontSize: 13,
-    fontFamily: "Inter_400Regular",
-    lineHeight: 19,
-    marginTop: -12,
-  },
-  fields: {
-    gap: 16,
-  },
-  label: {
-    fontSize: 12,
-    fontFamily: "Inter_600SemiBold",
-    marginBottom: 6,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-  inputRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 13,
-  },
-  input: {
-    flex: 1,
-    fontSize: 15,
-    fontFamily: "Inter_400Regular",
-    padding: 0,
-  },
-  errorBox: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    padding: 12,
-    borderRadius: 10,
-  },
-  errorText: {
-    fontSize: 13,
-    fontFamily: "Inter_500Medium",
-    flex: 1,
-  },
-  loginBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 10,
-    paddingVertical: 15,
-    borderRadius: 12,
-  },
-  loginBtnText: {
-    color: "#fff",
-    fontSize: 16,
-    fontFamily: "Inter_600SemiBold",
-  },
-  forgotBtn: {
-    alignItems: "center",
-    paddingVertical: 4,
-  },
-  forgotText: {
-    fontSize: 13,
-    fontFamily: "Inter_600SemiBold",
-  },
+  card: { borderWidth: 1, padding: space.xl, gap: space.base },
+  head: { gap: space.xs, marginBottom: space.xs },
+  forgot: { alignItems: "center", paddingVertical: space.xs },
 });

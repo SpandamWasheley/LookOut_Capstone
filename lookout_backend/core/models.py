@@ -23,6 +23,37 @@ def normalize_name(first_name, middle_name, last_name):
     return _WHITESPACE_RE.sub(" ", no_punct).strip().lower()
 
 
+_PH_MOBILE_RE = re.compile(r"^9\d{9}$")
+
+
+def normalize_ph_mobile(raw):
+    """Reduce any way a Philippine mobile number gets written to one E.164 form.
+
+    0917..., +63917..., 63917... and 0063917... are the same number. Which one
+    an operator types depends on where they copied it from, so the digits are
+    canonicalised on the way IN -- a number is stored once, the way a gateway
+    wants it, instead of every future reader having to re-guess the spelling.
+
+    Blank stays blank: having no number on file is the normal state of an
+    account, not an error. A non-empty value that is not a PH mobile raises
+    ValueError, so a typo surfaces as a 400 at the serializer rather than as a
+    row that can never receive anything.
+    """
+    # Only a genuinely empty value reads as "no number". Text that contained
+    # SOMETHING but no usable digits is a typo, and falls through to the
+    # rejection below -- treating it as blank would quietly delete a number
+    # that was already on file.
+    if not str(raw or "").strip():
+        return ""
+    digits = re.sub(r"\D", "", str(raw))
+    digits = digits.lstrip("0")               # trunk 0, or the 00 of an IDD prefix
+    if digits.startswith("63"):               # country code
+        digits = digits[2:]
+    if not _PH_MOBILE_RE.match(digits):
+        raise ValueError("Enter a valid Philippine mobile number, e.g. 0917 123 4567.")
+    return f"+63{digits}"
+
+
 class User(AbstractUser):
     class Role(models.TextChoices):
         ADMIN = "admin", "Administrator"
@@ -33,6 +64,35 @@ class User(AbstractUser):
     role = models.CharField(max_length=20, choices=Role.choices, default=Role.OFFICER)
     display_name = models.CharField(max_length=150, blank=True)
     must_change_password = models.BooleanField(default=False)
+    # Mobile number for out-of-band notification, held in E.164 (+639XXXXXXXXX)
+    # by normalize_ph_mobile.
+    #
+    # It lives on the ACCOUNT, not only on Officer, because an admin and a
+    # dispatcher have no Officer row at all and they are the accounts that see
+    # an alert first. `Officer.phone` predates this column and is kept for
+    # officers with no account (`Officer.user` is nullable); wherever an account
+    # does exist, THIS is the number that counts -- set_account_phone is the one
+    # writer of either, so the two cannot drift apart.
+    # max_length matches Officer.phone, so a legacy value that reaches here
+    # unparsed cannot be truncated on the way across.
+    phone = models.CharField(max_length=30, blank=True)
+    # Opt-IN, per account. Off by default, and a blank `phone` means nothing is
+    # sent whatever this says: an outbound channel billed per message should
+    # start silent and be switched on deliberately for a known number, not
+    # inherited by every account that happens to exist.
+    sms_alerts = models.BooleanField(default=False)
+
+    def set_account_phone(self, raw):
+        """The only place a user's number is written. Normalizes, then mirrors
+        the result onto the linked Officer row so the personnel roster can
+        never show a number the account itself no longer has."""
+        self.phone = normalize_ph_mobile(raw)
+        self.save(update_fields=["phone"])
+        officer = getattr(self, "officer_profile", None)
+        if officer is not None and officer.phone != self.phone:
+            officer.phone = self.phone
+            officer.save(update_fields=["phone"])
+        return self.phone
 
     def __str__(self):
         return self.display_name or self.username
@@ -194,6 +254,17 @@ class Officer(models.Model):
     class Meta:
         ordering = ["code"]
 
+    @property
+    def sms_alerts(self):
+        """Whether this officer has opted in to text notification.
+
+        Read-only and derived: the switch belongs to the ACCOUNT (an officer
+        with no login cannot have consented to anything), so there is one
+        answer for an officer however it is reached. Writing it goes through
+        the user -- see OfficerSerializer.update.
+        """
+        return bool(self.user_id and self.user.sms_alerts)
+
     def save(self, *args, **kwargs):
         if not self.code:
             self.code = _next_code(Officer, "OFC")
@@ -273,6 +344,16 @@ class Alert(models.Model):
     # which snaps to the preceding keyframe, so the real moment can sit a
     # little later in the file than this says.
     clip_offset = models.FloatField(null=True, blank=True)
+    # The same thing for the ANNOTATED clip, which is a different length and
+    # therefore a different number. One field cannot serve both: the raw clip
+    # is cut from the source with a fixed lead-in, while the annotated one is
+    # whatever the recorder's rolling buffer held when it was written.
+    #
+    # It also MOVES. The annotated clip is saved twice — once as the alert is
+    # filed, when the detection is its last frame, and again once the post-roll
+    # has played, when the detection sits in the middle. The second write
+    # replaces both the clip and this offset.
+    annotated_offset = models.FloatField(null=True, blank=True)
     # --- weighted-sum scoring (core/vision/scoring.py) ----------------------
     # `confidence` above is now the FINAL score for detectors that have been
     # ported to the scoring model — an estimate of "how likely is this a
@@ -452,6 +533,15 @@ class DetectionJob(models.Model):
                                related_name="detection_jobs")
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.RUNNING)
     pid = models.IntegerField(null=True, blank=True)
+    # PIDs of detectors running ALONGSIDE the primary one for this job.
+    #
+    # Only the "everything" option uses it today: disposal shares no model
+    # forward pass with the merged four, so running all five over one clip
+    # means two processes, not one wider detector. They are tracked on the one
+    # row because to an operator it was one Start — a second row would show as
+    # a second run they did not ask for, and cancelling one would leave the
+    # other going.
+    extra_pids = models.JSONField(default=list, blank=True)
     started_at = models.DateTimeField(auto_now_add=True)
     finished_at = models.DateTimeField(null=True, blank=True)
     # Tail of the subprocess's combined stdout/stderr log — only set on failure.
@@ -693,7 +783,13 @@ class SystemSettings(models.Model):
     # Seconds an object must sit STILL before the bag check runs at all. This
     # is the rule that makes it "disposal" rather than "a bag exists": rubbish
     # being carried past the camera never stops, so it never qualifies.
-    disposal_static_seconds = models.PositiveSmallIntegerField(default=2)
+    #
+    # Was 2, which is barely longer than the fast background model takes to
+    # forget anything at all, so night-time transients -- a headlight wash, a
+    # reflection off wet tarmac, a shadow crossing a shutter -- cleared it
+    # before they had faded and the bag check was being asked about nothing.
+    # See core/vision/disposal.STATIC_SECONDS.
+    disposal_static_seconds = models.PositiveSmallIntegerField(default=12)
     # Seconds before the same SPOT may alert again. Place-keyed rather than
     # track-keyed, because a static-blob candidate is dropped after a couple of
     # unseen seconds and its replacement starts with a clean timer -- the same
@@ -704,7 +800,7 @@ class SystemSettings(models.Model):
     # drinking_cooldown_center_dist: the seconds were already tunable while the
     # distance they applied over was not, so a camera looking down a long
     # street could not widen it.
-    disposal_cooldown_dist = models.PositiveSmallIntegerField(default=60)
+    disposal_cooldown_dist = models.PositiveSmallIntegerField(default=30)
     # --- what counts as an object at all (stage 1) -------------------------
     # Size bounds as a PERCENT of the frame. These are the two that decide how
     # much stage 1 raises in the first place, and on a 4MP frame the defaults
@@ -892,6 +988,19 @@ class SystemSettings(models.Model):
     # because the purge deletes files.
     evidence_auto_purge = models.BooleanField(default=False)
 
+    # Master switch for text notification, system-wide.
+    #
+    # This is NOT the removed `sms_alerts` column, and not a per-person
+    # preference either: who gets texted is `User.sms_alerts`, set per account.
+    # This gates all of it at once, so an admin can stop every message —
+    # credits exhausted, a detector misfiring at 2am, a provider outage —
+    # without clearing anybody's number or their choice to be reached.
+    #
+    # OFF by default, like evidence_auto_purge above and for the same reason:
+    # a switch whose consequence is outbound and billed should be turned on
+    # deliberately, never inherited by a fresh install.
+    sms_alerts_enabled = models.BooleanField(default=False)
+
     updated_at = models.DateTimeField(auto_now=True)
 
     @property
@@ -917,3 +1026,48 @@ class SystemSettings(models.Model):
 
     def __str__(self):
         return "System settings"
+
+
+class DevicePushToken(models.Model):
+    """One phone's address for push notifications.
+
+    A MODEL rather than a column on User, for two reasons. An account can be
+    signed in on more than one device (a phone and a spare handset), and the
+    token identifies the INSTALL, not the person -- reinstalling the app, or
+    restoring it onto a new handset, produces a new token for the same account
+    while the old one keeps existing until Expo says otherwise.
+
+    `token` is unique and is the identity of the row: the same install
+    re-registering must update who it belongs to, not file a second row. That
+    matters on a shared handset, where the next officer to sign in has to take
+    the token over or they would both be notified of each other's assignments.
+
+    Nothing here is a secret -- an Expo push token lets its holder send a
+    notification to the device, not read anything from it -- but a stale one is
+    a privacy problem, which is why sign-out deletes the row rather than
+    waiting for Expo to report it dead.
+    """
+
+    class Platform(models.TextChoices):
+        ANDROID = "android", "Android"
+        IOS = "ios", "iOS"
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="push_tokens",
+    )
+    # ExponentPushToken[xxxxxxxxxxxxxxxxxxxxxx] -- 41 chars today, with room.
+    token = models.CharField(max_length=255, unique=True)
+    platform = models.CharField(max_length=10, choices=Platform.choices, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    # Bumped every time the app re-registers, which it does on each launch.
+    # A token that has not been seen for months belongs to an install that is
+    # gone; this is what makes that visible without guessing.
+    last_seen = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-last_seen"]
+
+    def __str__(self):
+        return f"{self.user} - {self.token[:24]}…"

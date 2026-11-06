@@ -64,18 +64,22 @@ export function RecordingPlayer({ alert, timeline = false }) {
   const showingRaw = useRaw && hasRaw;
   const src = showingRaw ? alert.rawVideoUrl : (hasAnnotated ? alert.videoUrl : alert.rawVideoUrl);
 
-  // Where in THIS clip the detector actually fired, in seconds, or null.
+  // Where in THIS clip the detector fired, in seconds, or null.
   //
-  // Not the same place in the two clips, which is why it cannot be one number:
-  //   RAW        cut with a lead-in, so the moment sits inside it —
-  //              `clipOffset`, measured and stored when the clip was written.
-  //   ANNOTATED  a rolling buffer of the frames BEFORE the alert, so the
-  //              moment is the last frame by construction. Marking "the end"
-  //              adds nothing a viewer cannot see, so it is left unmarked.
-  // Null on alerts written before the field existed, and on live-source raw
-  // clips (also pre-roll buffers) — no marker rather than a guessed one.
-  const detectedAt = showingRaw && alert.clipOffset != null && alert.clipOffset >= 0
-    ? alert.clipOffset
+  // Each clip carries its OWN offset, because they are different lengths and
+  // one number cannot locate the moment in both:
+  //   RAW        cut from the source with a fixed lead-in (`clipOffset`).
+  //   ANNOTATED  whatever the recorder's rolling buffer held when it was
+  //              written (`annotatedOffset`). Saved twice — at the alert,
+  //              where the detection is the last frame, then again once the
+  //              post-roll has played, where it sits in the middle — so this
+  //              number moves, and the stored one is always the current clip's.
+  //
+  // Null on alerts written before the field existed, and whenever a clip was
+  // not produced: no marker rather than a guessed one.
+  const offsetForClip = showingRaw ? alert.clipOffset : alert.annotatedOffset;
+  const detectedAt = offsetForClip != null && offsetForClip >= 0
+    ? offsetForClip
     : null;
 
   useEffect(() => {

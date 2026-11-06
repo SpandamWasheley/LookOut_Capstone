@@ -20,6 +20,7 @@ import tempfile
 import types
 from unittest import mock
 
+import cv2
 import numpy as np
 from django.test import TestCase
 
@@ -182,6 +183,346 @@ def forget(detector, cand, now, extra=1.0):
     detector.update(scene(), now)
     return now
 
+
+def scored_as(cand, level, now=10.0):
+    """Give `cand` the cue state that scores `level`, and return it.
+
+    The alert path works its own level out from scoring.DISPOSAL_WEIGHTS now
+    rather than being handed one, so a test that wants a Likely has to supply
+    the EVIDENCE for a Likely. These helpers keep the alert-path tests about
+    what they were always about -- one row per place, upgrades, peak_level --
+    instead of about cue arithmetic, which ScoredDisposalTests covers.
+
+        Monitoring  object only                       0.40
+        Possible    object + arrival                  0.60
+        Likely      object + arrival + person + left  0.95 (+ persisted = 1.00)
+    """
+    cand.confirmed, cand.weak, cand.rejected = True, False, False
+    # A reference patch has to EXIST for the arrival cue to be answerable; see
+    # Candidate.arrival_proven.
+    cand.ref_patch = np.zeros((4, 4), dtype=np.uint8)
+    cand.ref_region, cand.ref_inner = (0, 0, 4, 4), (1, 1, 2, 2)
+    cand.arrival_passes = disposal.ARRIVAL_CONFIRM_LOOKS
+    cand.had_owner, cand.last_owner_near_at, cand.confirm_count = False, None, 0
+    if level == scoring.MONITORING:
+        cand.arrival_passes = 0
+    elif level == scoring.VIOLATION:
+        cand.had_owner = True
+        cand.last_owner_near_at = now - 60.0      # long gone
+        cand.confirm_count = 2
+    return cand
+
+
+def lit(frame, delta=40):
+    """The whole scene brighter — headlights, a cloud moving, auto-exposure.
+
+    The thing the arrival test must NOT read as something being dumped: every
+    pixel moves, so an object's patch is no more changed than the ground
+    around it.
+    """
+    return np.clip(frame.astype(np.int16) + delta, 0, 255).astype(np.uint8)
+
+
+class ArrivalMeasurementTests(TestCase):
+    """The measurement on its own: two patches in, two fractions out.
+
+    Synthetic greyscale rather than footage, because what is under test is the
+    arithmetic of "changed here versus changed around here" — the same reason
+    stage 1 is tested on drawn rectangles.
+    """
+
+    REGION = (40, 40)                       # a 40x40 patch of ground...
+    INNER = (10, 10, 20, 20)                # ...with the object's box inside it
+
+    def before(self):
+        return np.full(self.REGION, 90, dtype=np.uint8)
+
+    def test_an_object_landing_in_the_box_changes_the_box_and_not_the_ring(self):
+        after = self.before()
+        x, y, w, h = self.INNER
+        after[y:y + h, x:x + w] = 235
+        inner, ring = disposal.arrival_change(self.before(), after, self.INNER)
+        self.assertEqual(inner, 1.0)
+        self.assertEqual(ring, 0.0)
+
+    def test_an_unchanged_spot_reads_zero(self):
+        inner, ring = disposal.arrival_change(self.before(), self.before(), self.INNER)
+        self.assertEqual((inner, ring), (0.0, 0.0))
+
+    def test_the_whole_scene_brightening_changes_the_ring_just_as_much(self):
+        """A headlight wash. The box IS changed — that is why coverage alone
+        cannot decide this, and why the ring is measured at all."""
+        inner, ring = disposal.arrival_change(
+            self.before(), lit(self.before()), self.INNER)
+        self.assertEqual(inner, 1.0)
+        self.assertEqual(ring, 1.0)
+
+    def test_mismatched_patches_abstain_rather_than_guess(self):
+        inner, ring = disposal.arrival_change(
+            self.before(), np.zeros((10, 10), np.uint8), self.INNER)
+        self.assertEqual((inner, ring), (0.0, 0.0))
+
+    def test_a_missing_reference_abstains(self):
+        self.assertEqual(
+            disposal.arrival_change(None, self.before(), self.INNER), (0.0, 0.0))
+
+
+class ArrivalVerdictTests(TestCase):
+    """Turning the two fractions into yes or no."""
+
+    def cand(self, inner, ring):
+        c = disposal.Candidate(1, OBJ, 0.0)
+        c.arrival_inner, c.arrival_ring = inner, ring
+        return c
+
+    def test_a_change_confined_to_the_object_passes(self):
+        self.assertTrue(self.cand(0.9, 0.02).arrival_verdict())
+
+    def test_a_change_the_ground_shares_fails(self):
+        """1.0 against 1.0 is the whole scene moving — the single most common
+        false candidate on night footage."""
+        self.assertFalse(self.cand(1.0, 1.0).arrival_verdict())
+
+    def test_a_change_too_small_to_be_an_object_fails(self):
+        self.assertFalse(self.cand(0.05, 0.0).arrival_verdict())
+
+    def test_the_margin_is_what_separates_them(self):
+        """Same coverage, different surroundings, opposite answers."""
+        self.assertTrue(self.cand(0.6, 0.1).arrival_verdict())
+        self.assertFalse(self.cand(0.6, 0.55).arrival_verdict())
+
+
+class ArrivalCueTests(TestCase):
+    """Does the detector PROVE a spot holds something that was not there?
+
+    This was a gate -- fail it and the candidate never reached the bag check.
+    It is a cue now (scoring 0.20), so these tests are about the measurement
+    being right, not about anything being blocked.
+    """
+
+    def test_a_dumped_object_proves_its_arrival(self):
+        det = disposal.StaticObjectDetector(suspect_window=False)
+        now = warm_up(det)
+        now = dumped(det, now)
+        cand = det.candidates[0]
+        self.assertTrue(
+            cand.arrival_proven,
+            f"inner={cand.arrival_inner} ring={cand.arrival_ring}")
+        self.assertIn("arrival", disposal.cues_for(cand, True, now))
+
+    def test_one_look_is_not_enough(self):
+        """Not latched on the first look: a transient would otherwise bank a
+        pass and keep the points for the rest of its life."""
+        det = disposal.StaticObjectDetector(suspect_window=False)
+        now = warm_up(det)
+        det.update(with_object(scene(), 300, 180), now)
+        if det.candidates:
+            self.assertLess(det.candidates[0].arrival_passes,
+                            disposal.ARRIVAL_CONFIRM_LOOKS)
+
+    def test_a_failing_look_sends_the_streak_back_to_zero(self):
+        det = disposal.StaticObjectDetector(suspect_window=False)
+        now = warm_up(det)
+        now = dumped(det, now)
+        cand = det.candidates[0]
+        self.assertTrue(cand.arrival_proven)
+        # The object is gone again; the spot now looks exactly like its
+        # reference, which is the one thing a dumped bag can never do.
+        cand.occluded_since = None
+        det._look_for_arrival(
+            cv2.cvtColor(cv2.GaussianBlur(scene(), (5, 5), 0), cv2.COLOR_BGR2GRAY),
+            now + disposal.ARRIVAL_INTERVAL * 2)
+        self.assertEqual(cand.arrival_passes, 0)
+        self.assertFalse(cand.arrival_proven)
+        self.assertNotIn("arrival", disposal.cues_for(cand, True, now))
+
+    def test_a_scene_wide_brightening_proves_nothing(self):
+        """The headlight case: every pixel moved, so the object's patch is no
+        more changed than the ground around it."""
+        det = disposal.StaticObjectDetector(suspect_window=False)
+        now = warm_up(det)
+        for _ in range(20):
+            det.update(lit(scene()), now)
+            now += 0.1
+        for cand in det.candidates:
+            self.assertFalse(
+                cand.arrival_verdict(),
+                f"lighting alone passed: inner={cand.arrival_inner} "
+                f"ring={cand.arrival_ring}")
+            self.assertNotIn("arrival", disposal.cues_for(cand, True, now))
+
+    def test_an_unanswerable_question_scores_nothing(self):
+        """No reference frame -- the first seconds of a run -- is not the same
+        as a failed comparison. As a GATE that had to read as "do not block";
+        as a cue it reads as no points, and the object and owner cues can
+        still carry the candidate on their own."""
+        cand = disposal.Candidate(1, OBJ, 0.0)
+        self.assertIsNone(cand.ref_patch)
+        self.assertFalse(cand.arrival_proven)
+        self.assertEqual(disposal.cues_for(cand, True, 10.0), {"object"})
+
+    def test_an_occluded_candidate_keeps_its_streak(self):
+        """Hidden is not gone, here as everywhere else in this module: the
+        pixels of whatever is standing in front say nothing about arrival."""
+        det = disposal.StaticObjectDetector(suspect_window=False)
+        now = warm_up(det)
+        now = dumped(det, now)
+        banked = det.candidates[0].arrival_passes
+        vehicle = [(OBJ[0] - 30, OBJ[1] - 30, OBJ[2] + 60, OBJ[3] + 60)]
+        for _ in range(20):
+            det.update(scene(), now, ignore_boxes=vehicle)
+            now += 0.1
+        self.assertIsNotNone(det.candidates[0].occluded_since)
+        self.assertEqual(det.candidates[0].arrival_passes, banked)
+
+    def test_nothing_is_withheld_from_the_bag_check_any_more(self):
+        """The regression this class is named after. A candidate that cannot
+        prove its arrival is still CHECKED -- it simply scores less. Reported
+        from footage: a person visibly left a sack and nothing was ever
+        flagged, because the gate withheld it for its whole life."""
+        det = disposal.StaticObjectDetector(suspect_window=False)
+        now = warm_up(det)
+        now = dumped(det, now)
+        det.candidates[0].arrival_passes = 0
+        self.assertIn(det.candidates[0], det.due_for_check(now, static_seconds=0.2))
+
+
+class OwnerCueTests(TestCase):
+    """Somebody was beside it as it appeared, and then walked away."""
+
+    def _settled(self, person_boxes, radius=200, frames=12):
+        det = disposal.StaticObjectDetector(suspect_window=False,
+                                            owner_radius=radius)
+        now = warm_up(det)
+        for _ in range(frames):
+            det.update(with_object(scene(), 300, 180), now,
+                       person_boxes=person_boxes)
+            now += 0.1
+        return det, now, det.candidates[0]
+
+    def test_an_object_somebody_was_standing_over_fires_the_person_cue(self):
+        _det, now, cand = self._settled([(300, 180, 60, 45)])
+        self.assertTrue(cand.had_owner)
+        self.assertIn("person", disposal.cues_for(cand, True, now))
+
+    def test_an_object_nobody_was_seen_to_leave_fires_neither(self):
+        _det, now, cand = self._settled([])
+        self.assertFalse(cand.had_owner)
+        cues = disposal.cues_for(cand, True, now)
+        self.assertNotIn("person", cues)
+        self.assertNotIn("left", cues)
+
+    def test_walking_away_fires_the_left_cue(self):
+        _det, now, cand = self._settled([(300, 180, 60, 45)])
+        # The owner has been gone longer than disposal_owner_away_seconds.
+        gone = now + 30.0
+        self.assertIn("left", disposal.cues_for(cand, True, gone))
+
+    def test_standing_over_it_does_not_fire_the_left_cue(self):
+        det, now, cand = self._settled([(300, 180, 60, 45)])
+        det.update(with_object(scene(), 300, 180), now,
+                   person_boxes=[(300, 180, 60, 45)])
+        cues = disposal.cues_for(cand, True, now, away_seconds=3.0)
+        self.assertIn("person", cues)
+        self.assertNotIn("left", cues, "they are still standing there")
+
+    def test_a_carrier_already_walking_away_still_counts_as_the_owner(self):
+        """The timing this exists for: the fast model has to forget the person
+        before the thing they set down shows up as static foreground, so by
+        the time the blob is born its owner is routinely a second or two gone.
+        See OWNER_LOOKBACK."""
+        det = disposal.StaticObjectDetector(suspect_window=False, owner_radius=200)
+        now = warm_up(det)
+        for _ in range(10):
+            det.update(scene(), now, person_boxes=[(300, 180, 60, 45)])
+            now += 0.1
+        for _ in range(12):
+            det.update(with_object(scene(), 300, 180), now, person_boxes=[])
+            now += 0.1
+        self.assertTrue(det.candidates[0].had_owner)
+
+    def test_a_missed_person_costs_points_and_not_the_violation(self):
+        """The whole argument for scoring over gating. No person detection at
+        all still reaches Possible on the object and arrival cues."""
+        det = disposal.StaticObjectDetector(suspect_window=False)
+        now = warm_up(det)
+        now = dumped(det, now)                  # person_boxes never supplied
+        cand = det.candidates[0]
+        cand.confirm_count = 2
+        self.assertIn(cand, det.due_for_check(now, static_seconds=0.2))
+        cues = disposal.cues_for(cand, True, now)
+        self.assertEqual(cues, {"object", "arrival", "persisted"})
+        score = scoring.Score("disposal", scoring.DISPOSAL_WEIGHTS, cues)
+        self.assertAlmostEqual(score.score, 0.65)
+        self.assertEqual(score.level, scoring.WARNING)
+
+
+class ScoredDisposalTests(TestCase):
+    """The cue table itself: what each combination of evidence is worth."""
+
+    def score(self, *cues):
+        return scoring.Score("disposal", scoring.DISPOSAL_WEIGHTS, set(cues))
+
+    def test_the_weights_total_their_documented_sum(self):
+        """1.15, capped at 1.00 by Score -- the same shape SMOKING_WEIGHTS has
+        (1.10). The table is an evidence budget, not a probability."""
+        self.assertAlmostEqual(sum(scoring.DISPOSAL_WEIGHTS.values()), 1.15)
+        everything = scoring.Score("disposal", scoring.DISPOSAL_WEIGHTS,
+                                   set(scoring.DISPOSAL_WEIGHTS))
+        self.assertEqual(everything.score, 1.0)
+
+    def test_no_bag_no_event(self):
+        """The spec's first rule, which every detector obeys: the gate cue is
+        what makes an observation an event at all."""
+        self.assertEqual(self.score("arrival", "person", "left").level,
+                         scoring.NONE)
+
+    def test_the_bag_check_alone_is_only_the_watchlist(self):
+        """A confirmed bag used to jump straight to Likely with nothing else
+        known about it. It is 0.40 now -- real, and not yet announceable."""
+        self.assertEqual(self.score("object").level, scoring.MONITORING)
+
+    def test_the_object_route_reaches_possible_without_any_person(self):
+        self.assertAlmostEqual(self.score("object", "arrival").score, 0.60)
+        self.assertEqual(self.score("object", "arrival").level, scoring.WARNING)
+
+    def test_the_full_sequence_is_likely(self):
+        """A person, then rubbish, then they leave it -- the ordinance's own
+        description of the offence."""
+        full = self.score("object", "arrival", "person", "left", "persisted")
+        self.assertAlmostEqual(full.score, 1.0)
+        self.assertEqual(full.level, scoring.VIOLATION)
+
+    def test_a_dark_sack_the_arrival_test_missed_is_still_likely(self):
+        """The night case: too few pixels moved for the arrival cue, but the
+        person evidence is all there."""
+        s = self.score("object", "person", "left", "persisted")
+        self.assertAlmostEqual(s.score, 0.80)
+        self.assertEqual(s.level, scoring.VIOLATION)
+
+    def test_walking_away_cannot_score_without_having_been_there(self):
+        """A conditional cue, like at_mouth needing a bottle. Without it an
+        object with no owner detected would score the departure on the
+        vacuous reading of "no owner is near it"."""
+        s = self.score("object", "arrival", "left")
+        self.assertIn("left", s.suppressed)
+        self.assertAlmostEqual(s.score, 0.60)
+
+    def test_the_person_cues_are_worth_less_than_the_object_route(self):
+        """Both die together when the person pass misses, so they must not be
+        the only road to Possible."""
+        person_only = scoring.DISPOSAL_WEIGHTS["person"] + scoring.DISPOSAL_WEIGHTS["left"]
+        object_route = scoring.DISPOSAL_WEIGHTS["object"] + scoring.DISPOSAL_WEIGHTS["arrival"]
+        self.assertLess(person_only, object_route)
+
+    def test_disposal_has_a_gate_cue_like_every_other_detector(self):
+        self.assertEqual(scoring.GATE_CUES["disposal"], "object")
+
+    def test_every_weight_has_a_plain_language_label(self):
+        """The alert card renders the checklist from these; a missing one
+        would show the raw cue name to a tanod."""
+        for name in scoring.DISPOSAL_WEIGHTS:
+            self.assertIn(name, scoring.Score.CUE_LABELS)
 
 class PinnedCandidateTests(TestCase):
     """What happens when the SLOW model absorbs the object too.
@@ -392,6 +733,121 @@ class CropTests(TestCase):
 ONE_BOX = (0.0, 0.0, 10.0, 10.0)
 
 
+class BystanderCropTests(TestCase):
+    """Keeping a person out of the crop the bag check is given.
+
+    Reported from footage twice: rubbish against a fence with two people a
+    metre away came back "person 88%" every recheck and sat at Below
+    Monitoring for the whole clip. `confirm` scores the reject side on a plain
+    maximum, so one confident person beats any combination of garbage prompts
+    and the object cue can never fire.
+    """
+
+    # 400x300 frame, object at (100,100)-(140,130), so the 50%-padded crop
+    # reaches well past it on every side.
+    OBJ = (100, 100, 40, 30)
+
+    def frame(self):
+        return scene(400, 300)
+
+    def crop(self, avoid=None):
+        return disposal.crop_full_res(self.frame(), self.OBJ, 1.0, avoid=avoid)
+
+    # ---- the geometry, on its own ------------------------------------------
+
+    def test_a_person_to_the_right_pulls_the_right_edge_in(self):
+        rect = disposal.shrink_away((80, 80, 200, 160), (100, 100, 140, 130),
+                                    [(150, 90, 190, 160)])
+        self.assertEqual(rect, (80, 80, 150, 160))
+
+    def test_a_person_to_the_left_pulls_the_left_edge_in(self):
+        rect = disposal.shrink_away((40, 80, 200, 160), (100, 100, 140, 130),
+                                    [(40, 90, 80, 160)])
+        self.assertEqual(rect, (80, 80, 200, 160))
+
+    def test_the_object_is_never_cropped_wherever_the_person_stands(self):
+        """The invariant the whole rule rests on: the padding is tradeable,
+        the object is not. Swept rather than spot-checked, because the one
+        case that breaks it is the one nobody thought to write down."""
+        obj = (100, 100, 140, 130)
+        for ax in range(0, 360, 20):
+            for ay in range(0, 260, 20):
+                rect = disposal.shrink_away((60, 60, 220, 180), obj,
+                                            [(ax, ay, ax + 40, ay + 70)])
+                self.assertLessEqual(rect[0], obj[0], f"left cut at {ax},{ay}")
+                self.assertLessEqual(rect[1], obj[1], f"top cut at {ax},{ay}")
+                self.assertGreaterEqual(rect[2], obj[2], f"right cut at {ax},{ay}")
+                self.assertGreaterEqual(rect[3], obj[3], f"bottom cut at {ax},{ay}")
+
+    def test_a_person_overlapping_the_object_is_left_alone(self):
+        """Somebody standing ON it cannot be excluded without cropping the
+        object out, and "person" is then the honest answer."""
+        rect = (80, 80, 200, 160)
+        self.assertEqual(
+            disposal.shrink_away(rect, (100, 100, 140, 130),
+                                 [(110, 110, 130, 125)]),
+            rect)
+
+    def test_a_person_outside_the_crop_changes_nothing(self):
+        rect = (80, 80, 200, 160)
+        self.assertEqual(
+            disposal.shrink_away(rect, (100, 100, 140, 130),
+                                 [(300, 300, 340, 360)]),
+            rect)
+
+    def test_people_on_both_sides_are_both_excluded(self):
+        rect = disposal.shrink_away((40, 80, 200, 160), (100, 100, 140, 130),
+                                    [(40, 90, 80, 160), (150, 90, 190, 160)])
+        self.assertEqual(rect, (80, 80, 150, 160))
+
+    def test_a_person_below_pulls_the_bottom_edge_in(self):
+        rect = disposal.shrink_away((80, 80, 200, 200), (100, 100, 140, 130),
+                                    [(90, 150, 190, 200)])
+        self.assertEqual(rect[3], 150)
+
+    # ---- through crop_full_res ---------------------------------------------
+
+    def test_the_crop_shrinks_when_a_bystander_is_beside_the_object(self):
+        wide = self.crop()
+        narrow = self.crop(avoid=[(150, 90, 40, 70)])     # x,y,w,h
+        self.assertLess(narrow.shape[1], wide.shape[1])
+
+    def test_the_object_survives_the_shrink(self):
+        """Whatever else is trimmed, every pixel of the object is still there
+        -- a crop that cut the bag in half would be worse than a contaminated
+        one."""
+        narrow = self.crop(avoid=[(150, 90, 40, 70), (40, 90, 40, 70)])
+        self.assertGreaterEqual(narrow.shape[1], self.OBJ[2])
+        self.assertGreaterEqual(narrow.shape[0], self.OBJ[3])
+
+    def test_no_avoid_boxes_is_the_old_behaviour_exactly(self):
+        """The padding is unchanged where there is nobody to avoid, so this
+        cannot have moved the calibration on an empty street."""
+        before = disposal.crop_full_res(self.frame(), self.OBJ, 1.0)
+        for avoid in (None, []):
+            self.assertEqual(self.crop(avoid=avoid).shape, before.shape)
+
+    def test_a_crop_is_never_empty(self):
+        narrow = self.crop(avoid=[(150, 90, 40, 70)])
+        self.assertGreater(narrow.size, 0)
+
+
+class BystanderCropWiringTests(TestCase):
+    """The boxes have to actually reach the crop, from the one pass that has them."""
+
+    def test_the_stage_two_crop_is_given_the_mover_boxes(self):
+        from core.management.commands import watch_disposal
+        source = inspect.getsource(watch_disposal.Command._ask_stage2)
+        self.assertIn("avoid=self._movers", source)
+
+    def test_both_check_paths_still_share_the_one_crop(self):
+        """Two copies would be two places for the padding to drift."""
+        from core.management.commands import watch_disposal
+        source = inspect.getsource(watch_disposal.Command._run_stream)
+        self.assertEqual(source.count("crop_full_res"), 0,
+                         "the loop must go through _ask_stage2")
+
+
 class FakeBoxes:
     def __init__(self, pairs, boxes=None):
         self.cls = _Listy(float(c) for c, _ in pairs)
@@ -487,6 +943,490 @@ class ConfirmTests(TestCase):
     def test_garbage_ids_cover_exactly_the_prompt_classes(self):
         self.assertEqual(disposal.garbage_class_ids(), set(range(len(disposal.PROMPTS))))
         self.assertNotIn(self.person, disposal.garbage_class_ids())
+
+
+class TrustedRejectTests(TestCase):
+    """A zero-shot reject the TRAINED detector contradicts does not get a vote.
+
+    Reported from footage: rubbish against a fence came back "person 86%" with
+    the nearest person metres away and no person box near it. `classify` only
+    asks whether garbage LED, so one hallucinated reject ended the candidate
+    permanently -- and with the object cue unable to fire, every other piece of
+    evidence became irrelevant.
+    """
+
+    OBJ = (100, 100, 40, 30)
+
+    def test_a_person_nowhere_near_the_object_is_declared_absent(self):
+        absent = disposal.absent_rejects(self.OBJ, persons=[(300, 100, 40, 80)],
+                                         vehicles=[])
+        self.assertIn("person", absent)
+
+    def test_a_person_on_the_object_is_not_declared_absent(self):
+        absent = disposal.absent_rejects(self.OBJ, persons=[(95, 95, 50, 50)],
+                                         vehicles=[])
+        self.assertNotIn("person", absent)
+
+    def test_an_empty_road_declares_the_vehicle_classes_absent(self):
+        absent = disposal.absent_rejects(self.OBJ, persons=[], vehicles=[])
+        self.assertEqual(absent, frozenset(disposal.TRUSTED_REJECTS))
+
+    def test_a_vehicle_beside_it_keeps_the_vehicle_classes_in_play(self):
+        absent = disposal.absent_rejects(self.OBJ, persons=[],
+                                         vehicles=[(110, 105, 60, 40)])
+        self.assertNotIn("car", absent)
+        self.assertIn("person", absent, "the person pass still ran")
+
+    def test_no_pass_claims_nothing(self):
+        """Absence is only claimed from a pass that actually ran. With the
+        mover detector unavailable this must behave exactly as before."""
+        self.assertEqual(
+            disposal.absent_rejects(self.OBJ, persons=None, vehicles=None),
+            frozenset())
+
+    def test_nothing_is_claimed_about_classes_the_detector_cannot_see(self):
+        """detect_scene does not return dogs or cats, so nothing here may
+        speak to them -- a confident "dog" must still be able to reject."""
+        absent = disposal.absent_rejects(self.OBJ, persons=[], vehicles=[])
+        self.assertNotIn("dog", absent)
+        self.assertNotIn("cat", absent)
+
+
+class ConfirmWithAbsentTests(TestCase):
+    """confirm() honouring the trained detector's verdict."""
+
+    def setUp(self):
+        self.crop = np.zeros((40, 40, 3), dtype=np.uint8)
+        self.garbage_ids = disposal.garbage_class_ids()
+        self.person = disposal.PROMPTS.index("plastic bag") + len(disposal.PROMPTS) \
+            if False else len(disposal.PROMPTS) + disposal.REJECT.index("person")
+        self.dog = len(disposal.PROMPTS) + disposal.REJECT.index("dog")
+
+    def test_a_hallucinated_person_no_longer_beats_the_bag(self):
+        """The exact footage case: sack 7%, 'person' 86%, no person in sight."""
+        pairs = [(0, 0.07), (self.person, 0.86)]
+        verdict = disposal.classify(
+            *disposal.confirm(disposal_world(pairs), self.crop,
+                              self.garbage_ids)[1:])
+        self.assertEqual(verdict, disposal.REJECTED, "the old behaviour")
+        g, r = disposal.confirm(disposal_world(pairs), self.crop,
+                                self.garbage_ids, absent=frozenset({"person"}))[1:]
+        self.assertEqual(disposal.classify(g, r), disposal.WEAK,
+                         "the lead now stands, weakly")
+        self.assertEqual(r, ("", 0.0))
+
+    def test_a_real_person_still_rejects(self):
+        """Absence is only ever claimed when the trained detector saw nobody;
+        with a person actually there, nothing changes."""
+        pairs = [(0, 0.07), (self.person, 0.86)]
+        g, r = disposal.confirm(disposal_world(pairs), self.crop,
+                                self.garbage_ids, absent=frozenset())[1:]
+        self.assertEqual(disposal.classify(g, r), disposal.REJECTED)
+
+    def test_a_class_the_detector_cannot_see_still_rejects(self):
+        pairs = [(0, 0.07), (self.dog, 0.60)]
+        g, r = disposal.confirm(disposal_world(pairs), self.crop,
+                                self.garbage_ids,
+                                absent=frozenset(disposal.TRUSTED_REJECTS))[1:]
+        self.assertEqual(disposal.classify(g, r), disposal.REJECTED)
+        self.assertEqual(r[0], "dog")
+
+    def test_the_next_best_reject_takes_over(self):
+        """Dropping the discounted class must not drop the ones behind it."""
+        pairs = [(0, 0.07), (self.person, 0.86), (self.dog, 0.40)]
+        _ok, _g, r = disposal.confirm(disposal_world(pairs), self.crop,
+                                      self.garbage_ids,
+                                      absent=frozenset({"person"}))
+        self.assertEqual(r[0], "dog")
+
+    def test_discounting_never_raises_the_garbage_score(self):
+        """It declines a veto; it does not manufacture confidence."""
+        pairs = [(0, 0.07), (self.person, 0.86)]
+        plain = disposal.confirm(disposal_world(pairs), self.crop,
+                                 self.garbage_ids)[1]
+        discounted = disposal.confirm(disposal_world(pairs), self.crop,
+                                      self.garbage_ids,
+                                      absent=frozenset({"person"}))[1]
+        self.assertEqual(plain, discounted)
+
+
+class DumperIsNotALookAlikeTests(TestCase):
+    """`person` must not veto the object cue on a candidate that HAS an owner.
+
+    Straight off the barangay's footage, from the run log:
+
+        #1 rejected: person 92% (best garbage: garbage bag 13%)
+
+    The model found the bag. It also found the person standing over it -- who,
+    on a candidate whose owner was latched as it appeared, is the person who
+    put it there. Their presence is half the offence; letting it also veto the
+    object cue meant the clearest dumping scene there is scored worse than
+    rubbish nobody was seen to leave.
+    """
+
+    def setUp(self):
+        self.crop = np.zeros((40, 40, 3), dtype=np.uint8)
+        self.ids = disposal.garbage_class_ids()
+        self.bag = disposal.PROMPTS.index("garbage bag")
+        self.person = len(disposal.PROMPTS) + disposal.REJECT.index("person")
+        self.dog = len(disposal.PROMPTS) + disposal.REJECT.index("dog")
+
+    def cand(self, had_owner):
+        c = disposal.Candidate(1, OBJ, 0.0)
+        c.had_owner = had_owner
+        return c
+
+    def verdict(self, pairs, absent):
+        _ok, g, r = disposal.confirm(FakeWorld(pairs), self.crop, self.ids,
+                                     absent=absent)
+        return disposal.classify(g, r), g, r
+
+    def test_an_owner_makes_the_person_reject_meaningless(self):
+        self.assertEqual(disposal.dumper_rejects(self.cand(True)),
+                         frozenset({"person"}))
+
+    def test_no_owner_changes_nothing(self):
+        """Rubbish nobody was seen to leave is judged exactly as before."""
+        self.assertEqual(disposal.dumper_rejects(self.cand(False)), frozenset())
+
+    def test_the_footage_case_stops_being_a_rejection(self):
+        pairs = [(self.bag, 0.13), (self.person, 0.92)]
+        before, _g, _r = self.verdict(pairs, frozenset())
+        self.assertEqual(before, disposal.REJECTED, "what the log recorded")
+        after, g, r = self.verdict(pairs, disposal.dumper_rejects(self.cand(True)))
+        self.assertEqual(after, disposal.WEAK)
+        self.assertEqual(g, ("garbage bag", 0.13))
+        self.assertEqual(r, ("", 0.0))
+
+    def test_and_then_reaches_possible_on_the_behaviour(self):
+        """End to end: bag + human + drop, which is what was asked for."""
+        cand = self.cand(True)
+        cand.weak, cand.rejected = True, False
+        cues = {"arrival", "person", "left"}
+        self.assertTrue(disposal.behaviour_only(cand, False, cues))
+        s = scoring.Score("disposal", scoring.DISPOSAL_WEIGHTS, cues,
+                          object_on=True, cap=scoring.WARNING)
+        self.assertEqual(s.level, scoring.WARNING)
+
+    def test_only_person_is_forgiven(self):
+        """A dog, a bin, a chair or a bucket still rejects outright -- the
+        owner says nothing about those."""
+        absent = disposal.dumper_rejects(self.cand(True))
+        for name in ("dog", "trash can", "chair", "bucket"):
+            cid = len(disposal.PROMPTS) + disposal.REJECT.index(name)
+            v, _g, r = self.verdict([(self.bag, 0.13), (cid, 0.60)], absent)
+            self.assertEqual(v, disposal.REJECTED, f"{name} should still reject")
+            self.assertEqual(r[0], name)
+
+    def test_the_owner_cap_still_covers_somebody_holding_their_own_bag(self):
+        """The guard that makes this safe: while they are standing there the
+        status is capped at Monitoring, whatever the bag check decided."""
+        cand = self.cand(True)
+        cand.confirmed = True
+        cand.last_owner_near_at = 100.0
+        self.assertTrue(cand.held_by_owner(100.0, away_seconds=3.0, max_hold=600.0))
+
+    def test_the_wiring_unions_both_discounts(self):
+        from core.management.commands import watch_disposal
+        source = inspect.getsource(watch_disposal.Command._ask_stage2)
+        self.assertIn("absent_rejects", source)
+        self.assertIn("dumper_rejects", source)
+
+
+class FixtureCannotHaveArrivedTests(TestCase):
+    """A container that LIVES here would never have become a candidate.
+
+    From the barangay's footage, the blocker left after the dumper fix:
+
+        #12 rejected: trash can 39% (best garbage: cardboard box 21%)
+
+    21% is comfortably over the floor. A dumped box was being thrown out for
+    resembling the container it had been dumped beside -- and the container
+    prompts were guarding against a case stage 1 already makes impossible,
+    since a fixture is learned into the background during warmup.
+    """
+
+    def setUp(self):
+        self.crop = np.zeros((40, 40, 3), dtype=np.uint8)
+        self.ids = disposal.garbage_class_ids()
+        self.box = disposal.PROMPTS.index("cardboard box")
+
+    def cand(self, arrived):
+        c = disposal.Candidate(1, OBJ, 0.0)
+        if arrived:
+            c.ref_patch = np.zeros((4, 4), dtype=np.uint8)
+            c.arrival_passes = disposal.ARRIVAL_CONFIRM_LOOKS
+        return c
+
+    def verdict(self, reject_name, score, absent):
+        cid = len(disposal.PROMPTS) + disposal.REJECT.index(reject_name)
+        pairs = [(self.box, 0.21), (cid, score)]
+        return disposal.classify(
+            *disposal.confirm(FakeWorld(pairs), self.crop, self.ids,
+                              absent=absent)[1:])
+
+    def test_a_proven_arrival_rules_the_container_classes_out(self):
+        self.assertEqual(disposal.fixture_rejects(self.cand(True)),
+                         disposal.FIXTURE_REJECTS)
+
+    def test_an_unproven_arrival_changes_nothing(self):
+        """Where the pixel test could not run, the old caution stands."""
+        self.assertEqual(disposal.fixture_rejects(self.cand(False)), frozenset())
+
+    def test_the_footage_case_now_confirms(self):
+        self.assertEqual(
+            self.verdict("trash can", 0.39, frozenset()),
+            disposal.REJECTED, "what the run log recorded")
+        self.assertEqual(
+            self.verdict("trash can", 0.39,
+                         disposal.fixture_rejects(self.cand(True))),
+            disposal.CONFIRMED)
+
+    def test_every_container_class_is_covered(self):
+        absent = disposal.fixture_rejects(self.cand(True))
+        for name in disposal.FIXTURE_REJECTS:
+            self.assertEqual(self.verdict(name, 0.39, absent),
+                             disposal.CONFIRMED, name)
+
+    def test_a_living_creature_still_rejects(self):
+        """Only fixtures are ruled out by arrival. A dog can walk in and sit
+        down, so arriving says nothing about whether it is a dog."""
+        absent = disposal.fixture_rejects(self.cand(True))
+        for name in ("dog", "cat", "person", "chair"):
+            self.assertEqual(self.verdict(name, 0.60, absent),
+                             disposal.REJECTED, name)
+
+    def test_the_container_classes_stay_in_the_prompt_list(self):
+        """They are still asked about -- what changes is whether the answer
+        gets a veto. A bin on footage with no arrival evidence still rejects."""
+        for name in disposal.FIXTURE_REJECTS:
+            self.assertIn(name, disposal.REJECT)
+
+    def test_the_wiring_unions_all_three_discounts(self):
+        from core.management.commands import watch_disposal
+        source = inspect.getsource(watch_disposal.Command._ask_stage2)
+        for fn in ("absent_rejects", "dumper_rejects", "fixture_rejects"):
+            self.assertIn(fn, source)
+
+
+class BehaviourOnlyPathTests(TestCase):
+    """Garbage + a person + a drop reaches Possible even when the bag check
+    could not clear the floor.
+
+    Asked for directly off the footage: "if it detects a bag of garbage plus
+    human plus drop, make it Possible if all of that are present." Without it
+    the object cue is an absolute veto -- a bag check one point under the floor
+    meant nothing else could count, however completely the dumping itself had
+    been observed. The exact analogue of smoking's puff-only path.
+    """
+
+    def cand(self, weak=True, rejected=False):
+        c = disposal.Candidate(1, OBJ, 0.0)
+        c.weak, c.rejected = weak, rejected
+        return c
+
+    BEHAVIOUR = {"arrival", "person", "left"}
+
+    def scored(self, cand, cues, confirmed=False):
+        on = disposal.behaviour_only(cand, confirmed, cues)
+        return on, scoring.Score(
+            "disposal", scoring.DISPOSAL_WEIGHTS, cues,
+            object_on=True if on else None,
+            cap=scoring.WARNING if on else None,
+            cap_reason=scoring.DISPOSAL_BEHAVIOUR_TAG if on else "")
+
+    def test_the_full_behaviour_with_a_weak_bag_is_possible(self):
+        on, s = self.scored(self.cand(), self.BEHAVIOUR)
+        self.assertTrue(on)
+        self.assertEqual(s.level, scoring.WARNING)
+
+    def test_it_can_never_reach_likely(self):
+        """The one cue that says WHAT was left is the unsure one, so this path
+        tops out at Possible however much behaviour piles up.
+
+        Two independent reasons, and the test pins both: the behaviour cues
+        cannot sum past 0.60 without the gate's 0.40, and the cap is set to
+        Possible regardless. The cap is the belt -- today the arithmetic is
+        the braces, but a later re-weighting must not quietly promote this
+        path to a full alert."""
+        on, s = self.scored(self.cand(), self.BEHAVIOUR | {"persisted"})
+        self.assertTrue(on)
+        self.assertEqual(s.level, scoring.WARNING)
+        self.assertLess(sum(scoring.DISPOSAL_WEIGHTS[c]
+                            for c in self.BEHAVIOUR | {"persisted"}),
+                        scoring.SCORE_VIOLATION)
+
+    def test_the_breakdown_shows_the_object_cue_did_not_fire(self):
+        """What tells a reviewer why this is only Possible: the checklist
+        lists the behaviour and not 'Looks like dumped rubbish'."""
+        _on, s = self.scored(self.cand(), self.BEHAVIOUR)
+        found = s.checklist()["found"]
+        self.assertNotIn("Looks like dumped rubbish", found)
+        self.assertIn("That person walked away and left it", found)
+
+    def test_a_weak_bag_without_the_behaviour_opens_nothing(self):
+        for missing in self.BEHAVIOUR:
+            cues = self.BEHAVIOUR - {missing}
+            on, s = self.scored(self.cand(), cues)
+            self.assertFalse(on, f"opened with {missing} missing")
+            self.assertEqual(s.level, scoring.NONE)
+
+    def test_a_rejected_candidate_is_never_opened_by_behaviour(self):
+        """REJECTED is a positive answer -- the model says that is a dog. No
+        amount of behaviour should talk us past it."""
+        on, s = self.scored(self.cand(weak=False, rejected=True), self.BEHAVIOUR)
+        self.assertFalse(on)
+        self.assertEqual(s.level, scoring.NONE)
+
+    def test_a_confirmed_bag_does_not_use_this_path(self):
+        """It has the real gate cue and must be free to reach Likely."""
+        cues = self.BEHAVIOUR | {"object"}
+        on, s = self.scored(self.cand(weak=False), cues, confirmed=True)
+        self.assertFalse(on)
+        self.assertEqual(s.level, scoring.VIOLATION)
+
+
+class DwellCueTests(TestCase):
+    """Time on the watchlist, asked for off the footage: "when the monitoring
+    reached 7-10 seconds it will make as possible".
+
+    Time is the weakest evidence in the table, so it ESCALATES a row that
+    already has a gate cue and can never open one. A shadow that lingers all
+    afternoon has no object cue and still scores nothing.
+    """
+
+    def cand(self, monitoring_for=None, now=100.0):
+        c = disposal.Candidate(1, OBJ, 0.0)
+        if monitoring_for is not None:
+            c.monitoring_since = now - monitoring_for
+        return c
+
+    def test_a_confirmed_bag_left_on_the_watchlist_becomes_possible(self):
+        c = self.cand(monitoring_for=disposal.MONITORING_DWELL_SECONDS)
+        cues = disposal.cues_for(c, True, 100.0)
+        self.assertEqual(cues, {"object", "dwell"})
+        s = scoring.Score("disposal", scoring.DISPOSAL_WEIGHTS, cues)
+        self.assertAlmostEqual(s.score, 0.55)
+        self.assertEqual(s.level, scoring.WARNING)
+
+    def test_it_does_not_fire_before_the_window(self):
+        c = self.cand(monitoring_for=disposal.MONITORING_DWELL_SECONDS - 0.1)
+        self.assertNotIn("dwell", disposal.cues_for(c, True, 100.0))
+
+    def test_waiting_cannot_open_an_event_on_its_own(self):
+        """The guard that keeps this honest: no gate cue, no event, however
+        long it sits. Otherwise every lingering shadow becomes Possible."""
+        c = self.cand(monitoring_for=600.0)
+        cues = disposal.cues_for(c, False, 100.0)
+        s = scoring.Score("disposal", scoring.DISPOSAL_WEIGHTS, cues)
+        self.assertIn("dwell", s.suppressed)
+        self.assertEqual(s.level, scoring.NONE)
+
+    def test_a_row_that_was_never_at_monitoring_has_no_clock(self):
+        self.assertNotIn("dwell", disposal.cues_for(self.cand(), True, 100.0))
+
+    def test_the_clock_starts_when_the_row_reaches_monitoring(self):
+        c = self.cand()
+        c.note_level(scoring.MONITORING, 50.0)
+        self.assertEqual(c.monitoring_since, 50.0)
+
+    def test_the_clock_does_not_restart_while_it_stays_at_monitoring(self):
+        c = self.cand()
+        c.note_level(scoring.MONITORING, 50.0)
+        c.note_level(scoring.MONITORING, 55.0)
+        self.assertEqual(c.monitoring_since, 50.0, "one continuous spell")
+
+    def test_leaving_monitoring_clears_the_clock(self):
+        """It counts the CURRENT spell. A row that rose to Possible and later
+        fell back must serve the wait again, not inherit the old one."""
+        c = self.cand()
+        c.note_level(scoring.MONITORING, 50.0)
+        c.note_level(scoring.WARNING, 60.0)
+        self.assertIsNone(c.monitoring_since)
+        c.note_level(scoring.MONITORING, 70.0)
+        self.assertEqual(c.monitoring_since, 70.0)
+
+    def test_a_collection_window_hold_does_not_feed_the_clock(self):
+        """Rubbish set out legally between 04:00 and 07:00 is parked at
+        Monitoring on purpose. Letting the dwell clock run through that would
+        turn a lawful hold into evidence -- every held bag would leave the
+        window one level higher than it entered."""
+        c = self.cand()
+        c.window_held = True
+        c.note_level(scoring.MONITORING, 50.0)
+        self.assertIsNone(c.monitoring_since)
+        # Released once the window closes: the clock starts from zero then.
+        c.window_held = False
+        c.note_level(scoring.MONITORING, 200.0)
+        self.assertEqual(c.monitoring_since, 200.0)
+
+    def test_the_window_is_in_the_range_that_was_asked_for(self):
+        self.assertGreaterEqual(disposal.MONITORING_DWELL_SECONDS, 7.0)
+        self.assertLessEqual(disposal.MONITORING_DWELL_SECONDS, 10.0)
+
+    def test_the_command_records_the_level_on_both_write_paths(self):
+        """A row filed fresh and a row restated both have to start the clock,
+        or a bag that opened at Monitoring would never escalate."""
+        from core.management.commands import watch_disposal
+        source = inspect.getsource(watch_disposal.Command._alert)
+        self.assertEqual(source.count("cand.note_level("), 2)
+
+
+class DisposalHasNoGatheringRuleTests(TestCase):
+    """Disposal scores ONE person putting ONE thing down.
+
+    Drinking's `gathering` / `gathering_duration` cues are about a group, and
+    they have no business here -- a crowd near rubbish is not more of a
+    violation than one person, and counting it would turn a busy pavement into
+    evidence. Pinned because the cue tables share a module and a label map.
+    """
+
+    def test_no_gathering_cue_exists_in_the_disposal_table(self):
+        for banned in ("gathering", "gathering_duration"):
+            self.assertNotIn(banned, scoring.DISPOSAL_WEIGHTS)
+
+    def test_a_stray_gathering_cue_scores_nothing(self):
+        """Even if one were passed in by mistake, the table is the authority:
+        a cue with no weight here contributes no points."""
+        s = scoring.Score("disposal", scoring.DISPOSAL_WEIGHTS,
+                          {"object", "gathering", "gathering_duration"})
+        self.assertAlmostEqual(s.score, scoring.DISPOSAL_WEIGHTS["object"])
+        self.assertEqual(set(s.cues), {"object"})
+
+    def test_the_person_cue_is_about_one_person_not_a_group(self):
+        """`person` fires on somebody being beside it -- it does not count
+        them, and a second person adds nothing."""
+        source = inspect.getsource(disposal.cues_for)
+        self.assertIn("had_owner", source)
+        for banned in ("len(", "count", "gathering"):
+            self.assertNotIn(f"{banned}person", source)
+
+
+class BehaviourPathWiringTests(TestCase):
+    """The two halves have to actually reach the decision."""
+
+    def test_the_stage_two_call_declares_what_is_absent(self):
+        from core.management.commands import watch_disposal
+        source = inspect.getsource(watch_disposal.Command._ask_stage2)
+        self.assertIn("absent_rejects", source)
+        self.assertIn("absent=absent", source)
+
+    def test_the_score_consults_the_behaviour_path(self):
+        from core.management.commands import watch_disposal
+        source = inspect.getsource(watch_disposal.Command._score)
+        self.assertIn("behaviour_only", source)
+        self.assertIn("object_on=True if behaviour else None", source)
+
+    def test_the_owner_cap_still_wins_over_the_behaviour_cap(self):
+        """Somebody standing over it is not a dump yet, whatever else fired."""
+        from core.management.commands import watch_disposal
+        source = inspect.getsource(watch_disposal.Command._score)
+        self.assertLess(source.index("if held:"), source.index("elif behaviour:"))
+
+
+def disposal_world(pairs):
+    """A FakeWorld over the shared prompt/reject class list."""
+    return FakeWorld(pairs)
 
 
 class CombineGarbageTests(TestCase):
@@ -636,12 +1576,15 @@ class SpatialCooldownTests(TestCase):
             self.assertTrue(cd.blocks((252.0, 181.0), t), f"should block at {t}s")
 
 
-class DisposalSettingsTests(TestCase):
+class DisposalDefaultsTests(TestCase):
+    """Named apart from DisposalSettingsTests below, which shadowed this whole
+    class while they shared a name -- so none of it ran."""
+
     def test_the_defaults_are_the_documented_ones(self):
         cfg = SystemSettings.load()
         self.assertTrue(cfg.disposal_enabled)
         self.assertEqual(cfg.disposal_confidence, 15)
-        self.assertEqual(cfg.disposal_static_seconds, 2)
+        self.assertEqual(cfg.disposal_static_seconds, 12)
         self.assertEqual(cfg.disposal_cooldown, 120)
 
     def test_the_confidence_default_matches_the_vision_modules_floor(self):
@@ -1005,6 +1948,35 @@ class CoverageGeometryTests(TestCase):
         x, y, w, h = disposal._padded((100, 100, 100, 100), pad=0.1)
         self.assertEqual((x, y), (90, 90))
         self.assertEqual((w, h), (120, 120))
+
+
+class MoverPassUnavailableTests(TestCase):
+    """Losing the person detector must not silently switch the owner gate on.
+
+    `[]` means "it looked and saw nobody", which withholds; `None` means "it
+    could not look", which must not. Conflating them turns a warning into a
+    detector that quietly stops alerting.
+    """
+
+    def test_a_failed_pass_reports_no_person_list_at_all(self):
+        from core.management.commands import watch_disposal
+        cmd = watch_disposal.Command()
+        cmd._movers, cmd._persons, cmd._movers_at = [], [(1, 2, 3, 4)], -1e9
+        cmd._mover_warned = False
+        cmd.stdout = types.SimpleNamespace(write=lambda *_a, **_k: None)
+        cmd.style = types.SimpleNamespace(WARNING=lambda m: m)
+        with mock.patch.object(watch_disposal.recognition, "detect_scene",
+                               side_effect=RuntimeError("no weights")):
+            cmd._mover_boxes(np.zeros((8, 8, 3), np.uint8), 0.0)
+        self.assertIsNone(cmd._persons)
+        self.assertEqual(cmd._movers, [])
+
+    def test_the_run_starts_with_no_person_list(self):
+        """Before the first pass there is no answer either, so the gate must
+        not be live for the candidates born in that first moment."""
+        from core.management.commands import watch_disposal
+        source = inspect.getsource(watch_disposal.Command.handle)
+        self.assertIn("self._persons = self._vehicles = None", source)
 
 
 class IgnoreMoversTests(TestCase):
@@ -1683,11 +2655,11 @@ class RecordingPublisher:
 
 
 class DisposalStatusFlowTests(TestCase):
-    """Monitoring -> Possible -> Likely, plus Below Monitoring.
+    """What the live processing view shows, and on what evidence.
 
-    Possible is a WAITING state and covers three different reasons for waiting;
-    the sub-label is what tells them apart, because the colour cannot. None of
-    them may write an Alert -- only Likely does.
+    The bar is the real cue score now, on the same 0-100 scale as every other
+    detector, so these are also a check that the page and the Alert row cannot
+    disagree: both read Command._score.
     """
 
     def setUp(self):
@@ -1703,39 +2675,60 @@ class DisposalStatusFlowTests(TestCase):
         self.det.candidates = [self.cand]
 
     def publish(self, now, static_seconds=2.0, conf=0.15,
-                away_seconds=3.0, max_hold=3.0):
+                away_seconds=3.0, max_hold=3.0, checked=True):
+        """`checked` = stage 2 has been asked at least once. Until it has, no
+        cue has had its chance and the bar shows the still-timer instead."""
+        if checked and self.cand.last_check is None:
+            self.cand.last_check = 0.0
         self.cmd.debug_pub.entries.clear()
         self.cmd._publish_view(self.det, self.det.candidates, now, static_seconds,
                                away_seconds, max_hold, conf)
         return self.cmd.debug_pub.entries[self.cand.id]
 
+    def proven_arrival(self):
+        """Give the candidate a passing arrival measurement (cue worth 0.20)."""
+        self.cand.ref_patch = np.zeros((4, 4), dtype=np.uint8)
+        self.cand.ref_region, self.cand.ref_inner = (0, 0, 4, 4), (1, 1, 2, 2)
+        self.cand.arrival_passes = disposal.ARRIVAL_CONFIRM_LOOKS
+
     # ---- the four statuses -------------------------------------------------
 
-    def test_still_time_under_the_requirement_is_monitoring(self):
-        e = self.publish(now=1.0, static_seconds=2.0)
+    def test_a_candidate_not_yet_asked_about_is_monitoring_checking(self):
+        e = self.publish(now=1.0, static_seconds=2.0, checked=False)
         self.assertEqual(e["status"], "Monitoring")
-        self.assertEqual(e["detail"], "")
+        self.assertEqual(e["detail"], "Checking")
 
-    def test_still_and_owner_nearby_is_possible_owner_nearby(self):
+    def test_the_owner_still_standing_over_it_caps_at_monitoring(self):
+        """Not abandoned yet. A cap rather than a withholding, so the score
+        keeps accruing underneath and reports at full strength the moment
+        they walk away."""
+        self.cand.confirmed = True
+        self.proven_arrival()
         self.cand.claim_owners([(400.0, 205.0)], 0.0)
         self.cand.track_owners([(400.0, 205.0)], 2.5)
         e = self.publish(now=2.5, static_seconds=2.0, away_seconds=3.0, max_hold=60.0)
-        self.assertEqual(e["status"], "Possible")
+        self.assertEqual(e["status"], "Monitoring")
         self.assertEqual(e["detail"], "Owner nearby")
+        self.assertEqual(e["score"], 70, "the score itself is not held down")
 
-    def test_still_and_not_yet_checked_is_possible_checking(self):
-        e = self.publish(now=5.0, static_seconds=2.0)
-        self.assertEqual(e["status"], "Possible")
-        self.assertEqual(e["detail"], "Checking")
-
-    def test_garbage_below_the_floor_is_possible_weak_match(self):
-        """The floor GATES: under it, no row. That is what makes
-        disposal_confidence a precision control rather than a label."""
+    def test_garbage_below_the_floor_is_monitoring_weak_match(self):
+        """No object cue, so no event -- and the sub-label names the one knob
+        that would change that."""
         self.cand.weak = True
         self.cand.label, self.cand.score = "garbage bag", 0.11
         e = self.publish(now=5.0, static_seconds=2.0, conf=0.15)
-        self.assertEqual(e["status"], "Possible")
+        self.assertEqual(e["status"], "Monitoring")
         self.assertEqual(e["detail"], "Weak match 11%")
+
+    def test_the_cue_breakdown_is_published_with_the_candidate(self):
+        """The same indicator list the scored detectors send, so the page
+        shows WHY a disposal candidate sits where it does."""
+        self.cand.confirmed = True
+        self.proven_arrival()
+        e = self.publish(now=5.0, static_seconds=2.0)
+        names = {i["name"]: i["points"] for i in e["indicators"]}
+        self.assertEqual(names["object"], 40)
+        self.assertEqual(names["arrival"], 20)
 
     def test_a_weak_match_shows_the_floor_it_fell_under(self):
         """Without the gap the number is unreadable: 11% is only 'weak'
@@ -1754,10 +2747,22 @@ class DisposalStatusFlowTests(TestCase):
         e = self.publish(now=5.0, static_seconds=2.0, conf=0.15)
         self.assertEqual(e["detail"], "Still there · weak 11%")
 
-    def test_a_confirmed_candidate_is_likely(self):
+    def test_a_confirmed_bag_alone_is_not_likely(self):
+        """The change the cue table makes: a bag check that clears the floor
+        with nothing else known is 0.40, not a full alert."""
         self.cand.confirmed = True
         self.cand.label, self.cand.score = "garbage bag", 0.42
         e = self.publish(now=5.0, static_seconds=2.0)
+        self.assertEqual(e["status"], "Monitoring")
+        self.assertEqual(e["score"], 40)
+
+    def test_the_full_sequence_is_likely(self):
+        self.cand.confirmed = True
+        self.cand.label, self.cand.score = "garbage bag", 0.42
+        self.proven_arrival()
+        self.cand.claim_owners([(400.0, 205.0)], 0.0)
+        self.cand.confirm_count = 2
+        e = self.publish(now=60.0, static_seconds=2.0)
         self.assertEqual(e["status"], "Likely")
         self.assertEqual(e["score"], 100)
 
@@ -1769,42 +2774,37 @@ class DisposalStatusFlowTests(TestCase):
 
     # ---- the score bands ---------------------------------------------------
 
-    def test_monitoring_fills_zero_to_fiftyfour(self):
-        self.assertEqual(self.publish(now=0.0, static_seconds=2.0)["score"], 0)
-        self.assertEqual(self.publish(now=1.0, static_seconds=2.0)["score"], 27)
-        self.assertEqual(self.publish(now=1.99, static_seconds=2.0)["score"], 54)
+    def test_the_still_timer_fills_zero_to_fiftyfour(self):
+        """Only while stage 2 has not been asked. The bar is progress toward
+        the question, not an answer to it."""
+        for now, expected in ((0.0, 0), (1.0, 27), (1.99, 54)):
+            self.assertEqual(
+                self.publish(now=now, static_seconds=2.0, checked=False)["score"],
+                expected)
 
-    def test_possible_sits_in_the_fiftyfive_to_ninetynine_band(self):
-        waiting = self.publish(now=5.0, static_seconds=2.0)["score"]
-        self.assertEqual(waiting, 55, "a waiting state has no score to place")
-        self.cand.weak = True
-        self.cand.label, self.cand.score = "sack", 0.149
-        near = self.publish(now=5.0, static_seconds=2.0, conf=0.15)["score"]
-        self.assertGreater(near, 55)
-        self.assertLessEqual(near, 99)
+    def test_an_unasked_candidate_never_reaches_the_possible_line(self):
+        """A full bar on something nobody has judged would read as a stronger
+        claim than the detector is making."""
+        self.assertLess(
+            self.publish(now=999.0, static_seconds=2.0, checked=False)["score"],
+            int(scoring.SCORE_WARNING * 100))
 
-    def test_possible_never_reaches_a_hundred(self):
-        """100 is reserved for Likely — a full bar on an unconfirmed candidate
-        would read as a stronger claim than the detector is making."""
-        self.cand.weak = True
-        self.cand.label, self.cand.score = "sack", 0.99
-        self.assertEqual(self.publish(now=9.0, static_seconds=2.0, conf=0.15)["score"],
-                         self.mod.Command.POSSIBLE_MAX_PCT)
+    def test_the_bar_is_the_real_score_once_it_has_been_judged(self):
+        self.cand.confirmed = True
+        self.proven_arrival()
+        self.assertEqual(self.publish(now=5.0, static_seconds=2.0)["score"], 60)
 
     def test_the_bands_line_up_with_the_rest_of_the_system(self):
-        """Possible starts at 0.55 everywhere else; the bar must mean the same
-        thing on a disposal candidate as on a smoking one."""
-        from core.vision import scoring
-        self.assertEqual(self.mod.Command.POSSIBLE_MIN_PCT,
-                         int(scoring.SCORE_WARNING * 100))
-        self.assertEqual(self.mod.Command.MONITORING_MAX_PCT,
-                         self.mod.Command.POSSIBLE_MIN_PCT - 1)
+        """55 means Possible on a disposal candidate exactly as it does on a
+        smoking one — the point of putting disposal on the shared table."""
+        self.assertEqual(self.mod.Command.STILL_MAX_PCT,
+                         int(scoring.SCORE_WARNING * 100) - 1)
 
     # ---- Possible must not block, and must not alert -----------------------
 
-    def test_possible_does_not_create_an_alert(self):
-        """The hard rule: only Likely writes a row. Every Possible state is
-        reached without _create_alert being called at all."""
+    def test_publishing_the_view_never_creates_an_alert(self):
+        """The view reads the same score the alert path does; it must not
+        write anything while doing so."""
         from core.models import Alert
         before = Alert.objects.count()
         self.cand.claim_owners([(400.0, 205.0)], 0.0)
@@ -1851,12 +2851,14 @@ class ConfidenceGatesTheAlertTests(TestCase):
         from core.management.commands import watch_disposal
         self.source = inspect.getsource(watch_disposal.Command._run_stream)
 
-    def test_a_weak_verdict_returns_before_the_alert_call(self):
+    def test_a_weak_verdict_returns_before_the_confirmed_branch(self):
+        """It may still reach _alert -- an object that already has a row has
+        to be told its evidence weakened -- but it must never fall through
+        into the branch that marks the candidate confirmed."""
         self.assertIn("if verdict == disposal_cv.WEAK:", self.source)
         between = self.source.split("if verdict == disposal_cv.WEAK:")[1]
-        between = between.split("cand.confirmed")[0]
-        self.assertIn("continue", between,
-                      "a weak match must not fall through to _alert")
+        between = between.split("cand.confirmed, cand.rejected, cand.weak")[0]
+        self.assertIn("continue", between)
 
     def test_only_a_confirmed_verdict_sets_confirmed(self):
         """`confirmed` is what the live view reads for Likely and what the
@@ -1989,7 +2991,8 @@ class PossibleAlertTests(TestCase):
         return cmd, watch_disposal
 
     def _fire(self, cmd, cand, level, score=0.11, cooldown=None, now=10.0):
-        """One _alert call with everything stubbed but the decision."""
+        """One _alert call with the candidate shaped to score `level`."""
+        scored_as(cand, level, now)
         return cmd._alert(
             cand, types.SimpleNamespace(scale=1.0), scene(640, 360),
             "garbage bag", score, now, SystemSettings.load(),
@@ -1997,7 +3000,6 @@ class PossibleAlertTests(TestCase):
                 seconds=120, distance=60),
             {"confirmed": 0, "possible": 0, "cooldown": 0, "upgraded": 0,
              "adopted": 0},
-            level,
         )
 
     def _candidate(self):
@@ -2118,16 +3120,16 @@ class PossibleAlertTests(TestCase):
         shot.assert_not_called()
         self.assertEqual(Alert.objects.get(pk=cand.alert_pk).image_url, before)
 
-    def test_the_alert_carries_no_cue_vector(self):
-        """Borrowing scoring's two status NAMES is not adopting its cue table:
-        an empty breakdown under a real status reads as a detector whose
-        indicators all failed rather than one that has none. The settings in
-        force are logged beside it, as for the scored detectors, but they are
-        not a breakdown."""
+    def test_the_alert_carries_the_cue_vector(self):
+        """Disposal is a scored detector now, so its card renders through the
+        same checklist path as the other four -- no client change needed."""
         cmd, _mod = self._command()
         self._fire(cmd, self._candidate(), scoring.VIOLATION)
         cues = Alert.objects.get(type__code="disposal").cues
-        self.assertEqual(set(cues), {"settings"})
+        self.assertEqual(cues["kind"], "disposal")
+        self.assertIn("settings", cues)
+        self.assertIn("object", cues["cues"])
+        self.assertIn("Looks like dumped rubbish", cues["checklist"]["found"])
 
     def test_a_dry_run_writes_no_row_and_leaves_the_candidate_unmarked(self):
         cmd, _mod = self._command()
@@ -2150,18 +3152,24 @@ class PossibleAlertTests(TestCase):
 class PossibleAlertWiringTests(TestCase):
     """The main loop has to hand both verdicts to _alert, not just one."""
 
-    def test_both_verdicts_reach_the_alert_path(self):
+    def test_the_loop_never_names_a_level(self):
+        """Every status disposal reports comes out of the cue table. A level
+        named in the loop would be a second, disagreeing decision path -- the
+        design the table replaced."""
         from core.management.commands import watch_disposal
         source = inspect.getsource(watch_disposal.Command._run_stream)
-        self.assertIn("scoring.WARNING", source)
-        self.assertIn("scoring.VIOLATION", source)
+        for named in ("scoring.VIOLATION", "scoring.WARNING", "scoring.MONITORING"):
+            self.assertNotIn(named, source)
 
-    def test_every_alert_call_has_to_state_a_level(self):
-        """A defaulted level would silently file a weak lead as Likely."""
+    def test_the_alert_path_scores_rather_than_being_told_a_level(self):
+        """_alert works the status out from the cue table. A `level` parameter
+        would mean a caller could still hand it one, which is the design the
+        cue table replaced."""
         from core.management.commands import watch_disposal
         signature = inspect.signature(watch_disposal.Command._alert)
-        self.assertIs(signature.parameters["level"].default,
-                      inspect.Parameter.empty)
+        self.assertNotIn("level", signature.parameters)
+        source = inspect.getsource(watch_disposal.Command._alert)
+        self.assertIn("self._score(", source)
 
 
 class OneRowPerPlaceTests(TestCase):
@@ -2197,12 +3205,12 @@ class OneRowPerPlaceTests(TestCase):
         return cmd
 
     def _fire(self, cmd, cand, cd, level=None, score=0.4, now=10.0):
+        scored_as(cand, level or scoring.VIOLATION, now)
         return cmd._alert(
             cand, types.SimpleNamespace(scale=1.0), scene(640, 360),
             "garbage bag", score, now, SystemSettings.load(), cd,
             {"confirmed": 0, "possible": 0, "cooldown": 0, "upgraded": 0,
              "adopted": 0},
-            level or scoring.VIOLATION,
         )
 
     def _cooldown(self):
@@ -2502,14 +3510,14 @@ class CollectionWindowAlertTests(TestCase):
 
     def fire(self, cand, level, when, now=10.0, cd=None, score=0.4):
         """One _alert call with the local time of day pinned to `when`."""
+        scored_as(cand, level, now)
         with mock.patch.object(self.cmd, "_collection_clock", return_value=when):
             return self.cmd._alert(
                 cand, types.SimpleNamespace(scale=1.0), scene(640, 360),
                 "garbage bag", score, now, SystemSettings.load(),
                 cd or disposal.SpatialCooldown(seconds=120, distance=60),
                 {"confirmed": 0, "possible": 0, "cooldown": 0, "upgraded": 0,
-                 "adopted": 0},
-                level)
+                 "adopted": 0})
 
     def candidate(self, cid=1):
         return disposal.Candidate(cid, self.BOX, 0.0)
@@ -2561,7 +3569,11 @@ class CollectionWindowAlertTests(TestCase):
         self.assertEqual(logged["disposal_collection_end"], "07:00")
         self.assertEqual(logged["disposal_collection_days"], "0,1,2,3,4,5")
         self.assertTrue(logged["disposal_collection_enabled"])
-        self.assertNotIn("cues", self.row().cues, "still no score breakdown")
+        # The cue vector rides alongside the settings snapshot now; the two
+        # answer different questions (what fired, and what the knobs were set
+        # to when it did) and a calibration pass needs both.
+        self.assertIn("cues", self.row().cues)
+        self.assertEqual(self.row().cues["kind"], "disposal")
 
     # -- outside the window --------------------------------------------------
 
@@ -2766,3 +3778,129 @@ class CollectionSettingsApiTests(TestCase):
         self.assertEqual(cfg.disposal_collection_start, _dt.time(4, 0))
         self.assertEqual(cfg.disposal_collection_end, _dt.time(7, 0))
         self.assertEqual(cfg.disposal_collection_days, "0,1,2,3,4,5")
+
+
+class SameSpotRadiusTests(TestCase):
+    """How far apart two bags have to be to count as two violations.
+
+    Was 60px at PROC_WIDTH — about two bag-widths, ~160px on 2560-wide
+    footage — so a second sack dropped beside the first adopted its alert and
+    never became a violation of its own. Two separate dumps, one report.
+    """
+
+    def test_the_default_is_about_one_bag_wide(self):
+        self.assertEqual(disposal.COOLDOWN_DIST, 30)
+
+    def test_the_settings_row_agrees_with_the_module(self):
+        """They are read from different places at runtime; a mismatch means
+        the dashboard shows one radius and the detector uses another."""
+        cfg = SystemSettings.load()
+        self.assertEqual(float(cfg.disposal_cooldown_dist), disposal.COOLDOWN_DIST)
+
+    def test_two_bags_a_bag_apart_are_two_places(self):
+        cd = disposal.SpatialCooldown(seconds=120, distance=disposal.COOLDOWN_DIST)
+        cd.remember((300.0, 400.0), 0.0, alert_pk=1)
+        self.assertIsNone(cd.alert_at((345.0, 400.0), 5.0),
+                          "a second sack beside the first is its own violation")
+
+    def test_the_same_bag_re_found_a_few_pixels_off_is_one_place(self):
+        """What the radius exists for: stage 1 forgets an object and re-finds
+        it a moment later with a slightly different box. That lands within a
+        few pixels, not a whole bag away."""
+        cd = disposal.SpatialCooldown(seconds=120, distance=disposal.COOLDOWN_DIST)
+        cd.remember((300.0, 400.0), 0.0, alert_pk=1)
+        self.assertEqual(cd.alert_at((308.0, 395.0), 5.0), (1, ""))
+
+    def test_the_migration_only_moves_an_untouched_value(self):
+        """An operator who deliberately set a wide radius keeps it. Changing a
+        number somebody chose on purpose, during a migration they did not ask
+        for, is worse than leaving it stale."""
+        import pathlib
+        from django.conf import settings as dj
+        source = (pathlib.Path(dj.BASE_DIR) / "core" / "migrations"
+                  / "0069_alter_systemsettings_disposal_cooldown_dist.py"
+                  ).read_text(encoding="utf-8")
+        self.assertIn("filter(", source)
+        self.assertIn("disposal_cooldown_dist=OLD_DEFAULT", source)
+
+    def test_the_dashboard_default_matches(self):
+        import pathlib, re
+        from django.conf import settings as dj
+        source = (pathlib.Path(dj.BASE_DIR).parent / "lookout" / "src"
+                  / "SystemConfig.jsx").read_text(encoding="utf-8")
+        found = re.search(r"disposal_cooldown_dist:\s*(\d+)", source)
+        self.assertEqual(int(found.group(1)), disposal.COOLDOWN_DIST)
+
+
+class AnnotatedClipTests(TestCase):
+    """Disposal's annotated clip has to actually be annotated.
+
+    It used to buffer CLEAN frames and append one boxed frame at the alert, so
+    the "annotated" version was the raw footage plus a single marked frame —
+    and once the save was deferred to centre the detection, even that frame
+    ended up buried mid-clip. The two options in the player showed the same
+    thing.
+    """
+
+    def _command(self):
+        from core.management.commands import watch_disposal
+        return watch_disposal.Command()
+
+    def _detector(self, with_area=True):
+        det = disposal.StaticObjectDetector()
+        det.scale = 1.0
+        confirmed = disposal.Candidate(1, (100, 200, 60, 45), 0.0)
+        confirmed.confirmed, confirmed.label, confirmed.score = True, "sack", 0.4
+        weak = disposal.Candidate(2, (300, 200, 60, 45), 0.0)
+        weak.weak, weak.label, weak.score = True, "bag", 0.11
+        rejected = disposal.Candidate(3, (450, 200, 60, 45), 0.0)
+        rejected.rejected, rejected.label = True, "dog 60%"
+        det.candidates = [confirmed, weak, rejected]
+        det.area = disposal.Area([[.1, .3], [.9, .3], [.9, .9], [.1, .9]]) if with_area else None
+        return det
+
+    def _frame(self):
+        return np.zeros((480, 640, 3), dtype=np.uint8)
+
+    def test_every_buffered_frame_is_drawn_on(self):
+        """The fix: the rolling buffer is fed boxed frames, the way
+        watch_parking has always fed it."""
+        import inspect
+        from core.management.commands import watch_disposal
+        source = inspect.getsource(watch_disposal.Command._run_stream)
+        self.assertIn("self.clip.add(self._annotate_live(frame, detector)", source)
+
+    def test_it_draws_something(self):
+        out = self._command()._annotate_live(self._frame(), self._detector())
+        self.assertGreater(int((out != self._frame()).any(axis=2).sum()), 0)
+
+    def test_the_callers_frame_is_never_touched(self):
+        """It goes on to the debug view, the stage-2 crops and the next
+        iteration's detection, and none of them want our rectangles."""
+        frame = self._frame()
+        self._command()._annotate_live(frame, self._detector())
+        self.assertEqual(int(frame.sum()), 0)
+
+    def test_the_watched_area_is_drawn_when_there_is_one(self):
+        cmd = self._command()
+        with_area = cmd._annotate_live(self._frame(), self._detector(True))
+        without = cmd._annotate_live(self._frame(), self._detector(False))
+        self.assertGreater(int((with_area != self._frame()).any(axis=2).sum()),
+                           int((without != self._frame()).any(axis=2).sum()))
+
+    def test_no_area_is_not_an_error(self):
+        out = self._command()._annotate_live(self._frame(), self._detector(False))
+        self.assertEqual(out.shape, (480, 640, 3))
+
+    def test_an_empty_scene_still_returns_a_frame(self):
+        det = self._detector(False)
+        det.candidates = []
+        out = self._command()._annotate_live(self._frame(), det)
+        self.assertEqual(int(out.sum()), 0, "nothing to draw, nothing drawn")
+
+    def test_the_three_states_are_told_apart(self):
+        """Same colour vocabulary as the live processing view, so a reviewer
+        who watched the run recognises them."""
+        cmd = self._command()
+        self.assertNotEqual(cmd.LIVE_CONFIRMED, cmd.LIVE_WEAK)
+        self.assertNotEqual(cmd.LIVE_WEAK, cmd.LIVE_REJECTED)

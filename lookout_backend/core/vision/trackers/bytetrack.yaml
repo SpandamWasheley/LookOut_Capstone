@@ -1,0 +1,30 @@
+# ByteTrack, tuned for a FIXED camera watching for PARKED vehicles.
+#
+# Only watch_parking (and watch_merged_all's parking engine) use this; every
+# other tracked pass still takes ultralytics' stock config.
+#
+# The one value that matters here is track_buffer. Stock is 30 frames: a track
+# unmatched for 30 frames is discarded, and the vehicle comes back as a new id
+# with a new timer. On this footage a motorcycle parked at the kerb was hidden
+# by one passing vehicle and lost its identity to exactly that.
+#
+# Two reasons a long buffer is safe here and would not be elsewhere:
+#
+#   * the subject is NOT MOVING. The usual cost of a long buffer is a stale
+#     track grabbing the wrong object, which needs the real one to have gone
+#     somewhere else. A parked vehicle is still on the same patch of road when
+#     the occluder clears, so re-association is the easy case.
+#   * the detector runs far below real time (1440p, far-mode tiling). The
+#     buffer counts FRAMES, not seconds, so 30 frames is only a few seconds of
+#     footage at the rate frames actually arrive — far shorter in practice
+#     than the number suggests.
+#
+# This does not replace _absorb_lost, which still catches the churn this
+# misses. It reduces how often that recovery is needed at all.
+tracker_type: bytetrack
+track_high_thresh: 0.25
+track_low_thresh: 0.1
+new_track_thresh: 0.25
+track_buffer: 120
+match_thresh: 0.8
+fuse_score: True

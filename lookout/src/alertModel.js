@@ -37,6 +37,10 @@ export function mapAlert(raw) {
     // Null where there is nothing to mark: a live source's raw clip (and the
     // annotated clip) are pre-roll buffers whose last frame IS the detection.
     clipOffset: raw.clip_offset ?? null,
+    // The same, for the annotated clip — a different length, so a different
+    // number. Marking the raw clip's moment on the annotated one would point
+    // at the wrong frame.
+    annotatedOffset: raw.annotated_offset ?? null,
     officersAssignedIds: raw.officers_assigned ?? [],
     officersAssignedNames: raw.officers_assigned_names ?? [],
     suspect: raw.suspect,

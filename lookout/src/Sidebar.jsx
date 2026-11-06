@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import {
   LayoutDashboard, Camera, Bell, Settings,
   ChevronLeft, ChevronRight, Eye, LogOut, Shield,
-  Archive, TrendingUp, Sun, Moon, PlayCircle, Info,
+  Archive, TrendingUp, Sun, Moon, PlayCircle, Info, UserCircle,
 } from "lucide-react";
 
 const navGroups = [
@@ -191,8 +191,29 @@ export function Sidebar({ activeView, onViewChange, activeRole, onRoleChange, al
         })}
       </nav>
 
-      {/* Bottom: AI status + theme toggle + sign out */}
+      {/* Bottom: my account + about + theme toggle + sign out */}
       <div className="flex-shrink-0 p-3 space-y-1.5" style={{ borderTop: `1px solid ${sidebarBorder}` }}>
+        {/* Down here rather than in navGroups: it is about the person signed
+            in, not about the barangay being watched, and every role has it. */}
+        <button
+          onClick={() => onViewChange("account")}
+          title="My account"
+          className="w-full flex items-center gap-2 rounded-md py-2 px-2 transition-all duration-150"
+          style={{
+            justifyContent: collapsed ? "center" : "flex-start",
+            color: activeView === "account" ? activeColor : mutedColor,
+            background: activeView === "account" ? activeBg : "transparent",
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.background = activeBg; e.currentTarget.style.color = activeColor; }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = activeView === "account" ? activeBg : "transparent";
+            e.currentTarget.style.color = activeView === "account" ? activeColor : mutedColor;
+          }}
+        >
+          <UserCircle size={14} className="flex-shrink-0" />
+          {!collapsed && <span className="text-[15px] font-medium">My account</span>}
+        </button>
+
         <button
           onClick={() => onViewChange("about")}
           title="About LookOut"

@@ -79,7 +79,12 @@ def _close_orphaned_jobs():
             return
         alive = {p.pid for p in psutil.process_iter(["pid"])}
         for job in running:
-            if job.pid and job.pid in alive:
+            # Companions count: an "everything" run whose merged pass has
+            # finished while disposal is still going is not an orphan, and
+            # marking it FAILED would both lie and stop the page polling a
+            # detector that is still filing alerts.
+            pids = [job.pid, *(job.extra_pids or [])]
+            if any(pid and pid in alive for pid in pids):
                 continue
             job.status = DetectionJob.Status.FAILED
             job.finished_at = job.finished_at or timezone.now()

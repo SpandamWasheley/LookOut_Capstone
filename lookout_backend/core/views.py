@@ -43,6 +43,7 @@ from .models import (
     Camera,
     Citation,
     DetectionJob,
+    DevicePushToken,
     EmailVerificationCode,
     Officer,
     SystemSettings,
@@ -52,6 +53,7 @@ from .models import (
     Violator,
     Zone,
     normalize_name,
+    normalize_ph_mobile,
 )
 from .permissions import CanEditOwnOpenCitation, IsAdmin, IsAdminOrReadOnly
 from .throttling import (
@@ -184,10 +186,76 @@ def health(request):
     )
 
 
-@api_view(["GET"])
+@api_view(["GET", "PATCH"])
 @permission_classes([permissions.IsAuthenticated])
 def me(request):
+    """The caller's own account.
+
+    PATCH is self-service for the two fields a user is expected to keep
+    current themselves -- their mobile number and whether they want text
+    notification. Everything else on the account is read-only here
+    (UserSerializer.read_only_fields): an admin grants a role, an account does
+    not grant itself one. Both clients use this, so a dispatcher on the web and
+    an officer on the phone change their number the same way.
+    """
+    if request.method == "PATCH":
+        serializer = UserSerializer(request.user, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
     return Response(UserSerializer(request.user).data)
+
+
+@api_view(["POST", "DELETE"])
+@permission_classes([permissions.IsAuthenticated])
+def push_token(request):
+    """Where to reach this account's phone with a push notification.
+
+    POST registers (or re-registers) a device; DELETE forgets one. The officer
+    app calls POST on every launch, because an Expo token is not permanent —
+    it can be reissued when the app updates or is restored onto a new handset.
+
+    Registration is an UPSERT ON THE TOKEN, not on the user, and that detail is
+    load-bearing. The token identifies the install, not the person: if officer
+    B signs in on a handset officer A used, the row must move to B. Keyed the
+    other way round, both would stay registered and each would be notified of
+    the other's assignments.
+
+    Deleting is deliberately scoped to the caller's own rows — knowing a token
+    is not authority to unregister somebody else's phone.
+    """
+    # Only the accounts that can actually sign in to the officer app may
+    # register a device. Registration upserts on the TOKEN (see below), so
+    # anyone able to call this and holding somebody else's token could point
+    # that handset at their own account — silencing the real officer. The
+    # token is opaque and never leaves the device or this server, so that is
+    # a narrow path, but there is no reason for a dispatcher or admin account
+    # to be on it at all.
+    if getattr(request.user, "role", "") not in ("officer", "both"):
+        return Response({"detail": "Only officer accounts register a device."}, status=403)
+
+    raw = (request.data.get("token") or "").strip()
+    if not raw:
+        return Response({"detail": "token is required."}, status=400)
+
+    if request.method == "DELETE":
+        DevicePushToken.objects.filter(user=request.user, token=raw).delete()
+        return Response(status=204)
+
+    # Cheap shape check. A malformed value cannot be delivered to, and storing
+    # it only guarantees a rejected send on every future assignment.
+    if not raw.startswith(("ExponentPushToken[", "ExpoPushToken[")):
+        return Response({"detail": "That is not an Expo push token."}, status=400)
+
+    platform = (request.data.get("platform") or "").strip().lower()
+    if platform not in dict(DevicePushToken.Platform.choices):
+        platform = ""
+
+    DevicePushToken.objects.update_or_create(
+        token=raw,
+        defaults={"user": request.user, "platform": platform},
+    )
+    return Response(status=204)
 
 
 @api_view(["POST"])
@@ -211,7 +279,23 @@ def logout(request):
     if not raw:
         return Response({"detail": "refresh is required."}, status=400)
     try:
-        RefreshToken(raw).blacklist()
+        token = RefreshToken(raw)
+        # Signing out must also stop the phone buzzing, and the client cannot
+        # be relied on to arrange that: officer_app withdraws its own device
+        # first, but only if it still knows which token it registered. The
+        # refresh token names the account on its own, so this holds even when
+        # the app has forgotten.
+        #
+        # ALL of the account's devices, not one, because nothing in this
+        # request identifies which handset is being signed out of. The cost is
+        # bounded: the app re-registers on every launch, so a second device
+        # goes quiet only until it is next opened. The alternative — a shared
+        # duty handset still announcing the previous officer's violations,
+        # with their place and evidence level — is the worse failure.
+        user_id = token.get("user_id")
+        if user_id:
+            DevicePushToken.objects.filter(user_id=user_id).delete()
+        token.blacklist()
     except TokenError:
         # Expired, malformed, or already blacklisted. The session is over
         # either way, which is all the caller asked for — reporting an error
@@ -300,6 +384,15 @@ def _validate_new_account_fields(data, *, require_phone=False):
             errors[field] = "Required."
     if require_phone and not fields["phone"]:
         errors["phone"] = "Required."
+    elif fields["phone"]:
+        # Normalised here, at the edge, so the account is created holding the
+        # same E.164 string a later edit through either serializer would
+        # produce -- the stored number must not depend on which route set it.
+        # Optional for a dispatcher-only account, but still checked if given.
+        try:
+            fields["phone"] = normalize_ph_mobile(fields["phone"])
+        except ValueError as exc:
+            errors["phone"] = str(exc)
     if errors:
         return fields, errors
 
@@ -360,6 +453,12 @@ def register_personnel(request):
             username=fields["username"], email=fields["email"], password=fields["password"],
             role=_PERSONNEL_ROLES[role_key], display_name=display_name,
             must_change_password=True,
+            # On the account for every role, not just the ones that get an
+            # Officer row: a dispatcher has no officer record and is exactly
+            # who needs reaching. sms_alerts is left at its default (off) --
+            # the admin turns it on, giving the number and the consent to use
+            # it two separate deliberate acts.
+            phone=fields["phone"],
         )
         officer = None
         if needs_officer_record:
@@ -761,7 +860,9 @@ class CameraViewSet(viewsets.ModelViewSet):
 
 
 class OfficerViewSet(viewsets.ModelViewSet):
-    queryset = Officer.objects.all()
+    # select_related("user"): every row serialises email, username and
+    # sms_alerts off the account, which is one query per officer without this.
+    queryset = Officer.objects.select_related("user").all()
     serializer_class = OfficerSerializer
     filterset_fields = ["status"]
     permission_classes = [permissions.IsAuthenticated, IsAdminOrReadOnly]
@@ -776,7 +877,12 @@ class OfficerViewSet(viewsets.ModelViewSet):
 class DispatcherViewSet(viewsets.ModelViewSet):
     queryset = User.objects.filter(role__in=[User.Role.DISPATCHER, User.Role.BOTH])
     serializer_class = DispatcherSerializer
-    http_method_names = ["get", "delete", "head", "options"]
+    # PATCH, but no POST: an account is created by register_personnel, which
+    # will not make one without a verified email. PATCH is how the admin keeps
+    # a dispatcher's contact details current -- the web client has been calling
+    # it since the Edit Credentials modal was added, and without it here that
+    # modal could only ever answer 405.
+    http_method_names = ["get", "patch", "delete", "head", "options"]
     permission_classes = [permissions.IsAuthenticated, IsAdmin]
 
     def perform_destroy(self, instance):
@@ -1032,6 +1138,9 @@ class AlertViewSet(viewsets.ModelViewSet):
     # page lists, which is where the reviewer needs to be shown.
     REVIEWED_STATUSES = (Alert.Status.RESOLVED, Alert.Status.ACKNOWLEDGED)
 
+    # Whose assignment is worth waking a phone for. See perform_update.
+    DISPATCHING_ROLES = frozenset({"admin", "dispatcher", "both"})
+
     def perform_update(self, serializer):
         """Records WHO closed the alert, keeps its timeline, and silently records the verdict.
 
@@ -1051,6 +1160,11 @@ class AlertViewSet(viewsets.ModelViewSet):
         officers = list(alert.officers_assigned.all())
         events = []
         update = {}
+
+        # Officers added by THIS request, not everyone currently on the alert.
+        # A dispatcher adding a second officer to an alert must not notify the
+        # first one all over again — they already went.
+        newly_assigned = [o for o in officers if o.pk not in previous_officers]
 
         if set(o.pk for o in officers) != previous_officers and officers:
             events.append(("assigned", "Assigned to " + ", ".join(o.name for o in officers)))
@@ -1082,6 +1196,25 @@ class AlertViewSet(viewsets.ModelViewSet):
             Alert.objects.filter(pk=alert.pk).update(**update)
             for name, value in update.items():
                 setattr(alert, name, value)
+
+        # Last, and off the request thread. The officer app only polls while it
+        # is open in the foreground, so without this an officer who is not
+        # already looking at their phone learns nothing until they next open
+        # it. Fired after the writes above so the notification can never
+        # describe a state the database does not yet hold, and never raises —
+        # a dispatcher's Assign must not fail because Expo is unreachable.
+        #
+        # Gated on the CALLER's role, not just on the transition. This
+        # ViewSet sets no permission_classes, so it falls back to
+        # IsAuthenticated — in this system the officer-vs-web split is a
+        # client-side gate, which means any signed-in account can PATCH
+        # officers_assigned. That was already true of the database write;
+        # ungated, it would also let any account ring every officer's
+        # handset at will, as often as it liked. Assigning work is a
+        # dispatcher's or an admin's act, so only their requests wake a phone.
+        if newly_assigned and getattr(user, "role", "") in self.DISPATCHING_ROLES:
+            from core import push
+            push.notify_assignment_async(alert, newly_assigned)
 
     @action(detail=True, methods=["post"])
     def accept(self, request, pk=None):
@@ -1138,6 +1271,10 @@ DETECTION_COMMANDS = {
     # violation class at all (dual background subtraction + a zero-shot bag
     # check), so it has nothing to share a model forward pass with.
     "disposal": "watch_disposal",
+    # Every violation in scope, over one clip. NOT a wider merged pass -- see
+    # DETECTION_COMPANIONS: it is watch_merged_all plus watch_disposal, run
+    # side by side, which is what "all five" actually costs.
+    "everything": "watch_merged_all",
 }
 # Detectors that judge vehicles against a marked no-parking area. Two tiers,
 # because the two mean different things to a caller:
@@ -1164,11 +1301,38 @@ def _opt_number(raw, cast):
         return None
 
 
-EDGE_REQUIRED = frozenset({"merged4"})
+# Nothing refuses for want of an area any more: watch_parking and
+# watch_merged_all both trace one from the footage when none is saved, and
+# disposal watches the whole frame. Kept as an empty set rather than deleted —
+# it is the hook a future detector with no such fallback would use, and the
+# create() check that reads it is the difference between a visible 400 and a
+# FAILED job with the reason buried in a subprocess log.
+EDGE_REQUIRED = frozenset()
 # "disposal" is capable but never required: an area narrows WHERE rubbish is
 # watched for (on a 4MP frame the whole-frame rule raises a flood of noise
 # blobs), but with none drawn it still watches everywhere, exactly as before.
-EDGE_CAPABLE = frozenset({"parking", "disposal"}) | EDGE_REQUIRED
+# Listed in full rather than derived from EDGE_REQUIRED, which it used to be
+# unioned with. The moment that set emptied, merged4 fell out of CAPABLE too --
+# and a merged4 run with an area drawn would have had it silently dropped on
+# the way to the detector.
+EDGE_CAPABLE = frozenset({"parking", "disposal", "merged4", "everything"})
+# Detectors launched ALONGSIDE the primary one, as their own processes.
+#
+# "Merged" means one shared YOLO pass over merged_v2.pt, routed to four rule
+# layers. Disposal cannot join that: it runs no trained violation class at all
+# (dual background subtraction, then a zero-shot crop check), so there is
+# nothing for it to share and adding it to the merged command would buy only
+# the appearance of one detector. core/monitor.py already runs it as its own
+# process for the live camera; this is the same arrangement for an upload.
+#
+# A companion runs HEADLESS: the live processing view is one directory per job
+# (monitor.job_dir), so a second publisher would overwrite the first's frames
+# and subjects. The page therefore shows the merged four tracking, while
+# disposal files its alerts without appearing there.
+DETECTION_COMPANIONS = {
+    "everything": ("watch_disposal",),
+}
+
 DETECTION_UPLOAD_EXTENSIONS = {".mp4", ".mkv", ".avi"}
 DETECTION_MAX_UPLOAD_BYTES = 1024 * 1024 * 1024  # 1GB
 
@@ -1238,13 +1402,23 @@ def _tail_log(path, max_chars=4000):
         return ""
 
 
-def _watch_detection_job(job_id, proc, log_path, source_path):
+def _watch_detection_job(job_id, proc, log_path, source_path, extras=()):
     """Runs in a daemon thread per launched job — blocks on the subprocess's
     exit code (liveness alone can't tell success from failure) and updates the
     DB row once it's known. No task queue: this assumes a single long-lived
     `runserver` process, which is what this project actually runs; it wouldn't
     generalise to a multi-worker WSGI deployment without a real queue."""
     returncode = proc.wait()
+    # Companions have to finish before the row is closed and the clip deleted:
+    # disposal commonly outlives the merged pass (it holds pinned candidates
+    # and defers its evidence clips), and removing the source out from under a
+    # still-running detector loses whatever it had not written yet.
+    for extra in extras:
+        try:
+            if extra.wait() != 0:
+                returncode = returncode or extra.returncode
+        except Exception:                                       # noqa: BLE001
+            pass
     job = DetectionJob.objects.filter(id=job_id).first()
     if job is None:
         return
@@ -1750,9 +1924,20 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
             return recognition.detect_vehicles(
                 frame, imgsz=autodetect.TRACE_IMGSZ)
 
+        # WHICH area is being traced, because the two want very different
+        # shapes from the same point cloud. Parking's is the carriageway, so a
+        # tight hull is right. Disposal's is where rubbish gets LEFT — off the
+        # carriageway by definition — so the same hull is grown well past the
+        # road's edges. Tracing a tight shape into a canvas that means "watch
+        # here for rubbish" would hand the operator the one area nobody dumps
+        # on, and it would look plausible.
+        kind = request.data.get("kind") or "zone"
+        pad = (autodetect.DISPOSAL_PAD_FRACTION if kind == "disposal"
+               else autodetect.PAD_FRACTION)
         try:
             points, report, preview = autodetect.trace_clip(
-                source, detect, max_samples=autodetect.WEB_MAX_SAMPLES)
+                source, detect, max_samples=autodetect.WEB_MAX_SAMPLES,
+                pad_fraction=pad)
         except Exception as exc:                                # noqa: BLE001
             logger.exception("Zone auto-trace failed")
             return Response({"detail": f"Could not trace a zone: {exc}"}, status=500)
@@ -1774,6 +1959,7 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
 
         height, width = preview.shape[:2]
         return Response({
+            "kind": kind,
             "points": [[round(x, 1), round(y, 1)] for x, y in points],
             # The resolution the points are in, so a caller drawing them over a
             # frame it obtained separately can check the two agree rather than
@@ -2058,14 +2244,36 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
                 job.save(update_fields=["status", "finished_at"])
                 raise
             job.pid = proc.pid
-            job.save(update_fields=["pid"])
+
+            # Companions, each its own process on the same source. Deliberately
+            # WITHOUT LOOKOUT_DEBUG_DIR: see DETECTION_COMPANIONS.
+            extras = []
+            companion_env = {k: v for k, v in env.items() if k != "LOOKOUT_DEBUG_DIR"}
+            for companion in DETECTION_COMPANIONS.get(violation_type, ()):
+                try:
+                    extra = subprocess.Popen(
+                        [sys.executable, "manage.py", companion,
+                         "--source", source_arg, "--camera", camera_code],
+                        cwd=str(django_settings.BASE_DIR),
+                        stdout=log_file, stderr=subprocess.STDOUT,
+                        env=companion_env,
+                    )
+                except OSError:
+                    # The primary is already running and will still produce
+                    # alerts. Losing a companion narrows the run; failing the
+                    # whole thing would throw away the part that works.
+                    logger.exception("Could not launch companion %s", companion)
+                    continue
+                extras.append(extra)
+            job.extra_pids = [e.pid for e in extras]
+            job.save(update_fields=["pid", "extra_pids"])
         finally:
             # The child inherits its own duplicated handle — safe to close ours.
             log_file.close()
 
         threading.Thread(
             target=_watch_detection_job,
-            args=(job.id, proc, log_path, source_arg),
+            args=(job.id, proc, log_path, source_arg, extras),
             daemon=True,
         ).start()
 
@@ -2108,6 +2316,14 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
         job.finished_at = timezone.now()
         job.save(update_fields=["status", "finished_at"])
 
+        for extra_pid in (job.extra_pids or []):
+            # Before the primary, and failures ignored: a companion left alive
+            # would go on writing alerts against a job the operator has just
+            # stopped, and one that has already exited is not an error.
+            try:
+                psutil.Process(extra_pid).terminate()
+            except Exception:                                   # noqa: BLE001
+                pass
         if job.pid:
             try:
                 proc = psutil.Process(job.pid)

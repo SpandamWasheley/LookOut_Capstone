@@ -28,6 +28,9 @@ urlpatterns = [
     # not just in the one browser. See views.logout.
     path("auth/logout/", views.logout, name="logout"),
     path("auth/me/", views.me, name="me"),
+    # Where to reach this account's phone. The officer app registers on
+    # every launch and unregisters on sign-out.
+    path("auth/push-token/", views.push_token, name="push_token"),
     path("auth/change-password/", views.change_password, name="change_password"),
     path("auth/forgot-password/send-code/", views.forgot_password_send_code, name="forgot_password_send_code"),
     path("auth/forgot-password/reset/", views.forgot_password_reset, name="forgot_password_reset"),

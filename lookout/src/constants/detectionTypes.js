@@ -1,6 +1,6 @@
-import { Cigarette, Beer, Car, ShieldAlert, Trash2, Layers, Layers3 } from "lucide-react";
+import { Cigarette, Beer, Car, ShieldAlert, Trash2, Layers, Layers3, SquareStack } from "lucide-react";
 
-// The 7 detectors DetectionJobViewSet.DETECTION_COMMANDS knows how to run,
+// The 8 detectors DetectionJobViewSet.DETECTION_COMMANDS knows how to run,
 // shared by every upload-a-clip-and-detect entry point (UploadDetectionModal,
 // RunDetectionPage) so the list is defined once. Deliberately NOT the same
 // shape as VIOLATION_TYPES in constants/violationTypes.js — that file keys
@@ -19,6 +19,16 @@ export const DETECTION_TYPES = [
   // Smoking + drinking + theft off one merged-model pass, plus road-edge
   // obstruction running its own vehicle model beside them (watch_merged_all).
   { key: "merged4", label: "Merged (All 4)", icon: Layers3, color: "#14b8a6" },
+  // Every violation in scope, presented as the next step in the Merged family
+  // — same label shape, same stacked icon, next colour in the progression.
+  //
+  // Worth knowing when reading the code rather than the picker: unlike its two
+  // siblings this is NOT one shared model pass. Disposal runs no trained
+  // violation class (dual background subtraction, then a zero-shot crop
+  // check), so it cannot read from the merged_v2.pt pass the other four share
+  // and is launched as its own process beside it — see DETECTION_COMPANIONS in
+  // views.py. The run costs two detectors, not one wider one.
+  { key: "everything", label: "Merged (All 5)", icon: SquareStack, color: "#0ea5e9" },
 ];
 
 // Detectors that use a drawn area, in three tiers that mirror the backend's
@@ -42,9 +52,12 @@ export const DETECTION_TYPES = [
 // dumped rubbish is watched for, and watch_disposal watches the whole frame
 // without one. Leaving it out of this third set would make a drawn polygon a
 // precondition for starting a run that worked fine without one before.
-export const TYPES_WITH_EDGES = new Set(["parking", "merged4", "disposal"]);
-export const TYPES_REQUIRING_EDGES = new Set(["merged4"]);
-export const TYPES_WITH_OPTIONAL_EDGES = new Set(["disposal", "parking"]);
+export const TYPES_WITH_EDGES = new Set(["parking", "merged4", "disposal", "everything"]);
+// Empty: both detectors that use an area can now work one out from the
+// footage. Kept because it is what UploadDetectionModal filters on — an entry
+// point with no drawing step at all still needs a way to ask.
+export const TYPES_REQUIRING_EDGES = new Set([]);
+export const TYPES_WITH_OPTIONAL_EDGES = new Set(["disposal", "parking", "merged4", "everything"]);
 
 // Which detectors own the "inside the road %" and "for N minutes" boxes.
 //
@@ -54,7 +67,17 @@ export const TYPES_WITH_OPTIONAL_EDGES = new Set(["disposal", "parking"]);
 // exactly as to a drawn one, while disposal draws an area and has no
 // thresholds at all. Tying them together hid parking's only real controls the
 // moment its polygon stopped being compulsory.
-export const TYPES_WITH_AREA_THRESHOLDS = new Set(["parking", "merged4"]);
+export const TYPES_WITH_AREA_THRESHOLDS = new Set(["parking", "merged4", "everything"]);
+
+// Which rule a drawn polygon belongs to, which is NOT always the detector you
+// picked. On an All 5 run parking traces its own no-parking area from the
+// traffic, so the one canvas on screen is free to mean the thing that cannot
+// be traced as well: where to watch for rubbish. Drawing it must therefore
+// write a "disposal" area and leave parking's alone — before this, one shape
+// was read as both, and a tight no-parking polygon silently confined the
+// rubbish search to the carriageway.
+export const edgeKind = (key) =>
+  (key === "disposal" || key === "everything") ? "disposal" : "zone";
 
 // What the polygon MEANS, which is not the same sentence for every detector:
 // parking judges vehicles against a no-parking area, disposal just confines
@@ -63,10 +86,17 @@ export const TYPES_WITH_AREA_THRESHOLDS = new Set(["parking", "merged4"]);
 export const edgeHeading = (key, label) =>
   key === "disposal"
     ? "Draw the area to watch for dumped rubbish (optional)"
-    : `No-parking area for ${label} (optional — worked out from the footage if you skip it)`;
+    : key === "everything"
+      // Parking traces its own from the traffic on this run, so this canvas
+      // is for the thing tracing does worst: where rubbish gets left, which
+      // is off the carriageway by definition.
+      ? "Area to watch for dumped rubbish (optional — the no-parking area is worked out from the footage)"
+      : `No-parking area for ${label} (optional — worked out from the footage if you skip it)`;
 
 export const edgeCameraNote = (key, label) =>
-  key === "disposal"
+  key === "everything"
+    ? `${label} runs the merged four plus disposal as a second process. Parking works its no-parking area out from the footage; a rubbish area drawn here is used by disposal only.`
+    : key === "disposal"
     ? `${label} uses the area saved on the camera (Feeds → Edge Zones). Without one it watches the whole frame.`
     : `${label} uses the no-parking area saved on the camera (Feeds → Edge Zones). Without one it works the road out from the first half-minute of footage and saves what it finds.`;
 

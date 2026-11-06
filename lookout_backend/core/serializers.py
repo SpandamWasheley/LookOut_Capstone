@@ -12,25 +12,84 @@ from .models import (
     ViolationType,
     Violator,
     Zone,
+    normalize_ph_mobile,
 )
 
 
+class PhoneNumberField(serializers.CharField):
+    """A Philippine mobile number, accepted in whatever spelling it arrives in.
+
+    Normalising in the FIELD rather than in each view means every route that
+    takes a number -- an admin editing personnel, a user editing their own
+    profile, registration -- stores the identical E.164 string, and a typo is
+    rejected once, with the same message, wherever it is typed.
+    """
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("required", False)
+        kwargs.setdefault("allow_blank", True)
+        kwargs.setdefault("max_length", 30)
+        super().__init__(**kwargs)
+
+    def to_internal_value(self, data):
+        try:
+            return normalize_ph_mobile(super().to_internal_value(data))
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+
+
 class UserSerializer(serializers.ModelSerializer):
+    """The caller's own account -- /auth/me/, GET and PATCH.
+
+    `phone` and `sms_alerts` are the only writable fields: this route exists so
+    a user can keep their own number current without an admin, not so an
+    account can rewrite its own role or email.
+    """
+
     officer_id = serializers.SerializerMethodField()
+    phone = PhoneNumberField()
 
     class Meta:
         model = User
-        fields = ["id", "username", "display_name", "role", "email", "must_change_password", "officer_id"]
+        fields = [
+            "id", "username", "display_name", "role", "email", "must_change_password",
+            "officer_id", "phone", "sms_alerts",
+        ]
+        read_only_fields = ["username", "display_name", "role", "email", "must_change_password"]
 
     def get_officer_id(self, obj):
         officer = getattr(obj, "officer_profile", None)
         return officer.id if officer else None
 
+    def update(self, instance, validated_data):
+        # set_account_phone, not a plain assignment: it normalises and carries
+        # the number onto the officer row, which a bare setattr would leave
+        # showing the old one on the personnel roster.
+        if "phone" in validated_data:
+            instance.set_account_phone(validated_data.pop("phone"))
+        return super().update(instance, validated_data)
+
 
 class DispatcherSerializer(serializers.ModelSerializer):
+    """A dispatcher account as the admin's Personnel page sees it.
+
+    Writable through DispatcherViewSet's PATCH, so the list is deliberately
+    narrow: contact details only. `username` and `role` are an account's
+    identity and who it may act as -- changing either is not an edit to a
+    contact number and does not belong on this route.
+    """
+
+    phone = PhoneNumberField()
+
     class Meta:
         model = User
-        fields = ["id", "username", "display_name", "email", "role"]
+        fields = ["id", "username", "display_name", "email", "role", "phone", "sms_alerts"]
+        read_only_fields = ["username", "role"]
+
+    def update(self, instance, validated_data):
+        if "phone" in validated_data:
+            instance.set_account_phone(validated_data.pop("phone"))
+        return super().update(instance, validated_data)
 
 
 class ZoneSerializer(serializers.ModelSerializer):
@@ -70,12 +129,17 @@ class CameraSerializer(serializers.ModelSerializer):
 class OfficerSerializer(serializers.ModelSerializer):
     email = serializers.SerializerMethodField()
     username = serializers.SerializerMethodField()
+    phone = PhoneNumberField()
+    # Reads the derived Officer.sms_alerts property (the account's switch);
+    # writes are intercepted in update() and applied to the account, because
+    # the property has no setter and the officer row is not where it lives.
+    sms_alerts = serializers.BooleanField(required=False)
 
     class Meta:
         model = Officer
         fields = [
             "id", "code", "name", "badge", "status", "location",
-            "phone", "shift", "joined_date", "email", "username",
+            "phone", "sms_alerts", "shift", "joined_date", "email", "username",
         ]
 
     def get_email(self, obj):
@@ -83,6 +147,36 @@ class OfficerSerializer(serializers.ModelSerializer):
 
     def get_username(self, obj):
         return obj.user.username if obj.user_id else ""
+
+    def update(self, instance, validated_data):
+        """Routes the two account-level fields to the account.
+
+        Both are popped BEFORE the ordinary update: `sms_alerts` is not a
+        column on this model, and `phone` has to be written by
+        set_account_phone so the user row and this one stay equal.
+        """
+        phone = validated_data.pop("phone", None)
+        sms_alerts = validated_data.pop("sms_alerts", None)
+        officer = super().update(instance, validated_data)
+        user = officer.user
+
+        if phone is not None:
+            if user is not None:
+                # Mirrors back onto a second in-memory copy of this row, so the
+                # response would otherwise still carry the pre-edit number.
+                user.set_account_phone(phone)
+                officer.refresh_from_db(fields=["phone"])
+            else:
+                officer.phone = phone
+                officer.save(update_fields=["phone"])
+
+        if sms_alerts is not None and user is not None:
+            user.sms_alerts = sms_alerts
+            user.save(update_fields=["sms_alerts"])
+            # No refresh needed: `user` IS officer.user, so the property that
+            # reads it already sees the new value.
+
+        return officer
 
 
 def _format_full_name(last, first, middle, suffix):
@@ -328,7 +422,7 @@ class AlertSerializer(serializers.ModelSerializer):
             # is (or is not) there, when the owner walked off, and where in
             # an uploaded clip this sits -- `timestamp` is wall clock.
             "suspect_image_url", "suspect_status", "owner_left_at", "footage_offset",
-            "clip_offset",
+            "clip_offset", "annotated_offset",
             # Weighted-sum scoring (core/vision/scoring.py). `level` is what the
             # dashboard should badge on -- `confidence` is now a violation
             # likelihood, so a bare percentage badge reads differently than it
@@ -347,7 +441,7 @@ class AlertSerializer(serializers.ModelSerializer):
             # training data after the fact.
             "level", "level_label", "peak_level", "peak_level_label", "last_seen_at",
             "object_confidence", "cues", "ai_context", "timeline",
-            "suspect_status", "owner_left_at", "footage_offset", "clip_offset",
+            "suspect_status", "owner_left_at", "footage_offset", "clip_offset", "annotated_offset",
             # Who reviewed it is recorded FROM the authenticated request, so a
             # client cannot name somebody else as the reviewer.
             "reviewed_by", "reviewed_by_name", "reviewed_at",
@@ -430,6 +524,7 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
             "holdup_loiter_seconds", "holdup_near_person_heights",
             "vlm_frames", "vlm_max_edge", "vlm_async",
             "alert_cooldown", "evidence_retention_days", "evidence_auto_purge", "show_testing_tools", "auto_start_detection",
+            "sms_alerts_enabled",
             "updated_at", "spec_defaults",
         ]
         read_only_fields = ["updated_at", "spec_defaults"]

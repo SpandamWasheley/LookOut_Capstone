@@ -307,7 +307,7 @@ class ScoreCapTests(unittest.TestCase):
         self.assertEqual((capped.level, capped.capped), (scoring.MONITORING, "capped: no puff"))
         self.assertEqual(capped.score, free.score)
         self.assertEqual(capped.as_dict()["checklist"]["capped"], "capped: no puff")
-        self.assertEqual(capped.as_dict()["spec"], "v6.2.11")
+        self.assertEqual(capped.as_dict()["spec"], scoring.SCORING_SPEC_VERSION)
 
     def test_puff_only_path_is_not_capped(self):
         s = scoring.Score("smoking", scoring.SMOKING_WEIGHTS, {"gesture", "puffs", "puff_pattern"},
