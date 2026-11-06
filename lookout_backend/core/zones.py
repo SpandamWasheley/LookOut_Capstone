@@ -61,6 +61,27 @@ def has_disposal(edges):
                for spec in disposal_entries(edges).values())
 
 
+def rescaled(edges, old_size, new_size):
+    """`edges` with every point moved from the (w, h) it was drawn at to the
+    (w, h) it will be stored at.
+
+    Both areas share Camera.edges_width / edges_height, so a writer that saves
+    at a new frame size must carry the OTHER area's pixels across with it --
+    otherwise that area is silently read at the wrong scale afterwards. A
+    missing or equal old size is taken as "already at the new size".
+    """
+    (ow, oh), (nw, nh) = old_size, new_size
+    if not (ow and oh and nw and nh) or (ow, oh) == (nw, nh):
+        return {k: dict(v) if isinstance(v, dict) else v for k, v in _specs(edges).items()}
+    sx, sy = nw / ow, nh / oh
+    out = {}
+    for key, spec in _specs(edges).items():
+        if isinstance(spec, dict) and spec.get("points"):
+            spec = {**spec, "points": [[round(x * sx), round(y * sy)] for x, y in spec["points"]]}
+        out[key] = spec
+    return out
+
+
 def with_road(edges, road):
     """`edges` with its road side replaced by `road`; the disposal area is kept."""
     return {**road_entries(road), **disposal_entries(edges)}

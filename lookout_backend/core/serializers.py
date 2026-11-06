@@ -122,7 +122,6 @@ class CameraSerializer(serializers.ModelSerializer):
             "image_url", "is_live", "stream_url",
             "edges", "edges_width", "edges_height",
             "obstruction_pct", "obstruction_minutes",
-            "disposal_edges", "disposal_edges_width", "disposal_edges_height",
         ]
 
 

@@ -26,6 +26,7 @@ from pathlib import Path
 import cv2
 from django.core.management.base import BaseCommand, CommandError
 
+from core import zones
 from core.models import Camera
 from core.vision.progress import Spinner
 
@@ -157,7 +158,10 @@ class Command(BaseCommand):
 
         if camera is not None:
             height, width = preview.shape[:2]
-            camera.edges = autodetect.to_spec(points)
+            # Replaces the road side only; a disposal area on the camera is kept.
+            kept = zones.rescaled(zones.disposal_entries(camera.edges),
+                                  (camera.edges_width, camera.edges_height), (width, height))
+            camera.edges = zones.with_road(kept, autodetect.to_spec(points))
             camera.edges_width = width
             camera.edges_height = height
             camera.save(update_fields=["edges", "edges_width", "edges_height"])

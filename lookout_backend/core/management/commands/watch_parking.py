@@ -9,7 +9,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
-from core import descriptions
+from core import descriptions, zones
 from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision.progress import Spinner
@@ -450,16 +450,25 @@ class Command(BaseCommand):
         # and so the operator can see and adjust what the detector decided
         # rather than having to guess at it.
         #
-        # Two conditions, and both matter. Nothing stored: a traced area must
-        # never overwrite one somebody drew on purpose. And not a "-TEST"
+        # Two conditions, and both matter. No ROAD stored: a traced area must
+        # never overwrite one somebody drew on purpose -- or edited after an
+        # earlier trace, which is the same thing. (A disposal area alone does
+        # not count as a road: zones.has_road.) And not a "-TEST"
         # camera: those are per-RUN scratch for uploaded clips, so persisting
         # there would hand the next clip — a different street — this clip's
         # road, which is exactly the silent wrongness auto-tracing is supposed
         # to remove.
+        #
+        # The write replaces only the road side: the disposal area, if there
+        # is one, is carried across (rescaled, since the two share one frame
+        # size) rather than assigned over.
         saved = ""
-        if not (self.camera.edges or {}) and not self.camera.code.endswith("-TEST"):
+        if not zones.has_road(self.camera.edges) and not self.camera.code.endswith("-TEST"):
             try:
-                self.camera.edges = autodetect.to_spec(points)
+                kept = zones.rescaled(
+                    zones.disposal_entries(self.camera.edges),
+                    (self.camera.edges_width, self.camera.edges_height), (width, height))
+                self.camera.edges = zones.with_road(kept, autodetect.to_spec(points))
                 self.camera.edges_width = width
                 self.camera.edges_height = height
                 self.camera.save(update_fields=["edges", "edges_width", "edges_height"])

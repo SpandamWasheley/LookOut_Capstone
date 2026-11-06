@@ -187,14 +187,6 @@ class Camera(models.Model):
     edges_height = models.PositiveIntegerField(null=True, blank=True)
     obstruction_pct = models.PositiveSmallIntegerField(default=35)
     obstruction_minutes = models.FloatField(default=2.0)
-    # Improper disposal's OWN watch area, same {"key": {"type": "zone", "points":
-    # [[x,y],...]}} shape as `edges` and drawn at disposal_edges_width/height.
-    # Separate from `edges` because the two rules want different ground: parking
-    # wants the carriageway, rubbish piles up on the footpath and kerb beside it.
-    # Empty means no area: watch_disposal watches the whole frame.
-    disposal_edges = models.JSONField(default=dict, blank=True)
-    disposal_edges_width = models.PositiveIntegerField(null=True, blank=True)
-    disposal_edges_height = models.PositiveIntegerField(null=True, blank=True)
 
     class Meta:
         ordering = ["code"]

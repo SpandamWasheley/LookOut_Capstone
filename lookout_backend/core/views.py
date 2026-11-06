@@ -25,6 +25,7 @@ from django.db.models import Count, Q
 from django.utils import timezone
 from django.utils.text import get_valid_filename
 from rapidfuzz import process as rapidfuzz_process
+from core import zones
 from django.db import connection
 from rest_framework import generics, permissions, viewsets
 from rest_framework.decorators import action, api_view, permission_classes, throttle_classes
@@ -787,14 +788,31 @@ class CameraViewSet(viewsets.ModelViewSet):
 
     def update(self, request, *args, **kwargs):
         """Saving a changed zone also applies it to the running live monitor."""
+        before = self.get_object()
+        old_road, old_disposal = zones.road_entries(before.edges), zones.disposal_entries(before.edges)
+        old_size = (before.edges_width, before.edges_height)
+        old_thresholds = (before.obstruction_pct, before.obstruction_minutes)
         response = super().update(request, *args, **kwargs)
         if response.status_code == 200 and getattr(django_settings, "DETECTION_ENABLED", True):
             camera = self.get_object()
             from core.monitor import CAMERA_CODE, monitor
             if camera.code == CAMERA_CODE:
-                if "edges" in request.data:
+                # Camera.edges holds two independent areas (core/zones.py), and
+                # saving one must restart only ITS process. Each is compared
+                # against what was stored before this request, not merely
+                # "edges was in the payload": the editor always sends both, so
+                # that would restart parking every time disposal was touched.
+                # A new frame size moves both areas' pixels, so it counts as a
+                # change to whichever of them exists.
+                resized = (camera.edges_width, camera.edges_height) != old_size
+                road_changed = (zones.road_entries(camera.edges) != old_road
+                                or (resized and old_road)
+                                or (camera.obstruction_pct, camera.obstruction_minutes) != old_thresholds)
+                disposal_changed = (zones.disposal_entries(camera.edges) != old_disposal
+                                    or (resized and old_disposal))
+                if road_changed:
                     response.data["zone_applied"] = monitor.apply_zone(camera)
-                if "disposal_edges" in request.data:
+                if disposal_changed:
                     response.data["disposal_zone_applied"] = monitor.apply_disposal_zone(camera)
         return response
 
@@ -2003,7 +2021,7 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
             # Edge Zones), so there is nothing to stage — but an EDGE_REQUIRED
             # detector still cannot run without one, and the camera row is the
             # only place to check.
-            if violation_type in EDGE_REQUIRED and not camera.edges:
+            if violation_type in EDGE_REQUIRED and not zones.has_road(camera.edges):
                 return Response(
                     {"detail": f"{camera.name} has no no-parking area saved. Draw one on "
                                "Live Feeds → Edge Zones first — this detector judges "

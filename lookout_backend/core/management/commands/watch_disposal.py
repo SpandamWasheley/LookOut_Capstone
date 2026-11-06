@@ -1157,9 +1157,9 @@ class Command(BaseCommand):
     def _area_points_from_camera(self):
         """The camera's drawn polygon as normalised (0-1) points, or None.
 
-        Reads Camera.disposal_edges only. It used to share parking's `edges`,
-        which silently confined disposal to the road the moment a no-parking
-        zone (or a traced one) was saved.
+        Reads the "disposal" entry of Camera.edges (core/zones.py), falling
+        back to the no-parking "zone" entry only for cameras drawn before the
+        two were told apart.
         """
         stored = self.camera.edges or {}
 

@@ -22,6 +22,8 @@ import time
 from django.conf import settings
 from django.utils import timezone
 
+from core import zones
+
 CAMERA_CODE = "CAM-SMOKE-01"
 LIVE_DIR_NAME = "live"
 STATE_STALE_SECONDS = 30       # no new frame published for this long = the stream is not delivering
@@ -42,6 +44,9 @@ def job_dir(job_id):
 def has_road_edge(camera):
     """True when the camera has a usable no-parking area saved.
 
+    A "disposal" entry never counts (core/zones.py) -- it is a different rule's
+    area, and counting it launched parking on a camera with no road at all.
+
     Both shapes count. A ZONE is a closed polygon keyed by "type": "zone" and
     needs at least three points; a legacy EDGE is an open kerb line keyed
     left/right and needs two.
@@ -52,17 +57,7 @@ def has_road_edge(camera):
     launched watch_merged and quietly left parking out — no error, no log line,
     just three violations where four were configured.
     """
-    edges = camera.edges or {}
-    if not isinstance(edges, dict):
-        return False
-    for spec in edges.values():
-        if not isinstance(spec, dict):
-            continue
-        points = spec.get("points") or []
-        minimum = 3 if spec.get("type") == "zone" else 2
-        if len(points) >= minimum:
-            return True
-    return False
+    return zones.has_road(camera.edges)
 
 
 class LiveMonitor:

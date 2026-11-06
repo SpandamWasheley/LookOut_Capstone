@@ -1,7 +1,9 @@
-"""Improper disposal has its OWN watch area on the camera (disposal_edges).
+"""Improper disposal's watch area is the "disposal" entry of Camera.edges.
 
-It used to read parking's `edges`, so tracing or saving a no-parking road
-polygon silently confined disposal to the carriageway.
+Parking's no-parking road lives in the same JSON under a "zone" entry. The two
+are told apart by type (core/zones.py), so tracing or saving a road polygon
+cannot confine disposal to the carriageway, and drawing a disposal area cannot
+become a road.
 """
 from io import StringIO
 from unittest import mock
@@ -12,7 +14,7 @@ from core.management.commands.watch_disposal import Command
 from core.models import Camera, SystemSettings
 
 ROAD = {"road": {"type": "zone", "points": [[0, 0], [100, 0], [100, 50]]}}
-BIN_SPOT = {"road": {"type": "zone", "points": [[10, 10], [50, 10], [50, 40]]}}
+BIN = {"disposal": {"type": "disposal", "points": [[10, 10], [50, 10], [50, 40]]}}
 
 
 def _command(camera):
@@ -23,37 +25,36 @@ def _command(camera):
 
 
 class DisposalAreaSourceTests(TestCase):
-    def test_parkings_zone_is_not_used(self):
-        cam = Camera(code="CAM-SMOKE-01", name="c", edges=ROAD,
+    def test_disposal_entry_wins_over_the_road(self):
+        cam = Camera(code="CAM-SMOKE-01", name="c", edges={**ROAD, **BIN},
                      edges_width=100, edges_height=50)
-        self.assertIsNone(_command(cam)._area_points_from_camera())
-
-    def test_disposal_edges_are_normalised_by_their_own_frame_size(self):
-        cam = Camera(code="CAM-SMOKE-01", name="c", edges=ROAD,
-                     edges_width=999, edges_height=999,
-                     disposal_edges=BIN_SPOT,
-                     disposal_edges_width=100, disposal_edges_height=50)
         self.assertEqual(_command(cam)._area_points_from_camera(),
                          [[0.1, 0.2], [0.5, 0.2], [0.5, 0.8]])
 
+    def test_a_camera_with_only_a_road_falls_back_to_it(self):
+        # Cameras drawn before the two were told apart keep working.
+        cam = Camera(code="CAM-SMOKE-01", name="c", edges=ROAD,
+                     edges_width=100, edges_height=50)
+        self.assertEqual(_command(cam)._area_points_from_camera(),
+                         [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]])
+
     def test_no_recorded_frame_size_means_whole_frame(self):
-        cam = Camera(code="CAM-SMOKE-01", name="c", disposal_edges=BIN_SPOT)
+        cam = Camera(code="CAM-SMOKE-01", name="c", edges=BIN)
         cmd = _command(cam)
-        self.assertIsNone(cmd._area_points_from_camera())
+        self.assertIsNone(_command(cam)._area_points_from_camera())
+        cmd._area_points_from_camera()
         self.assertIn("frame size", cmd.stdout.getvalue())
 
     def test_saving_via_the_serializer_round_trips(self):
         from core.serializers import CameraSerializer
         cam = Camera.objects.create(code="CAM-SMOKE-01", name="c")
         ser = CameraSerializer(cam, data={
-            "disposal_edges": BIN_SPOT,
-            "disposal_edges_width": 640, "disposal_edges_height": 480,
+            "edges": BIN, "edges_width": 640, "edges_height": 480,
         }, partial=True)
         self.assertTrue(ser.is_valid(), ser.errors)
         ser.save()
         cam.refresh_from_db()
-        self.assertEqual(cam.disposal_edges, BIN_SPOT)
-        self.assertEqual(cam.edges, {})
+        self.assertEqual(cam.edges, BIN)
 
 
 class ApplyDisposalZoneTests(TestCase):
