@@ -4,25 +4,29 @@ import { useRouter } from "expo-router";
 import React from "react";
 import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
 
+import { radius, space, SPINE, type as T } from "@/constants/theme";
 import { getViolationIconName } from "@/constants/violationIcons";
 import { Assignment } from "@/context/AssignmentContext";
 import { useColors } from "@/hooks/useColors";
+import { readable, wash } from "@/lib/tint";
 
+/**
+ * Whole words, not "3m ago".
+ *
+ * The abbreviation saved nothing on a line with this much room, and an officer
+ * scanning a list under time pressure should not have to expand "21m" into a
+ * duration. Minutes matter here — a vehicle parked 6 minutes ago and one
+ * parked 40 minutes ago are different situations — so the unit is never
+ * dropped.
+ */
 function timeAgo(isoString: string): string {
-  const diff = Math.floor((Date.now() - new Date(isoString).getTime()) / 1000);
-  if (diff < 0) return "just now";
-  if (diff < 60) return `${diff}s ago`;
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-  return `${Math.floor(diff / 86400)}d ago`;
+  const seconds = Math.floor((Date.now() - new Date(isoString).getTime()) / 1000);
+  if (seconds < 45) return "just now";
+  const plural = (n: number, unit: string) => n + " " + unit + (n === 1 ? "" : "s") + " ago";
+  if (seconds < 3600) return plural(Math.floor(seconds / 60), "minute");
+  if (seconds < 86400) return plural(Math.floor(seconds / 3600), "hour");
+  return plural(Math.floor(seconds / 86400), "day");
 }
-
-const STATUS_LABELS: Record<Assignment["status"], string> = {
-  active: "Pending",
-  dispatched: "Assigned",
-  resolved: "Resolved",
-  acknowledged: "Dismissed",
-};
 
 interface Props {
   assignment: Assignment;
@@ -32,11 +36,32 @@ export default function AssignmentCard({ assignment }: Props) {
   const router = useRouter();
   const c = useColors();
 
-  const statusColor =
-    assignment.status === "active"      ? c.danger
-    : assignment.status === "resolved"  ? "#10b981"
-    : assignment.status === "acknowledged" ? "#ef4444"
-    : c.accent;
+  /**
+   * Status in the officer's language, not the database's.
+   *
+   * "Pending" and "Assigned" described the record. What an officer needs to
+   * know is whether this one is waiting on THEM, so `active` says so and
+   * `dispatched` names what they already did about it.
+   *
+   * Dismissed is deliberately not red. It means the alert was judged a false
+   * alarm, and colouring a false alarm like a live violation is the one
+   * reading here that would be actively misleading.
+   */
+  const status = {
+    active: { label: "Needs you", color: c.urgent },
+    dispatched: { label: "Accepted", color: c.closed },
+    resolved: { label: "Resolved", color: c.closed },
+    acknowledged: { label: "Dismissed", color: c.mutedForeground },
+  }[assignment.status];
+
+  const level =
+    assignment.levelLabel === "Likely"
+      ? c.urgent
+      : assignment.levelLabel === "Possible"
+        ? c.pending
+        : c.mutedForeground;
+
+  const typeColor = assignment.violationType.color;
 
   return (
     <Pressable
@@ -44,41 +69,67 @@ export default function AssignmentCard({ assignment }: Props) {
         if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
         router.push(`/assignment/${assignment.id}`);
       }}
+      accessibilityRole="button"
+      accessibilityLabel={`${assignment.violationType.label} at ${assignment.location}. ${status.label}.`}
       style={({ pressed }) => [
         styles.card,
-        { backgroundColor: c.card, borderColor: c.border, opacity: pressed ? 0.85 : 1 },
+        {
+          backgroundColor: c.card,
+          borderColor: c.border,
+          borderRadius: radius.card,
+          opacity: pressed ? 0.85 : 1,
+        },
+        c.lift(1),
       ]}
     >
-      <View style={styles.leftBar}>
-        <View style={[styles.priorityBar, { backgroundColor: assignment.violationType.color }]} />
-      </View>
-      <View style={styles.content}>
-        <View style={styles.header}>
-          <View style={[styles.iconWrap, { backgroundColor: `${assignment.violationType.color}22` }]}>
-            <Feather name={getViolationIconName(assignment.violationType.icon)} size={18} color={assignment.violationType.color} />
+      {/* The spine. Coloured by violation type, so the list is scannable by
+          colour before a single word has been read. */}
+      <View style={[styles.spine, { backgroundColor: typeColor }]} />
+
+      <View style={styles.body}>
+        <View style={styles.top}>
+          <View style={[styles.icon, { backgroundColor: wash(typeColor, c.scheme) }]}>
+            <Feather
+              name={getViolationIconName(assignment.violationType.icon)}
+              size={17}
+              color={readable(typeColor, c.scheme)}
+            />
           </View>
-          <View style={styles.meta}>
-            <Text style={[styles.type, { color: c.foreground }]} numberOfLines={1}>
+          <View style={styles.name}>
+            <Text style={[T.heading, { color: c.foreground }]} numberOfLines={1}>
               {assignment.violationType.label}
             </Text>
-            <Text style={[styles.time, { color: c.mutedForeground }]}>{timeAgo(assignment.dispatchedAt)}</Text>
+            <Text style={[T.meta, { color: c.mutedForeground }]}>
+              {timeAgo(assignment.dispatchedAt)}
+            </Text>
           </View>
-          <View style={[styles.statusPill, { borderColor: statusColor }]}>
-            <Text style={[styles.statusText, { color: statusColor }]}>{STATUS_LABELS[assignment.status]}</Text>
+          {/* A dot as well as the word: colour reads before text does, and
+              this is the one thing on the card worth reading first. */}
+          <View style={styles.status}>
+            <View style={[styles.dot, { backgroundColor: status.color }]} />
+            <Text style={[T.metaStrong, { color: status.color }]}>{status.label}</Text>
           </View>
         </View>
-        <Text style={[styles.location, { color: c.mutedForeground }]} numberOfLines={1}>
-          <Feather name="map-pin" size={11} color={c.mutedForeground} /> {assignment.location}
-        </Text>
-        <Text style={[styles.description, { color: c.foreground }]} numberOfLines={2}>
+
+        <View style={styles.where}>
+          <Feather name="map-pin" size={12} color={c.mutedForeground} />
+          <Text style={[T.meta, { color: c.mutedForeground }]} numberOfLines={1}>
+            {assignment.location}
+          </Text>
+        </View>
+
+        <Text style={[T.body, styles.desc, { color: c.foreground }]} numberOfLines={2}>
           {assignment.description}
         </Text>
-        <View style={styles.footer}>
-          <Text style={[styles.code, { color: c.mutedForeground }]}>{assignment.code}</Text>
+
+        {/* The code and the confidence level are a different kind of
+            information from the description — a reference and a judgement,
+            not a narrative — so a hairline separates them instead of a gap
+            the eye has to interpret. */}
+        <View style={[styles.foot, { borderTopColor: c.border }]}>
+          <Text style={[T.code, { color: c.mutedForeground }]}>{assignment.code}</Text>
           {assignment.levelLabel ? (
-            <Text style={[styles.confidence, { color: assignment.levelLabel === "Likely" ? "#dc2626" : "#f59e0b" }]}>
-              {assignment.levelLabel}
-            </Text>
+            <Text style={[T.metaStrong, { color: level }]}>{assignment.levelLabel}</Text>
           ) : null}
         </View>
       </View>
@@ -87,26 +138,28 @@ export default function AssignmentCard({ assignment }: Props) {
 }
 
 const styles = StyleSheet.create({
-  card: {
-    flexDirection: "row",
-    borderRadius: 12,
-    borderWidth: 1,
-    marginBottom: 10,
-    overflow: "hidden",
+  card: { flexDirection: "row", borderWidth: 1, marginBottom: space.md, overflow: "hidden" },
+  spine: { width: SPINE },
+  body: { flex: 1, padding: space.base, minWidth: 0 },
+  top: { flexDirection: "row", alignItems: "center", gap: space.md },
+  icon: {
+    width: 34,
+    height: 34,
+    borderRadius: radius.control,
+    alignItems: "center",
+    justifyContent: "center",
   },
-  leftBar: { width: 4 },
-  priorityBar: { flex: 1, width: 4 },
-  content: { flex: 1, padding: 14, gap: 6 },
-  header: { flexDirection: "row", alignItems: "center", gap: 10 },
-  iconWrap: { width: 36, height: 36, borderRadius: 10, alignItems: "center", justifyContent: "center" },
-  meta: { flex: 1 },
-  type: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
-  time: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 1 },
-  statusPill: { borderWidth: 1, borderRadius: 20, paddingHorizontal: 8, paddingVertical: 3 },
-  statusText: { fontSize: 11, fontFamily: "Inter_600SemiBold" },
-  location: { fontSize: 12, fontFamily: "Inter_400Regular" },
-  description: { fontSize: 13, fontFamily: "Inter_400Regular", lineHeight: 19 },
-  footer: { flexDirection: "row", justifyContent: "space-between", marginTop: 2 },
-  code: { fontSize: 11, fontFamily: "Inter_400Regular" },
-  confidence: { fontSize: 12, fontFamily: "Inter_600SemiBold" },
+  name: { flex: 1, minWidth: 0, gap: space.xxs },
+  status: { flexDirection: "row", alignItems: "center", gap: space.xs },
+  dot: { width: 7, height: 7, borderRadius: radius.pill },
+  where: { flexDirection: "row", alignItems: "center", gap: space.xs, marginTop: space.md },
+  desc: { marginTop: space.xs },
+  foot: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: space.md,
+    paddingTop: space.md,
+    borderTopWidth: 1,
+  },
 });

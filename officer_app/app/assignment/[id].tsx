@@ -9,7 +9,6 @@ import * as ScreenOrientation from "expo-screen-orientation";
 import { useVideoPlayer, VideoView } from "expo-video";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ActivityIndicator,
   Animated,
   KeyboardAvoidingView,
   Modal,
@@ -29,6 +28,7 @@ import { AutoScrollView } from "@/components/AutoScrollView";
 import { getViolationIconName } from "@/constants/violationIcons";
 import { Assignment, useAssignments } from "@/context/AssignmentContext";
 import { useAuth } from "@/context/AuthContext";
+import { Spinner } from "@/components/ui/Spinner";
 import { useColors } from "@/hooks/useColors";
 import * as api from "@/lib/api";
 
@@ -109,7 +109,7 @@ function DismissModal({ visible, onClose, onConfirm }: DismissModalProps) {
             </View>
           </View>
 
-          <Text style={[styles.modalSectionLabel, { color: c.mutedForeground }]}>REASON</Text>
+          <Text style={[styles.modalSectionLabel, { color: c.foreground }]}>Reason</Text>
           <View style={styles.reasonGrid}>
             {DISMISS_REASONS.map((reason) => {
               const selected = selectedReason === reason;
@@ -136,7 +136,7 @@ function DismissModal({ visible, onClose, onConfirm }: DismissModalProps) {
             })}
           </View>
 
-          <Text style={[styles.modalSectionLabel, { color: c.mutedForeground, marginTop: 16 }]}>WHY? (OPTIONAL)</Text>
+          <Text style={[styles.modalSectionLabel, { color: c.foreground, marginTop: 16 }]}>Why? (optional)</Text>
           <TextInput
             style={[styles.modalInput, { color: c.foreground, borderColor: c.border, backgroundColor: c.muted }]}
             placeholder="Describe why this is being dismissed..."
@@ -639,8 +639,8 @@ function ResolveModal({
           <View style={[rStyles.handle, { backgroundColor: c.border }]} />
 
           <View style={rStyles.header}>
-            <View style={[rStyles.iconWrap, { backgroundColor: "rgba(16,185,129,0.12)" }]}>
-              <Feather name="file-text" size={20} color="#10b981" />
+            <View style={[rStyles.iconWrap, { backgroundColor: c.secondary }]}>
+              <Feather name="file-text" size={20} color={c.primary} />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={[rStyles.title, { color: c.foreground }]}>
@@ -696,9 +696,11 @@ function ResolveModal({
               {officerName || "Officer"} · Tetuan (violation site) · {formatDate(assignment.dispatchedAt)}
             </Text>
 
-            <Text style={[cfStyles.sectionLabel, { color: c.mutedForeground }]}>VIOLATION TYPE(S)</Text>
+            <Text style={[cfStyles.sectionLabel, { color: c.foreground }]}>Violation types</Text>
             {typesLoading ? (
-              <ActivityIndicator color={c.primary} style={{ marginVertical: 12 }} accessibilityLabel="Loading violation types" />
+              <View style={{ marginVertical: 12, alignItems: "center" }}>
+                <Spinner label="Loading violation types" />
+              </View>
             ) : !typesExpanded ? (
               <View>
                 {violationTypes
@@ -749,7 +751,7 @@ function ResolveModal({
               </View>
             )}
 
-            <Text style={[cfStyles.sectionLabel, { color: c.mutedForeground, marginTop: 18 }]}>VIOLATOR NAME</Text>
+            <Text style={[cfStyles.sectionLabel, { color: c.foreground, marginTop: 18 }]}>Violator name</Text>
             <UnderlineInput label="First name" required value={firstName} onChangeText={setFirstName} />
             <UnderlineInput label="Middle name" value={middleName} onChangeText={setMiddleName} />
             <UnderlineInput label="Last name" required ref={lastNameRef} value={lastName} onChangeText={setLastName} />
@@ -768,7 +770,7 @@ function ResolveModal({
               </Pressable>
             </View>
 
-            <Text style={[cfStyles.sectionLabel, { color: c.mutedForeground, marginTop: 18 }]}>VIOLATOR&apos;S HOME BARANGAY</Text>
+            <Text style={[cfStyles.sectionLabel, { color: c.foreground, marginTop: 18 }]}>Violator&apos;s home barangay</Text>
             <Pressable
               onPress={() => setBarangaySheetVisible(true)}
               style={[cfStyles.underlineInput, cfStyles.underlinePicker, { borderBottomColor: c.border }]}
@@ -787,7 +789,7 @@ function ResolveModal({
               <Feather name="chevron-right" size={16} color={c.mutedForeground} />
             </Pressable>
 
-            <Text style={[cfStyles.sectionLabel, { color: c.mutedForeground, marginTop: 18 }]}>NOTES (OPTIONAL)</Text>
+            <Text style={[cfStyles.sectionLabel, { color: c.foreground, marginTop: 18 }]}>Notes (optional)</Text>
             <TextInput
               style={[cfStyles.notesInput, { color: c.foreground, borderColor: c.border, backgroundColor: c.muted }]}
               placeholder="e.g. two others fled on approach"
@@ -827,14 +829,14 @@ function ResolveModal({
               accessibilityLabel={editing
                 ? "Save the correction to this citation"
                 : "Save and finish, resolving this assignment"}
-              style={[cfStyles.primaryBtn, { backgroundColor: "#10b981", opacity: !canSubmit ? 0.5 : 1 }]}
+              style={[cfStyles.primaryBtn, { backgroundColor: c.primary, opacity: !canSubmit ? 0.5 : 1 }]}
             >
               {submitting ? (
-                <ActivityIndicator color="#fff" />
+                <Spinner size={18} color={c.primaryForeground} track={c.primaryForeground + "33"} />
               ) : (
                 <>
-                  <Feather name={editing ? "save" : "check-circle"} size={16} color="#fff" />
-                  <Text style={cfStyles.primaryBtnText}>
+                  <Feather name={editing ? "save" : "check-circle"} size={16} color={c.primaryForeground} />
+                  <Text style={[cfStyles.primaryBtnText, { color: c.primaryForeground }]}>
                     {editing ? "Save changes" : "Save & finish"}
                   </Text>
                 </>
@@ -964,13 +966,13 @@ function ResolveModal({
             )}
 
             <View style={cfStyles.reviewBlock}>
-              <Text style={[cfStyles.reviewLabel, { color: c.mutedForeground }]}>VIOLATOR</Text>
+              <Text style={[cfStyles.reviewLabel, { color: c.mutedForeground }]}>Violator</Text>
               <Text style={[cfStyles.reviewValue, { color: c.foreground }]}>
                 {[firstName, middleName, lastName, suffix].filter(Boolean).join(" ")}
               </Text>
             </View>
             <View style={cfStyles.reviewBlock}>
-              <Text style={[cfStyles.reviewLabel, { color: c.mutedForeground }]}>VIOLATION TYPE(S)</Text>
+              <Text style={[cfStyles.reviewLabel, { color: c.mutedForeground }]}>Violation types</Text>
               <Text style={[cfStyles.reviewValue, { color: c.foreground }]}>
                 {violationTypes
                   .filter((t) => selectedTypeIds.has(t.id))
@@ -979,7 +981,7 @@ function ResolveModal({
               </Text>
             </View>
             <View style={cfStyles.reviewBlock}>
-              <Text style={[cfStyles.reviewLabel, { color: c.mutedForeground }]}>HOME BARANGAY</Text>
+              <Text style={[cfStyles.reviewLabel, { color: c.mutedForeground }]}>Home barangay</Text>
               <Text style={[cfStyles.reviewValue, { color: c.foreground }]}>{selectedBarangayLabel}</Text>
             </View>
 
@@ -987,9 +989,9 @@ function ResolveModal({
               <Pressable onPress={() => setReviewState(null)} style={[rStyles.cancelBtn, { borderColor: c.border }]}>
                 <Text style={[rStyles.cancelText, { color: c.mutedForeground }]}>Cancel</Text>
               </Pressable>
-              <Pressable onPress={confirmReview} style={rStyles.confirmBtn}>
-                <Feather name="check-circle" size={16} color="#fff" />
-                <Text style={rStyles.confirmText}>Confirm</Text>
+              <Pressable onPress={confirmReview} style={[rStyles.confirmBtn, { backgroundColor: c.primary }]}>
+                <Feather name="check-circle" size={16} color={c.primaryForeground} />
+                <Text style={[rStyles.confirmText, { color: c.primaryForeground }]}>Confirm</Text>
               </Pressable>
             </View>
           </Pressable>
@@ -1145,7 +1147,7 @@ function RecordingPlayer({
         )}
         {showLoading && (
           <View style={rpStyles.centerOverlay}>
-            <ActivityIndicator color="#fff" />
+            <Spinner size={24} color="#ffffff" track="rgba(255,255,255,0.28)" label="Loading video" />
           </View>
         )}
         {showUnavailable && (
@@ -1199,7 +1201,7 @@ function RecordingPlayer({
             </Pressable>
             <Pressable onPress={handleSaveClip} disabled={!hasVideo || saving} style={rpStyles.saveClipBtn} hitSlop={8}>
               {saving
-                ? <ActivityIndicator size="small" color={c.mutedForeground} />
+                ? <Spinner size={14} color={c.mutedForeground} label="Saving clip" />
                 : <Feather name="download" size={11} color={hasVideo ? c.mutedForeground : c.border} />}
               <Text style={[rpStyles.saveClipText, { color: hasVideo ? c.mutedForeground : c.border }]}>Save clip</Text>
             </Pressable>
@@ -1232,9 +1234,9 @@ const rpStyles = StyleSheet.create({
   topOverlay: { position: "absolute", top: 0, left: 0, right: 0, flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 10, paddingVertical: 8 },
   recRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   recBadge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, backgroundColor: "rgba(239,68,68,0.85)" },
-  recText: { color: "#fff", fontSize: 9, fontFamily: "Inter_600SemiBold" },
-  overlayMono: { color: "rgba(255,255,255,0.8)", fontSize: 10, fontFamily: "Inter_500Medium" },
-  zoneLabel: { position: "absolute", bottom: 34, left: 10, color: "rgba(255,255,255,0.8)", fontSize: 10, fontFamily: "Inter_500Medium" },
+  recText: { color: "#fff", fontSize: 11, fontFamily: "Inter_600SemiBold" },
+  overlayMono: { color: "rgba(255,255,255,0.8)", fontSize: 11, fontFamily: "Inter_500Medium" },
+  zoneLabel: { position: "absolute", bottom: 34, left: 10, color: "rgba(255,255,255,0.8)", fontSize: 11, fontFamily: "Inter_500Medium" },
   controls: { paddingHorizontal: 14, paddingVertical: 10, gap: 8 },
   progressTrack: { height: 4, borderRadius: 2, position: "relative" },
   progressFill: { position: "absolute", left: 0, top: 0, height: "100%", borderRadius: 2 },
@@ -1242,8 +1244,8 @@ const rpStyles = StyleSheet.create({
   unavailableText: { color: "rgba(255,255,255,0.85)", fontSize: 11, fontFamily: "Inter_500Medium" },
   retryBtn: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, backgroundColor: "rgba(255,255,255,0.15)" },
   retryText: { color: "#fff", fontSize: 11, fontFamily: "Inter_600SemiBold" },
-  saveErrorText: { color: "#ef4444", fontSize: 10, fontFamily: "Inter_500Medium" },
-  saveSuccessText: { color: "#10b981", fontSize: 10, fontFamily: "Inter_500Medium" },
+  saveErrorText: { color: "#ef4444", fontSize: 11, fontFamily: "Inter_500Medium" },
+  saveSuccessText: { color: "#10b981", fontSize: 11, fontFamily: "Inter_500Medium" },
   controlsRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   controlsLeft: { flexDirection: "row", alignItems: "center", gap: 12 },
   controlsRight: { flexDirection: "row", alignItems: "center", gap: 14 },
@@ -1434,7 +1436,7 @@ export default function AssignmentDetailScreen() {
         </View>
 
         <View style={[styles.card, { backgroundColor: c.card, borderColor: c.border }]}>
-          <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>LOCATION</Text>
+          <Text style={[styles.cardLabel, { color: c.foreground }]}>Location</Text>
           <View style={[styles.infoRow, { borderBottomColor: c.border, borderBottomWidth: 0, paddingBottom: 0 }]}>
             <Feather name="map-pin" size={15} color={c.mutedForeground} />
             <View style={{ flex: 1 }}>
@@ -1449,7 +1451,7 @@ export default function AssignmentDetailScreen() {
         <View style={{ flexDirection: "row", gap: 10 }}>
           <View style={[styles.card, { flex: 1, backgroundColor: c.card, borderColor: c.border }]}>
             <View style={styles.cardTitleRow}>
-              <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>STATUS</Text>
+              <Text style={[styles.cardLabel, { color: c.foreground }]}>Status</Text>
               <Pressable onPress={() => setTip(tip === "status" ? null : "status")} hitSlop={8}>
                 <Feather name="info" size={13} color={c.mutedForeground} />
               </Pressable>
@@ -1460,7 +1462,7 @@ export default function AssignmentDetailScreen() {
           </View>
           <View style={[styles.card, { flex: 1, backgroundColor: c.card, borderColor: c.border }]}>
             <View style={styles.cardTitleRow}>
-              <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>OBJECT CONFIDENCE</Text>
+              <Text style={[styles.cardLabel, { color: c.foreground }]}>Object confidence</Text>
               <Pressable onPress={() => setTip(tip === "object" ? null : "object")} hitSlop={8}>
                 <Feather name="info" size={13} color={c.mutedForeground} />
               </Pressable>
@@ -1488,7 +1490,7 @@ export default function AssignmentDetailScreen() {
             null rather than an "unavailable" payload, so there is no card to draw. */}
         {assignment.ai && <View style={[styles.card, styles.aiCard, { backgroundColor: c.card, borderColor: c.border }]}>
           <View style={styles.aiHeader}>
-            <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>AI CONTEXT</Text>
+            <Text style={[styles.cardLabel, { color: c.foreground }]}>AI context</Text>
             <Text style={[styles.aiNote, { color: c.mutedForeground }]}>AI-generated · may be wrong</Text>
           </View>
           {assignment.ai?.state === "done" ? (
@@ -1516,14 +1518,14 @@ export default function AssignmentDetailScreen() {
             Dropped with the card above when there is no checker for this violation. */}
         {assignment.ai && <View style={[styles.card, styles.aiCard, { backgroundColor: c.card, borderColor: c.border }]}>
           <View style={styles.aiHeader}>
-            <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>STATUS WITH AI CONTEXT</Text>
+            <Text style={[styles.cardLabel, { color: c.foreground }]}>Status with AI context</Text>
             <Text style={[styles.aiNote, { color: c.mutedForeground }]}>suggestion only</Text>
           </View>
           <SuggestedStatus assignment={assignment} muted={c.mutedForeground} />
         </View>}
 
         <View style={[styles.card, { backgroundColor: c.card, borderColor: c.border }]}>
-          <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>ASSIGNMENT INFO</Text>
+          <Text style={[styles.cardLabel, { color: c.foreground }]}>Assignment info</Text>
           {[
             { icon: "clock" as const, label: "Detected", value: `${formatDate(assignment.dispatchedAt)} · ${timeSince(assignment.dispatchedAt)}` },
           ].map((row) => (
@@ -1538,8 +1540,8 @@ export default function AssignmentDetailScreen() {
         </View>
 
         <View style={[styles.card, { backgroundColor: c.card, borderColor: c.border }]}>
-          <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>
-            ASSIGNED OFFICERS{assignment.assignedOfficerNames.length > 0 ? ` (${assignment.assignedOfficerNames.length})` : ""}
+          <Text style={[styles.cardLabel, { color: c.foreground }]}>
+            Assigned officers{assignment.assignedOfficerNames.length > 0 ? ` (${assignment.assignedOfficerNames.length})` : ""}
           </Text>
           {assignment.assignedOfficerNames.length === 0 ? (
             <Text style={[styles.infoValue, { color: c.mutedForeground, marginTop: 0 }]}>None assigned</Text>
@@ -1561,8 +1563,8 @@ export default function AssignmentDetailScreen() {
         {/* Citations filed so far — the officer's working memory for a multi-person scene */}
         {citationsForAlert.length > 0 && (
           <View style={[styles.card, { backgroundColor: c.card, borderColor: c.border }]}>
-            <Text style={[styles.cardLabel, { color: c.mutedForeground }]}>
-              CITATIONS FILED ({citationsForAlert.length})
+            <Text style={[styles.cardLabel, { color: c.foreground }]}>
+              Citations filed ({citationsForAlert.length})
             </Text>
             <View style={{ gap: 8 }}>
               {citationsForAlert.map((cit) => {
@@ -1594,8 +1596,8 @@ export default function AssignmentDetailScreen() {
               })}
             </View>
             {!sceneClosed && (
-              <Text style={[styles.cardLabel, { color: c.mutedForeground, marginTop: 10, marginBottom: 0 }]}>
-                TAP A NAME TO CORRECT IT
+              <Text style={[styles.cardLabel, { color: c.foreground, marginTop: 10, marginBottom: 0 }]}>
+                Tap a name to correct it
               </Text>
             )}
           </View>
@@ -1658,11 +1660,19 @@ export default function AssignmentDetailScreen() {
             ]}
           >
             {busy ? (
-              <ActivityIndicator color="#fff" />
+              <Spinner
+                size={20}
+                color={isUnassigned ? c.primaryForeground : "#ffffff"}
+                track="rgba(255,255,255,0.3)"
+              />
             ) : (
               <>
-                <Feather name={isUnassigned ? "log-in" : "check-circle"} size={18} color="#fff" />
-                <Text style={styles.advanceBtnText}>
+                <Feather
+                  name={isUnassigned ? "log-in" : "check-circle"}
+                  size={18}
+                  color={isUnassigned ? c.primaryForeground : "#ffffff"}
+                />
+                <Text style={[styles.advanceBtnText, isUnassigned && { color: c.primaryForeground }]}>
                   {isUnassigned
                     ? "Accept Assignment"
                     : citationsForAlert.length > 0
@@ -1708,18 +1718,25 @@ const rStyles = StyleSheet.create({
   footerBtns: { flexDirection: "row", gap: 10 },
   cancelBtn: { paddingHorizontal: 18, paddingVertical: 13, borderRadius: 12, borderWidth: 1, alignItems: "center", justifyContent: "center" },
   cancelText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
-  confirmBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 13, borderRadius: 12, backgroundColor: "#10b981" },
+  confirmBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 13, borderRadius: 12 },
   confirmText: { color: "#fff", fontSize: 14, fontFamily: "Inter_600SemiBold" },
 });
 
-const PILL: Record<string, { color: string; bg: string }> = {
-  Monitoring: { color: "#64748b", bg: "rgba(100,116,139,0.16)" },
-  Possible:   { color: "#d97706", bg: "rgba(245,158,11,0.16)" },
-  Likely:     { color: "#dc2626", bg: "rgba(220,38,38,0.12)" },
-};
+/** The level labels the pill can draw. This was a lookup into the PILL
+ *  colour table; the colours now come from the palette inside LevelPill,
+ *  so the set of known labels has to be stated on its own. */
+const LEVELS = new Set(["Monitoring", "Possible", "Likely"]);
 
 function LevelPill({ label }: { label?: string | null }) {
-  const st = (label && PILL[label]) || { color: "#64748b", bg: "rgba(100,116,139,0.16)" };
+  const c = useColors();
+  // Read from the palette rather than a module-level constant, which is
+  // what pinned these three pills to the same hexes in both themes.
+  const st =
+    label === "Likely"
+      ? { color: c.urgent, bg: c.urgentSoft }
+      : label === "Possible"
+        ? { color: c.pending, bg: c.pendingSoft }
+        : { color: c.mutedForeground, bg: c.muted };
   return (
     <View style={{ backgroundColor: st.bg, borderRadius: 999, paddingHorizontal: 9, paddingVertical: 3 }}>
       <Text style={{ color: st.color, fontSize: 12, fontFamily: "Inter_600SemiBold" }}>{label || "—"}</Text>
@@ -1747,7 +1764,7 @@ function SuggestedStatus({ assignment, muted }: { assignment: Assignment; muted:
       </View>
     );
   }
-  if (sug?.suggested && PILL[sug.suggested]) {
+  if (sug?.suggested && LEVELS.has(sug.suggested)) {
     const noChange = text.startsWith("No change");
     return (
       <View style={{ marginTop: 6, flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
@@ -1766,7 +1783,7 @@ const cfStyles = StyleSheet.create({
   filedBanner: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12, borderWidth: 1, marginBottom: 14 },
   filedBannerText: { fontSize: 12, fontFamily: "Inter_600SemiBold", flex: 1 },
   lockedLine: { fontSize: 12, fontFamily: "Inter_400Regular", marginBottom: 16 },
-  sectionLabel: { fontSize: 11, fontFamily: "Inter_600SemiBold", letterSpacing: 0.8, marginBottom: 8 },
+  sectionLabel: { fontSize: 13, lineHeight: 18, fontFamily: "Inter_600SemiBold", marginBottom: 8 },
   typeGrid: { gap: 8 },
   typeRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 14, paddingVertical: 14, borderRadius: 12, borderWidth: 1 },
   typeLabel: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
@@ -1804,7 +1821,7 @@ const cfStyles = StyleSheet.create({
   barangayEmpty: { fontSize: 14, lineHeight: 20, paddingHorizontal: 4, paddingVertical: 18, textAlign: "center" },
   barangayRowText: { fontSize: 16, fontFamily: "Inter_600SemiBold" },
   reviewBlock: { marginTop: 12 },
-  reviewLabel: { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 0.6, marginBottom: 3 },
+  reviewLabel: { fontSize: 12, lineHeight: 16, fontFamily: "Inter_600SemiBold", marginBottom: 3 },
   reviewValue: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
 });
 
@@ -1829,7 +1846,7 @@ const styles = StyleSheet.create({
   statusPillText: { fontSize: 12, fontFamily: "Inter_600SemiBold" },
   scroll: { padding: 16, gap: 12 },
   card: { borderRadius: 14, borderWidth: 1, padding: 16, gap: 14 },
-  cardLabel: { fontSize: 11, fontFamily: "Inter_600SemiBold", letterSpacing: 0.8 },
+  cardLabel: { fontSize: 13, lineHeight: 18, fontFamily: "Inter_600SemiBold" },
   violationHeader: { flexDirection: "row", alignItems: "center", gap: 14 },
   iconCircle: { width: 56, height: 56, borderRadius: 16, alignItems: "center", justifyContent: "center" },
   violationType: { fontSize: 20, fontFamily: "Inter_700Bold" },
@@ -1872,7 +1889,7 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     fontStyle: "italic",
   },
-  infoLabel: { fontSize: 11, fontFamily: "Inter_400Regular", textTransform: "uppercase", letterSpacing: 0.5 },
+  infoLabel: { fontSize: 12, lineHeight: 16, fontFamily: "Inter_400Regular" },
   infoValue: { fontSize: 14, fontFamily: "Inter_500Medium", marginTop: 2 },
   actionBar: { flexDirection: "row", padding: 16, gap: 12, borderTopWidth: 1 },
   dismissBtn: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 16, paddingVertical: 14, borderRadius: 12, borderWidth: 1 },
@@ -1888,7 +1905,7 @@ const styles = StyleSheet.create({
   modalIconWrap: { width: 44, height: 44, borderRadius: 12, alignItems: "center", justifyContent: "center" },
   modalTitle: { fontSize: 17, fontFamily: "Inter_700Bold" },
   modalSubtitle: { fontSize: 13, fontFamily: "Inter_400Regular", marginTop: 2 },
-  modalSectionLabel: { fontSize: 11, fontFamily: "Inter_600SemiBold", letterSpacing: 0.8 },
+  modalSectionLabel: { fontSize: 13, lineHeight: 18, fontFamily: "Inter_600SemiBold" },
   reasonGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   reasonChip: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 20, borderWidth: 1 },
   reasonText: { fontSize: 13, fontFamily: "Inter_500Medium" },

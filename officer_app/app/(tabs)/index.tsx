@@ -1,22 +1,27 @@
 import { Feather } from "@expo/vector-icons";
 import React, { useMemo, useState } from "react";
-import {
-  ActivityIndicator,
-  Platform,
-  Pressable,
-  RefreshControl,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
+import { Platform, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { AutoScrollView } from "@/components/AutoScrollView";
 import AssignmentCard from "@/components/AssignmentCard";
+import { AutoScrollView } from "@/components/AutoScrollView";
+import { AssignmentCardSkeleton } from "@/components/ui/Skeleton";
+import { Button } from "@/components/ui/Button";
+import { GUTTER, radius, space, SPINE, type as T } from "@/constants/theme";
 import { useAssignments } from "@/context/AssignmentContext";
 import { useAuth } from "@/context/AuthContext";
 import { useColors } from "@/hooks/useColors";
+
+/**
+ * Small numbers are spelled out, larger ones are not.
+ *
+ * Ordinary editorial practice, and it matters here because this number is the
+ * first thing on the screen: "Three need you now" reads as a sentence, while
+ * "3 need you now" reads as a counter and invites the eye to treat it as a
+ * statistic. Past nine the word is longer than the glance it saves.
+ */
+const SPELLED = ["No", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine"];
+const spell = (n: number) => (n < SPELLED.length ? SPELLED[n] : String(n));
 
 export default function AssignmentsScreen() {
   const { activeAssignments, loading, error, refreshAssignments } = useAssignments();
@@ -27,35 +32,45 @@ export default function AssignmentsScreen() {
   const [search, setSearch] = useState("");
   const [refreshing, setRefreshing] = useState(false);
 
-  const myAssignments = useMemo(() =>
-    activeAssignments.filter(
-      (a) =>
-        ["active", "dispatched"].includes(a.status) &&
-        officer?.officerId != null &&
-        a.assignedOfficerIds.includes(officer.officerId)
-    ),
-    [activeAssignments, officer]
+  const mine = useMemo(
+    () =>
+      activeAssignments.filter(
+        (a) =>
+          ["active", "dispatched"].includes(a.status) &&
+          officer?.officerId != null &&
+          a.assignedOfficerIds.includes(officer.officerId),
+      ),
+    [activeAssignments, officer],
   );
 
   const searched = useMemo(() => {
-    if (!search.trim()) return myAssignments;
-    const q = search.toLowerCase();
-    return myAssignments.filter(
+    const query = search.trim().toLowerCase();
+    if (!query) return mine;
+    return mine.filter(
       (a) =>
-        a.violationType.label.toLowerCase().includes(q) ||
-        a.location.toLowerCase().includes(q) ||
-        a.description?.toLowerCase().includes(q)
+        a.violationType.label.toLowerCase().includes(query) ||
+        a.location.toLowerCase().includes(query) ||
+        a.description?.toLowerCase().includes(query),
     );
-  }, [myAssignments, search]);
+  }, [mine, search]);
 
-  const pendingCount = activeAssignments.filter(
-    (a) =>
-      a.status === "active" &&
-      officer?.officerId != null &&
-      a.assignedOfficerIds.includes(officer.officerId)
-  ).length;
-
-  const lastName = officer?.name?.trim().split(/\s+/).pop() ?? "Officer";
+  /**
+   * The headline states the duty, not a greeting.
+   *
+   * This screen used to open with "Welcome Back!" over the officer's surname,
+   * with the workload demoted to a small badge in the corner. The number of
+   * violations waiting is the only thing an officer opens this app to find
+   * out, so it is now the largest thing on the screen — and it distinguishes
+   * the two states that matter: not yet accepted, versus accepted and still
+   * open.
+   */
+  const waiting = mine.filter((a) => a.status === "active").length;
+  const headline =
+    waiting > 0
+      ? `${spell(waiting)} need${waiting === 1 ? "s" : ""} you now`
+      : mine.length > 0
+        ? `${spell(mine.length)} in progress`
+        : "Nothing open right now";
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -68,75 +83,97 @@ export default function AssignmentsScreen() {
       <View
         style={[
           styles.header,
-          { backgroundColor: c.card, borderBottomColor: c.border, paddingTop: insets.top + (Platform.OS === "web" ? 20 : 10) },
+          {
+            backgroundColor: c.card,
+            borderBottomColor: c.border,
+            paddingTop: insets.top + (Platform.OS === "web" ? space.lg : space.md),
+          },
         ]}
       >
-        <View style={{ flex: 1 }}>
-          <Text style={[styles.greeting, { color: c.mutedForeground }]}>Welcome Back!</Text>
-          <Text style={[styles.title, { color: c.foreground }]} numberOfLines={1}>{lastName}</Text>
-        </View>
-        {pendingCount > 0 && (
-          <View style={[styles.alertBadge, { backgroundColor: c.primary }]}>
-            <Feather name="alert-circle" size={14} color="#fff" />
-            <Text style={styles.alertBadgeText}>{pendingCount} pending</Text>
-          </View>
-        )}
-      </View>
+        <Text style={[T.meta, { color: c.mutedForeground }]}>
+          Officer {officer?.name ?? ""}
+        </Text>
+        <Text style={[T.title, styles.headline, { color: c.foreground }]}>{headline}</Text>
 
-      {/* Search bar */}
-      <View style={[styles.searchRow, { backgroundColor: c.card }]}>
-        <View style={[styles.searchBox, { backgroundColor: c.secondary, borderColor: c.border }]}>
-          <Feather name="search" size={14} color={c.mutedForeground} />
+        <View style={[styles.search, { backgroundColor: c.secondary, borderColor: c.border }]}>
+          <Feather name="search" size={15} color={c.mutedForeground} />
           <TextInput
             value={search}
             onChangeText={setSearch}
-            placeholder="Search violations…"
+            placeholder="Search your violations"
             placeholderTextColor={c.mutedForeground}
-            style={[styles.searchInput, { color: c.foreground }]}
+            style={[T.body, styles.searchInput, { color: c.foreground }]}
+            returnKeyType="search"
           />
           {search.length > 0 && (
-            <Pressable onPress={() => setSearch("")}>
-              <Feather name="x" size={14} color={c.mutedForeground} />
+            <Pressable
+              onPress={() => setSearch("")}
+              accessibilityLabel="Clear search"
+              hitSlop={10}
+            >
+              <Feather name="x" size={15} color={c.mutedForeground} />
             </Pressable>
           )}
         </View>
       </View>
 
       <AutoScrollView
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={c.primary} />}
-        style={{ backgroundColor: c.card }}
-        contentContainerStyle={{ paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 32) }}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            tintColor={c.primary}
+            colors={[c.primary]}
+            progressBackgroundColor={c.card}
+          />
+        }
+        contentContainerStyle={{
+          paddingBottom: insets.bottom + space.xxl,
+        }}
         overScrollMode="never"
       >
-        <View style={styles.listContent}>
+        <View style={styles.list}>
           {loading ? (
-            <View style={styles.empty}>
-              <ActivityIndicator color={c.primary} />
-              <Text style={[styles.emptyText, { color: c.mutedForeground }]}>Loading assignments…</Text>
-            </View>
+            /* The card's own silhouette rather than a spinner, so the shape
+               about to be read is already in place and the screen does not
+               jump when the data lands. */
+            <>
+              <SectionHeading label="Assigned to you" />
+              <AssignmentCardSkeleton />
+              <AssignmentCardSkeleton />
+            </>
           ) : error ? (
             <View style={styles.empty}>
-              <Feather name="alert-triangle" size={40} color={c.destructive} />
-              <Text style={[styles.emptyTitle, { color: c.foreground }]}>Couldn't load assignments</Text>
-              <Text style={[styles.emptyText, { color: c.mutedForeground }]}>{error}</Text>
+              <Feather name="wifi-off" size={36} color={c.mutedForeground} />
+              <Text style={[T.heading, styles.emptyTitle, { color: c.foreground }]}>
+                Can&apos;t reach the server
+              </Text>
+              <Text style={[T.body, styles.emptyBody, { color: c.mutedForeground }]}>
+                {error}
+              </Text>
+              {/* There was no way back from this state before — the screen
+                  showed the error and waited for the next 4-second poll. */}
+              <Button label="Try again" onPress={refreshAssignments} variant="quiet" full={false} />
             </View>
           ) : searched.length === 0 ? (
             <View style={styles.empty}>
-              <Feather name="check-circle" size={48} color={c.mutedForeground} />
-              <Text style={[styles.emptyTitle, { color: c.foreground }]}>
-                {myAssignments.length === 0 ? "No assignments yet" : "No results"}
+              <Feather
+                name={mine.length === 0 ? "check-circle" : "search"}
+                size={40}
+                color={c.mutedForeground}
+              />
+              <Text style={[T.heading, styles.emptyTitle, { color: c.foreground }]}>
+                {mine.length === 0 ? "Nothing assigned to you" : "No match"}
               </Text>
-              <Text style={[styles.emptyText, { color: c.mutedForeground }]}>
-                {myAssignments.length === 0
-                  ? "Waiting for assignment"
-                  : "Try a different search term"}
+              <Text style={[T.body, styles.emptyBody, { color: c.mutedForeground }]}>
+                {mine.length === 0
+                  ? "New violations appear here as dispatch assigns them to you."
+                  : `Nothing here matches “${search.trim()}”. Try the violation type or the place.`}
               </Text>
             </View>
           ) : (
             <>
-              <Text style={[styles.sectionLabel, { color: c.mutedForeground }]}>
-                YOUR ASSIGNED VIOLATIONS · {searched.length}
-              </Text>
+              <SectionHeading label="Assigned to you" count={searched.length} />
               {searched.map((a) => (
                 <AssignmentCard key={a.id} assignment={a} />
               ))}
@@ -148,19 +185,50 @@ export default function AssignmentsScreen() {
   );
 }
 
+/**
+ * A section heading: the spine, the name in sentence case, the count as data
+ * on the right. This replaces `YOUR ASSIGNED VIOLATIONS · 2` — tracked-out
+ * capitals with the number welded on by a middle dot.
+ */
+function SectionHeading({ label, count }: { label: string; count?: number }) {
+  const c = useColors();
+  return (
+    <View style={styles.section}>
+      <View style={[styles.sectionSpine, { backgroundColor: c.primary }]} />
+      <Text style={[T.label, { color: c.foreground }]}>{label}</Text>
+      {count !== undefined && (
+        <Text style={[T.metaStrong, styles.sectionCount, { color: c.mutedForeground }]}>
+          {count}
+        </Text>
+      )}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20, paddingBottom: 16, borderBottomWidth: 1, gap: 10 },
-  greeting: { fontSize: 13, fontFamily: "Inter_400Regular" },
-  title: { fontSize: 20, fontFamily: "Inter_700Bold", marginTop: 2 },
-  alertBadge: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
-  alertBadgeText: { color: "#fff", fontSize: 13, fontFamily: "Inter_600SemiBold" },
-  searchRow: { paddingHorizontal: 16, paddingVertical: 10 },
-  searchBox: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 9, borderRadius: 12, borderWidth: 1 },
-  searchInput: { flex: 1, fontSize: 14, fontFamily: "Inter_400Regular", padding: 0 },
-  listContent: { paddingHorizontal: 16, paddingTop: 16 },
-  sectionLabel: { fontSize: 11, fontFamily: "Inter_600SemiBold", letterSpacing: 0.8, marginBottom: 10, marginTop: 6 },
-  empty: { alignItems: "center", justifyContent: "center", paddingVertical: 80, gap: 12 },
-  emptyTitle: { fontSize: 18, fontFamily: "Inter_600SemiBold" },
-  emptyText: { fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center" },
+  header: {
+    paddingHorizontal: GUTTER,
+    paddingBottom: space.base,
+    borderBottomWidth: 1,
+  },
+  headline: { marginTop: space.xxs },
+  search: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.sm,
+    borderWidth: 1,
+    borderRadius: radius.control,
+    paddingHorizontal: space.md,
+    paddingVertical: Platform.OS === "ios" ? space.md : space.sm,
+    marginTop: space.base,
+  },
+  searchInput: { flex: 1, padding: 0 },
+  list: { paddingHorizontal: GUTTER, paddingTop: space.base },
+  section: { flexDirection: "row", alignItems: "center", gap: space.sm, marginBottom: space.md },
+  sectionSpine: { width: SPINE, height: 14, borderRadius: 2 },
+  sectionCount: { marginLeft: "auto" },
+  empty: { alignItems: "center", justifyContent: "center", paddingVertical: 72, gap: space.md },
+  emptyTitle: { marginTop: space.xs },
+  emptyBody: { textAlign: "center", maxWidth: 300 },
 });

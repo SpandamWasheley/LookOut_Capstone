@@ -1,10 +1,14 @@
 import { Feather } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
 import React, { useCallback, useEffect, useState } from "react";
-import { ActivityIndicator, Alert, Platform, Pressable, StyleSheet, Switch, Text, TextInput, View } from "react-native";
+import { Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AutoScrollView } from "@/components/AutoScrollView";
+import { Button } from "@/components/ui/Button";
+import { Dialog } from "@/components/ui/Dialog";
+import { Spinner } from "@/components/ui/Spinner";
+import { Toggle } from "@/components/ui/Toggle";
+import { GUTTER, radius, space, SPINE, type as T } from "@/constants/theme";
 import { useAssignments } from "@/context/AssignmentContext";
 import { useAuth } from "@/context/AuthContext";
 import { useTheme, type ThemePreference } from "@/context/ThemeContext";
@@ -27,10 +31,10 @@ export default function ProfileScreen() {
   const c = useColors();
   const { preference, setPreference } = useTheme();
   const insets = useSafeAreaInsets();
-  const router = useRouter();
 
   const [profile, setProfile] = useState<api.ApiOfficer | null>(null);
   const [loading, setLoading] = useState(true);
+  const [signOutAsked, setSignOutAsked] = useState(false);
 
   // The ACCOUNT, separate from the officer record above: the mobile number and
   // the SMS switch live there, and /auth/me/ is the only route an officer may
@@ -47,8 +51,7 @@ export default function ProfileScreen() {
     try {
       const res = await api.getOfficers();
       const list = Array.isArray(res) ? res : res.results;
-      const mine = list.find((o) => o.username === authOfficer?.username);
-      setProfile(mine ?? null);
+      setProfile(list.find((o) => o.username === authOfficer?.username) ?? null);
     } catch {
       setProfile(null);
     } finally {
@@ -76,8 +79,9 @@ export default function ProfileScreen() {
   // A switch with no number behind it would store a preference that can never
   // do anything, so the two are saved together or not at all.
   const smsWithoutNumber = smsAlerts && phone.trim() === "";
-  const contactDirty = account !== null
-    && (phone.trim() !== formatPhone(account.phone || "") || smsAlerts !== Boolean(account.sms_alerts));
+  const contactDirty =
+    account !== null &&
+    (phone.trim() !== formatPhone(account.phone || "") || smsAlerts !== Boolean(account.sms_alerts));
   const contactBlocked = !contactDirty || phoneInvalid || smsWithoutNumber || savingContact;
 
   const handleSaveContact = async () => {
@@ -96,34 +100,25 @@ export default function ProfileScreen() {
       // The roster carries a mirrored copy of the number, so refresh it too.
       loadProfile();
     } catch (err) {
-      setContactError(err instanceof Error ? err.message : "Could not save.");
+      setContactError(err instanceof Error ? err.message : "Could not save. Check your signal and try again.");
     } finally {
       setSavingContact(false);
     }
   };
 
-  const myAssignments = assignments.filter(
-    (a) => authOfficer?.officerId != null && a.assignedOfficerIds.includes(authOfficer.officerId)
+  const mine = assignments.filter(
+    (a) => authOfficer?.officerId != null && a.assignedOfficerIds.includes(authOfficer.officerId),
   );
-  const resolvedCount = myAssignments.filter((a) => a.status === "resolved").length;
-  const activeCount = myAssignments.filter((a) => a.status === "active" || a.status === "dispatched").length;
-  const dismissedCount = myAssignments.filter((a) => a.status === "acknowledged").length;
-
-  const handleLogout = () => {
-    if (Platform.OS === "web") {
-      logout();
-      return;
-    }
-    Alert.alert("Sign Out", "Are you sure you want to sign out?", [
-      { text: "Cancel", style: "cancel" },
-      { text: "Sign Out", style: "destructive", onPress: logout },
-    ]);
-  };
+  const counts = [
+    { n: mine.filter((a) => a.status === "active" || a.status === "dispatched").length, label: "Open" },
+    { n: mine.filter((a) => a.status === "resolved").length, label: "Resolved" },
+    { n: mine.filter((a) => a.status === "acknowledged").length, label: "Dismissed" },
+  ];
 
   if (loading) {
     return (
-      <View style={[styles.root, { backgroundColor: c.background, alignItems: "center", justifyContent: "center" }]}>
-        <ActivityIndicator color={c.primary} />
+      <View style={[styles.root, styles.centre, { backgroundColor: c.background }]}>
+        <Spinner label="Loading your profile" />
       </View>
     );
   }
@@ -143,156 +138,161 @@ export default function ProfileScreen() {
       <View
         style={[
           styles.header,
-          { backgroundColor: c.card, borderBottomColor: c.border, paddingTop: insets.top + (Platform.OS === "web" ? 20 : 10) },
+          {
+            backgroundColor: c.card,
+            borderBottomColor: c.border,
+            paddingTop: insets.top + (Platform.OS === "web" ? space.lg : space.md),
+          },
         ]}
       >
-        <Text style={[styles.title, { color: c.foreground }]}>Profile</Text>
+        <Text style={[T.meta, { color: c.mutedForeground }]}>Your account and settings</Text>
+        <Text style={[T.title, styles.headline, { color: c.foreground }]}>Profile</Text>
       </View>
 
       <AutoScrollView
-        contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 32) }]}
+        contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + space.xxl }]}
         bounces={false}
         overScrollMode="never"
       >
-        <View style={[styles.profileCard, { backgroundColor: c.card, borderColor: c.border }]}>
+        <View
+          style={[
+            styles.identity,
+            { backgroundColor: c.card, borderColor: c.border, borderRadius: radius.card },
+            c.lift(1),
+          ]}
+        >
           <View style={[styles.avatar, { backgroundColor: c.primary }]}>
-            <Text style={styles.avatarText}>{initials || "O"}</Text>
+            <Text style={[T.figure, { color: c.primaryForeground, fontSize: 22 }]}>
+              {initials || "O"}
+            </Text>
           </View>
-          <Text style={[styles.officerName, { color: c.foreground }]}>{authOfficer.name}</Text>
-          <Text style={[styles.rank, { color: c.mutedForeground }]}>{authOfficer.username}</Text>
+          <Text style={[T.heading, { color: c.foreground }]}>{authOfficer.name}</Text>
+          <Text style={[T.meta, { color: c.mutedForeground }]}>{authOfficer.username}</Text>
           {profile && (
-            <View style={[styles.badgePill, { backgroundColor: c.muted }]}>
+            <View style={[styles.badge, { backgroundColor: c.muted }]}>
               <Feather name="shield" size={13} color={c.mutedForeground} />
-              <Text style={[styles.badgeNum, { color: c.mutedForeground }]}>{profile.badge || profile.code}</Text>
+              <Text style={[T.code, { color: c.mutedForeground }]}>
+                {profile.badge || profile.code}
+              </Text>
             </View>
           )}
         </View>
 
-        <View style={styles.statsRow}>
-          <View style={[styles.statCard, { backgroundColor: c.card, borderColor: c.border }]}>
-            <Text style={[styles.statNum, { color: c.foreground }]}>{activeCount}</Text>
-            <Text style={[styles.statLabel, { color: c.mutedForeground }]}>Pending</Text>
-          </View>
-          <View style={[styles.statCard, { backgroundColor: c.card, borderColor: c.border }]}>
-            <Text style={[styles.statNum, { color: c.foreground }]}>{resolvedCount}</Text>
-            <Text style={[styles.statLabel, { color: c.mutedForeground }]}>Resolved</Text>
-          </View>
-          <View style={[styles.statCard, { backgroundColor: c.card, borderColor: c.border }]}>
-            <Text style={[styles.statNum, { color: c.foreground }]}>{dismissedCount}</Text>
-            <Text style={[styles.statLabel, { color: c.mutedForeground }]}>Dismissed</Text>
-          </View>
-        </View>
-
-        <View style={[styles.section, { backgroundColor: c.card, borderColor: c.border, marginTop: 8 }]}>
-          <Text style={[styles.sectionTitle, { color: c.mutedForeground }]}>DETAILS</Text>
-          {[
-            { icon: "mail" as const, label: "Email", value: authOfficer.username && profile?.email ? profile.email : "—" },
-            { icon: "map-pin" as const, label: "Station", value: "Brgy. Tetuan, Zamboanga City" },
-          ].map((row) => (
-            <View key={row.label} style={[styles.detailRow, { borderBottomColor: c.border }]}>
-              <Feather name={row.icon} size={16} color={c.mutedForeground} />
-              <View style={styles.detailText}>
-                <Text style={[styles.detailLabel, { color: c.mutedForeground }]}>{row.label}</Text>
-                <Text style={[styles.detailValue, { color: c.foreground }]}>{row.value}</Text>
-              </View>
+        <View style={styles.counts}>
+          {counts.map((item) => (
+            <View
+              key={item.label}
+              style={[
+                styles.countCard,
+                { backgroundColor: c.card, borderColor: c.border, borderRadius: radius.card },
+              ]}
+            >
+              {/* Tabular figures: three numbers side by side should line up on
+                  their digits, not drift because a 1 is narrower than a 4. */}
+              <Text style={[T.figure, { color: c.foreground }]}>{item.n}</Text>
+              <Text style={[T.meta, { color: c.mutedForeground }]}>{item.label}</Text>
             </View>
           ))}
         </View>
 
+        <Section title="Details">
+          {[
+            { icon: "mail" as const, label: "Email", value: profile?.email || "—" },
+            { icon: "map-pin" as const, label: "Station", value: "Brgy. Tetuan, Zamboanga City" },
+          ].map((row) => (
+            <View key={row.label} style={[styles.detail, { borderBottomColor: c.border }]}>
+              <Feather name={row.icon} size={16} color={c.mutedForeground} />
+              <View style={styles.detailText}>
+                <Text style={[T.meta, { color: c.mutedForeground }]}>{row.label}</Text>
+                <Text style={[T.bodyStrong, { color: c.foreground }]}>{row.value}</Text>
+              </View>
+            </View>
+          ))}
+        </Section>
+
         {/* The number an assignment text would go to, editable here because an
             officer changing SIMs should not need an admin to stay reachable. */}
-        <View style={[styles.section, { backgroundColor: c.card, borderColor: c.border }]}>
-          <Text style={[styles.sectionTitle, { color: c.mutedForeground }]}>CONTACT</Text>
-
+        <Section title="Contact">
           <View>
-            <Text style={[styles.detailLabel, { color: c.mutedForeground }]}>Mobile number</Text>
+            <Text style={[T.meta, { color: c.mutedForeground }]}>Mobile number</Text>
             <TextInput
               value={phone}
-              onChangeText={(t) => { setPhone(formatPhone(t)); setContactSaved(false); }}
+              onChangeText={(t) => {
+                setPhone(formatPhone(t));
+                setContactSaved(false);
+              }}
               placeholder="+63 917 123 4567"
               placeholderTextColor={c.mutedForeground}
               keyboardType="phone-pad"
               autoComplete="tel"
               editable={account !== null}
               style={[
-                styles.phoneInput,
+                T.bodyStrong,
+                styles.input,
                 {
                   color: c.foreground,
                   backgroundColor: c.muted,
-                  borderColor: phoneInvalid ? c.destructive : c.border,
+                  borderColor: phoneInvalid ? c.urgent : c.border,
+                  borderRadius: radius.control,
                 },
               ]}
             />
             {phoneInvalid && (
-              <Text style={[styles.contactHint, { color: c.destructive }]}>
-                Enter a mobile number as +63 917 123 4567.
+              <Text style={[T.meta, styles.hint, { color: c.urgent }]}>
+                Write the number as +63 917 123 4567.
               </Text>
             )}
           </View>
 
-          <View style={styles.smsRow}>
+          {/* Deliberately NOT worded as "text me my assignments". Nothing in
+              this system sends an SMS — there is no provider wired up and
+              texting is out of scope — so `sms_alerts` is a consent flag
+              recorded against the number, nothing more. */}
+          <View style={styles.switchRow}>
             <View style={styles.detailText}>
-              <Text style={[styles.detailValue, { color: c.foreground }]}>SMS alerts</Text>
-              <Text style={[styles.contactHint, { color: c.mutedForeground }]}>
-                Text me when I am assigned an alert
+              <Text style={[T.bodyStrong, { color: c.foreground }]}>Allow texts to this number</Text>
+              <Text style={[T.meta, styles.hint, { color: c.mutedForeground }]}>
+                Permission for your barangay to text you. No texts are sent yet.
               </Text>
             </View>
-            <Switch
+            <Toggle
               value={smsAlerts}
-              onValueChange={(v) => { setSmsAlerts(v); setContactSaved(false); }}
+              onValueChange={(v) => {
+                setSmsAlerts(v);
+                setContactSaved(false);
+              }}
               disabled={account === null}
-              trackColor={{ false: c.border, true: c.primary }}
-              accessibilityLabel="SMS alerts"
+              accessibilityLabel="Allow texts to this number"
             />
           </View>
 
           {smsWithoutNumber && (
-            <Text style={[styles.contactHint, { color: c.destructive }]}>
-              Add a mobile number to turn on SMS alerts.
+            <Text style={[T.meta, { color: c.urgent }]}>
+              Add a mobile number first — there is nothing to give permission for.
             </Text>
           )}
-          {contactError !== "" && (
-            <Text style={[styles.contactHint, { color: c.destructive }]}>{contactError}</Text>
-          )}
+          {contactError !== "" && <Text style={[T.meta, { color: c.urgent }]}>{contactError}</Text>}
           {account === null && (
-            <Text style={[styles.contactHint, { color: c.mutedForeground }]}>
-              Could not load your account. Pull up again once you are back online.
+            <Text style={[T.meta, { color: c.mutedForeground }]}>
+              Your account details didn&apos;t load. Pull down to retry once you have signal.
             </Text>
           )}
 
-          <Pressable
+          <Button
+            label={savingContact ? "Saving" : contactSaved && !contactDirty ? "Saved" : "Save changes"}
             onPress={handleSaveContact}
-            disabled={contactBlocked}
-            style={({ pressed }) => [
-              styles.saveBtn,
-              {
-                backgroundColor: c.primary,
-                opacity: contactBlocked ? 0.4 : pressed ? 0.8 : 1,
-              },
-            ]}
-          >
-            {savingContact ? (
-              <ActivityIndicator size="small" color={c.primaryForeground} />
-            ) : (
-              <Feather
-                name={contactSaved && !contactDirty ? "check" : "save"}
-                size={15}
-                color={c.primaryForeground}
-              />
-            )}
-            <Text style={[styles.saveText, { color: c.primaryForeground }]}>
-              {savingContact ? "Saving…" : contactSaved && !contactDirty ? "Saved" : "Save"}
-            </Text>
-          </Pressable>
-        </View>
+            icon={contactSaved && !contactDirty ? "check" : "save"}
+            loading={savingContact}
+            disabled={contactBlocked && !savingContact}
+          />
+        </Section>
 
-        <View style={[styles.section, { backgroundColor: c.card, borderColor: c.border }]}>
-          <Text style={[styles.sectionTitle, { color: c.mutedForeground }]}>APPEARANCE</Text>
+        <Section title="Appearance">
           {/* A segmented control, not a switch: "follow the phone" is a real
               third option and a two-position switch cannot say it. Whichever
               way such a switch booted, the first tap would silently pin the
               app to one theme for good. */}
-          <View style={[styles.themeRow, { borderColor: c.border }]}>
+          <View style={[styles.segments, { backgroundColor: c.secondary, borderColor: c.border }]}>
             {THEME_CHOICES.map((choice) => {
               const active = preference === choice.value;
               return (
@@ -303,7 +303,7 @@ export default function ProfileScreen() {
                   accessibilityState={{ selected: active }}
                   accessibilityLabel={`${choice.label} theme`}
                   style={({ pressed }) => [
-                    styles.themeOption,
+                    styles.segment,
                     {
                       backgroundColor: active ? c.primary : "transparent",
                       opacity: pressed && !active ? 0.6 : 1,
@@ -316,10 +316,7 @@ export default function ProfileScreen() {
                     color={active ? c.primaryForeground : c.mutedForeground}
                   />
                   <Text
-                    style={[
-                      styles.themeLabel,
-                      { color: active ? c.primaryForeground : c.mutedForeground },
-                    ]}
+                    style={[T.label, { color: active ? c.primaryForeground : c.mutedForeground }]}
                   >
                     {choice.label}
                   </Text>
@@ -327,62 +324,128 @@ export default function ProfileScreen() {
               );
             })}
           </View>
-          <Text style={[styles.themeHint, { color: c.mutedForeground }]}>
+          <Text style={[T.meta, { color: c.mutedForeground }]}>
             {preference === "system"
               ? "Following your phone's light and dark setting."
               : `Always ${preference}, whatever the phone is set to.`}
           </Text>
-        </View>
+        </Section>
 
-        <Pressable
-          onPress={handleLogout}
-          style={({ pressed }) => [styles.logoutBtn, { borderColor: c.destructive, opacity: pressed ? 0.7 : 1 }]}
-        >
-          <Feather name="log-out" size={16} color={c.destructive} />
-          <Text style={[styles.logoutText, { color: c.destructive }]}>Sign Out</Text>
-        </Pressable>
+        <Button
+          label="Sign out"
+          onPress={() => setSignOutAsked(true)}
+          variant="danger"
+          icon="log-out"
+          style={styles.signOut}
+        />
       </AutoScrollView>
+
+      {/* Replaces Alert.alert, which drew Android's own panel — Roboto,
+          Material blue, capitalised buttons — over a screen built by hand. */}
+      <Dialog
+        visible={signOutAsked}
+        title="Sign out?"
+        message="You'll need your username and password to get back in."
+        confirmLabel="Sign out"
+        cancelLabel="Stay signed in"
+        tone="danger"
+        onConfirm={() => {
+          setSignOutAsked(false);
+          logout();
+        }}
+        onCancel={() => setSignOutAsked(false)}
+      />
+    </View>
+  );
+}
+
+/**
+ * A settings group. The heading is sentence case against a spine — the app's
+ * one structural device — rather than the tracked-out capitals (DETAILS,
+ * CONTACT, APPEARANCE) this screen used to shout three times.
+ */
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  const c = useColors();
+  return (
+    <View style={styles.section}>
+      <View style={styles.sectionHead}>
+        <View style={[styles.sectionSpine, { backgroundColor: c.primary }]} />
+        <Text style={[T.label, { color: c.foreground }]}>{title}</Text>
+      </View>
+      <View
+        style={[
+          styles.sectionBody,
+          { backgroundColor: c.card, borderColor: c.border, borderRadius: radius.card },
+        ]}
+      >
+        {children}
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  header: { paddingHorizontal: 20, paddingBottom: 16, borderBottomWidth: 1 },
-  title: { fontSize: 22, fontFamily: "Inter_700Bold" },
-  scroll: { paddingHorizontal: 20, paddingTop: 24, gap: 24 },
-  profileCard: { borderRadius: 16, borderWidth: 1, paddingHorizontal: 24, paddingVertical: 28, alignItems: "center", gap: 8 },
-  avatar: { width: 72, height: 72, borderRadius: 36, alignItems: "center", justifyContent: "center", marginBottom: 4 },
-  avatarText: { color: "#fff", fontSize: 24, fontFamily: "Inter_700Bold" },
-  officerName: { fontSize: 20, fontFamily: "Inter_700Bold" },
-  rank: { fontSize: 14, fontFamily: "Inter_400Regular" },
-  badgePill: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 12, paddingVertical: 5, borderRadius: 20, marginTop: 4 },
-  badgeNum: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
-  statsRow: { flexDirection: "row", gap: 10, marginTop: 8 },
-  statCard: { flex: 1, borderRadius: 12, borderWidth: 1, paddingHorizontal: 16, paddingVertical: 20, alignItems: "center", gap: 4 },
-  statNum: { fontSize: 24, fontFamily: "Inter_700Bold" },
-  statLabel: { fontSize: 12, fontFamily: "Inter_400Regular" },
-  section: { borderRadius: 16, borderWidth: 1, paddingHorizontal: 16, paddingVertical: 20, gap: 12 },
-  sectionTitle: { fontSize: 11, fontFamily: "Inter_600SemiBold", letterSpacing: 0.8 },
-  detailRow: { flexDirection: "row", alignItems: "flex-start", gap: 12, paddingBottom: 12, borderBottomWidth: 1 },
-  themeRow: { flexDirection: "row", borderRadius: 12, borderWidth: 1, padding: 4, gap: 4 },
-  themeOption: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 10, borderRadius: 9 },
-  themeLabel: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
-  themeHint: { fontSize: 12, fontFamily: "Inter_400Regular", lineHeight: 17 },
-  phoneInput: {
-    marginTop: 6, borderWidth: 1, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12,
-    fontSize: 15, fontFamily: "Inter_500Medium",
+  centre: { alignItems: "center", justifyContent: "center" },
+  header: { paddingHorizontal: GUTTER, paddingBottom: space.base, borderBottomWidth: 1 },
+  headline: { marginTop: space.xxs },
+  scroll: { paddingHorizontal: GUTTER, paddingTop: space.xl, gap: space.xl },
+
+  identity: { borderWidth: 1, paddingVertical: space.xl, alignItems: "center", gap: space.xs },
+  avatar: {
+    width: 68,
+    height: 68,
+    borderRadius: radius.pill,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: space.sm,
   },
-  contactHint: { fontSize: 12, fontFamily: "Inter_400Regular", lineHeight: 17, marginTop: 4 },
-  smsRow: { flexDirection: "row", alignItems: "center", gap: 12 },
-  saveBtn: {
-    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
-    paddingVertical: 14, borderRadius: 12,
+  badge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: space.xs,
+    paddingHorizontal: space.md,
+    paddingVertical: space.xs + 1,
+    borderRadius: radius.pill,
+    marginTop: space.sm,
   },
-  saveText: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
-  detailText: { flex: 1 },
-  detailLabel: { fontSize: 11, fontFamily: "Inter_400Regular", textTransform: "uppercase", letterSpacing: 0.5 },
-  detailValue: { fontSize: 14, fontFamily: "Inter_500Medium", marginTop: 2 },
-  logoutBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 18, borderRadius: 12, borderWidth: 1, marginTop: 12 },
-  logoutText: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
+
+  counts: { flexDirection: "row", gap: space.md },
+  countCard: {
+    flex: 1,
+    borderWidth: 1,
+    paddingVertical: space.lg,
+    alignItems: "center",
+    gap: space.xxs,
+  },
+
+  section: { gap: space.md },
+  sectionHead: { flexDirection: "row", alignItems: "center", gap: space.sm },
+  sectionSpine: { width: SPINE, height: 14, borderRadius: 2 },
+  sectionBody: { borderWidth: 1, padding: space.base, gap: space.base },
+
+  detail: { flexDirection: "row", alignItems: "flex-start", gap: space.md, paddingBottom: space.md, borderBottomWidth: 1 },
+  detailText: { flex: 1, gap: space.xxs },
+  input: { marginTop: space.sm, borderWidth: 1, paddingHorizontal: space.md, paddingVertical: space.md },
+  hint: { marginTop: space.xs },
+  switchRow: { flexDirection: "row", alignItems: "center", gap: space.base },
+
+  segments: {
+    flexDirection: "row",
+    gap: space.xs,
+    padding: space.xs,
+    borderWidth: 1,
+    borderRadius: radius.control + 4,
+  },
+  segment: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: space.xs + 2,
+    paddingVertical: space.md,
+    borderRadius: radius.control,
+  },
+
+  signOut: { marginTop: space.sm },
 });
