@@ -59,6 +59,9 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
   const [traceNote, setTraceNote] = useState("");
   const [traceError, setTraceError] = useState("");
   const [canvasKey, setCanvasKey] = useState(0);
+  const [disposalCanvasKey, setDisposalCanvasKey] = useState(0);
+  // Which canvas the latest trace was for, so its note/error shows on that tab only.
+  const [traceFor, setTraceFor] = useState("zone");
   const [edgePoints, setEdgePoints] = useState(0);
   const [applyNote, setApplyNote] = useState("");
   const pollRef = useRef(null);
@@ -176,11 +179,16 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
       // is the snapshot (often the sub-stream), so scale — the same job
       // acceptFrame does for saved edges.
       const sx = frame.width / job.width, sy = frame.height / job.height;
-      setPrefill({
-        points: job.points.map(([x, y]) => ({ x: x * sx, y: y * sy })),
-        legacyKerbs: false,
-      });
-      setCanvasKey((k) => k + 1);
+      const traced = job.points.map(([x, y]) => ({ x: x * sx, y: y * sy }));
+      // The result belongs to whichever canvas asked for it, and ONLY that
+      // one is reseeded: tracing the rubbish area must not move the road.
+      if (job.kind === "disposal") {
+        setDisposalPrefill(traced);
+        setDisposalCanvasKey((k) => k + 1);
+      } else {
+        setPrefill({ points: traced, legacyKerbs: false });
+        setCanvasKey((k) => k + 1);
+      }
       const n = job.report.moving_tracks;
       setTraceNote(
         `Traced from ${n} moving vehicle${n === 1 ? "" : "s"} across ${job.report.samples} frames — check it before saving.`);
@@ -204,12 +212,15 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
     }, 1000);
   };
 
-  const handleTrace = async () => {
+  const handleTrace = async (kind = "zone") => {
     if (tracing || !frame) return;
-    if (edgePoints > 0 && !window.confirm("Replace the current zone with the traced one?")) return;
+    const existing = kind === "disposal" ? disposalPoints : edgePoints;
+    if (existing > 0 && !window.confirm(
+      `Replace the current ${kind === "disposal" ? "rubbish area" : "zone"} with the traced one?`)) return;
     setTraceError(""); setTraceNote(""); setApplyNote("");
+    setTraceFor(kind);
     try {
-      setTrace(await startCameraZoneTrace(camera.dbId));
+      setTrace(await startCameraZoneTrace(camera.dbId, kind));
     } catch (err) {
       if (err.status !== 409) {
         setTraceError(err.message || "Could not start the trace.");
@@ -394,7 +405,7 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
               <div className={tab === "parking" ? "space-y-3.5" : "hidden"}>
               <div className="flex items-center gap-2 flex-wrap">
                 <button
-                  onClick={handleTrace}
+                  onClick={() => handleTrace("zone")}
                   disabled={tracing || saving}
                   className="flex items-center gap-2 px-3 py-1.5 rounded-xl text-[13px] font-medium"
                   style={{ background: "var(--secondary)", color: "var(--foreground)",
@@ -417,13 +428,13 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
                   </>
                 )}
               </div>
-              {traceNote && (
+              {traceNote && traceFor === "zone" && (
                 <div className="flex items-start gap-2 text-[13px] px-3 py-2.5 rounded-xl"
                   style={{ background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.25)", color: "#22c55e" }}>
                   <Info size={13} className="flex-shrink-0 mt-0.5" /><span>{traceNote}</span>
                 </div>
               )}
-              {traceError && (
+              {traceError && traceFor === "zone" && (
                 <div className="flex items-start gap-2 text-[13px] px-3 py-2.5 rounded-xl"
                   style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", color: "#ef4444" }}>
                   <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
@@ -461,7 +472,46 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
                     rubbish is dumped (footpath, kerb, corner). Drag a point to adjust it, or clear it and one is traced from the traffic each time disposal starts.
                   </span>
                 </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    onClick={() => handleTrace("disposal")}
+                    disabled={tracing || saving}
+                    className="flex items-center gap-2 px-3 py-1.5 rounded-xl text-[13px] font-medium"
+                    style={{ background: "var(--secondary)", color: "var(--foreground)",
+                      border: "1px solid var(--border)", opacity: tracing ? 0.6 : 1,
+                      cursor: tracing ? "not-allowed" : "pointer" }}
+                  >
+                    {tracing ? <Loader2 size={13} className="animate-spin" /> : <Wand2 size={13} />}
+                    Trace rubbish area
+                  </button>
+                  {tracing && (
+                    <>
+                      <span className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>
+                        Watching traffic… ~{trace.estimated_seconds ?? 48} s
+                        {" "}({Math.round((trace.progress ?? 0) * 100)}%)
+                      </span>
+                      <button onClick={handleCancelTrace} className="text-[13px] underline"
+                        style={{ color: "var(--muted-foreground)" }}>
+                        Cancel
+                      </button>
+                    </>
+                  )}
+                </div>
+                {traceNote && traceFor === "disposal" && (
+                  <div className="flex items-start gap-2 text-[13px] px-3 py-2.5 rounded-xl"
+                    style={{ background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.25)", color: "#22c55e" }}>
+                    <Info size={13} className="flex-shrink-0 mt-0.5" /><span>{traceNote}</span>
+                  </div>
+                )}
+                {traceError && traceFor === "disposal" && (
+                  <div className="flex items-start gap-2 text-[13px] px-3 py-2.5 rounded-xl"
+                    style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", color: "#ef4444" }}>
+                    <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
+                    <span>{traceError} You can draw the area by hand instead.</span>
+                  </div>
+                )}
                 <EdgeCanvas
+                  key={disposalCanvasKey}
                   frame={frame}
                   kind="disposal"
                   initialPoints={disposalPrefill}

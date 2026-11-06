@@ -780,7 +780,13 @@ class CameraViewSet(viewsets.ModelViewSet):
             from core.vision import recognition, zone_autodetect
             return recognition.detect_vehicles(frame, imgsz=zone_autodetect.TRACE_IMGSZ)
 
-        job, started = live_trace.start(camera.pk, source, detect)
+        # Same two shapes the Run Detection trace offers: a tight hull for
+        # parking's road, the same hull grown well past the road's edges for
+        # disposal (rubbish lies at the kerb, not on the carriageway).
+        kind = "disposal" if request.data.get("kind") == "disposal" else "zone"
+        from core.vision import zone_autodetect
+        pad = zone_autodetect.DISPOSAL_PAD_FRACTION if kind == "disposal" else zone_autodetect.PAD_FRACTION
+        job, started = live_trace.start(camera.pk, source, detect, kind=kind, pad_fraction=pad)
         if not started:
             return Response({"detail": "A trace is already running for this camera.", **job},
                             status=409)

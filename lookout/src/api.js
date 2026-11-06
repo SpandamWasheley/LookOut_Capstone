@@ -439,8 +439,9 @@ export const uploadCameraEdgeFrame = (id, file) => {
 // Live zone trace for the Edge Zones editor: start / poll / cancel a background
 // trace of the camera's live stream. Nothing is saved server-side; the result
 // is points in the STREAM's pixels (+ width/height) for the editor to scale.
-export const startCameraZoneTrace = (id) =>
-  apiFetch(`/cameras/${id}/trace-zone/`, { method: "POST", body: "{}" });
+// kind: "zone" = parking's road (tight), "disposal" = where rubbish is left (padded wide).
+export const startCameraZoneTrace = (id, kind = "zone") =>
+  apiFetch(`/cameras/${id}/trace-zone/`, { method: "POST", body: JSON.stringify({ kind }) });
 export const getCameraZoneTrace = (id) => apiFetch(`/cameras/${id}/trace-zone/`);
 export const cancelCameraZoneTrace = (id) =>
   apiFetch(`/cameras/${id}/trace-zone/`, { method: "DELETE" });

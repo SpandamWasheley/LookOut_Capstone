@@ -82,7 +82,8 @@ def classify_reason(report):
     return DEGENERATE
 
 
-def run_trace(source, detect, job, open_capture=_open, clock=time.monotonic):
+def run_trace(source, detect, job, open_capture=_open, clock=time.monotonic,
+              pad_fraction=autodetect.PAD_FRACTION):
     """Samples `source`, traces, and returns (points, report, frame_shape).
 
     Updates `job` (a dict with "progress"/"samples") as it goes and raises
@@ -132,7 +133,7 @@ def run_trace(source, detect, job, open_capture=_open, clock=time.monotonic):
 
     if first_shape is None or not samples:
         raise ConnectionError("Could not read any frames from the camera.")
-    points, report = autodetect.trace(samples, first_shape)
+    points, report = autodetect.trace(samples, first_shape, pad_fraction=pad_fraction)
     report.pop("cloud", None)
     return points, report, first_shape
 
@@ -153,8 +154,14 @@ def public(job):
     return {k: v for k, v in job.items() if k not in ("cancel",)}
 
 
-def start(camera_pk, source, detect, open_capture=_open, background=True):
-    """-> (job, started). started is False when one is already running."""
+def start(camera_pk, source, detect, open_capture=_open, background=True,
+          kind="zone", pad_fraction=autodetect.PAD_FRACTION):
+    """-> (job, started). started is False when one is already running.
+
+    `kind` ("zone" = parking's road, "disposal" = where rubbish is left) is only
+    echoed on the job so the editor knows which canvas the result belongs to;
+    what differs is `pad_fraction`, how far the traffic hull is grown.
+    """
     with _lock:
         existing = _jobs.get(camera_pk)
         if existing and existing["state"] == "running":
@@ -162,12 +169,13 @@ def start(camera_pk, source, detect, open_capture=_open, background=True):
         job = {"id": uuid.uuid4().hex, "state": "running", "progress": 0.0,
                "samples": 0, "max_samples": MAX_SAMPLES,
                "estimated_seconds": round(MAX_SAMPLES * STRIDE_SECONDS),
-               "started_at": time.time(), "cancel": False}
+               "started_at": time.time(), "cancel": False, "kind": kind}
         _jobs[camera_pk] = job
 
     def work():
         try:
-            points, report, shape = run_trace(source, detect, job, open_capture)
+            points, report, shape = run_trace(source, detect, job, open_capture,
+                                              pad_fraction=pad_fraction)
             height, width = shape[:2]
             job["report"] = report
             if points is None:

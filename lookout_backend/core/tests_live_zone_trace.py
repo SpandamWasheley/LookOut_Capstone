@@ -388,3 +388,94 @@ class ApplyZoneTests(TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.data["zone_applied"], "restarting")
         ap.assert_called_once()
+
+
+def _area(points):
+    xs, ys = zip(*points)
+    return (max(xs) - min(xs)) * (max(ys) - min(ys))
+
+
+class DisposalTraceTests(TestCase):
+    """The rubbish-area trace: same traffic, grown past the road's edges."""
+
+    def test_the_disposal_pad_grows_the_same_traffic_beyond_the_road(self):
+        from core.vision import zone_autodetect as zad
+        (road, _r, _s), _c, _j = run(scripted_detector(driving))
+        clock = FakeClock()
+        rubbish, _report, _shape = live_trace.run_trace(
+            "rtsp://x", scripted_detector(driving), {}, clock=clock,
+            open_capture=lambda _s: FakeCap(clock), pad_fraction=zad.DISPOSAL_PAD_FRACTION)
+        self.assertGreater(_area(rubbish), _area(road))
+
+    def test_the_job_remembers_which_area_it_was_for(self):
+        live_trace.reset()
+        self.addCleanup(live_trace.reset)
+        report = {"samples": 1, "moving_tracks": 1}
+        with mock.patch.object(live_trace, "run_trace",
+                               return_value=([(1.0, 2.0), (3.0, 4.0), (5.0, 6.0)], report, (48, 64, 3))):
+            job, _ = live_trace.start(1, "rtsp://x", lambda f: [], background=False, kind="disposal")
+        self.assertEqual(job["kind"], "disposal")
+
+
+@override_settings(DETECTION_ENABLED=True)
+class DisposalTraceEndpointTests(TestCase):
+    ROAD = {"road": {"type": "zone", "points": [[0, 0], [100, 0], [100, 50]]}}
+
+    def setUp(self):
+        live_trace.reset()
+        self.addCleanup(live_trace.reset)
+        self.admin = User.objects.create_user(username="adm", password="x", role="admin",
+                                              display_name="A")
+        self.camera = Camera.objects.create(
+            code="CAM-SMOKE-01", name="Cam", stream_url="rtsp://u:p@10.0.0.2/s",
+            edges=self.ROAD, edges_width=100, edges_height=50)
+        self.url = f"/api/cameras/{self.camera.pk}/trace-zone/"
+        self.client = APIClient()
+        self.client.force_authenticate(self.admin)
+
+    def _trace(self, **body):
+        report = {"samples": 3, "moving_tracks": 2, "detections": 9, "tracks": 3, "ground_points": 40}
+        traced = [(5.0, 5.0), (95.0, 5.0), (95.0, 48.0), (5.0, 48.0)]
+        with mock.patch.object(live_trace, "run_trace",
+                               return_value=(traced, report, (50, 100, 3))) as rt:
+            self.assertEqual(self.client.post(self.url, body, format="json").status_code, 202)
+            for _ in range(200):
+                got = self.client.get(self.url).data
+                if got["state"] != "running":
+                    break
+                time.sleep(0.02)
+        return got, rt
+
+    def test_disposal_kind_uses_the_wide_pad_and_is_echoed(self):
+        from core.vision import zone_autodetect as zad
+        got, rt = self._trace(kind="disposal")
+        self.assertEqual(got["state"], "done")
+        self.assertEqual(got["kind"], "disposal")
+        self.assertEqual(rt.call_args.kwargs["pad_fraction"], zad.DISPOSAL_PAD_FRACTION)
+
+    def test_default_kind_is_the_tight_road_trace(self):
+        from core.vision import zone_autodetect as zad
+        got, rt = self._trace()
+        self.assertEqual(got["kind"], "zone")
+        self.assertEqual(rt.call_args.kwargs["pad_fraction"], zad.PAD_FRACTION)
+
+    def test_tracing_saves_nothing_and_saving_the_result_writes_only_disposal(self):
+        got, _rt = self._trace(kind="disposal")
+        self.camera.refresh_from_db()
+        self.assertEqual(self.camera.edges, self.ROAD)               # nothing saved by the trace
+
+        # The editor now shows the traced points; the user presses Save. It
+        # sends both areas, the road exactly as it opened.
+        disposal = {"disposal": {"type": "disposal", "points": [[int(x), int(y)] for x, y in got["points"]]}}
+        with mock.patch("core.monitor.monitor.apply_zone") as pz, \
+                mock.patch("core.monitor.monitor.apply_disposal_zone", return_value="restarting") as pd:
+            res = self.client.patch(f"/api/cameras/{self.camera.pk}/",
+                                    {"edges": {**self.ROAD, **disposal},
+                                     "edges_width": 100, "edges_height": 50}, format="json")
+        self.assertEqual(res.status_code, 200, res.content)
+        pd.assert_called_once()
+        pz.assert_not_called()                                       # parking untouched
+        self.camera.refresh_from_db()
+        from core import zones
+        self.assertEqual(zones.road_entries(self.camera.edges), self.ROAD)
+        self.assertEqual(zones.disposal_entries(self.camera.edges), disposal)

@@ -484,7 +484,8 @@ Why: this branch and Sam's both separated disposal's area from parking's road, i
 4. Migrations: 0066_camera_disposal_edges (kept) and Sam's 0066..0073 are joined by 0074 (merge); 0075 copies any area drawn in the old columns into `edges["disposal"]` and then removes `disposal_edges`, `disposal_edges_width`, `disposal_edges_height`.
 5. Dropped: the three columns, their serializer fields, the `CameraGrid` mapping, `_area_points_from_camera`'s separate-column read, and `EdgeCanvas`'s `label`/`colour`/`hint` props.
 6. Not done: on an Everything run the one Run Detection canvas is the rubbish area (parking's road is traced inside the run and not shown first). Review/adjust a road beforehand by running Parking alone or in Live Feeds → Edge Zones.
-7. Tests: core/tests_zones.py (guard, per-kind restart, trace → edit → rerun keeps the edit, migration copy), core/tests_disposal_zone.py.
+7. Live Edge Zones can trace the rubbish area too: the disposal tab has "Trace rubbish area", which runs the same padded trace Run Detection uses (`kind=disposal` on `POST /cameras/{id}/trace-zone/`, `live_trace.start(pad_fraction=...)`, job echoes `kind`) and loads the result into the disposal canvas only. Nothing is saved until Save, and a disposal save never changes the road.
+8. Tests: core/tests_live_zone_trace.py (DisposalTrace*), core/tests_zones.py (guard, per-kind restart, trace → edit → rerun keeps the edit, migration copy), core/tests_disposal_zone.py.
 
 ## Tests
 
