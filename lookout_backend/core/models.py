@@ -1018,3 +1018,48 @@ class SystemSettings(models.Model):
 
     def __str__(self):
         return "System settings"
+
+
+class DevicePushToken(models.Model):
+    """One phone's address for push notifications.
+
+    A MODEL rather than a column on User, for two reasons. An account can be
+    signed in on more than one device (a phone and a spare handset), and the
+    token identifies the INSTALL, not the person -- reinstalling the app, or
+    restoring it onto a new handset, produces a new token for the same account
+    while the old one keeps existing until Expo says otherwise.
+
+    `token` is unique and is the identity of the row: the same install
+    re-registering must update who it belongs to, not file a second row. That
+    matters on a shared handset, where the next officer to sign in has to take
+    the token over or they would both be notified of each other's assignments.
+
+    Nothing here is a secret -- an Expo push token lets its holder send a
+    notification to the device, not read anything from it -- but a stale one is
+    a privacy problem, which is why sign-out deletes the row rather than
+    waiting for Expo to report it dead.
+    """
+
+    class Platform(models.TextChoices):
+        ANDROID = "android", "Android"
+        IOS = "ios", "iOS"
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="push_tokens",
+    )
+    # ExponentPushToken[xxxxxxxxxxxxxxxxxxxxxx] -- 41 chars today, with room.
+    token = models.CharField(max_length=255, unique=True)
+    platform = models.CharField(max_length=10, choices=Platform.choices, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    # Bumped every time the app re-registers, which it does on each launch.
+    # A token that has not been seen for months belongs to an install that is
+    # gone; this is what makes that visible without guessing.
+    last_seen = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-last_seen"]
+
+    def __str__(self):
+        return f"{self.user} - {self.token[:24]}…"

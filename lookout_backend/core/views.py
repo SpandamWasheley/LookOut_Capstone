@@ -43,6 +43,7 @@ from .models import (
     Camera,
     Citation,
     DetectionJob,
+    DevicePushToken,
     EmailVerificationCode,
     Officer,
     SystemSettings,
@@ -203,6 +204,58 @@ def me(request):
         serializer.save()
         return Response(serializer.data)
     return Response(UserSerializer(request.user).data)
+
+
+@api_view(["POST", "DELETE"])
+@permission_classes([permissions.IsAuthenticated])
+def push_token(request):
+    """Where to reach this account's phone with a push notification.
+
+    POST registers (or re-registers) a device; DELETE forgets one. The officer
+    app calls POST on every launch, because an Expo token is not permanent —
+    it can be reissued when the app updates or is restored onto a new handset.
+
+    Registration is an UPSERT ON THE TOKEN, not on the user, and that detail is
+    load-bearing. The token identifies the install, not the person: if officer
+    B signs in on a handset officer A used, the row must move to B. Keyed the
+    other way round, both would stay registered and each would be notified of
+    the other's assignments.
+
+    Deleting is deliberately scoped to the caller's own rows — knowing a token
+    is not authority to unregister somebody else's phone.
+    """
+    # Only the accounts that can actually sign in to the officer app may
+    # register a device. Registration upserts on the TOKEN (see below), so
+    # anyone able to call this and holding somebody else's token could point
+    # that handset at their own account — silencing the real officer. The
+    # token is opaque and never leaves the device or this server, so that is
+    # a narrow path, but there is no reason for a dispatcher or admin account
+    # to be on it at all.
+    if getattr(request.user, "role", "") not in ("officer", "both"):
+        return Response({"detail": "Only officer accounts register a device."}, status=403)
+
+    raw = (request.data.get("token") or "").strip()
+    if not raw:
+        return Response({"detail": "token is required."}, status=400)
+
+    if request.method == "DELETE":
+        DevicePushToken.objects.filter(user=request.user, token=raw).delete()
+        return Response(status=204)
+
+    # Cheap shape check. A malformed value cannot be delivered to, and storing
+    # it only guarantees a rejected send on every future assignment.
+    if not raw.startswith(("ExponentPushToken[", "ExpoPushToken[")):
+        return Response({"detail": "That is not an Expo push token."}, status=400)
+
+    platform = (request.data.get("platform") or "").strip().lower()
+    if platform not in dict(DevicePushToken.Platform.choices):
+        platform = ""
+
+    DevicePushToken.objects.update_or_create(
+        token=raw,
+        defaults={"user": request.user, "platform": platform},
+    )
+    return Response(status=204)
 
 
 @api_view(["POST"])
@@ -1064,6 +1117,9 @@ class AlertViewSet(viewsets.ModelViewSet):
     # page lists, which is where the reviewer needs to be shown.
     REVIEWED_STATUSES = (Alert.Status.RESOLVED, Alert.Status.ACKNOWLEDGED)
 
+    # Whose assignment is worth waking a phone for. See perform_update.
+    DISPATCHING_ROLES = frozenset({"admin", "dispatcher", "both"})
+
     def perform_update(self, serializer):
         """Records WHO closed the alert, keeps its timeline, and silently records the verdict.
 
@@ -1083,6 +1139,11 @@ class AlertViewSet(viewsets.ModelViewSet):
         officers = list(alert.officers_assigned.all())
         events = []
         update = {}
+
+        # Officers added by THIS request, not everyone currently on the alert.
+        # A dispatcher adding a second officer to an alert must not notify the
+        # first one all over again — they already went.
+        newly_assigned = [o for o in officers if o.pk not in previous_officers]
 
         if set(o.pk for o in officers) != previous_officers and officers:
             events.append(("assigned", "Assigned to " + ", ".join(o.name for o in officers)))
@@ -1114,6 +1175,25 @@ class AlertViewSet(viewsets.ModelViewSet):
             Alert.objects.filter(pk=alert.pk).update(**update)
             for name, value in update.items():
                 setattr(alert, name, value)
+
+        # Last, and off the request thread. The officer app only polls while it
+        # is open in the foreground, so without this an officer who is not
+        # already looking at their phone learns nothing until they next open
+        # it. Fired after the writes above so the notification can never
+        # describe a state the database does not yet hold, and never raises —
+        # a dispatcher's Assign must not fail because Expo is unreachable.
+        #
+        # Gated on the CALLER's role, not just on the transition. This
+        # ViewSet sets no permission_classes, so it falls back to
+        # IsAuthenticated — in this system the officer-vs-web split is a
+        # client-side gate, which means any signed-in account can PATCH
+        # officers_assigned. That was already true of the database write;
+        # ungated, it would also let any account ring every officer's
+        # handset at will, as often as it liked. Assigning work is a
+        # dispatcher's or an admin's act, so only their requests wake a phone.
+        if newly_assigned and getattr(user, "role", "") in self.DISPATCHING_ROLES:
+            from core import push
+            push.notify_assignment_async(alert, newly_assigned)
 
     @action(detail=True, methods=["post"])
     def accept(self, request, pk=None):

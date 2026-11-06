@@ -1,6 +1,6 @@
 import { Feather } from "@expo/vector-icons";
 import React, { useCallback, useEffect, useState } from "react";
-import { Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { Linking, Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AutoScrollView } from "@/components/AutoScrollView";
@@ -15,6 +15,7 @@ import { useTheme, type ThemePreference } from "@/context/ThemeContext";
 import { useColors } from "@/hooks/useColors";
 import * as api from "@/lib/api";
 import { formatPhone, isValidPhone } from "@/lib/phone";
+import { currentPushStatus, registerForPush, type PushStatus } from "@/lib/notifications";
 
 // The three choices, in the order they are offered. "System" FIRST and
 // default: a phone that dims itself at dusk should take the app with it, and
@@ -35,6 +36,10 @@ export default function ProfileScreen() {
   const [profile, setProfile] = useState<api.ApiOfficer | null>(null);
   const [loading, setLoading] = useState(true);
   const [signOutAsked, setSignOutAsked] = useState(false);
+  // "unknown" until the first check comes back, so the row says
+  // "Checking…" rather than flashing "Alerts are off" at an officer
+  // whose notifications are in fact working.
+  const [pushStatus, setPushStatus] = useState<PushStatus | "unknown">("unknown");
 
   // The ACCOUNT, separate from the officer record above: the mobile number and
   // the SMS switch live there, and /auth/me/ is the only route an officer may
@@ -70,10 +75,19 @@ export default function ProfileScreen() {
     }
   }, []);
 
+  // Re-registering rather than only reading the permission: an officer who
+  // has just turned notifications back on in phone settings needs the server
+  // to be told, and this is the screen they would come to afterwards.
+  const checkPush = useCallback(async () => {
+    const status = await currentPushStatus();
+    setPushStatus(status === "registered" ? status : await registerForPush());
+  }, []);
+
   useEffect(() => {
     loadProfile();
     loadAccount();
-  }, [loadProfile, loadAccount]);
+    checkPush();
+  }, [loadProfile, loadAccount, checkPush]);
 
   const phoneInvalid = phone.trim() !== "" && !isValidPhone(phone);
   // A switch with no number behind it would store a preference that can never
@@ -247,7 +261,8 @@ export default function ProfileScreen() {
           {/* Deliberately NOT worded as "text me my assignments". Nothing in
               this system sends an SMS — there is no provider wired up and
               texting is out of scope — so `sms_alerts` is a consent flag
-              recorded against the number, nothing more. */}
+              recorded against the number, nothing more. Assignments arrive by
+              push notification; see the Notifications section below. */}
           <View style={styles.switchRow}>
             <View style={styles.detailText}>
               <Text style={[T.bodyStrong, { color: c.foreground }]}>Allow texts to this number</Text>
@@ -285,6 +300,46 @@ export default function ProfileScreen() {
             loading={savingContact}
             disabled={contactBlocked && !savingContact}
           />
+        </Section>
+
+        {/* Push fails silently by design — a declined permission just means
+            the phone never makes a sound — and silence is indistinguishable
+            from "no assignments". So the state is stated plainly, with the one
+            action that fixes each case. */}
+        <Section title="Notifications">
+          <View style={styles.switchRow}>
+            <Feather
+              name={pushStatus === "registered" ? "bell" : "bell-off"}
+              size={18}
+              color={pushStatus === "registered" ? c.closed : c.mutedForeground}
+            />
+            <View style={styles.detailText}>
+              <Text style={[T.bodyStrong, { color: c.foreground }]}>
+                {pushStatus === "registered" ? "Alerts are on" : "Alerts are off"}
+              </Text>
+              <Text style={[T.meta, styles.hint, { color: c.mutedForeground }]}>
+                {{
+                  registered: "This phone buzzes when dispatch assigns you a violation, even with the app closed.",
+                  denied: "Notifications are blocked for LookOut in your phone's settings.",
+                  unsupported: "This device can't receive notifications. Sign in on a phone to get them.",
+                  failed: "This phone couldn't register for notifications. Check your signal.",
+                  unknown: "Checking…",
+                }[pushStatus]}
+              </Text>
+            </View>
+          </View>
+
+          {pushStatus === "denied" && (
+            <Button
+              label="Open phone settings"
+              onPress={() => Linking.openSettings()}
+              variant="quiet"
+              icon="settings"
+            />
+          )}
+          {pushStatus === "failed" && (
+            <Button label="Try again" onPress={checkPush} variant="quiet" icon="refresh-cw" />
+          )}
         </Section>
 
         <Section title="Appearance">

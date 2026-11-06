@@ -15,6 +15,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { AssignmentProvider } from "@/context/AssignmentContext";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
 import { ThemeProvider, useTheme } from "@/context/ThemeContext";
+import { useAssignmentNotifications } from "@/hooks/useAssignmentNotifications";
 import { useColors } from "@/hooks/useColors";
 
 SplashScreen.preventAutoHideAsync();
@@ -54,6 +55,10 @@ function NavigationGuard() {
 function RootLayoutNav() {
   const c = useColors();
   const { scheme } = useTheme();
+  // Registers this phone for push and opens the assignment behind a
+  // tapped notification. Here rather than in a screen for the same
+  // reason NavigationGuard is: there is exactly one of it.
+  useAssignmentNotifications();
   return (
     <>
       <NavigationGuard />

@@ -297,6 +297,23 @@ export const getMe = () => apiFetch<ApiUser>("/auth/me/");
 export const updateMe = (payload: { phone?: string; sms_alerts?: boolean }) =>
   apiFetch<ApiUser>("/auth/me/", { method: "PATCH", body: JSON.stringify(payload) });
 
+/** Where to reach this phone with a push notification.
+ *
+ * Re-sent on every launch, because an Expo token is not permanent — it can be
+ * reissued when the app updates or is restored onto a new handset. The server
+ * upserts on the TOKEN rather than the account, so re-registering is cheap and
+ * a shared handset moves to whoever signed in last instead of notifying both.
+ */
+export const registerPushToken = (token: string, platform: "android" | "ios") =>
+  apiFetch("/auth/push-token/", {
+    method: "POST",
+    body: JSON.stringify({ token, platform }),
+  });
+
+/** Withdraw this phone. Called on sign-out, while the session still works. */
+export const unregisterPushToken = (token: string) =>
+  apiFetch("/auth/push-token/", { method: "DELETE", body: JSON.stringify({ token }) });
+
 export interface ApiOfficer {
   id: number;
   code: string;
