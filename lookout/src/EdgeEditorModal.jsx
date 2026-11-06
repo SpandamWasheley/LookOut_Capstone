@@ -110,16 +110,12 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
       legacyKerbs,
     });
 
-    const disposalZone = Object.values(camera.disposal_edges || {}).find(
-      (spec) => spec && spec.type === "zone" && Array.isArray(spec.points) && spec.points.length >= 3,
+    // The disposal area is the "disposal" entry of the same `edges` object,
+    // drawn at the same frame size as the road, so it scales the same way.
+    const disposalZone = Object.values(stored).find(
+      (spec) => spec && spec.type === "disposal" && Array.isArray(spec.points) && spec.points.length >= 3,
     );
-    const dW = camera.disposal_edges_width, dH = camera.disposal_edges_height;
-    setDisposalPrefill(disposalZone
-      ? disposalZone.points.map(([x, y]) => ({
-        x: x * (dW ? nextFrame.width / dW : 1),
-        y: y * (dH ? nextFrame.height / dH : 1),
-      }))
-      : []);
+    setDisposalPrefill(disposalZone ? scale(disposalZone.points) : []);
   };
 
   // Try a live snapshot first; fall back to "upload a clip" if the camera
@@ -242,22 +238,20 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
     setSaving(true);
     setSaveError("");
     try {
-      const body = {};
+      // Both areas live in ONE `edges` object and share its frame size, so a
+      // save always sends both — each canvas's current shape, which for the
+      // one that was not touched is simply what it was opened with, rescaled
+      // to this frame. Sending only the edited one would delete the other.
+      // The SERVER works out which of the two actually changed and restarts
+      // only that detector.
+      const body = {
+        edges: { ...edgeSpec, ...disposalSpec },
+        edges_width: frame.width,
+        edges_height: frame.height,
+      };
       if (parkingDirty) {
-        Object.assign(body, {
-          edges: edgeSpec,
-          edges_width: frame.width,
-          edges_height: frame.height,
-          obstruction_pct: Number(pct),
-          obstruction_minutes: Number(minutes),
-        });
-      }
-      if (disposalDirty) {
-        Object.assign(body, {
-          disposal_edges: disposalSpec,
-          disposal_edges_width: frame.width,
-          disposal_edges_height: frame.height,
-        });
+        body.obstruction_pct = Number(pct);
+        body.obstruction_minutes = Number(minutes);
       }
       const updated = await updateCamera(camera.dbId, body);
       onSaved?.(updated);
@@ -464,25 +458,23 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
                   <Info size={13} className="flex-shrink-0 mt-0.5" />
                   <span>
                     Optional, and separate from the parking road zone. Draw it over where
-                    rubbish is dumped (footpath, kerb, corner). Leave it empty to watch the whole frame.
+                    rubbish is dumped (footpath, kerb, corner). Drag a point to adjust it, or clear it and one is traced from the traffic each time disposal starts.
                   </span>
                 </div>
                 <EdgeCanvas
                   frame={frame}
+                  kind="disposal"
                   initialPoints={disposalPrefill}
                   showThresholds={false}
-                  label="DISPOSAL AREA"
-                  colour="#22c55e"
-                  hint="Click around the ground where abandoned rubbish should be reported. A bag counts when it rests inside, judged by the point where it meets the ground."
                   onChange={(spec) => {
                     setDisposalInitial((prev) => prev ?? JSON.stringify(spec));
                     setDisposalSpec(spec);
-                    setDisposalPoints(spec.road?.points?.length ?? 0);
+                    setDisposalPoints(spec.disposal?.points?.length ?? 0);
                   }}
                 />
                 {disposalPoints === 0 && (
                   <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>
-                    No area drawn — the whole frame is watched.
+                    No area drawn — a rubbish area is worked out from the traffic each time disposal starts.
                   </div>
                 )}
               </div>

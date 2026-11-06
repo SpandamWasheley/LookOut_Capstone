@@ -91,10 +91,6 @@ function mapCamera(raw) {
     edges_height: raw.edges_height,
     obstruction_pct: raw.obstruction_pct,
     obstruction_minutes: raw.obstruction_minutes,
-    // Improper disposal's own watch area (separate from the parking zone).
-    disposal_edges: raw.disposal_edges,
-    disposal_edges_width: raw.disposal_edges_width,
-    disposal_edges_height: raw.disposal_edges_height,
   };
 }
 

@@ -20,6 +20,7 @@ import { Undo2, Trash2 } from "lucide-react";
 // pavement. A polygon only ever means the ground inside it.
 const ZONE_COLOUR = "#ff5f56";
 const ZONE_MIN_POINTS = 3;
+const VERTEX_GRAB_PX = 12;
 
 // What the operator is told they are drawing. It changes with `kind`, because
 // the same canvas serves two rules and the wrong sentence is worse than none:
@@ -28,11 +29,13 @@ const ZONE_MIN_POINTS = 3;
 const KIND_COPY = {
   zone: {
     name: "ROAD ZONE",
+    colour: ZONE_COLOUR,
     what: "Click around the edge of the road to enclose it; any vehicle standing inside counts as an obstruction.",
     hint: "Follow the road as it narrows into the distance rather than drawing a rectangle — a camera sees the carriageway as a trapezium, not a box.",
   },
   disposal: {
     name: "RUBBISH AREA",
+    colour: "#22c55e",      // the disposal violation colour used everywhere else
     what: "Click around the ground to watch for dumped rubbish; anything left inside it is checked.",
     // The opposite advice to the road zone's, and deliberately so: rubbish is
     // left where vehicles do not drive, so an area traced tightly around the
@@ -110,8 +113,8 @@ function toSpec(points, kind = "zone") {
  */
 export function EdgeCanvas({
   frame,
-  // Which rule the polygon is for — see toSpec. Defaults to the no-parking
-  // area, which is what every caller but the All 5 run wants.
+  // Which rule the polygon is for — see toSpec. Wording and colour follow it,
+  // so there is one canvas and one drawing flow for both areas.
   kind = "zone",
   initialPoints,
   pct,
@@ -123,14 +126,13 @@ export function EdgeCanvas({
   // containment test — showing "Inside the road %" next to a garbage area
   // would offer a dial that changes nothing.
   showThresholds = true,
-  // Defaults describe parking's road zone. A detector with its own area
-  // (improper disposal) passes its own wording and colour, so the operator is
-  // never told to trace a road when they are marking where rubbish is watched.
-  label = "ROAD ZONE",
-  colour = ZONE_COLOUR,
-  hint = null,
 }) {
   const [points, setPoints] = useState(() => initialPoints ?? []);
+  const copy = KIND_COPY[kind] ?? KIND_COPY.zone;
+  const colour = copy.colour;
+  // Index of the vertex being dragged, and whether the gesture moved anything
+  // (a drag ends in a click event, which must not also add a point).
+  const dragRef = useRef({ index: -1, moved: false });
 
   const canvasRef = useRef(null);
   const imgElRef = useRef(null);
@@ -166,32 +168,85 @@ export function EdgeCanvas({
   // canvas.width/height are the source frame's native size, so this ratio
   // lands in true frame-pixel space no matter how small the browser has
   // scaled the canvas down to fit.
-  const handleCanvasClick = (e) => {
+  const toFrame = (e) => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    setPoints((prev) => [...prev, {
+    return {
       x: (e.clientX - rect.left) * (canvas.width / rect.width),
       y: (e.clientY - rect.top) * (canvas.height / rect.height),
-    }]);
+    };
+  };
+
+  // The vertex under the pointer, if any. The grab radius is in CSS pixels so
+  // it feels the same on a 4MP frame shrunk to fit as on a small one.
+  const vertexAt = (e) => {
+    const canvas = canvasRef.current;
+    const rect = canvas.getBoundingClientRect();
+    const scale = canvas.width / rect.width;
+    const at = toFrame(e);
+    let best = -1, bestDist = VERTEX_GRAB_PX * scale;
+    points.forEach((q, i) => {
+      const d = Math.hypot(q.x - at.x, q.y - at.y);
+      if (d <= bestDist) { best = i; bestDist = d; }
+    });
+    return best;
+  };
+
+  // Press on a vertex to drag it; click empty ground to add one; right-click a
+  // vertex to remove it. This is what makes a traced polygon EDITABLE rather
+  // than take-it-or-leave-it: the trace only proposes points.
+  const handlePointerDown = (e) => {
+    if (e.button !== 0 || !canvasRef.current) return;
+    const index = vertexAt(e);
+    dragRef.current = { index, moved: false };
+    if (index >= 0) e.currentTarget.setPointerCapture?.(e.pointerId);
+  };
+
+  const handlePointerMove = (e) => {
+    const { index } = dragRef.current;
+    if (index < 0 || !canvasRef.current) return;
+    dragRef.current.moved = true;
+    const at = toFrame(e);
+    const x = Math.min(Math.max(at.x, 0), frame.width);
+    const y = Math.min(Math.max(at.y, 0), frame.height);
+    setPoints((prev) => prev.map((q, i) => (i === index ? { x, y } : q)));
+  };
+
+  const handlePointerUp = () => {
+    // Leave `moved` set until the click that follows has been swallowed.
+    dragRef.current.index = -1;
+  };
+
+  const handleCanvasClick = (e) => {
+    if (!canvasRef.current) return;
+    if (dragRef.current.moved) { dragRef.current.moved = false; return; }
+    if (vertexAt(e) >= 0) return;          // a plain click on a vertex adds nothing
+    setPoints((prev) => [...prev, toFrame(e)]);
+  };
+
+  const handleContextMenu = (e) => {
+    e.preventDefault();
+    if (!canvasRef.current) return;
+    const index = vertexAt(e);
+    if (index >= 0) setPoints((prev) => prev.filter((_, i) => i !== index));
   };
 
   if (!frame) return null;
 
   const count = points.length;
-  const copy = KIND_COPY[kind] ?? KIND_COPY.zone;
 
   return (
     <>
       <div className="rounded-xl p-3" style={{ background: "rgba(11,84,113,0.06)", border: "1px solid rgba(11,84,113,0.2)" }}>
         <span className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>
           Tracing the{" "}
-          <span className="font-semibold" style={{ color: ZONE_COLOUR }}>{copy.name}</span>
+          <span className="font-semibold" style={{ color: colour }}>{copy.name}</span>
           {" "}— {count} point{count === 1 ? "" : "s"}. {copy.what}
           {" "}{count >= ZONE_MIN_POINTS
             ? "The shape closes automatically — add more points where it bends."
             : `At least ${ZONE_MIN_POINTS} points needed.`}
           {" "}{copy.hint}
+          {count > 0 && " Drag a point to move it; right-click a point to remove it."}
         </span>
       </div>
 
@@ -199,7 +254,12 @@ export function EdgeCanvas({
         <canvas
           ref={canvasRef}
           onClick={handleCanvasClick}
-          style={{ width: "100%", display: "block", cursor: "crosshair" }}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerUp}
+          onContextMenu={handleContextMenu}
+          style={{ width: "100%", display: "block", cursor: "crosshair", touchAction: "none" }}
         />
       </div>
 
