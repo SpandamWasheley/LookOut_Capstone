@@ -279,7 +279,23 @@ def logout(request):
     if not raw:
         return Response({"detail": "refresh is required."}, status=400)
     try:
-        RefreshToken(raw).blacklist()
+        token = RefreshToken(raw)
+        # Signing out must also stop the phone buzzing, and the client cannot
+        # be relied on to arrange that: officer_app withdraws its own device
+        # first, but only if it still knows which token it registered. The
+        # refresh token names the account on its own, so this holds even when
+        # the app has forgotten.
+        #
+        # ALL of the account's devices, not one, because nothing in this
+        # request identifies which handset is being signed out of. The cost is
+        # bounded: the app re-registers on every launch, so a second device
+        # goes quiet only until it is next opened. The alternative — a shared
+        # duty handset still announcing the previous officer's violations,
+        # with their place and evidence level — is the worse failure.
+        user_id = token.get("user_id")
+        if user_id:
+            DevicePushToken.objects.filter(user_id=user_id).delete()
+        token.blacklist()
     except TokenError:
         # Expired, malformed, or already blacklisted. The session is over
         # either way, which is all the caller asked for — reporting an error

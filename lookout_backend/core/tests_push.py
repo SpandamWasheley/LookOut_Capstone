@@ -17,6 +17,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
+from rest_framework_simplejwt.tokens import RefreshToken
 
 from core import push
 from core.models import Alert, Camera, DevicePushToken, Officer, ViolationType, Zone
@@ -371,6 +372,35 @@ class PushTokenEndpointTests(TestCase):
         client.force_authenticate(hybrid)
 
         r = client.post(PUSH_TOKEN_URL, {"token": expo_token("aaa")}, format="json")
+        self.assertEqual(r.status_code, 204, r.content)
+
+    def test_logging_out_clears_the_devices_even_if_the_app_forgot(self):
+        """The client withdraws its own device first, but only if it still
+        knows which token it registered — a module variable is empty after a
+        restart, and the app may have had no signal when it relaunched. The
+        refresh token names the account on its own, so a successful sign-out
+        stops the phone whatever state the app is in."""
+        self.c.post(PUSH_TOKEN_URL, {"token": expo_token("aaa")}, format="json")
+        refresh = str(RefreshToken.for_user(self.user_a))
+
+        r = APIClient().post("/api/auth/logout/", {"refresh": refresh}, format="json")
+        self.assertEqual(r.status_code, 204, r.content)
+        self.assertFalse(DevicePushToken.objects.filter(user=self.user_a).exists())
+
+    def test_logging_out_does_not_clear_another_accounts_device(self):
+        DevicePushToken.objects.create(user=self.user_b, token=expo_token("theirs"))
+        self.c.post(PUSH_TOKEN_URL, {"token": expo_token("mine")}, format="json")
+
+        refresh = str(RefreshToken.for_user(self.user_a))
+        APIClient().post("/api/auth/logout/", {"refresh": refresh}, format="json")
+
+        self.assertTrue(DevicePushToken.objects.filter(user=self.user_b).exists())
+        self.assertFalse(DevicePushToken.objects.filter(user=self.user_a).exists())
+
+    def test_a_junk_refresh_token_still_logs_out_cleanly(self):
+        # logout is AllowAny and swallows a dead token on purpose; adding a
+        # database write to it must not change that.
+        r = APIClient().post("/api/auth/logout/", {"refresh": "not-a-token"}, format="json")
         self.assertEqual(r.status_code, 204, r.content)
 
     def test_signing_in_is_required(self):

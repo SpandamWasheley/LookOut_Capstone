@@ -1,3 +1,4 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import Constants from "expo-constants";
 import * as Device from "expo-device";
 import * as Notifications from "expo-notifications";
@@ -25,10 +26,45 @@ import * as api from "@/lib/api";
  *  default channel the officer never configured and may have silenced. */
 export const CHANNEL_ID = "assignments";
 
-/** The token currently registered with the server, so sign-out can withdraw
- *  the exact one it registered rather than asking Expo for it again — the app
- *  may be offline by then, and Expo is a network call. */
+/**
+ * The token currently registered with the server, so sign-out can withdraw
+ * the exact one it registered rather than asking Expo for it again — the app
+ * may be offline by then, and Expo is a network call.
+ *
+ * PERSISTED, not just held in memory. A module variable is empty after a
+ * restart, so an officer who relaunched and signed out before registration
+ * had finished — or whose registration failed because they had no signal —
+ * withdrew nothing, and the server went on delivering to a handset nobody
+ * was signed into. On a shared duty phone that hands the next person the
+ * type, place and evidence level of live violations.
+ *
+ * AsyncStorage rather than the SecureStore wrapper lib/api.ts uses for
+ * tokens: an Expo push token is an address, not a credential. Holding it
+ * lets you send that device a notification, not read anything from it.
+ */
+const TOKEN_KEY = "lookout.pushToken";
+
 let registered: string | null = null;
+
+async function remember(token: string | null) {
+  registered = token;
+  try {
+    if (token) await AsyncStorage.setItem(TOKEN_KEY, token);
+    else await AsyncStorage.removeItem(TOKEN_KEY);
+  } catch {
+    // Unreadable storage degrades this to the old in-memory behaviour
+    // rather than failing a sign-in over it.
+  }
+}
+
+async function recall(): Promise<string | null> {
+  if (registered) return registered;
+  try {
+    return await AsyncStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
 
 /**
  * How a notification behaves when it lands while the app is already open.
@@ -114,7 +150,7 @@ export async function registerForPush(): Promise<PushStatus> {
     });
 
     await api.registerPushToken(token, Platform.OS === "ios" ? "ios" : "android");
-    registered = token;
+    await remember(token);
     return "registered";
   } catch {
     // No FCM credentials on the build, no network, or a server that rejected
@@ -138,7 +174,7 @@ export async function currentPushStatus(): Promise<PushStatus> {
     if (!granted) return "denied";
     // Permission is held but the server was never told — no credentials on
     // the build, or the registration call did not get through.
-    return registered ? "registered" : "failed";
+    return (await recall()) ? "registered" : "failed";
   } catch {
     return "failed";
   }
@@ -153,14 +189,18 @@ export async function currentPushStatus(): Promise<PushStatus> {
  * the server would have no way to know the account had gone.
  */
 export async function forgetDevice() {
-  const token = registered;
-  registered = null;
+  const token = await recall();
+  await remember(null);
   if (!token) return;
   try {
     await api.unregisterPushToken(token);
   } catch {
-    // Offline sign-out. The row is left behind; the next officer to sign in on
-    // this handset takes the token over (the server upserts on the token, not
-    // the user), which closes the gap that actually matters.
+    // Offline sign-out: the request never left the phone. The server-side
+    // backstop is /auth/logout/, which clears this account's devices from
+    // the refresh token alone — but that is the same network, so it is gone
+    // too. What remains is the upsert: the next officer to sign in on this
+    // handset takes the token over, because the server keys on the token
+    // rather than the account. A handset signed out of while offline and
+    // then never used again is the one case still open.
   }
 }
