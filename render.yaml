@@ -115,6 +115,18 @@ services:
       - key: DEFAULT_FROM_EMAIL
         sync: false
 
+      # Assignment texts via UniSMS (unismsapi.com) -- see core/sms.py. Leave
+      # UNISMS_API_KEY unset and nothing is texted, which is a valid way to
+      # deploy; two further switches in the database gate it regardless
+      # (SystemSettings.sms_alerts_enabled, and each account's own opt-in).
+      - key: UNISMS_API_KEY
+        sync: false
+      # `Unisoft` is the provider's shared default sender, which is what this
+      # project uses -- a registered sender ID needs business documents the
+      # provider will not grant a capstone project. Globe and DITO only.
+      - key: UNISMS_SENDER_ID
+        value: Unisoft
+
 databases:
   - name: lookout-db
     plan: free

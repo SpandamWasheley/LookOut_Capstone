@@ -993,6 +993,17 @@ class SystemSettings(models.Model):
     # deliberately, never inherited by a fresh install.
     sms_alerts_enabled = models.BooleanField(default=False)
 
+    # Where the half-hourly digest counted up to last time (core/sms.py's
+    # `send_digest`). "30 new detected violations" means alerts filed AFTER
+    # this moment, so the count is a watermark rather than a fixed 30-minute
+    # window -- a digest run that was skipped (the PC was off, the loop was
+    # restarted) reports what it missed on the next run instead of losing it.
+    #
+    # Null on a fresh install, which the first run treats as "one interval ago"
+    # rather than "everything ever": the first digest after switching this on
+    # must not text somebody a count of every violation in the database.
+    sms_digest_sent_at = models.DateTimeField(null=True, blank=True)
+
     updated_at = models.DateTimeField(auto_now=True)
 
     @property
@@ -1018,6 +1029,59 @@ class SystemSettings(models.Model):
 
     def __str__(self):
         return "System settings"
+
+
+class AssignmentNotice(models.Model):
+    """One officer was assigned one alert, and whether a text has said so yet.
+
+    This exists because `Alert.officers_assigned` is a plain many-to-many with
+    no through model, so the database records THAT an officer is assigned and
+    never WHEN. The half-hourly digest has to say "you have 5 new assigned
+    violations", and there is no way to ask the M2M which of them are new.
+
+    Using the alert's own `created_at` instead was the alternative and is
+    wrong: assignment usually follows detection within minutes, but an officer
+    working through a backlog gets handed alerts filed hours earlier, and those
+    assignments would never be counted at all.
+
+    It is a LOG, not a queue. Nothing here is retried and nothing here is
+    authoritative -- the 4-second poll of /alerts/ remains the source of truth
+    for what an officer is assigned, exactly as it is for push and for the
+    instant texts. A row's only job is to be counted once.
+
+    Only NON-URGENT assignments are recorded (see sms.URGENT_TYPE_CODES): a
+    holdup or an obstruction texts the officer the moment it is assigned, so
+    there is nothing for a digest to add half an hour later.
+    """
+
+    officer = models.ForeignKey(
+        "Officer", on_delete=models.CASCADE, related_name="assignment_notices")
+    alert = models.ForeignKey(
+        "Alert", on_delete=models.CASCADE, related_name="assignment_notices")
+    created_at = models.DateTimeField(auto_now_add=True)
+    # When a digest counted this row. Null means "not yet told".
+    #
+    # Marking the row rather than filtering on a time window is what makes a
+    # missed run recoverable: a digest reports everything still unmarked, so a
+    # half hour the loop was not running is reported late instead of silently
+    # dropped. It is also what stops the same assignment being counted twice.
+    texted_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        # One row per officer per alert. A dispatcher who removes an officer
+        # and adds them back has not given them a second violation to attend.
+        constraints = [
+            models.UniqueConstraint(
+                fields=["officer", "alert"], name="unique_assignment_notice"),
+        ]
+        indexes = [
+            # The digest's only query: unmarked rows, by officer.
+            models.Index(fields=["officer", "texted_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.officer} <- {self.alert} ({'texted' if self.texted_at else 'pending'})"
 
 
 class DevicePushToken(models.Model):

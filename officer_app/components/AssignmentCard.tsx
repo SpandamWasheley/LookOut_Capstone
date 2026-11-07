@@ -39,9 +39,9 @@ export default function AssignmentCard({ assignment }: Props) {
   /**
    * Status in the officer's language, not the database's.
    *
-   * "Pending" and "Assigned" described the record. What an officer needs to
+   * "Pending" described the record, not the officer. What an officer needs to
    * know is whether this one is waiting on THEM, so `active` says so and
-   * `dispatched` names what they already did about it.
+   * `dispatched` reads "Assigned" -- it is on their plate, out of the queue.
    *
    * Dismissed is deliberately not red. It means the alert was judged a false
    * alarm, and colouring a false alarm like a live violation is the one
@@ -49,7 +49,7 @@ export default function AssignmentCard({ assignment }: Props) {
    */
   const status = {
     active: { label: "Needs you", color: c.urgent },
-    dispatched: { label: "Accepted", color: c.closed },
+    dispatched: { label: "Assigned", color: c.closed },
     resolved: { label: "Resolved", color: c.closed },
     acknowledged: { label: "Dismissed", color: c.mutedForeground },
   }[assignment.status];

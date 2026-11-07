@@ -258,16 +258,31 @@ export default function ProfileScreen() {
             )}
           </View>
 
-          {/* Deliberately NOT worded as "text me my assignments". Nothing in
-              this system sends an SMS — there is no provider wired up and
-              texting is out of scope — so `sms_alerts` is a consent flag
-              recorded against the number, nothing more. Assignments arrive by
-              push notification; see the Notifications section below. */}
+          {/* This DOES send now (core/sms.py, via UniSMS), so the copy says so
+              — it used to read "No texts are sent yet" while no provider was
+              wired up, and leaving that there would have been a lie.
+
+              What it must still not promise is DELIVERY. Three things gate a
+              text and two of them are invisible from this screen: the barangay's
+              system-wide SMS switch, and whether the account has credits. The
+              shared sender ID also reaches Globe and DITO only, so an officer
+              on Smart/TNT/Sun will never receive one. Hence "when available"
+              and the explicit pointer to push, which is the channel that is
+              always attempted.
+
+              It also must not promise that every assignment arrives the moment
+              it is made. Only a holdup or an obstruction texts immediately
+              (core/sms.py's URGENT_TYPE_CODES); the rest are counted into a
+              half-hourly digest, so an officer assigned a smoking violation
+              gets a text saying how many are theirs, not one per violation.
+              Saying "right away" would make a batched text read as a fault. */}
           <View style={styles.switchRow}>
             <View style={styles.detailText}>
               <Text style={[T.bodyStrong, { color: c.foreground }]}>Allow texts to this number</Text>
               <Text style={[T.meta, styles.hint, { color: c.mutedForeground }]}>
-                Permission for your barangay to text you. No texts are sent yet.
+                Get assignments by text when available, on Globe and DITO numbers.
+                Urgent ones arrive straight away; the rest are summed up every
+                half hour. Push notifications are the main alert either way.
               </Text>
             </View>
             <Toggle

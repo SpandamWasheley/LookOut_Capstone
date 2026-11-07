@@ -69,8 +69,13 @@ services:
         type: SECRET
       - key: DEFAULT_FROM_EMAIL
         type: SECRET
-      - key: SEMAPHORE_API_KEY
+      # Assignment texts via UniSMS (unismsapi.com) -- see core/sms.py. This
+      # replaces the SEMAPHORE_API_KEY placeholder that used to sit here for a
+      # provider no code ever called.
+      - key: UNISMS_API_KEY
         type: SECRET
+      - key: UNISMS_SENDER_ID
+        value: Unisoft
 
 # Migrations run as a PRE_DEPLOY job rather than in build_command: the build
 # step has no database attached, so `migrate` there would fail. A pre-deploy job

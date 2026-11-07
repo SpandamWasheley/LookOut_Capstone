@@ -559,7 +559,7 @@ export function SystemConfig() {
               value={testingTools} differs={testingTools}
               onChange={(v) => { writeTestingTools(v); setTestingTools(v); }} />
             <Toggle label="SMS alerts"
-              desc="Off by default. The master switch for text messages: while this is off nobody is texted, whatever their own setting says. Who gets a text is set per person — their mobile number and SMS switch are on their account, in Personnel or under My account."
+              desc="Off by default. The master switch for text messages: while this is off nobody is texted, whatever their own setting says. Who gets a text is set per person — their mobile number and SMS switch are on their account, in Personnel or under My account. A holdup or parking obstruction texts its assigned officer straight away; everything else is summed up every half hour, which also tells admins and dispatchers how many violations were detected. Each message uses a credit, and a quiet half hour sends nothing. Globe and DITO numbers only; Smart, TNT and Sun cannot be reached, and those officers rely on the app's push notification."
               value={form.sms_alerts_enabled} differs={differs("sms_alerts_enabled")}
               onChange={(v) => set("sms_alerts_enabled", v)} />
           </Card>
