@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   X, Loader2, FileVideo, AlertTriangle, Save, WifiOff, Wand2, Info,
+  Car, Trash2, Undo2,
 } from "lucide-react";
 import {
   getCameraSnapshotUrl, uploadCameraEdgeFrame, updateCamera,
@@ -10,6 +11,70 @@ import { EdgeCanvas } from "./EdgeCanvas";
 
 const ALLOWED_EXTENSIONS = [".mp4", ".mkv", ".avi"];
 const MAX_BYTES = 1024 * 1024 * 1024; // 1GB, matches the backend's limit
+
+// The two areas `Camera.edges` holds, in the order the selector lists them.
+// `kind` is the one name that travels: EdgeCanvas's prop, the trace job's
+// argument and `traceFor` all speak it, so nothing has to translate between a
+// tab name and a zone type.
+const ZONES = [
+  {
+    key: "parking",
+    kind: "zone",
+    icon: Car,
+    label: "No-parking road",
+    section: "Road zone",
+    traceLabel: "Trace zone",
+    tip: "Outline the road edges (3+ points). Follow its perspective; it'll look like a trapezium, not a box. Any vehicle stopped inside counts.",
+  },
+  {
+    key: "disposal",
+    kind: "disposal",
+    icon: Trash2,
+    label: "Improper disposal",
+    section: "Rubbish area",
+    traceLabel: "Trace area",
+    tip: "Outline where rubbish gets dumped: kerb, footpath, corners. Drag to move a point, right-click to remove. Optional; if left empty, it's auto-traced.",
+  },
+];
+
+// The circled i beside the section header, holding what the long grey
+// instruction box used to say. Opens on hover for a mouse and TOGGLES on
+// click, because a touch screen has no hover — a tap is the only way in.
+function InfoTip({ children }) {
+  const [hover, setHover] = useState(false);
+  const [pinned, setPinned] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!pinned) return undefined;
+    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setPinned(false); };
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setPinned(false); } };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey, true);
+    };
+  }, [pinned]);
+  const open = hover || pinned;
+  return (
+    <span ref={ref} className="relative inline-flex align-middle"
+      onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
+      <button type="button" aria-label="About this zone" aria-expanded={open}
+        onClick={(e) => { e.stopPropagation(); setPinned((prev) => !prev); }}
+        className="inline-flex items-center justify-center rounded-full"
+        style={{ color: open ? "var(--foreground)" : "var(--muted-foreground)", cursor: "pointer" }}>
+        <Info size={14} />
+      </button>
+      {open && (
+        <div role="tooltip"
+          className="absolute top-full right-0 mt-2 z-[80] w-64 max-w-[80vw] rounded-xl px-3 py-2.5 text-[12px] leading-relaxed shadow-2xl"
+          style={{ background: "var(--card)", border: "1px solid var(--foreground)", color: "var(--foreground)" }}>
+          {children}
+        </div>
+      )}
+    </span>
+  );
+}
 
 function validateFile(file) {
   const ext = `.${file.name.split(".").pop()?.toLowerCase() ?? ""}`;
@@ -45,6 +110,10 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
   // What each canvas first reported, to tell "edited" from "just opened".
   const [parkingInitial, setParkingInitial] = useState(null);
   const [disposalInitial, setDisposalInitial] = useState(null);
+  // Undo/Clear live in the controls column, not under the picture, so each
+  // canvas hands its two actions out through a ref — see EdgeCanvas.actionsRef.
+  const parkingActions = useRef({});
+  const disposalActions = useRef({});
 
   const [pct, setPct] = useState(camera.obstruction_pct ?? 35);
   const [minutes, setMinutes] = useState(camera.obstruction_minutes ?? 2);
@@ -289,6 +358,12 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
     }
   };
 
+  // Whichever area the selector is on: its copy, its point count and the
+  // canvas the shared Undo/Clear pair drives.
+  const active = ZONES.find((zone) => zone.key === tab) ?? ZONES[0];
+  const activeActions = tab === "disposal" ? disposalActions : parkingActions;
+  const activeCount = tab === "disposal" ? disposalPoints : edgePoints;
+
   return (
     <div
       className="fixed inset-0 z-[70] flex items-center justify-center p-4"
@@ -296,7 +371,7 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
       onClick={(e) => { if (e.target === e.currentTarget && !saving) onClose(); }}
     >
       <div
-        className="w-full max-w-3xl rounded-2xl overflow-hidden shadow-2xl flex flex-col"
+        className="w-full max-w-[1000px] rounded-2xl overflow-hidden shadow-2xl flex flex-col"
         style={{ background: "var(--card)", border: "1px solid var(--border)", maxHeight: "92vh" }}
       >
         {/* Header */}
@@ -386,148 +461,187 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
                   style={{ background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.3)", color: "#f59e0b" }}>
                   This camera still has the old kerb lines saved. Parking now uses a single
                   closed polygon around the road, which a kerb line cannot be converted into —
-                  trace the road below and save to replace them.
+                  trace the road again and save to replace them.
                 </div>
               )}
-              <div className="flex gap-1.5">
-                {[["parking", "Parking (no-parking road)"], ["disposal", "Improper disposal"]].map(([key, text]) => (
-                  <button key={key} onClick={() => setTab(key)}
-                    className="px-3 py-1.5 rounded-xl text-[13px] font-medium"
-                    style={{
-                      background: tab === key ? "var(--foreground)" : "var(--secondary)",
-                      color: tab === key ? "var(--card)" : "var(--muted-foreground)",
-                      border: "1px solid var(--border)",
-                    }}>
-                    {text}
+              {/* Picture on the left, every control on the right. Below md
+                  the controls stack under the frame rather than being squeezed
+                  beside it. */}
+              <div className="grid grid-cols-1 md:grid-cols-[minmax(0,60fr)_minmax(0,40fr)] gap-4 items-start">
+                {/* LEFT - the frame and its overlay. Both canvases stay MOUNTED
+                    (the inactive one is only hidden) because EdgeCanvas owns
+                    its points: unmounting on a switch would throw away a
+                    half-drawn shape. */}
+                <div className="relative">
+                  <div className={tab === "parking" ? "" : "hidden"}>
+                    <EdgeCanvas
+                      key={canvasKey}
+                      frame={frame}
+                      initialPoints={prefill.points}
+                      chrome={false}
+                      showThresholds={false}
+                      actionsRef={parkingActions}
+                      onChange={(spec, can, count) => {
+                        setParkingInitial((prev) => prev ?? JSON.stringify(spec));
+                        setEdgeSpec(spec); setCanSave(can);
+                        setEdgePoints(count);
+                      }}
+                    />
+                  </div>
+                  <div className={tab === "disposal" ? "" : "hidden"}>
+                    <EdgeCanvas
+                      key={disposalCanvasKey}
+                      frame={frame}
+                      kind="disposal"
+                      initialPoints={disposalPrefill}
+                      chrome={false}
+                      showThresholds={false}
+                      actionsRef={disposalActions}
+                      onChange={(spec, can, count) => {
+                        setDisposalInitial((prev) => prev ?? JSON.stringify(spec));
+                        setDisposalSpec(spec);
+                        setDisposalPoints(count);
+                      }}
+                    />
+                  </div>
+                  {/* The drawing affordance, in place of the instruction box.
+                      Hidden while the server is tracing, when the next thing to
+                      happen is a polygon arriving rather than a click. */}
+                  {!tracing && (
+                    <div className="absolute top-2 right-2 px-2 py-1 rounded-lg text-[11px] font-medium pointer-events-none"
+                      style={{ background: "rgba(0,0,0,0.6)", color: "#ffffff" }}>
+                      Click to add points
+                    </div>
+                  )}
+                </div>
+
+                {/* RIGHT - the controls for whichever area is selected. */}
+                <div className="space-y-3">
+                  <div className="text-[11px] font-medium uppercase tracking-wider"
+                    style={{ color: "var(--muted-foreground)" }}>
+                    Zone type
+                  </div>
+
+                  {/* Each row carries its own status, so how much is drawn on
+                      the OTHER area is readable without switching to it. */}
+                  <div className="space-y-1.5">
+                    {ZONES.map((zone) => {
+                      const on = tab === zone.key;
+                      const count = zone.key === "disposal" ? disposalPoints : edgePoints;
+                      const Icon = zone.icon;
+                      return (
+                        <button key={zone.key} onClick={() => setTab(zone.key)}
+                          className="w-full flex items-center gap-2 px-3 py-2.5 rounded-xl text-[13px] font-medium"
+                          style={{
+                            background: on ? "var(--foreground)" : "var(--secondary)",
+                            color: on ? "var(--card)" : "var(--muted-foreground)",
+                            border: "1px solid var(--border)",
+                          }}>
+                          <Icon size={14} className="flex-shrink-0" />
+                          <span className="flex-1 text-left">{zone.label}</span>
+                          <span className="text-[12px]" style={{ opacity: 0.7 }}>
+                            {count ? `${count} pt${count === 1 ? "" : "s"}` : "Not set"}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div style={{ borderTop: "1px solid var(--border)" }} />
+
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-[13px] font-semibold" style={{ color: "var(--foreground)" }}>
+                      {active.section}
+                    </div>
+                    <InfoTip>{active.tip}</InfoTip>
+                  </div>
+
+                  <button
+                    onClick={() => handleTrace(active.kind)}
+                    disabled={tracing || saving}
+                    className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-[13px] font-medium"
+                    style={{ background: "var(--secondary)", color: "var(--foreground)",
+                      border: "1px solid var(--border)", opacity: tracing ? 0.6 : 1,
+                      cursor: tracing ? "not-allowed" : "pointer" }}
+                  >
+                    {tracing ? <Loader2 size={13} className="animate-spin" /> : <Wand2 size={13} />}
+                    {active.traceLabel}
                   </button>
-                ))}
-              </div>
-              <div className={tab === "parking" ? "space-y-3.5" : "hidden"}>
-              <div className="flex items-center gap-2 flex-wrap">
-                <button
-                  onClick={() => handleTrace("zone")}
-                  disabled={tracing || saving}
-                  className="flex items-center gap-2 px-3 py-1.5 rounded-xl text-[13px] font-medium"
-                  style={{ background: "var(--secondary)", color: "var(--foreground)",
-                    border: "1px solid var(--border)", opacity: tracing ? 0.6 : 1,
-                    cursor: tracing ? "not-allowed" : "pointer" }}
-                >
-                  {tracing ? <Loader2 size={13} className="animate-spin" /> : <Wand2 size={13} />}
-                  Trace zone
-                </button>
-                {tracing && (
-                  <>
-                    <span className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>
-                      Watching traffic… ~{trace.estimated_seconds ?? 48} s
-                      {" "}({Math.round((trace.progress ?? 0) * 100)}%)
-                    </span>
-                    <button onClick={handleCancelTrace} className="text-[13px] underline"
+
+                  {tracing && (
+                    <div className="flex items-center justify-between gap-2 text-[13px]"
                       style={{ color: "var(--muted-foreground)" }}>
-                      Cancel
+                      <span>
+                        Watching traffic… ~{trace.estimated_seconds ?? 48} s
+                        {" "}({Math.round((trace.progress ?? 0) * 100)}%)
+                      </span>
+                      <button onClick={handleCancelTrace} className="underline flex-shrink-0"
+                        style={{ color: "var(--muted-foreground)" }}>
+                        Cancel
+                      </button>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <button onClick={() => activeActions.current?.undo?.()} disabled={!activeCount}
+                      className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-[13px] font-medium disabled:opacity-40"
+                      style={{ background: "var(--secondary)", color: "var(--foreground)", border: "1px solid var(--border)" }}>
+                      <Undo2 size={13} /> Undo
                     </button>
-                  </>
-                )}
+                    <button onClick={() => activeActions.current?.clear?.()}
+                      className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-[13px] font-medium"
+                      style={{ background: "var(--secondary)", color: "var(--foreground)", border: "1px solid var(--border)" }}>
+                      <Trash2 size={13} /> Clear
+                    </button>
+                  </div>
+
+                  {/* A trace's outcome belongs to the area that asked for it. */}
+                  {traceNote && traceFor === active.kind && (
+                    <div className="flex items-start gap-2 text-[13px] px-3 py-2.5 rounded-xl"
+                      style={{ background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.25)", color: "#22c55e" }}>
+                      <Info size={13} className="flex-shrink-0 mt-0.5" /><span>{traceNote}</span>
+                    </div>
+                  )}
+                  {traceError && traceFor === active.kind && (
+                    <div className="flex items-start gap-2 text-[13px] px-3 py-2.5 rounded-xl"
+                      style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", color: "#ef4444" }}>
+                      <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
+                      <span>{traceError} You can draw it by hand instead.</span>
+                    </div>
+                  )}
+
+                  {/* Parking's two thresholds. This modal saves them, so they
+                      stay with the area they belong to rather than going out
+                      with the instruction box. */}
+                  {tab === "parking" && (
+                    <div className="space-y-2 pt-1">
+                      <label className="flex items-center gap-2 text-[13px]" style={{ color: "var(--muted-foreground)" }}>
+                        Inside the road
+                        <input type="number" min={10} max={90} value={pct}
+                          onChange={(e) => setPct(e.target.value)}
+                          className="w-16 px-2 py-1.5 rounded-lg text-sm outline-none"
+                          style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
+                        %
+                      </label>
+                      <label className="flex items-center gap-2 text-[13px]" style={{ color: "var(--muted-foreground)" }}>
+                        for
+                        <input type="number" min={0.1} step={0.1} value={minutes}
+                          onChange={(e) => setMinutes(e.target.value)}
+                          className="w-16 px-2 py-1.5 rounded-lg text-sm outline-none"
+                          style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
+                        minutes
+                      </label>
+                    </div>
+                  )}
+                </div>
               </div>
-              {traceNote && traceFor === "zone" && (
-                <div className="flex items-start gap-2 text-[13px] px-3 py-2.5 rounded-xl"
-                  style={{ background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.25)", color: "#22c55e" }}>
-                  <Info size={13} className="flex-shrink-0 mt-0.5" /><span>{traceNote}</span>
-                </div>
-              )}
-              {traceError && traceFor === "zone" && (
-                <div className="flex items-start gap-2 text-[13px] px-3 py-2.5 rounded-xl"
-                  style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", color: "#ef4444" }}>
-                  <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
-                  <span>{traceError} You can draw the zone by hand instead.</span>
-                </div>
-              )}
+
               {applyNote && (
                 <div className="flex items-start gap-2 text-[13px] px-3 py-2.5 rounded-xl"
                   style={{ background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.25)", color: "#22c55e" }}>
                   <Info size={13} className="flex-shrink-0 mt-0.5" /><span>{applyNote}</span>
                 </div>
               )}
-              <EdgeCanvas
-                key={canvasKey}
-                frame={frame}
-                initialPoints={prefill.points}
-                pct={pct}
-                onPctChange={setPct}
-                minutes={minutes}
-                onMinutesChange={setMinutes}
-                onChange={(spec, can) => {
-                  setParkingInitial((prev) => prev ?? JSON.stringify(spec));
-                  setEdgeSpec(spec); setCanSave(can);
-                  setEdgePoints(spec.road?.points?.length ?? 0);
-                }}
-              />
-              </div>
-
-              <div className={tab === "disposal" ? "space-y-3.5" : "hidden"}>
-                <div className="flex items-start gap-2 text-[13px] px-3 py-2.5 rounded-xl"
-                  style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--muted-foreground)" }}>
-                  <Info size={13} className="flex-shrink-0 mt-0.5" />
-                  <span>
-                    Optional, and separate from the parking road zone. Draw it over where
-                    rubbish is dumped (footpath, kerb, corner). Drag a point to adjust it, or clear it and one is traced from the traffic each time disposal starts.
-                  </span>
-                </div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <button
-                    onClick={() => handleTrace("disposal")}
-                    disabled={tracing || saving}
-                    className="flex items-center gap-2 px-3 py-1.5 rounded-xl text-[13px] font-medium"
-                    style={{ background: "var(--secondary)", color: "var(--foreground)",
-                      border: "1px solid var(--border)", opacity: tracing ? 0.6 : 1,
-                      cursor: tracing ? "not-allowed" : "pointer" }}
-                  >
-                    {tracing ? <Loader2 size={13} className="animate-spin" /> : <Wand2 size={13} />}
-                    Trace rubbish area
-                  </button>
-                  {tracing && (
-                    <>
-                      <span className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>
-                        Watching traffic… ~{trace.estimated_seconds ?? 48} s
-                        {" "}({Math.round((trace.progress ?? 0) * 100)}%)
-                      </span>
-                      <button onClick={handleCancelTrace} className="text-[13px] underline"
-                        style={{ color: "var(--muted-foreground)" }}>
-                        Cancel
-                      </button>
-                    </>
-                  )}
-                </div>
-                {traceNote && traceFor === "disposal" && (
-                  <div className="flex items-start gap-2 text-[13px] px-3 py-2.5 rounded-xl"
-                    style={{ background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.25)", color: "#22c55e" }}>
-                    <Info size={13} className="flex-shrink-0 mt-0.5" /><span>{traceNote}</span>
-                  </div>
-                )}
-                {traceError && traceFor === "disposal" && (
-                  <div className="flex items-start gap-2 text-[13px] px-3 py-2.5 rounded-xl"
-                    style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", color: "#ef4444" }}>
-                    <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
-                    <span>{traceError} You can draw the area by hand instead.</span>
-                  </div>
-                )}
-                <EdgeCanvas
-                  key={disposalCanvasKey}
-                  frame={frame}
-                  kind="disposal"
-                  initialPoints={disposalPrefill}
-                  showThresholds={false}
-                  onChange={(spec) => {
-                    setDisposalInitial((prev) => prev ?? JSON.stringify(spec));
-                    setDisposalSpec(spec);
-                    setDisposalPoints(spec.disposal?.points?.length ?? 0);
-                  }}
-                />
-                {disposalPoints === 0 && (
-                  <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>
-                    No area drawn — a rubbish area is worked out from the traffic each time disposal starts.
-                  </div>
-                )}
-              </div>
 
               {saveError && (
                 <div className="flex items-start gap-2 text-[14px] px-3 py-2.5 rounded-xl"

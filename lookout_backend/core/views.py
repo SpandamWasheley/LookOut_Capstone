@@ -41,6 +41,7 @@ from core.emails import send_password_reset_code, send_verification_code
 
 from .models import (
     Alert,
+    AssignmentNotice,
     Camera,
     Citation,
     DetectionJob,
@@ -1228,6 +1229,14 @@ class AlertViewSet(viewsets.ModelViewSet):
         # describe a state the database does not yet hold, and never raises —
         # a dispatcher's Assign must not fail because Expo is unreachable.
         #
+        # Two channels, both best-effort and neither authoritative (the poll
+        # stays the source of truth). They are both here because they fail
+        # independently: push needs the app installed, permission granted and
+        # a data connection, while a text needs only signal. Push is always
+        # attempted; a text additionally needs the system-wide switch, the
+        # officer's own opt-in and a number on file — all three checked inside
+        # core/sms.py, since every message there is billed.
+        #
         # Gated on the CALLER's role, not just on the transition. This
         # ViewSet sets no permission_classes, so it falls back to
         # IsAuthenticated — in this system the officer-vs-web split is a
@@ -1236,9 +1245,31 @@ class AlertViewSet(viewsets.ModelViewSet):
         # ungated, it would also let any account ring every officer's
         # handset at will, as often as it liked. Assigning work is a
         # dispatcher's or an admin's act, so only their requests wake a phone.
+        #
+        # This matters more now than it did when push was the only channel:
+        # a text is billed, so an ungated path would be a way to spend the
+        # barangay's SMS credits from any signed-in account.
+        #
+        # A text is additionally filtered BY VIOLATION TYPE, which push is not:
+        # only a holdup or an obstruction texts an officer the moment it is
+        # assigned (sms.URGENT_TYPE_CODES). Smoking, drinking and improper
+        # disposal are counted into the half-hourly digest instead, which is
+        # why the AssignmentNotice rows below are written for exactly the
+        # assignments no instant text covered. The M2M has no timestamp of its
+        # own, so without those rows the digest has no way to tell a new
+        # assignment from one made last week.
         if newly_assigned and getattr(user, "role", "") in self.DISPATCHING_ROLES:
-            from core import push
+            from core import push, sms
             push.notify_assignment_async(alert, newly_assigned)
+            sms.notify_assignment_async(alert, newly_assigned)
+            if not sms.is_urgent(alert):
+                # ignore_conflicts, not get_or_create: re-assigning an officer
+                # who was removed and added back is not a second violation for
+                # them to attend, and the unique constraint is what says so.
+                AssignmentNotice.objects.bulk_create(
+                    [AssignmentNotice(officer=o, alert=alert) for o in newly_assigned],
+                    ignore_conflicts=True,
+                )
 
     @action(detail=True, methods=["post"])
     def accept(self, request, pk=None):

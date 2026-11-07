@@ -31,6 +31,16 @@ interface Props {
  * backgroundColor cannot run on the native driver, so animating it would put
  * this on the JS thread and make it stutter whenever a poll lands. Opacity and
  * translateX both can, so the whole gesture stays at 60fps.
+ *
+ * THE THUMB CHANGES COLOUR WITH STATE, by the same crossfade, and it has to.
+ * It used to be `card` in both states, which in dark mode is #0f2030 on a
+ * #142634 track -- two near-identical dark blues, on a card that is #0f2030
+ * as well, so an "off" switch was invisible. No single colour fixes that: in
+ * dark mode "off" is a DARK track needing a light thumb, while "on" is a
+ * light blue track needing a dark one. So the thumb is `mutedForeground`
+ * over the muted track and `primaryForeground` over the primary one -- the
+ * two tokens that already mean "legible on that background", which is
+ * exactly the question being asked.
  */
 export function Toggle({ value, onValueChange, disabled, accessibilityLabel }: Props) {
   const c = useColors();
@@ -64,7 +74,10 @@ export function Toggle({ value, onValueChange, disabled, accessibilityLabel }: P
       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
       style={{ opacity: disabled ? 0.4 : 1 }}
     >
-      <View style={[styles.track, { backgroundColor: c.muted }]}>
+      {/* A hairline, because the off track (#142634) barely separates from
+          the card it sits on (#0f2030) in dark mode -- without it the control
+          reads as a smudge rather than as a switch. */}
+      <View style={[styles.track, { backgroundColor: c.muted, borderColor: c.border }]}>
         <Animated.View
           style={[
             StyleSheet.absoluteFill,
@@ -76,7 +89,6 @@ export function Toggle({ value, onValueChange, disabled, accessibilityLabel }: P
           style={[
             styles.thumb,
             {
-              backgroundColor: c.card,
               transform: [
                 {
                   translateX: slide.interpolate({
@@ -87,14 +99,26 @@ export function Toggle({ value, onValueChange, disabled, accessibilityLabel }: P
               ],
             },
           ]}
-        />
+        >
+          <View style={[styles.face, { backgroundColor: c.mutedForeground }]} />
+          <Animated.View
+            style={[styles.face, { backgroundColor: c.primaryForeground, opacity: slide }]}
+          />
+        </Animated.View>
       </View>
     </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
-  track: { width: TRACK_W, height: TRACK_H, borderRadius: TRACK_H / 2, justifyContent: "center" },
+  track: {
+    width: TRACK_W,
+    height: TRACK_H,
+    borderRadius: TRACK_H / 2,
+    justifyContent: "center",
+    borderWidth: 1,
+  },
   on: { borderRadius: TRACK_H / 2 },
   thumb: { width: THUMB, height: THUMB, borderRadius: THUMB / 2, position: "absolute", left: 0 },
+  face: { ...StyleSheet.absoluteFillObject, borderRadius: THUMB / 2 },
 });

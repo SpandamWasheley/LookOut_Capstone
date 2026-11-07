@@ -126,6 +126,14 @@ export function EdgeCanvas({
   // containment test — showing "Inside the road %" next to a garbage area
   // would offer a dial that changes nothing.
   showThresholds = true,
+  // False strips everything but the picture: the instruction box above it and
+  // the Undo/Clear row below. EdgeEditorModal lays those out itself, in its
+  // own controls column beside the frame — see `actionsRef`.
+  chrome = true,
+  // How a caller that hid the chrome still drives the points this canvas owns.
+  // A ref rather than props because the two actions never change: handing them
+  // over must not re-render either side.
+  actionsRef,
 }) {
   const [points, setPoints] = useState(() => initialPoints ?? []);
   const copy = KIND_COPY[kind] ?? KIND_COPY.zone;
@@ -160,7 +168,10 @@ export function EdgeCanvas({
   // Redraws whenever the geometry changes, and reports the current spec up.
   useEffect(() => {
     redraw();
-    onChange?.(toSpec(points, kind), points.length >= ZONE_MIN_POINTS);
+    // The third argument is the RAW count, which the spec cannot carry: a
+    // shape under ZONE_MIN_POINTS serialises to {}, and a controls panel
+    // outside this canvas still has to show "1 pt" while one is being drawn.
+    onChange?.(toSpec(points, kind), points.length >= ZONE_MIN_POINTS, points.length);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [points]);
 
@@ -231,12 +242,23 @@ export function EdgeCanvas({
     if (index >= 0) setPoints((prev) => prev.filter((_, i) => i !== index));
   };
 
+  const undo = () => setPoints((prev) => prev.slice(0, -1));
+  const clear = () => setPoints([]);
+  // Handed over after every render, so the pair always closes over the current
+  // state. In an effect rather than in the render body because a ref must not
+  // be written during one; the buttons that read it cannot be clicked before
+  // the first effect has run.
+  useEffect(() => {
+    if (actionsRef) actionsRef.current = { undo, clear };
+  });
+
   if (!frame) return null;
 
   const count = points.length;
 
   return (
     <>
+      {chrome && (
       <div className="rounded-xl p-3" style={{ background: "rgba(11,84,113,0.06)", border: "1px solid rgba(11,84,113,0.2)" }}>
         <span className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>
           Tracing the{" "}
@@ -249,6 +271,7 @@ export function EdgeCanvas({
           {count > 0 && " Drag a point to move it; right-click a point to remove it."}
         </span>
       </div>
+      )}
 
       <div className="rounded-xl overflow-hidden" style={{ border: "1px solid var(--border)", background: "#000" }}>
         <canvas
@@ -263,18 +286,20 @@ export function EdgeCanvas({
         />
       </div>
 
+      {chrome && (
       <div className="flex flex-wrap items-center gap-2">
-        <button onClick={() => setPoints((prev) => prev.slice(0, -1))} disabled={!count}
+        <button onClick={undo} disabled={!count}
           className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-[14px] font-medium disabled:opacity-40"
           style={{ background: "var(--secondary)", color: "var(--foreground)", border: "1px solid var(--border)" }}>
           <Undo2 size={13} /> Undo point
         </button>
-        <button onClick={() => setPoints([])}
+        <button onClick={clear}
           className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-[14px] font-medium"
           style={{ background: "var(--secondary)", color: "var(--foreground)", border: "1px solid var(--border)" }}>
           <Trash2 size={13} /> Clear area
         </button>
       </div>
+      )}
 
       {showThresholds && (
       <div className="flex items-center gap-5 pt-1">

@@ -12,17 +12,6 @@ import { useAssignments } from "@/context/AssignmentContext";
 import { useAuth } from "@/context/AuthContext";
 import { useColors } from "@/hooks/useColors";
 
-/**
- * Small numbers are spelled out, larger ones are not.
- *
- * Ordinary editorial practice, and it matters here because this number is the
- * first thing on the screen: "Three need you now" reads as a sentence, while
- * "3 need you now" reads as a counter and invites the eye to treat it as a
- * statistic. Past nine the word is longer than the glance it saves.
- */
-const SPELLED = ["No", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine"];
-const spell = (n: number) => (n < SPELLED.length ? SPELLED[n] : String(n));
-
 export default function AssignmentsScreen() {
   const { activeAssignments, loading, error, refreshAssignments } = useAssignments();
   const { officer } = useAuth();
@@ -55,22 +44,33 @@ export default function AssignmentsScreen() {
   }, [mine, search]);
 
   /**
-   * The headline states the duty, not a greeting.
+   * The header greets the officer; the workload moved to the tab badge.
    *
-   * This screen used to open with "Welcome Back!" over the officer's surname,
-   * with the workload demoted to a small badge in the corner. The number of
-   * violations waiting is the only thing an officer opens this app to find
-   * out, so it is now the largest thing on the screen — and it distinguishes
-   * the two states that matter: not yet accepted, versus accepted and still
-   * open.
+   * This screen used to make the count the largest thing on it ("Three need
+   * you now"), on the reasoning that it is the only thing an officer opens
+   * the app to find out. That reasoning still holds -- the count now rides on
+   * the Assignments tab instead, where it is legible from EVERY screen rather
+   * than only this one, so it is demoted in size but promoted in reach.
    */
-  const waiting = mine.filter((a) => a.status === "active").length;
-  const headline =
-    waiting > 0
-      ? `${spell(waiting)} need${waiting === 1 ? "s" : ""} you now`
-      : mine.length > 0
-        ? `${spell(mine.length)} in progress`
-        : "Nothing open right now";
+  const greeting = (() => {
+    const hour = new Date().getHours();
+    if (hour < 12) return "Good morning";
+    if (hour < 18) return "Good afternoon";
+    return "Good evening";
+  })();
+
+  // Given name only. A greeting uses the name someone is actually called by,
+  // and the full record ("Spandam Washiley") reads as a database row.
+  const firstName = (officer?.name ?? "").trim().split(/\s+/)[0] ?? "";
+
+  // Last two words, so "Spandam Washiley" -> "SW". Same rule as the Profile tab.
+  const initials = (officer?.name ?? "")
+    .split(" ")
+    .filter(Boolean)
+    .slice(-2)
+    .map((w) => w[0])
+    .join("")
+    .toUpperCase();
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -90,10 +90,22 @@ export default function AssignmentsScreen() {
           },
         ]}
       >
-        <Text style={[T.meta, { color: c.mutedForeground }]}>
-          Officer {officer?.name ?? ""}
-        </Text>
-        <Text style={[T.title, styles.headline, { color: c.foreground }]}>{headline}</Text>
+        <View style={styles.identity}>
+          <View style={styles.identityText}>
+            <Text style={[T.meta, { color: c.mutedForeground }]}>{greeting},</Text>
+            <Text
+              style={[T.title, styles.headline, { color: c.foreground }]}
+              numberOfLines={1}
+            >
+              Officer {firstName}
+            </Text>
+          </View>
+          <View style={[styles.avatar, { backgroundColor: c.primary }]}>
+            <Text style={[T.figure, styles.avatarText, { color: c.primaryForeground }]}>
+              {initials || "O"}
+            </Text>
+          </View>
+        </View>
 
         <View style={[styles.search, { backgroundColor: c.secondary, borderColor: c.border }]}>
           <Feather name="search" size={15} color={c.mutedForeground} />
@@ -213,6 +225,16 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
   },
   headline: { marginTop: space.xxs },
+  identity: { flexDirection: "row", alignItems: "center", gap: space.md },
+  identityText: { flex: 1, minWidth: 0 },
+  avatar: {
+    width: 42,
+    height: 42,
+    borderRadius: radius.pill,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  avatarText: { fontSize: 14 },
   search: {
     flexDirection: "row",
     alignItems: "center",

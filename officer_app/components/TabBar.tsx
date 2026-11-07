@@ -5,12 +5,14 @@ import React from "react";
 import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { space, SPINE, type as T } from "@/constants/theme";
+import { radius, space, type as T } from "@/constants/theme";
+import { useAssignments } from "@/context/AssignmentContext";
+import { useAuth } from "@/context/AuthContext";
 import { useColors } from "@/hooks/useColors";
 
 /** Route name → what the officer sees. Keyed by the file name under app/(tabs). */
-const TABS: Record<string, { label: string; icon: keyof typeof Feather.glyphMap }> = {
-  index: { label: "Assignments", icon: "shield" },
+const TABS: Record<string, { label: string; icon: keyof typeof Feather.glyphMap; counts?: boolean }> = {
+  index: { label: "Assignments", icon: "shield", counts: true },
   history: { label: "History", icon: "clock" },
   profile: { label: "Profile", icon: "user" },
 };
@@ -18,20 +20,41 @@ const TABS: Record<string, { label: string; icon: keyof typeof Feather.glyphMap 
 /**
  * The bottom bar.
  *
- * Replaces the default Expo Router / React Navigation tab bar, which marks the
- * active tab by TINTING ITS ICON — the thing every stock tab bar on both
- * platforms does, and the reason a default tab bar is recognisable as one at a
- * glance. Here the active tab is marked by the spine: the same 4px bar that
- * runs down an assignment card, hung from the top edge of the bar.
+ * Replaces the default Expo Router / React Navigation tab bar so the chrome
+ * belongs to this app rather than to the platform. The active tab is marked
+ * by tinting its icon and label; the Assignments tab also carries a count of
+ * the violations assigned to this officer.
  *
- * That is not decoration for its own sake. The spine is this app's one
- * structural device and it always means "this one" — which violation a card
- * is, which section a heading opens, and here, which screen you are on. One
- * device, learned once.
+ * This used to hang a "spine" from the top edge over the active tab -- the
+ * same 4px bar that runs down an assignment card, reusing the app's one
+ * structural device to mean "this one". It was removed deliberately: the
+ * count badge now occupies that corner, and two markers competing in the
+ * same small space read as clutter rather than as one learnable device.
  */
 export function TabBar({ state, navigation }: BottomTabBarProps) {
   const c = useColors();
   const insets = useSafeAreaInsets();
+  const { activeAssignments } = useAssignments();
+  const { officer } = useAuth();
+
+  /**
+   * How many violations are assigned to THIS officer.
+   *
+   * `activeAssignments` is already everything still open (active +
+   * dispatched) across the whole board, so the only filter needed is whose
+   * it is -- badging an officer with another officer's workload would be
+   * worse than carrying no badge at all.
+   *
+   * Accepted ones count too. The question this answers is "how many do I
+   * have", not "how many have I not got to yet", so it matches the list on
+   * the Assignments screen exactly -- badge and screen can never disagree
+   * about what is yours.
+   */
+  const officerId = officer?.officerId ?? null;
+  const assigned =
+    officerId == null
+      ? 0
+      : activeAssignments.filter((a) => a.assignedOfficerIds.includes(officerId)).length;
 
   return (
     <View
@@ -69,22 +92,28 @@ export function TabBar({ state, navigation }: BottomTabBarProps) {
             onPress={press}
             accessibilityRole="tab"
             accessibilityState={{ selected: focused }}
-            accessibilityLabel={tab.label}
+            accessibilityLabel={
+              tab.counts && assigned > 0 ? `${tab.label}, ${assigned} assigned` : tab.label
+            }
             style={({ pressed }) => [styles.tab, { opacity: pressed && !focused ? 0.6 : 1 }]}
           >
-            {/* Flush to the bar's top border, so it reads as hanging from the
-                edge rather than floating above the icon. */}
-            <View
-              style={[
-                styles.spine,
-                { backgroundColor: focused ? c.primary : "transparent" },
-              ]}
-            />
-            <Feather
-              name={tab.icon}
-              size={21}
-              color={focused ? c.primary : c.mutedForeground}
-            />
+            <View>
+              <Feather
+                name={tab.icon}
+                size={21}
+                color={focused ? c.primary : c.mutedForeground}
+              />
+              {tab.counts && assigned > 0 && (
+                <View
+                  style={[styles.badge, { backgroundColor: c.urgent, borderColor: c.card }]}
+                  // Already spoken by the tab's accessibilityLabel above.
+                  accessibilityElementsHidden
+                  importantForAccessibility="no-hide-descendants"
+                >
+                  <Text style={styles.badgeText}>{assigned > 99 ? "99+" : assigned}</Text>
+                </View>
+              )}
+            </View>
             <Text
               style={[
                 T.meta,
@@ -105,14 +134,29 @@ export function TabBar({ state, navigation }: BottomTabBarProps) {
 }
 
 const styles = StyleSheet.create({
-  bar: { flexDirection: "row", borderTopWidth: 1 },
+  bar: { flexDirection: "row", borderTopWidth: 1, paddingTop: space.base },
   tab: { flex: 1, alignItems: "center", gap: space.xs },
-  spine: {
-    width: 26,
-    height: SPINE - 1,
-    borderBottomLeftRadius: 3,
-    borderBottomRightRadius: 3,
-    marginBottom: space.sm,
-  },
   label: { marginTop: space.xxs },
+  badge: {
+    position: "absolute",
+    top: -6,
+    left: 11,
+    minWidth: 17,
+    height: 17,
+    paddingHorizontal: 4,
+    borderRadius: radius.pill,
+    // Ringed in the bar's own colour so it reads as sitting ON the icon
+    // rather than merging into it.
+    borderWidth: 1.5,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  // White, not a token: there is no urgentForeground, and white carries on
+  // both themes' urgent (#c0392b light, #ef4444 dark).
+  badgeText: {
+    color: "#ffffff",
+    fontSize: 10,
+    lineHeight: 13,
+    fontFamily: T.metaStrong.fontFamily,
+  },
 });

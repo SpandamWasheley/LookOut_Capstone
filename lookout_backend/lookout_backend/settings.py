@@ -576,6 +576,35 @@ EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
 DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='')
 
 
+# --- SMS (assignment notification) via UniSMS -------------------------------
+#
+# The Philippine provider at unismsapi.com. NOT the unrelated Chinese service
+# of the same name (unisms.apistd.com / uni.apistd.com), whose API takes an
+# `accessKeyId` and a per-message `signature` -- none of which apply here.
+# See core/sms.py.
+#
+# Empty key means nothing is sent, and that is a normal state, not an error:
+# the on-site detection PC has no reason to hold this credential. There are two
+# further switches above it, both off by default and both in the database --
+# SystemSettings.sms_alerts_enabled system-wide, and User.sms_alerts per
+# account. Every message is billed, so all three must line up.
+#
+# The secret key from unismsapi.com -> API keys. It is sent as the Basic-auth
+# USERNAME with an empty password, so treat this .env as a secret.
+UNISMS_API_KEY = config('UNISMS_API_KEY', default='')
+
+# The sender ID shown on the officer's handset. Philippine telcos require a
+# registered sender, so an unregistered value is refused with a 422.
+#
+# In practice this is `Unisoft`, the provider's SHARED default, because
+# registering a barangay-branded sender needs an SID token plus business
+# documents and the provider does not permit capstone projects to register one.
+# That carries two limits worth knowing when a text never arrives: Unisoft
+# reaches Globe and DITO only (Smart/TNT/Sun are refused before any credit is
+# spent) and cannot send a message containing a link. See core/sms.py.
+UNISMS_SENDER_ID = config('UNISMS_SENDER_ID', default='')
+
+
 
 # --- Logging ----------------------------------------------------------------
 #
