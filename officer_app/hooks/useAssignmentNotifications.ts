@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { useAssignments } from "@/context/AssignmentContext";
 import { useAuth } from "@/context/AuthContext";
+import { LOCAL_FLAG, markPushArrived } from "@/lib/alertSound";
 import { registerForPush } from "@/lib/notifications";
 
 /**
@@ -52,7 +53,12 @@ export function useAssignmentNotifications() {
     const tapped = Notifications.addNotificationResponseReceivedListener(take);
     // Arriving (not tapped) while the app is open: pull the list straight away
     // so the new violation is already there if they switch to it themselves.
-    const arrived = Notifications.addNotificationReceivedListener(() => {
+    const arrived = Notifications.addNotificationReceivedListener((notification) => {
+      // A real push has just made a sound, so the poll must not announce the
+      // same assignment again a few seconds later. Our OWN local
+      // announcements come through this listener too and are skipped — taking
+      // them as "push works" would mute the next arrival for no reason.
+      if (!notification.request.content.data?.[LOCAL_FLAG]) markPushArrived();
       refreshAssignments();
     });
 

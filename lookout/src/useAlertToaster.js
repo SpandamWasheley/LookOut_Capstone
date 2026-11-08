@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { mapAlert } from "./alertModel";
+import { playAlertChime } from "./alertSound";
 
 // A burst of arrivals is announced ONCE, as a count.
 //
@@ -53,6 +54,14 @@ export function useAlertToaster() {
     const fresh = active.filter((a) => !seenRef.current.has(a.code));
     if (fresh.length === 0) return;
     fresh.forEach((a) => seenRef.current.add(a.code));
+
+    // The chime goes BEFORE the suppression check, so it sounds on the
+    // Violations tab too. The toast is held back there because it would cover
+    // the list it is announcing — a sound covers nothing, and the whole
+    // reason for having one is the operator who is not looking at the screen.
+    // Which tab is open says nothing about that. It is cheap, deduped and
+    // rate-limited inside playAlertChime, and never throws.
+    playAlertChime();
 
     // Marked seen but never announced: on the Violations tab the list IS the
     // notification, and a popup there would be covering the thing it is

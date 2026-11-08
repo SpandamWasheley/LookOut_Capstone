@@ -4,6 +4,7 @@ import { mapAlert } from "./alertModel";
 import { NotificationBell } from "./NotificationBell";
 import { AlertToast } from "./AlertToast";
 import { useAlertToaster } from "./useAlertToaster";
+import { armAlertSound } from "./alertSound";
 import { AlertFeed } from "./AlertFeed";
 import { CameraGrid } from "./CameraGrid";
 import { RecordsPage } from "./RecordsPage";
@@ -97,6 +98,11 @@ function AdminDashboard({ user, onLogout }) {
   // No toasts on the Violations tab: the list there already shows every
   // arrival, so a popup would be covering the thing it is announcing.
   useEffect(() => { setSuppressed(safePage === "alerts"); }, [safePage, setSuppressed]);
+
+  // Opens the audio device on the first click anywhere in the dashboard, so
+  // the first alert chime of a shift is not the one the browser swallows
+  // while it decides whether the page is allowed to make a sound.
+  useEffect(() => armAlertSound(), []);
 
   const activeAlerts = alerts.filter((a) => a.status === "active");
   const dispatchedAlerts = alerts.filter((a) => a.status === "dispatched");

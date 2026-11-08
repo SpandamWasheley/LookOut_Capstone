@@ -134,6 +134,19 @@ export function EdgeCanvas({
   // A ref rather than props because the two actions never change: handing them
   // over must not re-render either side.
   actionsRef,
+  // A CSS length the DISPLAYED picture must not grow past, e.g. "70vh". The
+  // canvas otherwise fills its column's width, which is what you want in a
+  // narrow column and wrong in a wide one: an expanded editor would scale a
+  // 16:9 frame taller than the window and push the points near the kerb off
+  // the bottom of the screen, where they cannot be clicked.
+  //
+  // Capped by the WRAPPER's width rather than the canvas's height, because a
+  // canvas only keeps its aspect ratio while one axis is auto — setting both
+  // would stretch the frame, and a stretched frame means every point is
+  // placed somewhere the detector will not read it. maxWidth = maxHeight x
+  // the frame's own ratio caps the height to the same effect, and leaves the
+  // element box exactly the picture, which is what toFrame measures against.
+  maxHeight,
 }) {
   const [points, setPoints] = useState(() => initialPoints ?? []);
   const copy = KIND_COPY[kind] ?? KIND_COPY.zone;
@@ -273,7 +286,10 @@ export function EdgeCanvas({
       </div>
       )}
 
-      <div className="rounded-xl overflow-hidden" style={{ border: "1px solid var(--border)", background: "#000" }}>
+      <div className="rounded-xl overflow-hidden mx-auto" style={{
+        border: "1px solid var(--border)", background: "#000", width: "100%",
+        ...(maxHeight ? { maxWidth: `calc(${maxHeight} * ${frame.width / frame.height})` } : null),
+      }}>
         <canvas
           ref={canvasRef}
           onClick={handleCanvasClick}

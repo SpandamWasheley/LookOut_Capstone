@@ -9,6 +9,7 @@ import {
   getDispatchers, updateDispatcher, deleteDispatcher,
 } from "./api";
 import { formatPhone, isValidPhone } from "./phone";
+import { NoticeDialog } from "./ConfirmDialog";
 import { NotificationBell } from "./NotificationBell";
 
 const statusConfig = {
@@ -79,6 +80,9 @@ const SMS_HINT_NO_ACCOUNT = "This officer has no login account, so there is noth
 // explanation.
 function SmsToggle({ on, phone, hasAccount = true, onToggle }) {
   const [busy, setBusy] = useState(false);
+  // Why the switch bounced back. In a dialog rather than window.alert, which
+  // blocks the tab the violation poll runs in.
+  const [notice, setNotice] = useState(null);
   const hasPhone = Boolean(phone);
   const disabled = busy || !hasAccount || (!on && !hasPhone);
   const hint = !hasAccount ? SMS_HINT_NO_ACCOUNT : hasPhone || on ? SMS_HINT : SMS_HINT_NO_PHONE;
@@ -90,13 +94,14 @@ function SmsToggle({ on, phone, hasAccount = true, onToggle }) {
     try {
       await onToggle(!on);
     } catch (err) {
-      alert(`Failed to update SMS alerts: ${err.message}`);
+      setNotice(err.message);
     } finally {
       setBusy(false);
     }
   };
 
   return (
+    <>
     <button
       type="button"
       onClick={handleClick}
@@ -111,6 +116,13 @@ function SmsToggle({ on, phone, hasAccount = true, onToggle }) {
       <span className="absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-all"
         style={{ left: on ? "1rem" : "0.125rem" }} />
     </button>
+    <NoticeDialog
+      open={!!notice}
+      title="SMS alerts not changed"
+      body={notice ? `${notice} The switch is still set the way the server has it.` : ""}
+      onClose={() => setNotice(null)}
+    />
+    </>
   );
 }
 
@@ -716,6 +728,10 @@ export function OfficersPage({ alerts = [], onOpenAlerts = () => {} }) {
     }
   };
 
+  // Why a removal was refused, kept after `deleteTarget` is cleared so the
+  // confirmation closes and the reason stays on screen.
+  const [removeError, setRemoveError] = useState(null);
+
   const handleDelete = async () => {
     if (!deleteTarget) return;
     try {
@@ -728,7 +744,7 @@ export function OfficersPage({ alerts = [], onOpenAlerts = () => {} }) {
       // to avoid leaving a stale entry behind in the other one.
       await Promise.all([refreshOfficers(), refreshDispatchers()]);
     } catch (err) {
-      alert(`Failed to remove ${deleteTarget.type}: ${err.message}`);
+      setRemoveError({ type: deleteTarget.type, message: err.message });
     } finally {
       setDeleteTarget(null);
     }
@@ -1069,6 +1085,13 @@ export function OfficersPage({ alerts = [], onOpenAlerts = () => {} }) {
           onClose={() => setEditTarget(null)}
         />
       )}
+
+      <NoticeDialog
+        open={!!removeError}
+        title={`Could not remove that ${removeError?.type ?? "account"}`}
+        body={removeError ? `${removeError.message} The account is unchanged.` : ""}
+        onClose={() => setRemoveError(null)}
+      />
     </div>
   );
 }

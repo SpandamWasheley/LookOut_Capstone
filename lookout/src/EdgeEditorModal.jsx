@@ -1,16 +1,26 @@
 import { useEffect, useRef, useState } from "react";
 import {
   X, Loader2, FileVideo, AlertTriangle, Save, WifiOff, Wand2, Info,
-  Car, Trash2, Undo2,
+  Car, Trash2, Undo2, Maximize2, Minimize2,
 } from "lucide-react";
 import {
   getCameraSnapshotUrl, uploadCameraEdgeFrame, updateCamera,
   startCameraZoneTrace, getCameraZoneTrace, cancelCameraZoneTrace,
 } from "./api";
 import { EdgeCanvas } from "./EdgeCanvas";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 const ALLOWED_EXTENSIONS = [".mp4", ".mkv", ".avi"];
 const MAX_BYTES = 1024 * 1024 * 1024; // 1GB, matches the backend's limit
+
+// How tall the picture may get while expanded: the window, less this modal's
+// own header, footer and padding. Points are placed by eye against kerbs and
+// wall lines a few pixels wide in the frame's own scale, so the only thing
+// that makes them placeable is size — but a picture taller than the window
+// hides the far end of the road behind the footer, and the editor would have
+// traded one unclickable area for another. One number, used both by the
+// canvas and by the hint badge pinned to its corner.
+const EXPANDED_FIT = "calc(96vh - 200px)";
 
 // The two areas `Camera.edges` holds, in the order the selector lists them.
 // `kind` is the one name that travels: EdgeCanvas's prop, the trace job's
@@ -121,6 +131,14 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
 
+  // Expanded = the picture gets the whole window instead of a 1000px modal.
+  // Drawing is the one job here and a 2MP frame scaled into a 600px column
+  // puts four source pixels under every screen one, which is the difference
+  // between a point on the kerb and a point in the gutter. Off by default:
+  // the compact modal is the better shape for checking a zone that is already
+  // right, which is most openings.
+  const [expanded, setExpanded] = useState(false);
+
   // Live zone trace. `canvasKey` remounts EdgeCanvas (it only reads
   // initialPoints at mount) so a traced polygon lands as ordinary editable
   // points; `edgePoints` mirrors how many points the canvas holds right now.
@@ -132,6 +150,12 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
   // Which canvas the latest trace was for, so its note/error shows on that tab only.
   const [traceFor, setTraceFor] = useState("zone");
   const [edgePoints, setEdgePoints] = useState(0);
+  // The `kind` whose retrace is waiting to be confirmed, or null. State rather
+  // than window.confirm: that one blocks the whole tab, which stops the alert
+  // poll dead, and its OK/Cancel say nothing about which of the two areas is
+  // about to be thrown away.
+  const [confirmKind, setConfirmKind] = useState(null);
+
   const [applyNote, setApplyNote] = useState("");
   const pollRef = useRef(null);
   const tracing = trace?.state === "running";
@@ -139,6 +163,19 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
   const liveUrlRef = useRef(null);
   const prefilledRef = useRef(false);
   const fileInputRef = useRef(null);
+
+  // Escape LEAVES the expanded view rather than closing the editor — with the
+  // frame filling the window there is no visible backdrop left to click, and
+  // a key that threw away a half-drawn polygon would be the wrong reflex to
+  // teach. It only acts while expanded, so the modal's behaviour is otherwise
+  // unchanged, and not while a confirmation is up: Escape belongs to the
+  // question on top, and shrinking the view out from under it answers nothing.
+  useEffect(() => {
+    if (!expanded || confirmKind) return undefined;
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setExpanded(false); } };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [expanded, confirmKind]);
 
   // Pre-loads any edges already saved on this camera, scaled from the
   // resolution they were drawn at to whatever frame we just loaded — mirrors
@@ -281,11 +318,12 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
     }, 1000);
   };
 
-  const handleTrace = async (kind = "zone") => {
+  // `confirmed` is set by the dialog's own button, so the first call with a
+  // shape already drawn only ASKS and the second one traces.
+  const handleTrace = async (kind = "zone", confirmed = false) => {
     if (tracing || !frame) return;
     const existing = kind === "disposal" ? disposalPoints : edgePoints;
-    if (existing > 0 && !window.confirm(
-      `Replace the current ${kind === "disposal" ? "rubbish area" : "zone"} with the traced one?`)) return;
+    if (existing > 0 && !confirmed) { setConfirmKind(kind); return; }
     setTraceError(""); setTraceNote(""); setApplyNote("");
     setTraceFor(kind);
     try {
@@ -364,15 +402,24 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
   const activeActions = tab === "disposal" ? disposalActions : parkingActions;
   const activeCount = tab === "disposal" ? disposalPoints : edgePoints;
 
+  // Expanded, the picture is capped at EXPANDED_FIT and its column is wider
+  // than that cap allows, so the wrapper is capped to the same width: the
+  // "Click to add points" badge is pinned to the wrapper's top-right corner
+  // and would otherwise float in the empty gap beside the frame.
+  const fitHeight = expanded ? EXPANDED_FIT : null;
+  const pictureStyle = fitHeight && frame
+    ? { width: "100%", maxWidth: `calc(${fitHeight} * ${frame.width / frame.height})`, margin: "0 auto" }
+    : undefined;
+
   return (
     <div
-      className="fixed inset-0 z-[70] flex items-center justify-center p-4"
+      className={`fixed inset-0 z-[70] flex items-center justify-center ${expanded ? "p-2" : "p-4"}`}
       style={{ background: "rgba(0,0,0,0.72)", backdropFilter: "blur(6px)" }}
       onClick={(e) => { if (e.target === e.currentTarget && !saving) onClose(); }}
     >
       <div
-        className="w-full max-w-[1000px] rounded-2xl overflow-hidden shadow-2xl flex flex-col"
-        style={{ background: "var(--card)", border: "1px solid var(--border)", maxHeight: "92vh" }}
+        className={`w-full rounded-2xl overflow-hidden shadow-2xl flex flex-col ${expanded ? "max-w-[1800px]" : "max-w-[1000px]"}`}
+        style={{ background: "var(--card)", border: "1px solid var(--border)", maxHeight: expanded ? "96vh" : "92vh" }}
       >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 flex-shrink-0"
@@ -385,12 +432,25 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
               {camera.name} ({camera.id})
             </div>
           </div>
-          {!saving && (
-            <button onClick={onClose} className="p-1.5 rounded-lg"
-              style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}>
-              <X size={14} />
-            </button>
-          )}
+          <div className="flex items-center gap-1.5">
+            {frame && (
+              <button onClick={() => setExpanded((v) => !v)}
+                title={expanded ? "Shrink the view (Esc)" : "Expand the view for drawing"}
+                aria-label={expanded ? "Shrink the view" : "Expand the view"}
+                aria-pressed={expanded}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[12px] font-medium"
+                style={{ color: "var(--foreground)", background: "var(--secondary)", border: "1px solid var(--border)" }}>
+                {expanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+                {expanded ? "Shrink" : "Expand"}
+              </button>
+            )}
+            {!saving && (
+              <button onClick={onClose} className="p-1.5 rounded-lg"
+                style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}>
+                <X size={14} />
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3.5">
@@ -467,12 +527,14 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
               {/* Picture on the left, every control on the right. Below md
                   the controls stack under the frame rather than being squeezed
                   beside it. */}
-              <div className="grid grid-cols-1 md:grid-cols-[minmax(0,60fr)_minmax(0,40fr)] gap-4 items-start">
+              <div className={`grid grid-cols-1 gap-4 items-start ${
+                expanded ? "md:grid-cols-[minmax(0,1fr)_300px]" : "md:grid-cols-[minmax(0,60fr)_minmax(0,40fr)]"
+              }`}>
                 {/* LEFT - the frame and its overlay. Both canvases stay MOUNTED
                     (the inactive one is only hidden) because EdgeCanvas owns
                     its points: unmounting on a switch would throw away a
                     half-drawn shape. */}
-                <div className="relative">
+                <div className="relative" style={pictureStyle}>
                   <div className={tab === "parking" ? "" : "hidden"}>
                     <EdgeCanvas
                       key={canvasKey}
@@ -480,6 +542,7 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
                       initialPoints={prefill.points}
                       chrome={false}
                       showThresholds={false}
+                      maxHeight={fitHeight}
                       actionsRef={parkingActions}
                       onChange={(spec, can, count) => {
                         setParkingInitial((prev) => prev ?? JSON.stringify(spec));
@@ -496,6 +559,7 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
                       initialPoints={disposalPrefill}
                       chrome={false}
                       showThresholds={false}
+                      maxHeight={fitHeight}
                       actionsRef={disposalActions}
                       onChange={(spec, can, count) => {
                         setDisposalInitial((prev) => prev ?? JSON.stringify(spec));
@@ -613,24 +677,26 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
                   {/* Parking's two thresholds. This modal saves them, so they
                       stay with the area they belong to rather than going out
                       with the instruction box. */}
+                  {/* One sentence on one line — "Inside the road 35 % for 2
+                      minutes" reads as the rule it is, and two stacked rows
+                      spent the height of the controls column saying it.
+                      Wraps rather than overflows on a narrow column. */}
                   {tab === "parking" && (
-                    <div className="space-y-2 pt-1">
-                      <label className="flex items-center gap-2 text-[13px]" style={{ color: "var(--muted-foreground)" }}>
-                        Inside the road
-                        <input type="number" min={10} max={90} value={pct}
-                          onChange={(e) => setPct(e.target.value)}
-                          className="w-16 px-2 py-1.5 rounded-lg text-sm outline-none"
-                          style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
-                        %
-                      </label>
-                      <label className="flex items-center gap-2 text-[13px]" style={{ color: "var(--muted-foreground)" }}>
-                        for
-                        <input type="number" min={0.1} step={0.1} value={minutes}
-                          onChange={(e) => setMinutes(e.target.value)}
-                          className="w-16 px-2 py-1.5 rounded-lg text-sm outline-none"
-                          style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
-                        minutes
-                      </label>
+                    <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1.5 pt-1 text-[13px]"
+                      style={{ color: "var(--muted-foreground)" }}>
+                      <span>Inside the road</span>
+                      <input type="number" min={10} max={90} value={pct}
+                        aria-label="How much of the vehicle must be inside the road, as a percentage"
+                        onChange={(e) => setPct(e.target.value)}
+                        className="w-14 px-2 py-1 rounded-lg text-sm outline-none"
+                        style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
+                      <span>% for</span>
+                      <input type="number" min={0.1} step={0.1} value={minutes}
+                        aria-label="How long it must stand there, in minutes"
+                        onChange={(e) => setMinutes(e.target.value)}
+                        className="w-14 px-2 py-1 rounded-lg text-sm outline-none"
+                        style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
+                      <span>minutes</span>
                     </div>
                   )}
                 </div>
@@ -679,6 +745,29 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
           </button>
         </div>
       </div>
+
+      {/* Tracing over a shape somebody has already drawn. The question names
+          the area and how many points go, because the two areas look alike on
+          screen and only one of them is being replaced. */}
+      <ConfirmDialog
+        open={!!confirmKind}
+        title={`Replace the ${confirmKind === "disposal" ? "rubbish area" : "road zone"}?`}
+        body={(() => {
+          const n = confirmKind === "disposal" ? disposalPoints : edgePoints;
+          const where = confirmKind === "disposal" ? "rubbish area" : "road zone";
+          return `Tracing throws away the ${n} point${n === 1 ? "" : "s"} drawn on the ${where}`
+            + " and puts its own there instead. Nothing is saved until you press Save zones,"
+            + " and the other area is left alone.";
+        })()}
+        confirmLabel="Replace and trace"
+        cancelLabel="Keep mine"
+        onCancel={() => setConfirmKind(null)}
+        onConfirm={() => {
+          const kind = confirmKind;
+          setConfirmKind(null);
+          handleTrace(kind, true);
+        }}
+      />
     </div>
   );
 }

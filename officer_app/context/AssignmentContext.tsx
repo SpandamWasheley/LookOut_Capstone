@@ -1,6 +1,7 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 
 import { useAuth } from "@/context/AuthContext";
+import { announceNewAssignments } from "@/lib/alertSound";
 import * as api from "@/lib/api";
 
 export interface ViolationTypeMeta {
@@ -95,6 +96,50 @@ export function AssignmentProvider({ children }: { children: React.ReactNode }) 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
+  // Which open violations were already this officer's last time we looked.
+  // `null` until the first list lands — that one is the backlog, not an
+  // arrival, and announcing it would chime through everything an officer is
+  // already carrying every time they sign in.
+  const mineRef = useRef<Set<string> | null>(null);
+  // Assignments this officer gave themselves by tapping Accept. They are
+  // holding the phone and just pressed the button, so a notification about it
+  // is noise — the same reason AlertViewSet.accept deliberately sends no
+  // push. Consumed on the poll that first sees them, so an alert reassigned
+  // to them later still announces.
+  const selfClaimedRef = useRef<Set<string>>(new Set());
+
+  // Mirrors core/push.py's rule: only assignments made to THIS officer, and
+  // only ones that are new to them. Runs on the poll's own response, so the
+  // comparison is against what the server just said rather than against a
+  // re-render of the same array.
+  const announce = useCallback((list: Assignment[]) => {
+    const id = officer?.officerId;
+    if (id == null) return;
+    const mine = list.filter(
+      (a) => (a.status === "active" || a.status === "dispatched") && a.assignedOfficerIds.includes(id),
+    );
+    const open = new Set(mine.map((a) => a.id));
+    const seen = mineRef.current;
+    mineRef.current = open;
+    if (seen === null) return;
+
+    const fresh = mine.filter((a) => {
+      if (seen.has(a.id)) return false;
+      if (selfClaimedRef.current.has(a.id)) {
+        selfClaimedRef.current.delete(a.id);
+        return false;
+      }
+      return true;
+    });
+    if (fresh.length === 0) return;
+    announceNewAssignments({
+      count: fresh.length,
+      id: fresh[0].id,
+      label: fresh[0].violationType.label,
+      location: fresh[0].location,
+    });
+  }, [officer?.officerId]);
+
   const fetchAssignments = useCallback(async (silent = false) => {
     if (!silent) setError("");
     try {
@@ -113,17 +158,31 @@ export function AssignmentProvider({ children }: { children: React.ReactNode }) 
       setAssignments((prev) =>
         JSON.stringify(prev) === JSON.stringify(next) ? prev : next
       );
+      // Driven by the RESPONSE, not by the state swap above: whether React
+      // re-rendered says nothing about whether this officer was handed
+      // something, and `announce` keeps its own record of what was already
+      // theirs.
+      announce(next);
       if (silent) setError("");
     } catch (err) {
       // Background polling fails silently (keeps showing the last good data);
       // only surface an error for the initial load / explicit manual refresh.
       if (!silent) setError(err instanceof Error ? err.message : "Failed to load assignments.");
     }
-  }, []);
+    // `announce` is rebuilt when the signed-in officer changes, which the
+    // poll's own effect reacts to as well — without it here, polling would go
+    // on calling the previous officer's version.
+  }, [announce]);
 
   const refreshAssignments = useCallback(() => fetchAssignments(false), [fetchAssignments]);
 
   useEffect(() => {
+    // A different account on the same handset must not inherit the last
+    // officer's record of what was already theirs: reseed from their own
+    // first list instead of announcing the difference between two people's
+    // workloads.
+    mineRef.current = null;
+    selfClaimedRef.current.clear();
     if (!officer) {
       setAssignments([]);
       setError("");
@@ -145,9 +204,21 @@ export function AssignmentProvider({ children }: { children: React.ReactNode }) 
     async (id: string) => {
       const a = assignments.find((x) => x.id === id);
       if (!a) return;
-      // Atomic add on the server — safe if another officer accepts the same
-      // alert at the same time, unlike a client-computed read-modify-write.
-      await api.acceptAlert(a.dbId);
+      // Recorded BEFORE the request, because the refresh below is what makes
+      // it look like an arrival — and it is not one, the officer just pressed
+      // Accept with the phone in their hand.
+      selfClaimedRef.current.add(a.id);
+      try {
+        // Atomic add on the server — safe if another officer accepts the same
+        // alert at the same time, unlike a client-computed read-modify-write.
+        await api.acceptAlert(a.dbId);
+      } catch (err) {
+        // The accept never happened, so this is not theirs and the mark would
+        // silently swallow the announcement if a dispatcher assigned it to
+        // them later. The screen still reports the failure.
+        selfClaimedRef.current.delete(a.id);
+        throw err;
+      }
       await refreshAssignments();
     },
     [assignments, refreshAssignments]

@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { Save, RotateCcw, Car, Cigarette, Siren, Beer, Trash2, AlertTriangle, Loader2, SlidersHorizontal, User } from "lucide-react";
 import { getSettings, saveSettings } from "./api";
 import { readTestingTools, writeTestingTools } from "./useTestingTools";
+import { readAlertSound, writeAlertSound } from "./alertSound";
+import { NoticeDialog } from "./ConfirmDialog";
 import { SettingsSlider as Slider } from "./components/settings/SettingsSlider";
 import { AccountPage } from "./AccountPage";
 
@@ -221,6 +223,11 @@ export function SystemConfig() {
   const [active, setActive] = useState("parking");
   const [saving, setSaving] = useState(false);
   const [testingTools, setTestingTools] = useState(readTestingTools);
+  // Per-browser, like the one above: saved here, not on the server.
+  const [alertSound, setAlertSound] = useState(readAlertSound);
+  // Why a save was refused. Shown in a dialog, not window.alert, which
+  // freezes the whole tab — including the alert poll — until it is answered.
+  const [saveError, setSaveError] = useState("");
   const [saved, setSaved] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -264,6 +271,7 @@ export function SystemConfig() {
 
   const save = async () => {
     setSaving(true);
+    setSaveError("");
     try {
       const patch = {};
       changedKeys.forEach((k) => { patch[k] = form[k]; });
@@ -272,7 +280,7 @@ export function SystemConfig() {
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (err) {
-      alert(`Failed to save settings: ${err.message}`);
+      setSaveError(err.message);
     } finally {
       setSaving(false);
     }
@@ -563,6 +571,10 @@ export function SystemConfig() {
               desc="Shows Run Detection, and Upload Video and History on Feeds, for trying the system on recorded footage. Leave off for normal use. Applies right away on this computer only, so there is no need to press Save."
               value={testingTools} differs={testingTools}
               onChange={(v) => { writeTestingTools(v); setTestingTools(v); }} />
+            <Toggle label="Alert sound"
+              desc="On by default. Plays a short chime on this computer when a new violation arrives, so the desk hears it without watching the screen. Applies right away on this computer only, so there is no need to press Save — it is also one click away under the bell, for anyone who cannot open this page."
+              value={alertSound} differs={!alertSound}
+              onChange={(v) => { writeAlertSound(v); setAlertSound(v); }} />
             <Toggle label="SMS alerts"
               desc="Off by default. The master switch for text messages: while this is off nobody is texted, whatever their own setting says. Who gets a text is set per person — their mobile number and SMS switch are on their account, in Personnel or under My account. A holdup or parking obstruction texts its assigned officer straight away; everything else is summed up every half hour, which also tells admins and dispatchers how many violations were detected. Each message uses a credit, and a quiet half hour sends nothing. Globe and DITO numbers only; Smart, TNT and Sun cannot be reached, and those officers rely on the app's push notification."
               value={form.sms_alerts_enabled} differs={differs("sms_alerts_enabled")}
@@ -759,6 +771,13 @@ export function SystemConfig() {
           </div>
         );
       })()}
+
+      <NoticeDialog
+        open={!!saveError}
+        title="Settings not saved"
+        body={saveError ? `${saveError} Nothing was changed — your edits are still here, so you can try again.` : ""}
+        onClose={() => setSaveError("")}
+      />
     </div>
   );
 }

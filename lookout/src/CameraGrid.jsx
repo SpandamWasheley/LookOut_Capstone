@@ -7,6 +7,7 @@ import { useTestingTools } from "./useTestingTools";
 import { LiveMonitor } from "./LiveMonitor";
 import { EdgeEditorModal } from "./EdgeEditorModal";
 import { CameraStreamModal } from "./CameraStreamModal";
+import { NoticeDialog } from "./ConfirmDialog";
 import { detectionLabel } from "./constants/detectionTypes";
 
 // Polls a live camera's snapshot proxy and returns the latest frame as an
@@ -586,6 +587,11 @@ export function CameraGrid({ compact = false, isAdmin: isAdminRole = false }) {
   // — e.g. the wrong video got uploaded and there's no other way to stop it.
   // Applies the server's response immediately instead of waiting up to 4s for
   // the next poll, so the card/row updates right away.
+  // Why a cancel could not be stopped, when the refresh above shows it is in
+  // fact still running. A dialog rather than window.alert: that one freezes
+  // the tab, and the tab is what polls for violations.
+  const [notice, setNotice] = useState(null);
+
   const handleCancelJob = (id) => {
     cancelDetectionJob(id)
       .then((updated) => {
@@ -600,7 +606,7 @@ export function CameraGrid({ compact = false, isAdmin: isAdminRole = false }) {
         getDetectionJobs()
           .then((res) => setDetectionJobs((res.results ?? res).map(mapDetectionJob)))
           .catch(() => {});
-        alert(`Could not cancel: ${err.message || "unknown error"}`);
+        setNotice(err.message || "unknown error");
       });
   };
 
@@ -783,6 +789,13 @@ export function CameraGrid({ compact = false, isAdmin: isAdminRole = false }) {
           onCancel={handleCancelJob}
         />
       )}
+
+      <NoticeDialog
+        open={!!notice}
+        title="Could not cancel that run"
+        body={notice}
+        onClose={() => setNotice(null)}
+      />
     </div>
   );
 }

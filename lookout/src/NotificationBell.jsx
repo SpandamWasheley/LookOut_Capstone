@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from "react";
-import { Bell, BellOff, ArrowUpRight } from "lucide-react";
+import { Bell, BellOff, ArrowUpRight, Volume2, VolumeX } from "lucide-react";
 
 import { violationDisplay } from "./constants/violationTypes";
 import { levelColor } from "./alertModel";
+import { useAlertSoundPref, writeAlertSound } from "./alertSound";
 
 // The topbar notification bell: how many violations are waiting to be reviewed,
 // and which ones, without leaving the page you are on.
@@ -35,6 +36,11 @@ function timeAgo(ts) {
 export function NotificationBell({ alerts, onOpenAlerts }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef(null);
+  // Whether this computer chimes on a new violation. It lives in the bell
+  // rather than in Settings because Settings is admin-only, and the person
+  // who needs the speaker turned down is whoever is sitting at the desk —
+  // usually a dispatcher, who cannot open that page at all.
+  const soundOn = useAlertSoundPref();
 
   // A dropdown that outlives a click elsewhere is a dropdown that covers the
   // page it is sitting on, so it closes on an outside click and on Escape.
@@ -100,9 +106,23 @@ export function NotificationBell({ alerts, onOpenAlerts }) {
             <span className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>
               New violations
             </span>
-            <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>
-              {count > 0 ? `${count} to review` : "All clear"}
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>
+                {count > 0 ? `${count} to review` : "All clear"}
+              </span>
+              <button
+                onClick={() => writeAlertSound(!soundOn)}
+                aria-pressed={soundOn}
+                aria-label={soundOn ? "Turn the alert sound off" : "Turn the alert sound on"}
+                title={soundOn
+                  ? "Alert sound on — this computer chimes when a violation arrives"
+                  : "Alert sound off on this computer"}
+                className="p-1 rounded-md"
+                style={{ color: soundOn ? "var(--foreground)" : "var(--muted-foreground)" }}
+              >
+                {soundOn ? <Volume2 size={14} /> : <VolumeX size={14} />}
+              </button>
+            </div>
           </div>
 
           {newest.length === 0 ? (
