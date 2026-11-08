@@ -3,6 +3,7 @@ import React, { createContext, useCallback, useContext, useEffect, useRef, useSt
 import { useAuth } from "@/context/AuthContext";
 import { announceNewAssignments } from "@/lib/alertSound";
 import * as api from "@/lib/api";
+import { displayLabel } from "@/lib/violationLabels";
 
 export interface ViolationTypeMeta {
   code: string;
@@ -147,7 +148,11 @@ export function AssignmentProvider({ children }: { children: React.ReactNode }) 
       const alerts = Array.isArray(alertsRes) ? alertsRes : alertsRes.results;
       const types = Array.isArray(typesRes) ? typesRes : typesRes.results;
       const typesByCode = Object.fromEntries(
-        types.map((t) => [t.code, { code: t.code, label: t.label, color: t.color, icon: t.icon }])
+        // displayLabel here rather than at each render site: this is the single
+        // place the app turns an API type into the shape every screen reads, so
+        // the card, the detail header, the search filter and the local
+        // notification cannot drift apart on what a violation is called.
+        types.map((t) => [t.code, { code: t.code, label: displayLabel(t), color: t.color, icon: t.icon }])
       );
       const next = alerts.map((a) => mapAlert(a, typesByCode));
       // Only swap in a new array when the data actually changed. Every 4s poll

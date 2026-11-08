@@ -26,6 +26,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AutoScrollView } from "@/components/AutoScrollView";
 import { getViolationIconName } from "@/constants/violationIcons";
+import { displayLabel } from "@/lib/violationLabels";
 import { Assignment, useAssignments } from "@/context/AssignmentContext";
 import { useAuth } from "@/context/AuthContext";
 import { Spinner } from "@/components/ui/Spinner";
@@ -178,21 +179,6 @@ function DismissModal({ visible, onClose, onConfirm }: DismissModalProps) {
 // an officer dispatched to a disposal alert reached a slip with nothing on it
 // they could tick — the alert was citable in principle and uncitable in fact.
 const IN_SCOPE_VIOLATION_CODES = ["smoking", "drinking", "parking", "theft", "disposal"];
-
-// What the SLIP calls a violation, where that differs from what the system
-// calls it. The detector's name describes the thing it watches for; a citation
-// has to name the offence the way the ordinance does, and the officer handing
-// it over reads it out loud.
-//
-// Deliberately a display-only override: the code, the colour, the icon and
-// every other screen are untouched, so an alert is still "Improper Disposal"
-// in the dashboard and the two cannot disagree about WHICH violation this is.
-const SLIP_LABELS: Record<string, string> = {
-  disposal: "Abandoned Waste",
-};
-
-const slipLabel = (type: { code: string; label: string }) =>
-  SLIP_LABELS[type.code] ?? type.label;
 
 // Every barangay of Zamboanga City, District I (West Coast) and District II
 // (East Coast). MUST stay identical to core/constants.py's ZAMBOANGA_BARANGAYS:
@@ -708,7 +694,7 @@ function ResolveModal({
                   .map((t) => (
                     <View key={t.id} style={[cfStyles.confirmedTypeRow, { backgroundColor: `${t.color}18`, borderColor: t.color }]}>
                       <Feather name={getViolationIconName(t.icon)} size={16} color={t.color} />
-                      <Text style={[cfStyles.typeLabel, { color: t.color }]}>{slipLabel(t)}</Text>
+                      <Text style={[cfStyles.typeLabel, { color: t.color }]}>{displayLabel(t)}</Text>
                       <Feather name="check" size={15} color={t.color} style={{ marginLeft: "auto" }} />
                     </View>
                   ))}
@@ -732,7 +718,7 @@ function ResolveModal({
                       onPress={() => toggleType(t.id)}
                       accessibilityRole="checkbox"
                       accessibilityState={{ checked }}
-                      accessibilityLabel={slipLabel(t)}
+                      accessibilityLabel={displayLabel(t)}
                       style={({ pressed }) => [
                         cfStyles.typeRow,
                         {
@@ -743,7 +729,7 @@ function ResolveModal({
                       ]}
                     >
                       <Feather name={getViolationIconName(t.icon)} size={18} color={checked ? t.color : c.mutedForeground} />
-                      <Text style={[cfStyles.typeLabel, { color: checked ? t.color : c.foreground }]}>{slipLabel(t)}</Text>
+                      <Text style={[cfStyles.typeLabel, { color: checked ? t.color : c.foreground }]}>{displayLabel(t)}</Text>
                       {checked && <Feather name="check" size={16} color={t.color} style={{ marginLeft: "auto" }} />}
                     </Pressable>
                   );
@@ -878,7 +864,11 @@ function ResolveModal({
             )}
           </View>
           {/* Scrolls, because ninety-nine rows do not fit a sheet. */}
-          <ScrollView keyboardShouldPersistTaps="handled" style={cfStyles.barangayList}>
+          <ScrollView
+            keyboardShouldPersistTaps="handled"
+            style={cfStyles.barangayList}
+            contentContainerStyle={cfStyles.barangayListContent}
+          >
             {barangayMatches.map((b) => (
               <Pressable
                 key={b.value}
@@ -976,7 +966,7 @@ function ResolveModal({
               <Text style={[cfStyles.reviewValue, { color: c.foreground }]}>
                 {violationTypes
                   .filter((t) => selectedTypeIds.has(t.id))
-                  .map(slipLabel)
+                  .map(displayLabel)
                   .join(", ")}
               </Text>
             </View>
@@ -1818,6 +1808,10 @@ const cfStyles = StyleSheet.create({
   // Capped so the sheet cannot grow past the screen on a long list, and so
   // the rows scroll under a search box that stays put.
   barangayList: { maxHeight: 360 },
+  // The gap belongs here rather than as a margin on barangayRow: that row
+  // style is shared with the Suffix sheet, whose rows are direct children of
+  // a container that already gaps them, and would end up double-spaced.
+  barangayListContent: { gap: 8, paddingBottom: 4 },
   barangayEmpty: { fontSize: 14, lineHeight: 20, paddingHorizontal: 4, paddingVertical: 18, textAlign: "center" },
   barangayRowText: { fontSize: 16, fontFamily: "Inter_600SemiBold" },
   reviewBlock: { marginTop: 12 },
