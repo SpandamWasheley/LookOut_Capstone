@@ -47,10 +47,13 @@ function useLiveOverviewData(onAlerts) {
   return { alerts, cameras, officers };
 }
 
-// "account" is on every role: it holds the mobile number an alert would be
-// texted to, and each role is responsible for its own.
+// "account" is on every role EXCEPT admin: it holds the mobile number an alert
+// would be texted to, and each role is responsible for its own. An admin
+// reaches the same page as the last section of Settings instead, so it is not
+// listed twice; the other roles have no Settings page to put it in, which is
+// why this cannot simply be dropped for everyone.
 const ROLE_PAGES = {
-  admin:      ["dashboard", "cameras", "alerts", "records", "residentlog", "rundetection", "officers", "config", "account", "about"],
+  admin:      ["dashboard", "cameras", "alerts", "records", "residentlog", "rundetection", "officers", "config", "about"],
   dispatcher: ["dashboard", "cameras", "alerts", "records", "residentlog", "account", "about"],
   officer:    ["cameras", "alerts", "records", "account", "about"],
   both:       ["dashboard", "cameras", "alerts", "records", "account", "about"],

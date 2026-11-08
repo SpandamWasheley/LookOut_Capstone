@@ -37,7 +37,12 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from core.constants import ZAMBOANGA_BARANGAYS
-from core.emails import send_password_reset_code, send_verification_code
+from core.emails import (
+    send_email_change_code,
+    send_email_changed_notice,
+    send_password_reset_code,
+    send_verification_code,
+)
 
 from .models import (
     Alert,
@@ -205,6 +210,109 @@ def me(request):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data)
+    return Response(UserSerializer(request.user).data)
+
+
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated])
+@throttle_classes([OtpSendThrottle])
+def change_email_send_code(request):
+    """Step 1 of moving an account onto a different email address.
+
+    TWO different things are proven here, and both are needed.
+
+    The CURRENT PASSWORD proves the requester is the account owner and not
+    merely whoever is holding the session. This is the gate that matters. A
+    code sent to the new address proves only that the address is reachable --
+    and an attacker who has taken a session owns the address they are sending
+    it to, so on its own it stops typos, not takeovers. Without the password
+    check, a borrowed session could repoint the email and then use
+    forgot-password to own the account permanently.
+
+    The CODE then proves the new address exists and reaches someone, so the
+    account cannot be stranded on a typo nobody can receive mail at.
+
+    Nothing on the account changes until change_email_confirm.
+
+    Unlike the forgot-password route, this one DOES say when an address is
+    already taken. That route stays vague to stop strangers enumerating
+    accounts; here the caller has already proven who they are and is choosing
+    an address, so refusing to say why it was rejected would only strand them.
+    """
+    email = (request.data.get("email") or "").strip().lower()
+    password = request.data.get("current_password") or ""
+
+    if not email:
+        return Response({"email": "Email is required."}, status=400)
+    try:
+        validate_email(email)
+    except ValidationError:
+        return Response({"email": "Enter a valid email address."}, status=400)
+    if not password or not request.user.check_password(password):
+        return Response({"current_password": "That password is not correct."}, status=400)
+    if email == (request.user.email or "").strip().lower():
+        return Response({"email": "That is already your email address."}, status=400)
+    # Checked here so the error is immediate, and AGAIN on confirm, because
+    # the address can be claimed by someone else in between the two calls.
+    if User.objects.filter(email__iexact=email).exclude(pk=request.user.pk).exists():
+        return Response({"email": "That email is already used by another account."}, status=400)
+
+    code = f"{random.randint(0, 999999):06d}"
+    # Bound to the caller: a code is spendable only by the account that asked
+    # for it, so one minted by registration or password-reset -- or by another
+    # user -- cannot be replayed here to move this address.
+    EmailVerificationCode.objects.create(email=email, code=code, user=request.user)
+    send_async(
+        lambda: send_email_change_code(email, code, CODE_EXPIRY_MINUTES),
+        "email-change",
+        email,
+    )
+    return Response({"detail": f"A confirmation code has been sent to {email}."})
+
+
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated])
+@throttle_classes([OtpVerifyThrottle])
+def change_email_confirm(request):
+    """Step 2: the code came back, so the address is real and reachable."""
+    email = (request.data.get("email") or "").strip().lower()
+    code = (request.data.get("code") or "").strip()
+    if not email or not code:
+        return Response({"detail": "Email and code are required."}, status=400)
+
+    cutoff = timezone.now() - timedelta(minutes=CODE_EXPIRY_MINUTES)
+    row = (
+        EmailVerificationCode.objects
+        .filter(email=email, code=code, used=False, created_at__gte=cutoff, user=request.user)
+        .order_by("-created_at")
+        .first()
+    )
+    if row is None:
+        return Response({"code": "That code is wrong or has expired."}, status=400)
+
+    # Re-checked: somebody else may have taken the address while this code was
+    # sitting in an inbox.
+    if User.objects.filter(email__iexact=email).exclude(pk=request.user.pk).exists():
+        return Response({"email": "That email is already used by another account."}, status=400)
+
+    row.verified = True
+    row.used = True
+    row.save(update_fields=["verified", "used"])
+
+    previous = (request.user.email or "").strip()
+    request.user.email = email
+    request.user.save(update_fields=["email"])
+
+    # Told AFTER the fact, and never allowed to block the change: this is
+    # detection, not a third gate. It is also the only warning that reaches
+    # the real owner if the password itself has been taken.
+    if previous:
+        send_async(
+            lambda: send_email_changed_notice(previous, email),
+            "email-changed-notice",
+            previous,
+        )
+
     return Response(UserSerializer(request.user).data)
 
 

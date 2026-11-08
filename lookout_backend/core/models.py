@@ -101,6 +101,14 @@ class User(AbstractUser):
 class EmailVerificationCode(models.Model):
     email = models.EmailField()
     code = models.CharField(max_length=6)
+    # Which account asked, for the change-email flow only. Null for the
+    # registration and password-reset codes, which are issued to an address
+    # before -- or without -- a session. change_email_confirm requires a row
+    # that names the caller, so a code minted by one of those flows, or by a
+    # different user, cannot be spent to move somebody's email address.
+    user = models.ForeignKey(
+        "User", null=True, blank=True, on_delete=models.CASCADE, related_name="email_codes",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     verified = models.BooleanField(default=False)
     used = models.BooleanField(default=False)

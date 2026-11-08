@@ -41,9 +41,15 @@ class PhoneNumberField(serializers.CharField):
 class UserSerializer(serializers.ModelSerializer):
     """The caller's own account -- /auth/me/, GET and PATCH.
 
-    `phone` and `sms_alerts` are the only writable fields: this route exists so
-    a user can keep their own number current without an admin, not so an
-    account can rewrite its own role or email.
+    `phone`, `sms_alerts` and `username` are writable. `role` is NOT, and must
+    never be: an admin grants a role, and an account that could rewrite its own
+    would be granting itself one.
+
+    `email` is not writable HERE either, but for a different reason -- it is
+    the address a password reset is sent to, so letting a live session repoint
+    it turns a borrowed session into a permanent takeover. It is changed
+    through /auth/change-email/, which first proves the new address receives
+    mail. See those views.
     """
 
     officer_id = serializers.SerializerMethodField()
@@ -55,7 +61,25 @@ class UserSerializer(serializers.ModelSerializer):
             "id", "username", "display_name", "role", "email", "must_change_password",
             "officer_id", "phone", "sms_alerts",
         ]
-        read_only_fields = ["username", "display_name", "role", "email", "must_change_password"]
+        read_only_fields = ["display_name", "role", "email", "must_change_password"]
+
+    def validate_username(self, value):
+        """Unique, case-insensitively, and not blank.
+
+        The model already has unique=True, so this exists to turn a database
+        IntegrityError into a field error the form can show. Compared
+        case-insensitively because "Admin" and "admin" being different logins
+        is a trap rather than a feature.
+        """
+        value = (value or "").strip()
+        if not value:
+            raise serializers.ValidationError("Username cannot be empty.")
+        taken = User.objects.filter(username__iexact=value)
+        if self.instance is not None:
+            taken = taken.exclude(pk=self.instance.pk)
+        if taken.exists():
+            raise serializers.ValidationError("That username is already taken.")
+        return value
 
     def get_officer_id(self, obj):
         officer = getattr(obj, "officer_profile", None)

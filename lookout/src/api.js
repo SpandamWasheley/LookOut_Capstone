@@ -375,6 +375,20 @@ export const getMe = () => apiFetch("/auth/me/");
 export const updateMe = (payload) =>
   apiFetch("/auth/me/", { method: "PATCH", body: JSON.stringify(payload) });
 
+// Changing the email is TWO calls, not a field on updateMe. The CURRENT
+// PASSWORD is what proves this is the account owner rather than whoever is
+// holding the session -- without it, a borrowed session could repoint the
+// address and then use forgot-password to keep the account. The code sent to
+// the new address proves only that the address is reachable.
+// See core/views.change_email_send_code.
+export const sendEmailChangeCode = (email, currentPassword) =>
+  apiFetch("/auth/change-email/send-code/", {
+    method: "POST",
+    body: JSON.stringify({ email, current_password: currentPassword }),
+  });
+export const confirmEmailChange = (email, code) =>
+  apiFetch("/auth/change-email/confirm/", { method: "POST", body: JSON.stringify({ email, code }) });
+
 export const getOfficers = () => apiFetch("/officers/");
 export const updateOfficer = (id, payload) =>
   apiFetch(`/officers/${id}/`, { method: "PATCH", body: JSON.stringify(payload) });

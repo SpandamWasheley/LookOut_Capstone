@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { Save, RotateCcw, Car, Cigarette, Siren, Beer, Trash2, AlertTriangle, Loader2, SlidersHorizontal } from "lucide-react";
+import { Save, RotateCcw, Car, Cigarette, Siren, Beer, Trash2, AlertTriangle, Loader2, SlidersHorizontal, User } from "lucide-react";
 import { getSettings, saveSettings } from "./api";
 import { readTestingTools, writeTestingTools } from "./useTestingTools";
 import { SettingsSlider as Slider } from "./components/settings/SettingsSlider";
+import { AccountPage } from "./AccountPage";
 
 // Settings. One form for the whole page and ONE save button (top right). Every panel is two
 // columns on a wide screen: "Detection" on the left, "Timings" on the right; they stack on a
@@ -18,6 +19,10 @@ const sections = [
   { id: "drinking", label: "Drinking", icon: Beer, color: "#8b5cf6" },
   { id: "disposal", label: "Waste", icon: Trash2, color: "#22c55e" },
   { id: "system", label: "System", icon: SlidersHorizontal, color: "#3b82f6" },
+  // Your own account, not the barangay's. Last, under a rule, because it is
+  // the one section here that is about YOU rather than about the system --
+  // and the only one every role may open.
+  { id: "account", label: "My Account", icon: User, color: "#0ea5e9" },
 ];
 
 // Defaults for fields the server does not publish a default for. Timings come from the server
@@ -623,8 +628,12 @@ export function SystemConfig() {
         style={{ borderBottom: "1px solid var(--border)" }}>
         <div className="flex items-center gap-3">
           <h1 className="text-xl font-bold" style={{ color: "var(--foreground)" }}>Settings</h1>
-          <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>Admin only · changes apply within a few seconds</span>
+          <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>{active === "account" ? "Your own sign-in details and alert preferences" : "Admin only · changes apply within a few seconds"}</span>
         </div>
+        {/* These act on the barangay's settings, not on your account -- the
+            account section brings its own Save, and two of them in one header
+            is the kind of thing that gets the wrong one pressed. */}
+        {active !== "account" && (
         <div className="flex gap-2">
           <button
             onClick={() => setPendingAction("reset")}
@@ -643,6 +652,7 @@ export function SystemConfig() {
             <Save size={11} /> {saved ? "Saved!" : saving ? "Saving…" : "Save changes"}
           </button>
         </div>
+        )}
       </div>
 
       <div className="flex flex-1 overflow-hidden">
@@ -672,7 +682,12 @@ export function SystemConfig() {
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-5">
           <div className="max-w-5xl">
-            {loading ? (
+            {/* Account first and outside the settings gate: it fetches its own
+                data and saves itself, so a settings load that is slow or has
+                failed must not hide it. */}
+            {active === "account" ? (
+              <AccountPage embedded />
+            ) : loading ? (
               <div className="flex flex-col items-center justify-center py-16 gap-2">
                 <Loader2 size={24} className="animate-spin" style={{ color: "var(--muted-foreground)" }} />
                 <div className="text-sm font-medium" style={{ color: "var(--foreground)" }}>Loading settings…</div>

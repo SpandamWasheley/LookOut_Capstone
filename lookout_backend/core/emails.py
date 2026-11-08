@@ -98,6 +98,68 @@ def send_verification_code(recipient: str, code: str, minutes: int) -> None:
     ).send(fail_silently=False)
 
 
+def send_email_change_code(recipient: str, code: str, minutes: int) -> None:
+    """Email a code to an address somebody wants to MOVE their account to.
+
+    Sent to the proposed new address, never to the current one, because the
+    whole point is proving the person asking can actually receive mail there.
+    Until this code comes back the account's email is left alone.
+    """
+    _code_message(
+        f"Confirm your new {PRODUCT} email address",
+        recipient,
+        lead=(
+            f"Someone asked to use this address for their {PRODUCT} account, "
+            "the barangay security monitoring system. Enter this code to "
+            "confirm it:"
+        ),
+        code=code,
+        minutes=minutes,
+        closing=(
+            "If you didn't request this, you can ignore this email -- the "
+            "account is unchanged and keeps its current address."
+        ),
+    ).send(fail_silently=False)
+
+
+def send_email_changed_notice(recipient: str, new_address: str) -> None:
+    """Tell the OLD address that the account has moved somewhere else.
+
+    This is the part that does not depend on trusting whoever was signed in.
+    A code proves the NEW address is reachable, and the current password
+    proves the person knew it -- but neither reaches the real owner if their
+    session or password has been taken. This does: it lands in the inbox they
+    still read, and it is the only signal they would get that the account is
+    being walked away from.
+
+    Sent after the change, so it never blocks it -- the point is detection,
+    not another gate.
+    """
+    text = (
+        f"The email address for your {PRODUCT} account has been changed to "
+        f"{new_address}." + "\n\n"
+        "If you did this, nothing more is needed.\n\n"
+        "If you did NOT do this, someone else may have access to your "
+        "account. Contact your barangay administrator now -- password resets "
+        "will go to the new address from here on.\n\n"
+        f"-- {PRODUCT}, {TAGLINE.lower()}"
+    )
+    html = (
+        f'<p>The email address for your {PRODUCT} account has been changed to '
+        f'<strong>{escape(new_address)}</strong>.</p>'
+        '<p>If you did this, nothing more is needed.</p>'
+        '<p><strong>If you did not do this</strong>, someone else may have '
+        'access to your account. Contact your barangay administrator now &mdash; '
+        'password resets will go to the new address from here on.</p>'
+        f'<p style="color:#6b7280;font-size:12px">&mdash; {PRODUCT}, {escape(TAGLINE.lower())}</p>'
+    )
+    message = EmailMultiAlternatives(
+        f"Your {PRODUCT} email address was changed", text, to=[recipient],
+    )
+    message.attach_alternative(html, "text/html")
+    message.send(fail_silently=False)
+
+
 def send_password_reset_code(recipient: str, code: str, minutes: int) -> None:
     """Email a password-reset code. Raises on delivery failure."""
     _code_message(

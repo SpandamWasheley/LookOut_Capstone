@@ -17,6 +17,16 @@ const statusConfig = {
   "responding": { label: "Responding", color: "#f59e0b", bg: "rgba(245,158,11,0.1)",  icon: Radio },
 };
 
+// The Personnel roster is filtered by what an account IS, not by duty status:
+// a "both" account appears in the officer list and the dispatcher list, so the
+// first three tabs each show one kind on its own.
+const ROLE_FILTERS = [
+  { key: "all",        label: "All",        color: "var(--primary)", bg: "var(--primary)" },
+  { key: "officer",    label: "Officers",   color: "#10b981",        bg: "rgba(16,185,129,0.1)" },
+  { key: "dispatcher", label: "Dispatcher", color: "#f59e0b",        bg: "rgba(245,158,11,0.1)" },
+  { key: "both",       label: "Both",       color: "#3b82f6",        bg: "rgba(59,130,246,0.1)" },
+];
+
 function mapOfficer(raw) {
   return {
     id: raw.code,
@@ -87,27 +97,20 @@ function SmsToggle({ on, phone, hasAccount = true, onToggle }) {
   };
 
   return (
-    <span className="flex items-center gap-1.5">
-      <button
-        type="button"
-        onClick={handleClick}
-        disabled={disabled}
-        role="switch"
-        aria-checked={on}
-        aria-label="SMS Message Notification"
-        title={hint}
-        className="w-8 h-[18px] rounded-full relative transition-colors flex-shrink-0 disabled:opacity-40"
-        style={{ background: on ? "var(--primary)" : "var(--border)" }}
-      >
-        <span className="absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-all"
-          style={{ left: on ? "1rem" : "0.125rem" }} />
-      </button>
-      {/* The tooltip lives on a wrapping span: a `title` attribute on an <svg>
-          is not what browsers show a tooltip for. */}
-      <span title={hint} className="flex items-center flex-shrink-0 cursor-help">
-        <Info size={11} style={{ color: "var(--muted-foreground)" }} />
-      </span>
-    </span>
+    <button
+      type="button"
+      onClick={handleClick}
+      disabled={disabled}
+      role="switch"
+      aria-checked={on}
+      aria-label="SMS Message Notification"
+      title={hint}
+      className="w-8 h-[18px] rounded-full relative transition-colors flex-shrink-0 disabled:opacity-40"
+      style={{ background: on ? "var(--primary)" : "var(--border)" }}
+    >
+      <span className="absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-all"
+        style={{ left: on ? "1rem" : "0.125rem" }} />
+    </button>
   );
 }
 
@@ -456,8 +459,8 @@ function AddAccountModal({ role, onAdd, onClose }) {
               onClick={() => { setError(""); setStep((s) => s + 1); }}
               className="flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-medium transition-all"
               style={{
-                background: (step === 1 ? step1Valid : step2Valid) ? "var(--primary)" : "rgba(245,158,11,0.2)",
-                color: (step === 1 ? step1Valid : step2Valid) ? "var(--primary-foreground)" : "rgba(245,158,11,0.4)",
+                background: (step === 1 ? step1Valid : step2Valid) ? "var(--primary)" : "var(--secondary)",
+                color: (step === 1 ? step1Valid : step2Valid) ? "var(--primary-foreground)" : "var(--muted-foreground)",
                 cursor: (step === 1 ? step1Valid : step2Valid) ? "pointer" : "not-allowed",
               }}>
               Next <ChevronRight size={14} />
@@ -468,8 +471,8 @@ function AddAccountModal({ role, onAdd, onClose }) {
               onClick={handleSubmit}
               className="flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-medium transition-all"
               style={{
-                background: step3Valid ? "var(--primary)" : "rgba(245,158,11,0.05)",
-                color: step3Valid ? "var(--primary-foreground)" : "rgba(245,158,11,0.4)",
+                background: step3Valid ? "var(--primary)" : "var(--secondary)",
+                color: step3Valid ? "var(--primary-foreground)" : "var(--muted-foreground)",
                 cursor: step3Valid && !submitting ? "pointer" : "not-allowed",
               }}>
               {submitting ? <Loader2 size={13} className="animate-spin" /> : <UserPlus size={13} />}
@@ -626,7 +629,7 @@ function EditContactModal({ target, onSaved, onClose }) {
           </button>
           <button onClick={handleSave} disabled={blocked || saving}
             className="flex-1 py-2 rounded-xl text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50"
-            style={{ background: "rgba(245,158,11,0.15)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.25)" }}>
+            style={{ background: "var(--primary)", color: "var(--primary-foreground)" }}>
             {saving ? <Loader2 size={13} className="animate-spin" /> : <Mail size={13} />}
             {saving ? "Saving…" : "Save"}
           </button>
@@ -646,10 +649,9 @@ export function OfficersPage({ alerts = [], onOpenAlerts = () => {} }) {
   const [loadError, setLoadError] = useState("");
   const [showAdd, setShowAdd] = useState(null); // "officer" | "dispatcher" | "both" | null
   const [addMenuOpen, setAddMenuOpen] = useState(false);
-  const [filterStatus, setFilterStatus] = useState("all");
+  const [filterRole, setFilterRole] = useState("all"); // all | officer | dispatcher | both
   const [deleteTarget, setDeleteTarget] = useState(null); // { type, id }
   const [editTarget, setEditTarget] = useState(null); // { type, dbId, name, email }
-  const [statusConfirm, setStatusConfirm] = useState(null); // { id, name, next }
 
   const refreshOfficers = async () => {
     const data = await getOfficers();
@@ -685,7 +687,24 @@ export function OfficersPage({ alerts = [], onOpenAlerts = () => {} }) {
     return () => clearInterval(interval);
   }, []);
 
-  const filtered = officers.filter((o) => filterStatus === "all" || o.status === filterStatus);
+  // A "both" account owns a row in each list, and only the dispatcher route
+  // reports `role` -- so the officer rows learn which of them are also
+  // dispatchers by matching usernames, rather than the officer serializer
+  // growing a field for one filter's sake.
+  const bothUsernames = new Set(
+    dispatchers.filter((d) => d.role === "both" && d.username).map((d) => d.username),
+  );
+  const isBoth = (o) => Boolean(o.username) && bothUsernames.has(o.username);
+
+  const showOfficers = filterRole === "all" || filterRole === "officer" || filterRole === "both";
+  const showDispatchers = filterRole === "all" || filterRole === "dispatcher" || filterRole === "both";
+
+  const filtered = officers.filter((o) =>
+    filterRole === "officer" ? !isBoth(o) : filterRole === "both" ? isBoth(o) : true,
+  );
+  const visibleDispatchers = dispatchers.filter((d) =>
+    filterRole === "dispatcher" ? d.role !== "both" : filterRole === "both" ? d.role === "both" : true,
+  );
 
   const handleAdd = async () => {
     try {
@@ -712,24 +731,6 @@ export function OfficersPage({ alerts = [], onOpenAlerts = () => {} }) {
       alert(`Failed to remove ${deleteTarget.type}: ${err.message}`);
     } finally {
       setDeleteTarget(null);
-    }
-  };
-
-  const toggleStatus = (id) => {
-    const officer = officers.find((o) => o.id === id);
-    const next = officer.status === "off-duty" ? "on-duty" : "off-duty";
-    setStatusConfirm({ id: officer.dbId, name: officer.name, next });
-  };
-
-  const confirmToggle = async () => {
-    if (!statusConfirm) return;
-    try {
-      await updateOfficer(statusConfirm.id, { status: statusConfirm.next });
-      await refreshOfficers();
-    } catch (err) {
-      alert(`Failed to update status: ${err.message}`);
-    } finally {
-      setStatusConfirm(null);
     }
   };
 
@@ -788,118 +789,218 @@ export function OfficersPage({ alerts = [], onOpenAlerts = () => {} }) {
       <div className="flex-1 overflow-y-auto flex flex-col px-6 py-5 gap-4">
         {/* Filter tabs */}
         <div className="flex items-center gap-1.5 flex-shrink-0">
-          {["all", "on-duty", "responding", "off-duty"].map((s) => (
+          {ROLE_FILTERS.map((f) => (
             <button
-              key={s}
-              onClick={() => setFilterStatus(s)}
-              className="px-3 py-1 text-xs font-medium rounded-full transition-all capitalize"
+              key={f.key}
+              onClick={() => setFilterRole(f.key)}
+              className="px-3 py-1 text-xs font-medium rounded-full transition-all"
               style={{
-                background: filterStatus === s ? (s === "all" ? "var(--primary)" : statusConfig[s]?.bg ?? "rgba(245,158,11,0.1)") : "var(--secondary)",
-                color:      filterStatus === s ? (s === "all" ? "var(--primary-foreground)" : statusConfig[s]?.color ?? "#f59e0b") : "var(--muted-foreground)",
-                border:     `1px solid ${filterStatus === s ? (s === "all" ? "var(--primary)" : (statusConfig[s]?.color ?? "#f59e0b") + "40") : "var(--border)"}`,
+                background: filterRole === f.key ? f.bg : "var(--secondary)",
+                color:      filterRole === f.key ? (f.key === "all" ? "var(--primary-foreground)" : f.color) : "var(--muted-foreground)",
+                border:     `1px solid ${filterRole === f.key ? f.color + "40" : "var(--border)"}`,
               }}
             >
-              {s === "all" ? "All" : s.replace("-", " ")}
+              {f.label}
             </button>
           ))}
         </div>
 
-        {/* Table */}
-        <div className="rounded-xl flex-shrink-0" style={{ border: "1px solid var(--border)", maxHeight: 420, overflowY: "auto" }}>
-          {/* Header */}
-          <div
-            className="grid px-4 py-2.5 text-[13px] font-semibold sticky top-0"
-            style={{
-              gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr",
-              color: "var(--muted-foreground)",
-              background: "var(--card)",
-              borderBottom: "1px solid var(--border)",
-              zIndex: 1,
-            }}
-          >
-            <span>Officer</span>
-            <span>Status</span>
-            <span>Username</span>
-            <span>Email</span>
-            <span className="text-right">SMS</span>
-          </div>
+        {showOfficers && (
+          <>
+          {/* Table */}
+          <div className="rounded-xl flex-shrink-0" style={{ border: "1px solid var(--border)", maxHeight: 420, overflowY: "auto" }}>
+            {/* Header */}
+            <div
+              className="grid px-4 py-2.5 text-[13px] font-semibold sticky top-0"
+              style={{
+                gridTemplateColumns: "2fr 2fr 1.4fr 1.2fr 0.6fr",
+                color: "var(--muted-foreground)",
+                background: "var(--card)",
+                borderBottom: "1px solid var(--border)",
+                zIndex: 1,
+              }}
+            >
+              <span>Officer</span>
+              <span className="pl-3">Email</span>
+              <span className="pl-3">Mobile</span>
+              <span className="flex items-center justify-center gap-2">
+                SMS
+                {/* The tooltip lives on a wrapping span: a `title` attribute on
+                    an <svg> is not what browsers show a tooltip for. */}
+                <span title={SMS_HINT} className="flex items-center flex-shrink-0 cursor-help">
+                  <Info size={11} style={{ color: "var(--muted-foreground)" }} />
+                </span>
+              </span>
+              <span />
+            </div>
 
-          {loading ? (
-            <div className="flex flex-col items-center justify-center py-16 gap-2" style={{ background: "var(--card)" }}>
-              <Loader2 size={24} className="animate-spin" style={{ color: "var(--muted-foreground)" }} />
-              <div className="text-sm font-medium text-white">Loading officers…</div>
-            </div>
-          ) : loadError ? (
-            <div className="flex flex-col items-center justify-center py-16 gap-2" style={{ background: "var(--card)" }}>
-              <AlertTriangle size={24} style={{ color: "#ef4444" }} />
-              <div className="text-sm font-medium text-white">Failed to load officers</div>
-              <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>{loadError}</div>
-            </div>
-          ) : (
-            filtered.map((officer, idx) => {
-              const scfg = statusConfig[officer.status];
-              const StatusIcon = scfg.icon;
-              return (
-                <div
-                  key={officer.id}
-                  className="grid px-4 py-3 items-center transition-colors hover:bg-white/[0.02] group"
-                  style={{
-                    gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr",
-                    borderBottom: idx < filtered.length - 1 ? "1px solid var(--border)" : "none",
-                    background: "var(--card)",
-                  }}
-                >
-                  {/* Name + badge */}
-                  <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold flex-shrink-0"
-                      style={{ background: `${scfg.color}22`, color: scfg.color }}>
-                      {officer.name.split(" ")[1]?.[0] ?? officer.name[0] ?? "O"}
-                    </div>
-                    <div>
-                      <div className="text-[15px] font-medium text-white">{officer.name}</div>
-                      <div className="text-[12px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
-                        {officer.badge} · {formatPhone(officer.phone ?? "") || "—"}
+            {loading ? (
+              <div className="flex flex-col items-center justify-center py-16 gap-2" style={{ background: "var(--card)" }}>
+                <Loader2 size={24} className="animate-spin" style={{ color: "var(--muted-foreground)" }} />
+                <div className="text-sm font-medium text-white">Loading officers…</div>
+              </div>
+            ) : loadError ? (
+              <div className="flex flex-col items-center justify-center py-16 gap-2" style={{ background: "var(--card)" }}>
+                <AlertTriangle size={24} style={{ color: "#ef4444" }} />
+                <div className="text-sm font-medium text-white">Failed to load officers</div>
+                <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>{loadError}</div>
+              </div>
+            ) : (
+              filtered.map((officer, idx) => {
+                const scfg = statusConfig[officer.status];
+                return (
+                  <div
+                    key={officer.id}
+                    className="grid px-4 py-3 items-center transition-colors hover:bg-white/[0.02] group"
+                    style={{
+                      gridTemplateColumns: "2fr 2fr 1.4fr 1.2fr 0.6fr",
+                      borderBottom: idx < filtered.length - 1 ? "1px solid var(--border)" : "none",
+                      background: "var(--card)",
+                    }}
+                  >
+                    {/* Name + badge */}
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold flex-shrink-0"
+                        style={{ background: `${scfg.color}22`, color: scfg.color }}>
+                        {officer.name.split(" ")[1]?.[0] ?? officer.name[0] ?? "O"}
+                      </div>
+                      <div>
+                        <div className="text-[15px] font-medium text-white">{officer.name}</div>
+                        <div className="text-[12px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+                          {officer.badge} · {officer.username || "—"}
+                        </div>
                       </div>
                     </div>
+
+                    {/* Email */}
+                    <div className="text-[13px] truncate pl-3" style={{ color: "var(--muted-foreground)" }}>
+                      {officer.email || "—"}
+                    </div>
+
+                    {/* Mobile */}
+                    <div className="text-[13px] truncate pl-3" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+                      {officer.phone ? formatPhone(officer.phone) : "—"}
+                    </div>
+
+                    {/* SMS */}
+                    <div className="flex items-center justify-center">
+                      <SmsToggle
+                        on={Boolean(officer.smsAlerts)}
+                        phone={officer.phone}
+                        // An empty username is how the serializer reports an
+                        // officer with no linked account.
+                        hasAccount={Boolean(officer.username)}
+                        onToggle={async (next) => {
+                          await updateOfficer(officer.dbId, { sms_alerts: next });
+                          await refreshOfficers();
+                        }}
+                      />
+                    </div>
+
+                    {/* Actions */}
+                    <div className="flex items-center gap-1 justify-end">
+                      <button
+                        onClick={() => setEditTarget({
+                          type: "officer", dbId: officer.dbId, name: officer.name,
+                          email: officer.email, phone: officer.phone, smsAlerts: officer.smsAlerts,
+                        })}
+                        className="p-1.5 rounded-lg transition-all" style={{ color: "var(--muted-foreground)" }}
+                        onMouseEnter={(e) => { e.currentTarget.style.color = "var(--foreground)"; e.currentTarget.style.background = "var(--secondary)"; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.color = "var(--muted-foreground)"; e.currentTarget.style.background = "transparent"; }}
+                        title="Edit credentials">
+                        <Edit2 size={13} />
+                      </button>
+                      <button onClick={() => setDeleteTarget({ type: "officer", dbId: officer.dbId, name: officer.name })}
+                        className="p-1.5 rounded-lg transition-all" style={{ color: "var(--muted-foreground)" }}
+                        onMouseEnter={(e) => { e.currentTarget.style.color = "#ef4444"; e.currentTarget.style.background = "rgba(239,68,68,0.08)"; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.color = "var(--muted-foreground)"; e.currentTarget.style.background = "transparent"; }}>
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
                   </div>
+                );
+              })
+            )}
 
-                  {/* Status */}
-                  <button
-                    onClick={() => toggleStatus(officer.id)}
-                    className="flex items-center gap-1.5 px-2 py-1 rounded-md w-fit text-[13px] font-medium transition-all"
-                    style={{ background: scfg.bg, color: scfg.color }}
-                    title="Click to toggle on-duty / off-duty"
-                  >
-                    <StatusIcon size={10} /> {scfg.label}
-                  </button>
+            {!loading && !loadError && filtered.length === 0 && (
+              <div className="flex flex-col items-center justify-center py-16 gap-2"
+                style={{ background: "var(--card)" }}>
+                <Shield size={28} style={{ color: "var(--muted-foreground)" }} />
+                <div className="text-sm font-medium text-white">No officers found</div>
+              </div>
+            )}
+          </div>
+          </>
+        )}
 
-                  {/* Username */}
-                  <div className="text-[14px] flex items-center gap-1" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
-                    {officer.username || "—"}
+        {showDispatchers && (
+          <>
+          {/* Dispatchers */}
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <h2 className="text-sm font-semibold text-white">Dispatchers</h2>
+            <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>{visibleDispatchers.length} total</span>
+          </div>
+          <div className="rounded-xl overflow-hidden flex-shrink-0" style={{ border: "1px solid var(--border)" }}>
+            <div className="grid px-4 py-2.5 text-[13px] font-semibold rounded-t-xl"
+              style={{ gridTemplateColumns: "2fr 2fr 1.4fr 1.2fr 0.6fr", color: "var(--muted-foreground)", background: "var(--card)", borderBottom: "1px solid var(--border)" }}>
+              <span>Name</span>
+              <span className="pl-3">Email</span>
+              <span className="pl-3">Mobile</span>
+              <span className="flex items-center justify-center gap-2">
+                SMS
+                {/* The tooltip lives on a wrapping span: a `title` attribute on
+                    an <svg> is not what browsers show a tooltip for. */}
+                <span title={SMS_HINT} className="flex items-center flex-shrink-0 cursor-help">
+                  <Info size={11} style={{ color: "var(--muted-foreground)" }} />
+                </span>
+              </span>
+              <span />
+            </div>
+            {!loading && visibleDispatchers.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-10 gap-2" style={{ background: "var(--card)" }}>
+                <UserCog size={22} style={{ color: "var(--muted-foreground)" }} />
+                <div className="text-sm font-medium text-white">No dispatchers found</div>
+              </div>
+            ) : (
+              visibleDispatchers.map((d, idx) => (
+                <div key={d.id} className="grid px-4 py-3 items-center transition-colors hover:bg-white/[0.02] group"
+                  style={{ gridTemplateColumns: "2fr 2fr 1.4fr 1.2fr 0.6fr", borderBottom: idx < visibleDispatchers.length - 1 ? "1px solid var(--border)" : "none", background: "var(--card)" }}>
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold flex-shrink-0"
+                      style={{ background: "rgba(245,158,11,0.15)", color: "#f59e0b" }}>
+                      {d.name[0]?.toUpperCase() ?? "D"}
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[15px] font-medium text-white">{d.name}</span>
+                        {d.role === "both" && (
+                          <span className="text-[11px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: "rgba(59,130,246,0.15)", color: "#3b82f6" }}>
+                            OFFICER & DISPATCHER
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[12px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>{d.username}</div>
+                    </div>
                   </div>
-
-                  {/* Email */}
-                  <div className="text-[13px] truncate" style={{ color: "var(--muted-foreground)" }}>
-                    {officer.email || "—"}
+                  <div className="text-[13px] truncate pl-3" style={{ color: "var(--muted-foreground)" }}>{d.email || "—"}</div>
+                  <div className="text-[13px] truncate pl-3" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+                    {d.phone ? formatPhone(d.phone) : "—"}
                   </div>
-
-                  {/* Actions */}
-                  <div className="flex items-center gap-1 justify-end">
+                  <div className="flex items-center justify-center">
                     <SmsToggle
-                      on={Boolean(officer.smsAlerts)}
-                      phone={officer.phone}
-                      // An empty username is how the serializer reports an
-                      // officer with no linked account.
-                      hasAccount={Boolean(officer.username)}
+                      on={Boolean(d.smsAlerts)}
+                      phone={d.phone}
                       onToggle={async (next) => {
-                        await updateOfficer(officer.dbId, { sms_alerts: next });
-                        await refreshOfficers();
+                        await updateDispatcher(d.dbId, { sms_alerts: next });
+                        await refreshDispatchers();
                       }}
                     />
+                  </div>
+                  <div className="flex items-center gap-1 justify-end">
                     <button
                       onClick={() => setEditTarget({
-                        type: "officer", dbId: officer.dbId, name: officer.name,
-                        email: officer.email, phone: officer.phone, smsAlerts: officer.smsAlerts,
+                        type: "dispatcher", dbId: d.dbId, name: d.name,
+                        email: d.email, phone: d.phone, smsAlerts: d.smsAlerts,
                       })}
                       className="p-1.5 rounded-lg transition-all" style={{ color: "var(--muted-foreground)" }}
                       onMouseEnter={(e) => { e.currentTarget.style.color = "var(--foreground)"; e.currentTarget.style.background = "var(--secondary)"; }}
@@ -907,7 +1008,7 @@ export function OfficersPage({ alerts = [], onOpenAlerts = () => {} }) {
                       title="Edit credentials">
                       <Edit2 size={13} />
                     </button>
-                    <button onClick={() => setDeleteTarget({ type: "officer", dbId: officer.dbId, name: officer.name })}
+                    <button onClick={() => setDeleteTarget({ type: "dispatcher", dbId: d.dbId, name: d.name })}
                       className="p-1.5 rounded-lg transition-all" style={{ color: "var(--muted-foreground)" }}
                       onMouseEnter={(e) => { e.currentTarget.style.color = "#ef4444"; e.currentTarget.style.background = "rgba(239,68,68,0.08)"; }}
                       onMouseLeave={(e) => { e.currentTarget.style.color = "var(--muted-foreground)"; e.currentTarget.style.background = "transparent"; }}>
@@ -915,138 +1016,12 @@ export function OfficersPage({ alerts = [], onOpenAlerts = () => {} }) {
                     </button>
                   </div>
                 </div>
-              );
-            })
-          )}
-
-          {!loading && !loadError && filtered.length === 0 && (
-            <div className="flex flex-col items-center justify-center py-16 gap-2"
-              style={{ background: "var(--card)" }}>
-              <Shield size={28} style={{ color: "var(--muted-foreground)" }} />
-              <div className="text-sm font-medium text-white">No officers found</div>
-            </div>
-          )}
-        </div>
-
-        {/* Dispatchers */}
-        <div className="flex items-center gap-2 flex-shrink-0">
-          <h2 className="text-sm font-semibold text-white">Dispatchers</h2>
-          <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>{dispatchers.length} total</span>
-        </div>
-        <div className="rounded-xl overflow-hidden flex-shrink-0" style={{ border: "1px solid var(--border)" }}>
-          <div className="grid px-4 py-2.5 text-[13px] font-semibold rounded-t-xl"
-            style={{ gridTemplateColumns: "2fr 2fr 1.4fr 0.8fr 1fr", color: "var(--muted-foreground)", background: "var(--card)", borderBottom: "1px solid var(--border)" }}>
-            <span>Name</span>
-            <span>Email</span>
-            <span>Mobile</span>
-            <span>SMS</span>
-            <span />
+              ))
+            )}
           </div>
-          {!loading && dispatchers.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-10 gap-2" style={{ background: "var(--card)" }}>
-              <UserCog size={22} style={{ color: "var(--muted-foreground)" }} />
-              <div className="text-sm font-medium text-white">No dispatchers found</div>
-            </div>
-          ) : (
-            dispatchers.map((d, idx) => (
-              <div key={d.id} className="grid px-4 py-3 items-center transition-colors hover:bg-white/[0.02] group"
-                style={{ gridTemplateColumns: "2fr 2fr 1.4fr 0.8fr 1fr", borderBottom: idx < dispatchers.length - 1 ? "1px solid var(--border)" : "none", background: "var(--card)" }}>
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold flex-shrink-0"
-                    style={{ background: "rgba(245,158,11,0.15)", color: "#f59e0b" }}>
-                    {d.name[0]?.toUpperCase() ?? "D"}
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-[15px] font-medium text-white">{d.name}</span>
-                      {d.role === "both" && (
-                        <span className="text-[11px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: "rgba(59,130,246,0.15)", color: "#3b82f6" }}>
-                          OFFICER & DISPATCHER
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-[12px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>{d.username}</div>
-                  </div>
-                </div>
-                <div className="text-[13px] truncate" style={{ color: "var(--muted-foreground)" }}>{d.email || "—"}</div>
-                <div className="text-[13px] truncate" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
-                  {d.phone ? formatPhone(d.phone) : "—"}
-                </div>
-                <div className="flex items-center">
-                  <SmsToggle
-                    on={Boolean(d.smsAlerts)}
-                    phone={d.phone}
-                    onToggle={async (next) => {
-                      await updateDispatcher(d.dbId, { sms_alerts: next });
-                      await refreshDispatchers();
-                    }}
-                  />
-                </div>
-                <div className="flex items-center gap-1 justify-end">
-                  <button
-                    onClick={() => setEditTarget({
-                      type: "dispatcher", dbId: d.dbId, name: d.name,
-                      email: d.email, phone: d.phone, smsAlerts: d.smsAlerts,
-                    })}
-                    className="p-1.5 rounded-lg transition-all" style={{ color: "var(--muted-foreground)" }}
-                    onMouseEnter={(e) => { e.currentTarget.style.color = "var(--foreground)"; e.currentTarget.style.background = "var(--secondary)"; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.color = "var(--muted-foreground)"; e.currentTarget.style.background = "transparent"; }}
-                    title="Edit credentials">
-                    <Edit2 size={13} />
-                  </button>
-                  <button onClick={() => setDeleteTarget({ type: "dispatcher", dbId: d.dbId, name: d.name })}
-                    className="p-1.5 rounded-lg transition-all" style={{ color: "var(--muted-foreground)" }}
-                    onMouseEnter={(e) => { e.currentTarget.style.color = "#ef4444"; e.currentTarget.style.background = "rgba(239,68,68,0.08)"; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.color = "var(--muted-foreground)"; e.currentTarget.style.background = "transparent"; }}>
-                    <Trash2 size={13} />
-                  </button>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
+          </>
+        )}
       </div>
-
-      {/* Confirm status change */}
-      {statusConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
-          style={{ background: "rgba(0,0,0,0.75)", backdropFilter: "blur(6px)" }}>
-          <div className="w-full max-w-xs rounded-2xl overflow-hidden"
-            style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
-            <div className="px-5 py-5 text-center">
-              <div className="w-10 h-10 rounded-full flex items-center justify-center mx-auto mb-3"
-                style={{ background: statusConfirm.next === "on-duty" ? "rgba(16,185,129,0.1)" : "rgba(100,116,139,0.1)" }}>
-                {statusConfirm.next === "on-duty"
-                  ? <CheckCircle size={18} style={{ color: "#10b981" }} />
-                  : <Clock size={18} style={{ color: "#64748b" }} />}
-              </div>
-              <div className="text-sm font-semibold text-white">Change duty status?</div>
-              <p className="text-[14px] mt-1" style={{ color: "var(--muted-foreground)" }}>
-                Set <span className="text-white">{statusConfirm.name}</span> to{" "}
-                <span style={{ color: statusConfirm.next === "on-duty" ? "#10b981" : "#64748b", fontWeight: 600 }}>
-                  {statusConfirm.next === "on-duty" ? "On Duty" : "Off Duty"}
-                </span>?
-              </p>
-            </div>
-            <div className="flex gap-2 px-5 pb-5">
-              <button onClick={() => setStatusConfirm(null)}
-                className="flex-1 py-2 rounded-xl text-sm font-medium"
-                style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}>
-                Cancel
-              </button>
-              <button onClick={confirmToggle}
-                className="flex-1 py-2 rounded-xl text-sm font-medium"
-                style={{
-                  background: statusConfirm.next === "on-duty" ? "rgba(16,185,129,0.15)" : "rgba(100,116,139,0.15)",
-                  color: statusConfirm.next === "on-duty" ? "#10b981" : "#94a3b8",
-                  border: `1px solid ${statusConfirm.next === "on-duty" ? "rgba(16,185,129,0.25)" : "rgba(100,116,139,0.25)"}`,
-                }}>
-                Confirm
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Confirm delete */}
       {deleteTarget && (

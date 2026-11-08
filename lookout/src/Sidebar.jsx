@@ -194,7 +194,13 @@ export function Sidebar({ activeView, onViewChange, activeRole, onRoleChange, al
       {/* Bottom: my account + about + theme toggle + sign out */}
       <div className="flex-shrink-0 p-3 space-y-1.5" style={{ borderTop: `1px solid ${sidebarBorder}` }}>
         {/* Down here rather than in navGroups: it is about the person signed
-            in, not about the barangay being watched, and every role has it. */}
+            in, not about the barangay being watched.
+            Hidden for an admin, who reaches the same page as the last section
+            of Settings -- listing it twice is what this removes. The other
+            roles have no Settings page, so for them this button is the only
+            way to their own number, SMS opt-in and password, and it stays.
+            Keep this condition in step with ROLE_PAGES in admin_dashboard. */}
+        {activeRole !== "admin" && (
         <button
           onClick={() => onViewChange("account")}
           title="My account"
@@ -213,6 +219,7 @@ export function Sidebar({ activeView, onViewChange, activeRole, onRoleChange, al
           <UserCircle size={14} className="flex-shrink-0" />
           {!collapsed && <span className="text-[15px] font-medium">My account</span>}
         </button>
+        )}
 
         <button
           onClick={() => onViewChange("about")}
