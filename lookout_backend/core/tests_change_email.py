@@ -198,3 +198,66 @@ class ChangeEmailTests(APITestCase):
         self.assertEqual(response.status_code, 400)
         self.user.refresh_from_db()
         self.assertEqual(self.user.email, "old@example.com")
+
+
+class ChangePasswordGateTests(APITestCase):
+    """The sibling path has to hold the same line.
+
+    change_email_send_code asks for the current password. If change_password
+    did not, a borrowed session could set the password first and then satisfy
+    that check with its own value -- the email gate would be decoration.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(
+            username="officer1", password="pw-original", email="o@example.com", role="officer",
+        )
+        self.client.force_authenticate(self.user)
+        self.url = reverse("change_password")
+
+    def test_cannot_change_password_without_the_current_one(self):
+        response = self.client.post(self.url, {"new_password": "attacker-chosen"}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("pw-original"))
+
+    def test_cannot_change_password_with_a_wrong_current_one(self):
+        response = self.client.post(
+            self.url,
+            {"current_password": "guess", "new_password": "attacker-chosen"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("pw-original"))
+
+    def test_the_right_current_password_works(self):
+        response = self.client.post(
+            self.url,
+            {"current_password": "pw-original", "new_password": "a-better-one"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("a-better-one"))
+
+    def test_a_forced_first_change_does_not_need_it(self):
+        """The temporary password was already used to get this session."""
+        self.user.must_change_password = True
+        self.user.save(update_fields=["must_change_password"])
+        response = self.client.post(self.url, {"new_password": "first-real-one"}, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("first-real-one"))
+        self.assertFalse(self.user.must_change_password)
+
+    def test_the_forced_exception_closes_after_it_is_used(self):
+        self.user.must_change_password = True
+        self.user.save(update_fields=["must_change_password"])
+        self.client.post(self.url, {"new_password": "first-real-one"}, format="json")
+        # must_change_password is now False, so the gate applies again.
+        response = self.client.post(self.url, {"new_password": "second-one"}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("first-real-one"))

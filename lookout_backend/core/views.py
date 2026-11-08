@@ -589,7 +589,27 @@ def register_personnel(request):
 @api_view(["POST"])
 @permission_classes([permissions.IsAuthenticated])
 def change_password(request):
+    """Set a new password for the signed-in account.
+
+    Requires the CURRENT password, and that is not ceremony. Without it a
+    borrowed session could simply set a password of its own choosing -- and
+    every other check that asks for the password would then be satisfied by
+    the attacker's own value, change_email_send_code above most of all. A
+    gate is only as strong as the cheapest way past it, and this was it.
+
+    ONE exception: an account still carrying must_change_password has not
+    chosen a password yet. It is holding the temporary one an admin issued,
+    it had to use that password to obtain this session at all, and both
+    clients route such an account straight here and nowhere else. Asking for
+    the temporary password again proves nothing it has not already proven.
+    """
     new_password = request.data.get("new_password") or ""
+    current_password = request.data.get("current_password") or ""
+
+    if not request.user.must_change_password:
+        if not current_password or not request.user.check_password(current_password):
+            return Response({"current_password": "That password is not correct."}, status=400)
+
     if len(new_password) < 8:
         return Response({"new_password": "Password must be at least 8 characters."}, status=400)
     request.user.set_password(new_password)
