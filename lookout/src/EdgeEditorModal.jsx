@@ -156,6 +156,13 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
   // about to be thrown away.
   const [confirmKind, setConfirmKind] = useState(null);
 
+  // Every other question this editor asks, as one record: { title, body,
+  // confirmLabel, cancelLabel, tone, run }. One piece of state and one dialog
+  // rather than a boolean and a <ConfirmDialog> per question -- leaving is
+  // leaving whether it was the X, the backdrop or Cancel that did it, and the
+  // three would otherwise drift apart in wording.
+  const [pending, setPending] = useState(null);
+
   const [applyNote, setApplyNote] = useState("");
   const pollRef = useRef(null);
   const tracing = trace?.state === "running";
@@ -171,11 +178,11 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
   // unchanged, and not while a confirmation is up: Escape belongs to the
   // question on top, and shrinking the view out from under it answers nothing.
   useEffect(() => {
-    if (!expanded || confirmKind) return undefined;
+    if (!expanded || confirmKind || pending) return undefined;
     const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setExpanded(false); } };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
-  }, [expanded, confirmKind]);
+  }, [expanded, confirmKind, pending]);
 
   // Pre-loads any edges already saved on this camera, scaled from the
   // resolution they were drawn at to whatever frame we just loaded — mirrors
@@ -387,6 +394,8 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
           started: "Improper disposal is starting with its new area.",
         }[updated?.disposal_zone_applied],
       ].filter(Boolean);
+      setParkingInitial(JSON.stringify(edgeSpec));
+      setDisposalInitial(JSON.stringify(disposalSpec));
       if (notes.length) setApplyNote(`Saved. ${notes.join(" ")}`);
       else onClose();
     } catch (err) {
@@ -394,6 +403,64 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
     } finally {
       setSaving(false);
     }
+  };
+
+  // Leaving with a shape drawn and not saved. All three ways out come through
+  // here -- the X, the backdrop and Cancel -- so none of them can quietly bin
+  // a traced or hand-drawn area. Clean (or mid-save) just leaves.
+  const requestClose = () => {
+    if (saving) return;
+    if (!parkingDirty && !disposalDirty) { onClose(); return; }
+    const parts = [
+      parkingDirty ? "the road zone" : null,
+      disposalDirty ? "the rubbish area" : null,
+    ].filter(Boolean);
+    setPending({
+      title: "Leave without saving?",
+      body: `Your changes to ${parts.join(" and ")} have not been saved.`
+        + " Closing now leaves the camera on whatever was stored before,"
+        + " and the detectors keep running against that.",
+      confirmLabel: "Discard and close",
+      cancelLabel: "Keep editing",
+      tone: "#ef4444",
+      run: () => onClose(),
+    });
+  };
+
+  // Clear wipes the whole polygon in one press and Undo only walks back one
+  // point at a time, so an accidental Clear on a twelve-point road is twelve
+  // presses to recover -- if the operator even notices which area went.
+  const requestClear = () => {
+    if (!activeCount) return;
+    setPending({
+      title: `Clear the ${active.key === "disposal" ? "rubbish area" : "road zone"}?`,
+      body: `This removes all ${activeCount} point${activeCount === 1 ? "" : "s"}`
+        + ` from the ${active.label.toLowerCase()} and leaves the other area alone.`
+        + " Nothing is saved until you press Save zones.",
+      confirmLabel: "Clear it",
+      cancelLabel: "Keep mine",
+      tone: "#ef4444",
+      run: () => activeActions.current?.clear?.(),
+    });
+  };
+
+  // Saving is not just a write: the server swaps the live detector process for
+  // each area that changed, so a camera being watched stops and restarts.
+  const requestSave = () => {
+    if (!savable || !frame) return;
+    const parts = [
+      parkingDirty ? "Parking" : null,
+      disposalDirty ? "Improper disposal" : null,
+    ].filter(Boolean);
+    setPending({
+      title: "Save and apply these zones?",
+      body: `${parts.join(" and ")} ${parts.length > 1 ? "restart" : "restarts"}`
+        + " to pick up the new area, which takes a few seconds. Any other"
+        + " detector on this camera keeps running.",
+      confirmLabel: "Save zones",
+      cancelLabel: "Not yet",
+      run: () => handleSave(),
+    });
   };
 
   // Whichever area the selector is on: its copy, its point count and the
@@ -415,7 +482,7 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
     <div
       className={`fixed inset-0 z-[70] flex items-center justify-center ${expanded ? "p-2" : "p-4"}`}
       style={{ background: "rgba(0,0,0,0.72)", backdropFilter: "blur(6px)" }}
-      onClick={(e) => { if (e.target === e.currentTarget && !saving) onClose(); }}
+      onClick={(e) => { if (e.target === e.currentTarget && !saving) requestClose(); }}
     >
       <div
         className={`w-full rounded-2xl overflow-hidden shadow-2xl flex flex-col ${expanded ? "max-w-[1800px]" : "max-w-[1000px]"}`}
@@ -445,7 +512,7 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
               </button>
             )}
             {!saving && (
-              <button onClick={onClose} className="p-1.5 rounded-lg"
+              <button onClick={requestClose} className="p-1.5 rounded-lg"
                 style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}>
                 <X size={14} />
               </button>
@@ -652,8 +719,8 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
                       style={{ background: "var(--secondary)", color: "var(--foreground)", border: "1px solid var(--border)" }}>
                       <Undo2 size={13} /> Undo
                     </button>
-                    <button onClick={() => activeActions.current?.clear?.()}
-                      className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-[13px] font-medium"
+                    <button onClick={requestClear} disabled={!activeCount}
+                      className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-[13px] font-medium disabled:opacity-40"
                       style={{ background: "var(--secondary)", color: "var(--foreground)", border: "1px solid var(--border)" }}>
                       <Trash2 size={13} /> Clear
                     </button>
@@ -724,14 +791,14 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
         <div className="px-5 py-4 flex items-center justify-end gap-2 flex-shrink-0"
           style={{ borderTop: "1px solid var(--border)" }}>
           {!saving && (
-            <button onClick={onClose} className="px-4 py-2 rounded-xl text-sm font-medium"
+            <button onClick={requestClose} className="px-4 py-2 rounded-xl text-sm font-medium"
               style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}>
               {applyNote ? "Close" : "Cancel"}
             </button>
           )}
           <button
             disabled={!savable || saving || !!applyNote}
-            onClick={handleSave}
+            onClick={requestSave}
             className="flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-medium"
             style={{
               background: "#f59e0b",
@@ -766,6 +833,23 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
           const kind = confirmKind;
           setConfirmKind(null);
           handleTrace(kind, true);
+        }}
+      />
+
+      {/* Leaving, clearing and saving. One dialog driven by `pending`, so the
+          wording lives with the action that raised it. */}
+      <ConfirmDialog
+        open={!!pending}
+        title={pending?.title ?? ""}
+        body={pending?.body ?? ""}
+        confirmLabel={pending?.confirmLabel ?? "Confirm"}
+        cancelLabel={pending?.cancelLabel ?? "Cancel"}
+        tone={pending?.tone}
+        onCancel={() => setPending(null)}
+        onConfirm={() => {
+          const run = pending?.run;
+          setPending(null);
+          run?.();
         }}
       />
     </div>

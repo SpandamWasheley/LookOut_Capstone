@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Upload, FileVideo, Loader2, AlertTriangle, RotateCcw, Play, Radio, Square, CheckCircle2, X, History, Wand2, Info } from "lucide-react";
+import { Upload, FileVideo, Loader2, AlertTriangle, RotateCcw, Play, Radio, Square, CheckCircle2, X, History, Wand2, Info,
+         Maximize2, Minimize2 } from "lucide-react";
 import {
   startStagedDetectionJob, startLiveDetectionJob, getCameras, getJobState, cancelDetectionJob,
   traceZoneFromStaged,
@@ -8,9 +9,15 @@ import { discardUpload, listPendingUploads, uploadClipInChunks } from "./chunked
 import { DETECTION_TYPES, TYPES_WITH_EDGES, TYPES_WITH_OPTIONAL_EDGES, TYPES_WITH_AREA_THRESHOLDS, edgeKind,
          edgeHeading, edgeCameraNote } from "./constants/detectionTypes";
 import { ClipTrimmer } from "./ClipTrimmer";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { EdgeCanvas } from "./EdgeCanvas";
 import { ProcessingView } from "./ProcessingView";
 import { useTestingTools } from "./useTestingTools";
+
+// How tall the frame may get in the expanded view: the window, less the room
+// the heading, the trace notes and EdgeCanvas's own instruction box and
+// Undo/Clear row need. Same reasoning as EdgeEditorModal's EXPANDED_FIT.
+const EXPANDED_FIT = "calc(96vh - 260px)";
 
 const ALLOWED_EXTENSIONS = [".mp4", ".mkv", ".avi"];
 const MAX_BYTES = 1024 * 1024 * 1024; // 1GB, matches the backend's limit
@@ -109,6 +116,13 @@ export function RunDetectionPage() {
   const [traceError, setTraceError] = useState("");
   const [traced, setTraced] = useState(null);     // the report, once one lands
   const [tracedPoints, setTracedPoints] = useState([]);
+  // Full-screen drawing. A 2MP frame in a page column puts four source pixels
+  // under every screen one, so a point meant for the kerb lands in the gutter.
+  const [expanded, setExpanded] = useState(false);
+  // The question waiting to be answered: { title, body, confirmLabel,
+  // cancelLabel, tone, run }. One record and one dialog for all of them.
+  // Named `ask` because `pending` on this page is the resumable-upload list.
+  const [ask, setAsk] = useState(null);
   const [canvasKey, setCanvasKey] = useState(0);
 
   // When the clip was recorded (datetime-local). Optional; becomes --clock for the detector.
@@ -317,6 +331,14 @@ export function RunDetectionPage() {
     }
   };
 
+  // Escape shrinks rather than resets, and yields to a question on top of it.
+  useEffect(() => {
+    if (!expanded || ask) return undefined;
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setExpanded(false); } };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [expanded, ask]);
+
   const reset = () => {
     abortRef.current?.abort();
     setFile(null); setFileError(""); setStaged(null); setStageError("");
@@ -348,7 +370,82 @@ export function RunDetectionPage() {
   }, [job]);
 
   const detectorLabel = DETECTION_TYPES.find((t) => t.key === violationType)?.label ?? "";
+
+  // No "Trace it for me" for the rubbish area. The trace hulls the ground
+  // points of vehicles that MOVED and pads the result -- it finds where
+  // traffic drives, which is the one place rubbish does not get left. For
+  // parking that IS the answer; for disposal it proposed the carriageway and
+  // called it a suggestion, and the report underneath ("traced from N moving
+  // vehicles") described a rule with nothing to do with rubbish. Drawing the
+  // kerb and corners by hand is the only thing that gets it right, and the
+  // area is optional anyway -- watch_disposal pads its own per run.
+  //
+  // edgeKind, not violationType: an "everything" run draws a disposal area
+  // too, so it is covered by the same answer.
   const running = jobStatus === "running";
+
+  const canTrace = edgeKind(violationType) !== "disposal";
+
+  // How many points are on the canvas right now. edgeSpec holds one keyed
+  // area ("road" or "disposal"), so whichever it is, this is its length.
+  const drawnPoints = Object.values(edgeSpec)[0]?.points?.length ?? 0;
+
+  // Tracing REPLACES whatever is on the canvas -- it reseeds initialPoints and
+  // remounts EdgeCanvas -- so an operator who has carefully followed a kerb
+  // loses it to one press. Edge Zones has always asked before a retrace; this
+  // page did not, and it is the same loss.
+  const requestTrace = () => {
+    if (tracing || !staged) return;
+    if (!drawnPoints) { runTrace(); return; }
+    setAsk({
+      title: "Replace the area you drew?",
+      body: `Tracing throws away the ${drawnPoints} point${drawnPoints === 1 ? "" : "s"} on`
+        + " the canvas and puts its own there instead. Nothing has been saved or started yet,"
+        + " and you can still edit whatever the trace proposes.",
+      confirmLabel: "Replace and trace",
+      cancelLabel: "Keep mine",
+      tone: "#ef4444",
+      run: () => runTrace(),
+    });
+  };
+
+  // "New run" throws away the staged clip AND the area drawn against it. The
+  // clip is routinely 200 MB and uploading it again is minutes, so this is the
+  // most expensive accidental press on the page.
+  const requestReset = () => {
+    const losing = [
+      staged ? "the staged clip" : null,
+      drawnPoints ? `the ${drawnPoints}-point area you drew` : null,
+    ].filter(Boolean);
+    if (!losing.length && !job) { reset(); return; }
+    setAsk({
+      title: running ? "Stop this run and start over?" : "Start a new run?",
+      body: (running ? "The run in progress is cancelled. " : "")
+        + (losing.length
+          ? `This clears ${losing.join(" and ")}, and the clip has to be uploaded again.`
+          : "This clears the form.")
+        + " Violations already filed from this run are kept.",
+      confirmLabel: "Discard and start over",
+      cancelLabel: "Keep it",
+      tone: "#ef4444",
+      run: () => reset(),
+    });
+  };
+
+  // Cancelling mid-run cannot be resumed -- the job restarts from the first
+  // frame -- so the minutes already spent processing are the cost.
+  const requestStop = () => {
+    if (!job || stopping) return;
+    setAsk({
+      title: "Stop the detection run?",
+      body: "It cannot be resumed — starting again processes the clip from the beginning."
+        + " Violations already found are kept and stay in the list.",
+      confirmLabel: "Stop the run",
+      cancelLabel: "Let it finish",
+      tone: "#ef4444",
+      run: () => stop(),
+    });
+  };
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -372,13 +469,13 @@ export function RunDetectionPage() {
               </div>
               <div className="flex items-center gap-2">
                 {running && (
-                  <button onClick={stop} disabled={stopping}
+                  <button onClick={requestStop} disabled={stopping}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium"
                     style={{ background: "rgba(239,68,68,0.12)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.35)" }}>
                     <Square size={12} /> Stop
                   </button>
                 )}
-                <button onClick={reset}
+                <button onClick={requestReset}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium"
                   style={{ background: "var(--secondary)", color: "var(--foreground)", border: "1px solid var(--border)" }}>
                   <RotateCcw size={12} /> New run
@@ -533,15 +630,45 @@ export function RunDetectionPage() {
             )}
 
             {needsEdges && source === "file" && staged && (
-              <div className="rounded-xl p-4 space-y-3" style={barStyle}>
+              /* Expanded, this stops being a block in the page column and
+                 becomes the window: a 2MP frame scaled into a column puts
+                 four source pixels under every screen one, and a point meant
+                 for the kerb lands in the gutter. Below the alert toast
+                 (z-[100]) on purpose — a violation arriving must not be
+                 hidden behind the editor. */
+              <div
+                className={expanded
+                  ? "fixed inset-0 z-[60] overflow-auto p-4 space-y-3"
+                  : "rounded-xl p-4 space-y-3"}
+                style={expanded ? { background: "var(--background)" } : barStyle}
+              >
+                {/* display:contents while inline, so the unexpanded layout is
+                    exactly what it was before this wrapper existed. */}
+                <div className={expanded ? "mx-auto w-full max-w-[1800px] space-y-3" : "contents"}>
                 <div className="flex items-center justify-between gap-3 flex-wrap">
                   <div className="text-[13px] font-semibold uppercase tracking-wide"
                     style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
                     {edgeHeading(violationType, detectorLabel)}
                   </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                  {/* Gives the frame the window. The picture is capped by
+                      EdgeCanvas's maxHeight, so it keeps the clip's aspect
+                      ratio -- a stretched frame would put every point where
+                      the detector will not read it. */}
+                  <button onClick={() => setExpanded((v) => !v)}
+                    title={expanded ? "Shrink the view (Esc)" : "Expand the view for drawing"}
+                    aria-label={expanded ? "Shrink the view" : "Expand the view"}
+                    aria-pressed={expanded}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[13px] font-medium"
+                    style={{ background: "var(--secondary)", color: "var(--foreground)",
+                      border: "1px solid var(--border)" }}>
+                    {expanded ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+                    {expanded ? "Shrink" : "Expand"}
+                  </button>
                   {/* The clip is already on the server, so this costs no
                       upload — it just asks the detector to look at it. */}
-                  <button onClick={runTrace} disabled={tracing}
+                  {canTrace && (
+                  <button onClick={requestTrace} disabled={tracing}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[13px] font-medium flex-shrink-0"
                     style={{
                       background: "#f59e0b", color: "#0c0f16",
@@ -551,18 +678,20 @@ export function RunDetectionPage() {
                     {tracing ? <Loader2 size={12} className="animate-spin" /> : <Wand2 size={12} />}
                     {tracing ? "Watching the traffic…" : "Trace it for me"}
                   </button>
+                  )}
+                  </div>
                 </div>
 
                 {/* The wait is tens of seconds of real inference, so it is
                     named rather than left as a spinner that looks like a hang. */}
-                {tracing && (
+                {canTrace && tracing && (
                   <div className="text-[13px] px-3 py-2.5 rounded-xl"
                     style={{ background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.2)", color: "#f59e0b" }}>
                     Running the vehicle detector over this clip — this takes up to a minute.
                   </div>
                 )}
 
-                {traceError && (
+                {canTrace && traceError && (
                   <div className="flex items-start gap-2 text-[13px] px-3 py-2.5 rounded-xl"
                     style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", color: "#ef4444" }}>
                     <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
@@ -570,7 +699,7 @@ export function RunDetectionPage() {
                   </div>
                 )}
 
-                {traced && !tracing && (
+                {canTrace && traced && !tracing && (
                   <div className="flex items-start gap-2 text-[13px] px-3 py-2.5 rounded-xl"
                     style={{ background: "rgba(59,130,246,0.08)", border: "1px solid rgba(59,130,246,0.25)", color: "var(--foreground)" }}>
                     <Info size={13} className="flex-shrink-0 mt-0.5" style={{ color: "#3b82f6" }} />
@@ -586,10 +715,12 @@ export function RunDetectionPage() {
                 )}
 
                 <EdgeCanvas key={canvasKey} kind={edgeKind(violationType)}
+                  maxHeight={expanded ? EXPANDED_FIT : null}
                   frame={staged.frame} initialPoints={tracedPoints}
                   pct={pct} onPctChange={setPct} minutes={minutes}
                   onMinutesChange={setMinutes} showThresholds={hasAreaThresholds}
                   onChange={(spec, can) => { setEdgeSpec(spec); setCanSaveEdges(can); }} />
+                </div>
               </div>
             )}
             {needsEdges && source === "camera" && cameraId && (
@@ -601,6 +732,22 @@ export function RunDetectionPage() {
           </>
         )}
       </div>
+
+      {/* Replacing a drawn area, discarding a staged clip, stopping a run. */}
+      <ConfirmDialog
+        open={!!ask}
+        title={ask?.title ?? ""}
+        body={ask?.body ?? ""}
+        confirmLabel={ask?.confirmLabel ?? "Confirm"}
+        cancelLabel={ask?.cancelLabel ?? "Cancel"}
+        tone={ask?.tone}
+        onCancel={() => setAsk(null)}
+        onConfirm={() => {
+          const run = ask?.run;
+          setAsk(null);
+          run?.();
+        }}
+      />
     </div>
   );
 }
