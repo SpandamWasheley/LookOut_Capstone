@@ -14,7 +14,6 @@ import { SystemConfig } from "./SystemConfig";
 import { ResidentLog } from "./ResidentLog";
 import { RunDetectionPage } from "./RunDetectionPage";
 import { AboutPage } from "./AboutPage";
-import { AccountPage } from "./AccountPage";
 import { useTestingTools } from "./useTestingTools";
 import { getAlerts, getCameras, getOfficers } from "./api";
 
@@ -48,16 +47,17 @@ function useLiveOverviewData(onAlerts) {
   return { alerts, cameras, officers };
 }
 
-// "account" is on every role EXCEPT admin: it holds the mobile number an alert
-// would be texted to, and each role is responsible for its own. An admin
-// reaches the same page as the last section of Settings instead, so it is not
-// listed twice; the other roles have no Settings page to put it in, which is
-// why this cannot simply be dropped for everyone.
+// "config" is on EVERY role, because My Account is a section of Settings
+// rather than its own page -- it holds the mobile number an alert would be
+// texted to, and each role is responsible for its own. A non-admin opening
+// Settings gets that one section and nothing else: the barangay's detection
+// settings stay admin-only, and SystemSettingsView enforces that server-side
+// regardless of what this map says.
 const ROLE_PAGES = {
   admin:      ["dashboard", "cameras", "alerts", "records", "residentlog", "rundetection", "officers", "config", "about"],
-  dispatcher: ["dashboard", "cameras", "alerts", "records", "residentlog", "account", "about"],
-  officer:    ["cameras", "alerts", "records", "account", "about"],
-  both:       ["dashboard", "cameras", "alerts", "records", "account", "about"],
+  dispatcher: ["dashboard", "cameras", "alerts", "records", "residentlog", "config", "about"],
+  officer:    ["cameras", "alerts", "records", "config", "about"],
+  both:       ["dashboard", "cameras", "alerts", "records", "config", "about"],
 };
 
 function LiveClock() {
@@ -281,7 +281,6 @@ function AdminDashboard({ user, onLogout }) {
 
         {safePage === "rundetection" && <RunDetectionPage />}
         {safePage === "about" && <div className="h-full"><AboutPage /></div>}
-        {safePage === "account" && <div className="h-full"><AccountPage /></div>}
         {safePage === "officers" && (
           <div className="h-full">
             <OfficersPage
@@ -290,7 +289,7 @@ function AdminDashboard({ user, onLogout }) {
             />
           </div>
         )}
-        {safePage === "config" && <div className="h-full"><SystemConfig /></div>}
+        {safePage === "config" && <div className="h-full"><SystemConfig role={role} /></div>}
         {safePage === "residentlog" && (
           <div className="h-full">
             <ResidentLog

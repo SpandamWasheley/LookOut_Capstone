@@ -219,8 +219,15 @@ const TwoCols = ({ left, right, below }) => (
 );
 
 // ── The page ─────────────────────────────────────────────────────────────────
-export function SystemConfig() {
-  const [active, setActive] = useState("parking");
+// `role` decides how much of this page there is. Every role reaches Settings
+// now -- it is where My Account lives -- but only an admin sees the barangay's
+// detection sections. For anyone else this page IS the account section: the
+// rail is dropped (a one-item nav rail is noise) and the settings fetch is
+// skipped entirely, since SystemSettingsView is IsAdmin and would 403.
+export function SystemConfig({ role = "admin" }) {
+  const isAdmin = role === "admin";
+  const visibleSections = isAdmin ? sections : sections.filter((s) => s.id === "account");
+  const [active, setActive] = useState(isAdmin ? "parking" : "account");
   const [saving, setSaving] = useState(false);
   const [testingTools, setTestingTools] = useState(readTestingTools);
   // Per-browser, like the one above: saved here, not on the server.
@@ -257,7 +264,12 @@ export function SystemConfig() {
     }
   };
 
-  useEffect(() => { load(); }, []);
+  // Nothing to load for a non-admin: the only section they get fetches and
+  // saves itself.
+  useEffect(() => {
+    if (isAdmin) load();
+    else setLoading(false);
+  }, [isAdmin]);
 
   const changedKeys = form && server ? FIELD_KEYS.filter((k) => form[k] !== server[k]) : [];
   const isDirty = changedKeys.length > 0;
@@ -668,10 +680,11 @@ export function SystemConfig() {
       </div>
 
       <div className="flex flex-1 overflow-hidden">
-        {/* Section nav */}
+        {/* Section nav. Hidden when My Account is the only section there is. */}
+        {visibleSections.length > 1 && (
         <div className="w-44 flex-shrink-0 p-3 space-y-0.5 overflow-y-auto"
           style={{ borderRight: "1px solid var(--border)" }}>
-          {sections.map((s) => {
+          {visibleSections.map((s) => {
             const Icon = s.icon;
             const isActive = active === s.id;
             return (
@@ -690,6 +703,7 @@ export function SystemConfig() {
             );
           })}
         </div>
+        )}
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-5">
