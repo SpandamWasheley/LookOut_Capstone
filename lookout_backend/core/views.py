@@ -65,6 +65,7 @@ from .models import (
 from .permissions import CanEditOwnOpenCitation, IsAdmin, IsAdminOrReadOnly
 from .throttling import (
     LoginThrottle,
+    PasswordChangeThrottle,
     OtpSendThrottle,
     OtpVerifyThrottle,
     PasswordResetConfirmThrottle,
@@ -588,6 +589,7 @@ def register_personnel(request):
 
 @api_view(["POST"])
 @permission_classes([permissions.IsAuthenticated])
+@throttle_classes([PasswordChangeThrottle])
 def change_password(request):
     """Set a new password for the signed-in account.
 

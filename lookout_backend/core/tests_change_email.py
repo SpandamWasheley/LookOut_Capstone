@@ -261,3 +261,33 @@ class ChangePasswordGateTests(APITestCase):
         self.assertEqual(response.status_code, 400)
         self.user.refresh_from_db()
         self.assertTrue(self.user.check_password("first-real-one"))
+
+
+class ChangePasswordThrottleTests(APITestCase):
+    """Verifying the current password makes this a guessing oracle.
+
+    Closing the no-password hole is not enough on its own: unlimited guesses
+    against check_password would recover the real one, and that single value
+    opens both this endpoint and change_email_send_code.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(
+            username="officer2", password="pw-original", email="o2@example.com", role="officer",
+        )
+        self.client.force_authenticate(self.user)
+        self.url = reverse("change_password")
+
+    def test_repeated_wrong_guesses_are_throttled(self):
+        seen_429 = False
+        for _ in range(15):
+            response = self.client.post(
+                self.url, {"current_password": "guess", "new_password": "x" * 10}, format="json")
+            if response.status_code == 429:
+                seen_429 = True
+                break
+            self.assertEqual(response.status_code, 400)
+        self.assertTrue(seen_429, "change_password accepted unlimited password guesses")
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("pw-original"))
