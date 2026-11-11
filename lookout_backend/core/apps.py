@@ -40,6 +40,12 @@ class CoreConfig(AppConfig):
             try:
                 from core.models import SystemSettings
                 from core.monitor import monitor
+                # The tape first, and unconditionally: continuous recording is not
+                # detection and does not wait for anybody to press Start. It is a
+                # traditional CCTV recorder -- it runs because the server is running and
+                # the camera is reachable, and its only switch is `recording_enabled`
+                # (checked inside, every few seconds, so this call is safe either way).
+                monitor.ensure_recording()
                 if SystemSettings.load().auto_start_detection:
                     monitor.start()
             except Exception:                                        # noqa: BLE001

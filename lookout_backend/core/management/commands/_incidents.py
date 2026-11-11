@@ -44,7 +44,11 @@ TRIGGER_COLORS = {scoring.MONITORING: (150, 150, 150),     # grey
                   scoring.WARNING: (0, 140, 255),          # orange  (Possible)
                   scoring.VIOLATION: (0, 0, 220)}          # red     (Likely)
 PARTNER_COLOR = (255, 190, 0)
-TRIGGER_NAMES = {"smoke": "Smoking", "drink": "Drinking", "cluster": "Drinking", "knife": "Holdup"}   # incident key kind -> name
+# Burned onto the evidence frame beside the track id and the level, so these
+# are read by whoever reviews the clip -- the short form of the violation's
+# own name, not a second one for it.
+TRIGGER_NAMES = {"smoke": "Smoking", "drink": "Drinking", "cluster": "Drinking",
+                 "knife": "Dangerous Weapon"}   # incident key kind -> name
 
 
 class Incident:

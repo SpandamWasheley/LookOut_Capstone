@@ -651,7 +651,7 @@ class Command(IncidentMixin, BaseCommand):
         # Rolling 30-second buffer of annotated frames — on an alert it's written
         # out as the evidence clip, so the card shows the bottle being detected
         # with its box, not just a still.
-        self.clip = recognition.ClipRecorder(seconds=30, label=self.camera.code)
+        self.clip = recognition.ClipRecorder(seconds=recognition.CLIP_BUFFER_SECONDS, label=self.camera.code)
 
         mode = f"FAR {self.tiles[0]}x{self.tiles[1]} tiling + person-crop" if self.far else "near"
         self.stdout.write(self.style.SUCCESS(

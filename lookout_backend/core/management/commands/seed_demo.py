@@ -15,7 +15,7 @@ from core.models import (
 # update_or_create below, so it silently overwrites the DB's label on every
 # reseed. See migration 0026 for the one-time rename/merge this mirrors.
 VIOLATION_TYPES = [
-    {"code": "theft", "label": "Holdup in Public Area", "color": "#ef4444", "icon": "theft"},
+    {"code": "theft", "label": "Dangerous Weapon Observed", "color": "#ef4444", "icon": "theft"},
     {"code": "parking", "label": "Parking Obstruction in Road", "color": "#f97316", "icon": "car"},
     {"code": "drinking", "label": "Drinking in Public Area", "color": "#8b5cf6", "icon": "beer"},
     {"code": "smoking", "label": "Smoking in Public Area", "color": "#64748b", "icon": "smoke"},

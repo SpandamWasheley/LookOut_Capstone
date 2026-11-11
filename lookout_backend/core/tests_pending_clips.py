@@ -13,19 +13,36 @@ from core.vision import recognition
 
 
 class FakeRecorder:
-    """Stands in for ClipRecorder / RawFrameRecorder: same add/save/span."""
+    """Stands in for ClipRecorder / RawFrameRecorder: same add/save/span.
 
-    def __init__(self, span=30.0, ok=True):
-        self._span, self._ok = span, ok
+    `save` takes `mark_at` and answers on `mark_offset`, as the real recorders
+    do -- only they can say where a moment landed in the written clip, because
+    only they know how long each frame was held."""
+
+    def __init__(self, span=30.0, ok=True, fps=12.0):
+        self._span, self._ok, self._fps = span, ok, fps
         self.saved = []
+        self.mark_offset = None
+        self.marked_at = None
 
     def span(self):
         return self._span
 
-    def save(self, path):
-        if self._ok:
-            self.saved.append(path)
-        return self._ok
+    def save(self, path, mark_at=None):
+        self.mark_offset = None
+        if not self._ok:
+            return False
+        self.saved.append(path)
+        self.marked_at = mark_at
+        if mark_at is not None:
+            # The buffer is taken to end at the save, as the real one does:
+            # the moment is `span` back from its last frame at most.
+            start = self.marked_at + 0.0
+            self.mark_offset = max(0.0, min(self._span, self._span - (self._now_gap())))
+        return True
+
+    def _now_gap(self):
+        return getattr(self, "gap_after_mark", 15.0)
 
 
 class PendingClipsTests(TestCase):
@@ -48,18 +65,25 @@ class PendingClipsTests(TestCase):
         self.assertEqual(rec.saved, ["x.mp4"])
         self.assertEqual(len(q), 0, "and it is not offered twice")
 
-    def test_the_offset_lands_in_the_middle_of_a_full_buffer(self):
-        """30s of footage, detection 15s before the save -> 15s in."""
+    def test_the_recorder_is_asked_where_the_detection_landed(self):
+        """The queue no longer works the position out from `now` and the span.
+        That assumed frames arrived evenly AND that the buffer still ended at
+        `now` -- false for the final flush at the end of a run, and false for
+        any clip whose frames were held unevenly."""
         q = recognition.PendingClips()
-        q.schedule("a", FakeRecorder(span=30.0), "x.mp4", now=100.0, post_seconds=15)
+        rec = FakeRecorder(span=30.0)
+        q.schedule("a", rec, "x.mp4", now=100.0, post_seconds=15)
         (_t, _p, offset), = q.due(115.0)
-        self.assertAlmostEqual(offset, 15.0, places=3)
+        self.assertEqual(rec.marked_at, 100.0, "the moment, not the save time")
+        self.assertEqual(offset, rec.mark_offset)
 
-    def test_a_short_buffer_puts_the_detection_later_not_off_the_end(self):
-        """Measured from the clip ACTUALLY written: a run that ends early
-        saves a truncated clip, and a marker past its end points at nothing."""
+    def test_a_marker_is_never_past_the_end_of_the_clip(self):
+        """A run that ends early saves a truncated clip, and a marker past its
+        end points at nothing."""
         q = recognition.PendingClips()
-        q.schedule("a", FakeRecorder(span=6.0), "x.mp4", now=100.0, post_seconds=15)
+        rec = FakeRecorder(span=6.0)
+        rec.gap_after_mark = 15.0
+        q.schedule("a", rec, "x.mp4", now=100.0, post_seconds=15)
         (_t, _p, offset), = q.due(115.0)
         self.assertGreaterEqual(offset, 0.0)
         self.assertLessEqual(offset, 6.0)
@@ -172,12 +196,28 @@ class DeferredClipWiringTests(TestCase):
 
 
 class ClipWindowTests(TestCase):
-    def test_the_raw_clip_is_symmetric(self):
-        """POST was 2s, so the thing the alert is ABOUT arrived just as the
-        clip ended. A reviewer needs what happened next."""
-        self.assertEqual(recognition.RAW_CLIP_POST_SECONDS,
-                         recognition.RAW_CLIP_PRE_SECONDS)
+    """The shape of the evidence window either side of the detection.
 
-    def test_the_detection_lands_in_the_middle(self):
+    These two started out asserting SYMMETRY -- the fix for a 2-second
+    post-roll, where the thing the alert was about arrived just as the clip
+    ended. That half of it still holds and is still tested: there must be a
+    real post-roll, because what settles most alerts is what happened next.
+
+    What changed is the other half. A detection is the END of something that
+    was already under way, so the lead-in does more work than the run-out: 15
+    seconds routinely opened on a scene already in progress. The clip is now
+    deliberately front-weighted, and these guard the shape rather than the
+    symmetry it used to have.
+    """
+
+    def test_there_is_still_a_real_post_roll(self):
+        """The original failure: a clip that ends on the detection shows the
+        approach and then nothing."""
+        self.assertGreaterEqual(recognition.RAW_CLIP_POST_SECONDS, 10)
+
+    def test_the_lead_in_is_the_longer_half(self):
         pre, post = recognition.RAW_CLIP_PRE_SECONDS, recognition.RAW_CLIP_POST_SECONDS
-        self.assertAlmostEqual(pre / (pre + post), 0.5, places=3)
+        self.assertGreater(pre, post)
+        # Far enough in that a viewer's instinct still finds it on the scrub
+        # bar, rather than at the very end where it started.
+        self.assertLess(pre / (pre + post), 0.8)

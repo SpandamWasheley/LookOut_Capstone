@@ -33,7 +33,7 @@ from core.models import Camera, SystemSettings, ViolationType
 VIOLATION_TYPES = [
     ("smoking",  "Public Smoking",         "#f59e0b", "cigarette"),
     ("drinking", "Public Drinking",        "#8b5cf6", "beer"),
-    ("theft",    "Holdup in Public Area",  "#ef4444", "siren"),
+    ("theft",    "Dangerous Weapon Observed",  "#ef4444", "siren"),
     ("parking",  "Illegal Parking",        "#ef4444", "car"),
     ("disposal", "Improper Disposal",      "#22c55e", "trash"),
 ]

@@ -12,6 +12,24 @@ A supervisor thread keeps it alive: if a detector exits, or the stream stops del
 is restarted with a growing delay (5 s, 10 s, ... up to 2 minutes) and a warning is shown. This
 lives inside the Django process, which is what this project already runs (see the detection job
 watcher in views.py); it is not a general task queue.
+
+It also keeps the CONTINUOUS RECORDER alive (manage.py record_cctv, core/recording.py) -- the
+ordinary CCTV tape of everything the camera sees. That is NOT a detector and is supervised
+separately, on its own switch:
+
+  * it starts with the SERVER (core/apps.py), not with detection, because a traditional CCTV
+    system records whether or not anything is analysing the picture, and because an archive that
+    only existed when somebody had pressed Start would be missing exactly the footage nobody
+    thought to ask for;
+  * stopping detection leaves it running -- detection is stopped for ordinary reasons (tuning a
+    threshold, freeing the GPU, re-drawing a zone) and footage missing from those minutes is the
+    archive failing at the one thing it is for;
+  * a detector dying does not cut the tape, and a dropped recording does not restart a detector;
+  * it is the one process here with a GRANDCHILD (ffmpeg), which on Windows outlives a terminated
+    parent, so ending it means signalling the pid file rather than killing a subprocess.
+
+Its only switch is `recording_enabled` in Settings, re-read every few seconds, so it can be turned
+off and on without touching detection.
 """
 import os
 import subprocess
@@ -60,6 +78,20 @@ def has_road_edge(camera):
     return zones.has_road(camera.edges)
 
 
+def _running_tests():
+    """True when this process is a test runner.
+
+    The recorder is a SUBPROCESS, so it connects to the real database and the real
+    camera -- not the test ones. A test that reached ensure_recording() therefore
+    started a genuine ffmpeg against the barangay's camera on whoever was running the
+    suite, and left it running after the suite finished. That happened; this is the
+    guard. Checked on argv rather than a settings flag because it has to hold for any
+    caller, including one added later that nobody thought about.
+    """
+    first = [os.path.basename(a) for a in sys.argv[:2]]
+    return "test" in sys.argv[:2] or any("pytest" in a for a in first)
+
+
 class LiveMonitor:
     def __init__(self):
         self._lock = threading.RLock()
@@ -73,6 +105,9 @@ class LiveMonitor:
         self._notice = ""
         self._job_ids = []
         self._last_error = ""
+        self._rec_proc = None           # manage.py record_cctv (it owns the ffmpeg)
+        self._rec_thread = None
+        self._recording_wanted = False  # the tape's own switch, independent of _want
 
     # ---- control ---------------------------------------------------------------
 
@@ -106,15 +141,35 @@ class LiveMonitor:
             self._user_id = getattr(user, "pk", None)
             self._thread = threading.Thread(target=self._supervise, daemon=True, name="live-monitor")
             self._thread.start()
-            return True, "Starting detection."
+        # The tape is NOT started here. It runs on its own switch and its supervisor is
+        # started with the server (core/apps.py), where it polls `recording_enabled`
+        # every few seconds -- so turning recording on mid-shift is picked up without
+        # anybody pressing Start, and pressing Start cannot spawn a recorder as a side
+        # effect. That side effect was real: a test calling start() launched an ffmpeg
+        # against the live camera.
+        return True, "Starting detection."
 
     def stop(self):
+        """Stop the DETECTORS. The tape keeps running.
+
+        Deliberate: a traditional CCTV system records whether or not anything is
+        analysing the picture, and detection is stopped for ordinary reasons -- tuning a
+        threshold, freeing the GPU, re-drawing a zone. Footage missing from exactly
+        those minutes is the archive failing at the one thing it is for. Recording is
+        switched off in Settings, or by stopping LookOut."""
         with self._lock:
             self._want = False
             procs = list(self._procs.values())
         for p in procs:
             self._kill(p)
         return True, "Detection stopped."
+
+    def shutdown(self):
+        """Everything down, tape included: the web server is going away. Registered with
+        atexit, and the only path that ends recording without an operator asking."""
+        self._recording_wanted = False
+        self.stop()
+        self._stop_recording()
 
     def apply_zone(self, camera):
         """Make a just-saved no-parking zone take effect. -> outcome string.
@@ -204,12 +259,25 @@ class LiveMonitor:
             self._procs[name] = proc
             self._job_ids.append(job_id)
 
-    @staticmethod
-    def _reap_orphans():
+    def _reap_orphans(self):
         """Detector processes left behind by an earlier run of the web server (it restarts itself
-        when code changes) would double up on the camera. End them and close their job rows."""
+        when code changes) would double up on the camera. End them and close their job rows.
+
+        A recorder left by an earlier server is asked to stop here too (it has no job row, so
+        the pid file is the only handle on it) -- two ffmpegs writing into one directory would
+        interleave segments from two connections. Only one we do NOT own, though: our own
+        recorder is the tape being written right now, and the pid file cannot tell the two
+        apart. The request is left for the recording supervisor to follow up on, because
+        waiting for a clean stop takes seconds and this runs on a request."""
         import signal
+        from core import recording
         from core.models import DetectionJob
+        ours = self._rec_proc is not None and self._rec_proc.poll() is None
+        if not ours and recording.is_running(CAMERA_CODE):
+            try:
+                recording.request_stop(CAMERA_CODE)
+            except Exception:                                    # noqa: BLE001
+                pass
         for job in DetectionJob.objects.filter(status=DetectionJob.Status.RUNNING, camera__code=CAMERA_CODE):
             if job.pid:
                 try:
@@ -232,6 +300,141 @@ class LiveMonitor:
         except OSError:
             pass
 
+    # ---- the continuous tape -----------------------------------------------------
+
+    def ensure_recording(self):
+        """Make sure the tape's supervisor is running. Idempotent.
+
+        Called from apps.ready() when the server starts, so the archive does not depend
+        on anybody having pressed Start -- a barangay that never opens Live Feeds should
+        still have footage of last Tuesday.
+        """
+        from django.conf import settings as django_settings
+        if not getattr(django_settings, "DETECTION_ENABLED", True):
+            return      # a hosted API has neither the camera nor the disk
+        if _running_tests():
+            return
+        with self._lock:
+            if self._rec_thread is not None and self._rec_thread.is_alive():
+                return
+            self._recording_wanted = True
+            self._rec_thread = threading.Thread(target=self._supervise_recording, daemon=True,
+                                                name="live-recorder")
+            self._rec_thread.start()
+
+    def _supervise_recording(self):
+        """Keep `manage.py record_cctv` running for as long as the setting says to.
+
+        Its own thread, not part of _supervise, and not bounded by the detectors'
+        lifetime: the tape must survive a detector restart, a detector must not be
+        restarted because a recording dropped, and stopping detection must not stop
+        recording.
+
+        Thin on purpose. The command does its own reconnecting, stall watchdog and
+        retention sweeping -- it is closer to the camera and is the only thing that
+        knows when a segment stopped growing. All this adds is the settings switch,
+        re-read each pass, so turning recording off in the dashboard stops the tape
+        within a few seconds and turning it on starts one, neither of them touching
+        detection.
+        """
+        from core.models import Camera, SystemSettings
+        while self._recording_wanted:
+            try:
+                wanted = SystemSettings.load().recording_enabled
+            except Exception:                                    # noqa: BLE001
+                wanted = False      # the database is unreachable; do not guess
+            proc = self._rec_proc
+            alive = proc is not None and proc.poll() is None
+            if wanted and not alive:
+                camera = Camera.objects.filter(code=CAMERA_CODE).first()
+                if camera is not None and camera.resolved_stream_url:
+                    # A recorder from a previous run of this server, or one still
+                    # finalising its last segment, would be a second ffmpeg writing
+                    # into the same directory. Waiting happens HERE, on a background
+                    # thread, rather than in _reap_orphans, which a request calls.
+                    from core import recording
+                    if recording.is_running(CAMERA_CODE):
+                        recording.terminate_running(CAMERA_CODE)
+                    self._rec_proc = self._spawn_recorder(camera)
+                    # Terminating a recorder takes seconds, and the server may have
+                    # been shutting down for all of them. Without this check the last
+                    # thing a dying process does is start an ffmpeg nobody will ever
+                    # stop.
+                    if not self._recording_wanted:
+                        self._stop_recording()
+                        break
+            elif alive and not wanted:
+                self._stop_recording()
+            time.sleep(5.0)
+        self._stop_recording()
+
+    def _spawn_recorder(self, camera):
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+        log_dir = settings.MEDIA_ROOT / "uploads"
+        os.makedirs(log_dir, exist_ok=True)
+        log = open(log_dir / "live_recording.log", "w")
+        try:
+            return subprocess.Popen(
+                [sys.executable, "manage.py", "record_cctv", "--camera", camera.code],
+                cwd=str(settings.BASE_DIR), stdout=log, stderr=subprocess.STDOUT, env=env)
+        finally:
+            log.close()
+
+    def _stop_recording(self):
+        """End the recorder, and the ffmpeg underneath it.
+
+        Through recording.terminate_running, which ASKS first (a flag file the recorder
+        polls) and waits before killing anything. That order is the difference between
+        the last ten minutes of footage existing and not: ffmpeg writes a segment's moov
+        atom only when it closes the file, and a killed ffmpeg never closes it.
+
+        Popen.terminate() is the fallback, not the method, because on Windows it is
+        TerminateProcess -- the manage.py process gets no chance to run its own cleanup,
+        so ffmpeg would be left running with the camera open, writing into the directory
+        the next recorder is about to use.
+        """
+        from core import recording
+        proc, self._rec_proc = self._rec_proc, None
+        try:
+            recording.terminate_running(CAMERA_CODE)
+        except Exception:                                        # noqa: BLE001
+            pass
+        if proc is None:
+            return
+        try:
+            proc.wait(timeout=20)       # it is finalising the open segment
+        except subprocess.TimeoutExpired:
+            self._kill(proc)
+
+    def recording_status(self):
+        """What the dashboard shows about the tape: whether it is recording now, and
+        what the archive holds. Safe to call with no recordings directory and with the
+        recorder never started."""
+        from core import recording
+        from core.models import SystemSettings
+        cfg = SystemSettings.load()
+        try:
+            use = recording.usage(CAMERA_CODE)
+        except (OSError, ValueError):
+            use = {"segments": 0, "bytes": 0, "oldest": None, "newest": None,
+                   "free_bytes": None}
+        proc = self._rec_proc
+        return {
+            "enabled": cfg.recording_enabled,
+            "running": (proc is not None and proc.poll() is None)
+                       or recording.is_running(CAMERA_CODE),
+            "mode": cfg.recording_mode,
+            "segment_minutes": cfg.recording_segment_minutes,
+            "retention_days": cfg.recording_retention_days,
+            "max_gb": cfg.recording_max_gb,
+            "segments": use["segments"],
+            "bytes": use["bytes"],
+            "free_bytes": use["free_bytes"],
+            "oldest": use["oldest"].isoformat() if use["oldest"] else None,
+            "newest": use["newest"].isoformat() if use["newest"] else None,
+        }
+
     # ---- status ----------------------------------------------------------------
 
     def status(self):
@@ -246,7 +449,8 @@ class LiveMonitor:
         notice = "" if edge_ok else "Draw the road edge for parking (parking is not being checked until you do)."
         if not want:
             return {"state": "stopped", "label": "Detection stopped", "since": None, "warning": "",
-                    "notice": notice, "restarts": 0, "parking_ready": edge_ok}
+                    "notice": notice, "restarts": 0, "parking_ready": edge_ok,
+                    "recording": self.recording_status()}
         age = debug_state.state_age(live_dir())
         now = time.time()
         in_grace = launched is not None and now - launched < STARTUP_GRACE_SECONDS
@@ -261,7 +465,7 @@ class LiveMonitor:
             state, label = "starting", "Starting detection…"
         return {"state": state, "label": label, "since": started.isoformat() if started else None,
                 "warning": warning, "notice": notice, "restarts": restarts, "parking_ready": edge_ok,
-                "last_error": last_error}
+                "last_error": last_error, "recording": self.recording_status()}
 
     # ---- the supervisor ----------------------------------------------------------
 
@@ -395,4 +599,4 @@ monitor = LiveMonitor()
 
 
 import atexit
-atexit.register(monitor.stop)      # the detectors go down with the web server
+atexit.register(monitor.shutdown)  # the detectors AND the tape go down with the web server

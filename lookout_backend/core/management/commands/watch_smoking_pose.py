@@ -106,7 +106,7 @@ class Command(BaseCommand):
         cfg = SystemSettings.load()
         cfg_at = time.time()
         tracker = tracking.PersonTracker()
-        self.clip = recognition.ClipRecorder(seconds=30, label=self.camera.code)
+        self.clip = recognition.ClipRecorder(seconds=recognition.CLIP_BUFFER_SECONDS, label=self.camera.code)
 
         self.stdout.write(self.style.SUCCESS(
             f"Watching {source} for the hand-to-mouth SMOKING GESTURE "

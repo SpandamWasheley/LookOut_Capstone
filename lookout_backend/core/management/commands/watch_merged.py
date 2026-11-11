@@ -342,7 +342,7 @@ class Command(BaseCommand):
         cmd.smoking_type = self._vtype("smoking", "Public Smoking", "#f59e0b", "cigarette")
         # code="theft" (not "thief") — matches watch_thief.py's own fix; see
         # migration 0026 for why the two codes must never diverge again.
-        cmd.thief_type = self._vtype("theft", "Holdup in Public Area", "#ef4444", "siren")
+        cmd.thief_type = self._vtype("theft", "Dangerous Weapon Observed", "#ef4444", "siren")
         cmd.drinking_type = self._vtype("drinking", "Public Drinking", "#8b5cf6", "beer")
         # Every engine gets its OWN evidence clip buffer (smoking, drinking
         # AND thief — thief's _create_alert didn't build a video_url at all
@@ -350,7 +350,7 @@ class Command(BaseCommand):
         # watch_all.py skips this (getattr(self, "clip", None) silently
         # no-ops in _create_alert), which quietly drops evidence video for
         # anything run through it — don't repeat that here.
-        cmd.clip = recognition.ClipRecorder(seconds=30, label=self.camera.code)
+        cmd.clip = recognition.ClipRecorder(seconds=recognition.CLIP_BUFFER_SECONDS, label=self.camera.code)
         if name == "thief":
             # watch_thief's own handle() builds the Layer E engine; running inside
             # this command that never happens, so the holdup pattern cues (E12

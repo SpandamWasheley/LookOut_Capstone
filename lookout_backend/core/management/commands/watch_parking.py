@@ -35,6 +35,9 @@ DEFAULT_ZONE_PATH = settings.BASE_DIR / "core" / "vision" / "zones" / "obstructi
 
 PARKING_CAMERA_CODE = "CAM-SMOKE-01"
 SETTINGS_REFRESH_SECONDS = 5  # re-poll SystemSettings this often, not every frame
+# How often the per-vehicle ledger is checkpointed to disk. Short enough that a
+# run stopped by hand still yields an evaluation, long enough to be invisible.
+LEDGER_EVERY_SECONDS = 30
 
 
 class Command(BaseCommand):
@@ -612,11 +615,12 @@ class Command(BaseCommand):
         # restart. CLI flags, if given, still win over the stored values.
         cfg = SystemSettings.load()
         cfg_loaded_at = time.time()
+        ledger_at = cfg_loaded_at
         # Rolling buffer of annotated frames — on an alert it's written out as
         # the evidence clip, so the card shows the vehicle's box (and, in
         # obstruction mode, the edge line) building up to the violation,
         # not just a single still. Same pattern as watch_drinking/watch_smoking.
-        self.clip = recognition.ClipRecorder(seconds=30, label=self.camera.code)
+        self.clip = recognition.ClipRecorder(seconds=recognition.CLIP_BUFFER_SECONDS, label=self.camera.code)
         # This loop drains, so it may defer: the clip is saved late and the
         # detection lands in the middle of it rather than on its last frame.
         self.pending = recognition.PendingClips()
@@ -658,6 +662,19 @@ class Command(BaseCommand):
                 if wall_now - cfg_loaded_at >= SETTINGS_REFRESH_SECONDS:
                     cfg = SystemSettings.load()
                     cfg_loaded_at = wall_now
+
+                # Checkpoint the vehicle ledger while the run is alive.
+                #
+                # It used to be written only at the end, which meant a run that
+                # was STOPPED left nothing at all -- and stopping a long run
+                # early is the normal thing to do, not an edge case. The stop
+                # is a kill (see DetectionJobViewSet.cancel), so there is no
+                # shutdown hook to write it from: the only way to survive one
+                # is to have written already. A few hundred lines of JSON every
+                # half minute is nothing beside the frame loop.
+                if wall_now - ledger_at >= LEDGER_EVERY_SECONDS:
+                    ledger_at = wall_now
+                    self._write_ledger()
 
                 if not cfg.parking_enabled:
                     time.sleep(0.5)
@@ -721,7 +738,104 @@ class Command(BaseCommand):
             reader.stop() if is_live else cap.release()
             if debug:
                 cv2.destroyAllWindows()
+            self._print_zone_table(is_live)
             self.stdout.write(self.style.SUCCESS("Stopped."))
+
+    def _write_ledger(self):
+        """The per-vehicle record as it stands. Safe to call at any moment."""
+        zone = getattr(self, "zone", None)
+        if zone is None or not getattr(zone, "seen", None) or not self._source_path:
+            return None
+        from core import evaluation
+        return evaluation.write_ledger(
+            self._source_path, threshold=zone.alert_score,
+            enter_fraction=zone.enter_fraction,
+            vehicles=sorted(zone.seen.values(), key=lambda r: r["first_seen"]),
+            zone_points=[list(p) for p in zone.points_norm])
+
+    @staticmethod
+    def _clock(seconds):
+        """m:ss, the way a clip's own scrub bar reads, because that is what an
+        evaluation sheet is filled in from. None means it never happened."""
+        if seconds is None:
+            return "-"
+        seconds = max(0.0, float(seconds))
+        return f"{int(seconds) // 60}:{int(seconds) % 60:02d}"
+
+    def _print_zone_table(self, is_live):
+        """One row per vehicle the zone watched, printed when the run ends.
+
+        For checking a run against ground truth: the SYSTEM's answer for when
+        each vehicle entered the zone, when it was last inside, and when (or
+        whether) it alerted. The columns a human has to fill in -- what the
+        clip really shows -- are deliberately absent rather than guessed at.
+
+        Only for a file run. A live camera has no end and no clip to hold a
+        stopwatch against; its times are on the alert rows themselves.
+        """
+        # getattr throughout: this runs in a `finally`, which is reached by
+        # paths that failed before a zone was ever built. A summary is not
+        # worth masking the real error with an AttributeError.
+        zone = getattr(self, "zone", None)
+        if is_live or zone is None or not getattr(zone, "seen", None):
+            return
+        rows = sorted(zone.seen.values(), key=lambda r: r["first_seen"])
+        # The same rows as a file, so the dashboard can show any one of them
+        # with its own frame long after this process is gone. Printed table for
+        # a person reading the log; ledger for anyone evaluating the run.
+        from core import evaluation
+        written = evaluation.write_ledger(
+            self._source_path, threshold=zone.alert_score,
+            enter_fraction=zone.enter_fraction, vehicles=rows,
+            zone_points=[list(p) for p in zone.points_norm])
+        self.stdout.write("")
+        # The clip's own name, because that is the first column of the sheet
+        # these rows get copied into and nobody should have to remember which
+        # run produced which table.
+        clip = Path(self._source_path).stem if self._source_path else "(live)"
+        self.stdout.write(self.style.SUCCESS(
+            # ASCII only: this table gets copied out of a console and a log
+            # file, and an em-dash arrives as mojibake on a cp1252 terminal.
+            f"Zone results for {clip} - threshold {zone.alert_score:.0f}s, "
+            f"inside-the-zone rule {zone.enter_fraction * 100:.0f}% of the vehicle"))
+        self.stdout.write(
+            "  vehicle            | sys enter | sys leave | alert | dwell | note")
+        for r in rows:
+            note = ("alerted" if r["alerted_at"] is not None
+                    else "never entered the zone" if not r["ever_inside"]
+                    else f"in the zone, reached {r['max_score']:.0f}s of "
+                         f"{zone.alert_score:.0f}s")
+            name = f"{r['label'] or 'vehicle'} #{r['display_id']}"
+            self.stdout.write(
+                f"  {name:<18} | {self._clock(r['first_inside']):>9}"
+                f" | {self._clock(r['last_inside']):>9}"
+                f" | {self._clock(r['alerted_at']):>5}"
+                f" | {r['max_score']:>4.0f}s | {note}")
+        if written:
+            self.stdout.write(f"  (vehicle ledger: {written.name})")
+
+        # The evidence pack, written now rather than on request: a picture of
+        # each vehicle at the three moments a reviewer has to put a time
+        # against, and the table. Done here because this is the only point
+        # where the clip, the area and the per-vehicle record are all to hand
+        # -- afterwards the -TEST camera has been rewritten by the next run.
+        #
+        # Guarded by its own try inside build_pack: a run that has already
+        # filed its alerts must not fail at the finish line over a still.
+        from django.conf import settings as dj_settings
+        pack_dir = (Path(dj_settings.MEDIA_ROOT) / "evaluation"
+                    / Path(self._source_path).stem)
+        self.stdout.write("  Writing the evidence pack (3 stills per vehicle)...")
+        shots, table = evaluation.build_pack(
+            self._source_path,
+            {"vehicles": rows, "threshold_seconds": zone.alert_score,
+             "enter_fraction": zone.enter_fraction,
+             "zone_points": [list(p) for p in zone.points_norm]},
+            pack_dir, log=lambda m: self.stdout.write(m))
+        if table:
+            self.stdout.write(self.style.SUCCESS(
+                f"  {len(shots)} vehicle picture(s) and the table: {pack_dir}"))
+        self.stdout.write("")
 
     def _schedule_clip(self, alert, video_name, now):
         """Queue a SECOND save of the annotated clip, once its post-roll plays.
@@ -801,7 +915,7 @@ class Command(BaseCommand):
             alert = self._create_alert(
                 hit["conf"], hit["label"], frame,
                 description=f"Obstruction: {hit['label']} stopped in zone {seconds:.0f}s",
-                now=now_ts,
+                now=now_ts, hit=hit,
             )
             self.stdout.write(self.style.SUCCESS(
                 (f"ALERT created: {alert.code}" if alert else "ALERT suppressed (dry run)")
@@ -920,7 +1034,23 @@ class Command(BaseCommand):
 
     # ---- shared alert creation --------------------------------------------
 
-    def _create_alert(self, score, label, frame, description, now=None):
+    def _zone_cues(self, hit):
+        """What the zone rule measured, for the alert row. Empty for a path
+        that has no hit (the --image test mode), never a half-filled one."""
+        if not hit:
+            return {}
+        return {"zone": {
+            "vehicle": hit.get("display_id", hit.get("track_id")),
+            "label": hit.get("label", ""),
+            "dwell_seconds": hit.get("score"),
+            "entered_at": hit.get("first_inside"),
+            "alerted_at": hit.get("t"),
+            "fraction_inside": hit.get("fraction"),
+            "threshold_seconds": self.zone.alert_score if self.zone else None,
+            "enter_fraction": self.zone.enter_fraction if self.zone else None,
+        }}
+
+    def _create_alert(self, score, label, frame, description, now=None, hit=None):
         ts_label = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         tag = label.replace(" ", "_")
         filename = f"{ts_label}_parking_{tag}.jpg"
@@ -944,15 +1074,20 @@ class Command(BaseCommand):
         annotated_offset = None
         clip_path = self.violations_dir / video_name
         if self.clip is not None:
-            self.clip.add(frame, now if now is not None else time.time())
-            if self.clip.save(clip_path):
+            fired_at = now if now is not None else time.time()
+            self.clip.add(frame, fired_at)
+            if self.clip.save(clip_path, mark_at=fired_at):
                 video_url = violation_media_path(video_name)
                 # This first copy is pre-roll only, so the detection is its
                 # LAST frame. Recorded rather than left null: the marker then
                 # sits at the end, which is the truth and explains why there
                 # is no aftermath to watch. _drain_pending moves it once the
                 # centred copy replaces this one.
-                annotated_offset = self.clip.span()
+                # In PLAYBACK seconds, which is what the player seeks in --
+                # and this first copy is pre-roll only, so it is the end of
+                # the clip. span() is the capture clock and is a different
+                # number whenever frames did not arrive evenly.
+                annotated_offset = self.clip.mark_offset
 
         # RAW (unannotated, full source frame rate/resolution) clip. File
         # sources cut straight from the source file (best quality, real fps);
@@ -996,6 +1131,21 @@ class Command(BaseCommand):
             # is exactly what the alert card's "Object confidence" box shows.
             object_confidence=score,
             description=description,
+            # WHERE IN THE SOURCE this happened, for a run against an uploaded
+            # clip -- the number an accuracy table compares with the time a
+            # human noted while watching the same clip. Only a file has such a
+            # position; on a live camera the timestamp above is the answer.
+            # (watch_disposal has recorded this for a while; parking alerts
+            # carried no source position at all, so an evaluation had to be
+            # done by eye against the video.)
+            footage_offset=(self._video_pos_sec
+                            if self._source_path is not None else None),
+            # What the zone rule actually measured, kept with the alert rather
+            # than only printed: the dwell it fired on, when it first put this
+            # vehicle inside, how much of the vehicle was in, and the two
+            # settings in force. An alert that cannot say which threshold it
+            # was judged against cannot be checked afterwards.
+            cues=self._zone_cues(hit),
             image_url=image_url,
             video_url=video_url,
             raw_video_url=raw_video_url,

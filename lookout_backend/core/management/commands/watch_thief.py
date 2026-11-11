@@ -388,7 +388,7 @@ class Command(IncidentMixin, BaseCommand):
         # whatever already landed on the old "thief" row.
         self.thief_type, _ = ViolationType.objects.get_or_create(
             code="theft",
-            defaults={"label": "Holdup in Public Area", "color": "#ef4444", "icon": "siren"},
+            defaults={"label": "Dangerous Weapon Observed", "color": "#ef4444", "icon": "siren"},
         )
         self.camera, _ = Camera.objects.get_or_create(
             code=options["camera"],
@@ -722,7 +722,7 @@ class Command(IncidentMixin, BaseCommand):
         # written out as the evidence clip, so the card shows the weapon/pose
         # being detected with its box, not just a still. Mirrors
         # watch_smoking/watch_drinking's own ClipRecorder.
-        self.clip = recognition.ClipRecorder(seconds=30, label=self.camera.code)
+        self.clip = recognition.ClipRecorder(seconds=recognition.CLIP_BUFFER_SECONDS, label=self.camera.code)
 
         mode = f"FAR {self.tiles[0]}x{self.tiles[1]} tiling + person-crop" if self.far else "near"
         layer_e = "off"
@@ -965,17 +965,17 @@ class Command(IncidentMixin, BaseCommand):
         if not cue.on:
             if dets:
                 self.stats["held back: momentum below ON"] += 1
-            self._debug_note("Holdup", ("knife", track.id), track.id, track.box, None, cue.momentum)
+            self._debug_note("Dangerous Weapon", ("knife", track.id), track.id, track.box, None, cue.momentum)
             return
         if location_momentum.holdup_rules_on() and not location_momentum.knife_recent(track, now_ts):
             # v6.2.1: E14 needs an accepted knife sighting in the last 1 s -- no long "last seen" carry.
             self.stats["held back: knife not seen in the last 1 s"] += 1
-            self._debug_note("Holdup", ("knife", track.id), track.id, track.box, None, cue.momentum)
+            self._debug_note("Dangerous Weapon", ("knife", track.id), track.id, track.box, None, cue.momentum)
             return
         persisted = self._knife_persist_at.get(track.id)
         if persisted is None or now_ts - persisted > KNIFE_PERSIST_MEMORY_SECONDS:
             self.stats["held back: knife in fewer than 2 of the last 5 frames"] += 1
-            self._debug_note("Holdup", ("knife", track.id), track.id, track.box, None, cue.momentum)
+            self._debug_note("Dangerous Weapon", ("knife", track.id), track.id, track.box, None, cue.momentum)
             return
         best_label, best_score = cue.label, cue.conf
         present_for = cue.momentum
@@ -987,7 +987,7 @@ class Command(IncidentMixin, BaseCommand):
         # the holder -- never the raw YOLO box confidence.
         evidence = self._knife_evidence(track, best_label, present_for, now_ts, box)
         self._ai_note(("partner", track.id), getattr(evidence, "partner_box", None))
-        self._debug_note("Holdup", ("knife", track.id), track.id, box, evidence, cue.momentum)
+        self._debug_note("Dangerous Weapon", ("knife", track.id), track.id, box, evidence, cue.momentum)
         who = track.display
         summary = ", ".join(sorted({s[5] for s in track.dets}))
 

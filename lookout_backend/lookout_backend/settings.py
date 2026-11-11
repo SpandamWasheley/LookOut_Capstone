@@ -398,6 +398,23 @@ STORAGES = {
 MEDIA_URL = 'media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
+# The continuous CCTV tape (core/recording.py). DELIBERATELY OUTSIDE MEDIA_ROOT.
+#
+# Everything under MEDIA_ROOT is served as static files with no authentication
+# — by Django itself in DEBUG (see lookout_backend/urls.py) and by whatever
+# fronts /media/ in production. That is an accepted trade for alert evidence,
+# which is one clip of one incident reached from an alert; it is the wrong
+# trade for a continuous recording of a public street, which is hours of
+# footage of identifiable people going about their business and is exactly the
+# kind of collection RA 10173 expects to be access-controlled. Under this root
+# the only way to a segment is core.views.recording_file, which checks a
+# credential and serves one byte range at a time.
+#
+# Separately configurable because it is also the one directory here that grows
+# without bound: a barangay with a second disk should point this at it rather
+# than resize the system drive.
+RECORDINGS_ROOT = Path(config('RECORDINGS_ROOT', default=str(BASE_DIR / 'recordings')))
+
 # Just above UploadSession.CHUNK_BYTES (5 MiB), so a chunked upload's pieces are
 # handled in memory rather than spooled to a temp file and copied out of it
 # again — a pointless extra write per chunk on a machine that has been at 98%

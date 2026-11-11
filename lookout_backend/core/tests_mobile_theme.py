@@ -80,7 +80,15 @@ class ThemeWiringTests(TestCase):
         """This single hook is what carries the override to every screen."""
         source = code("hooks", "useColors.ts")
         self.assertIn("useTheme", source)
-        self.assertNotIn('from "react-native"', source)
+        # The thing that must not come back is react-native's useColorScheme,
+        # which reads the OS and so ignores the in-app preference. Banning the
+        # module by name was too blunt: a TYPE-only import (ViewStyle) is
+        # erased at compile time and reads nothing at all, so the test failed
+        # on a file that was behaving exactly as intended.
+        self.assertNotIn("useColorScheme", source)
+        for line in source.splitlines():
+            if 'from "react-native"' in line:
+                self.assertIn("import type", line, line.strip())
 
     def test_the_provider_wraps_the_whole_app(self):
         source = read("app", "_layout.tsx")

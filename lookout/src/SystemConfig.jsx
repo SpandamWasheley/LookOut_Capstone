@@ -17,7 +17,7 @@ import { AccountPage } from "./AccountPage";
 const sections = [
   { id: "parking", label: "Parking", icon: Car,    color: "#f97316" },
   { id: "smoking", label: "Smoking", icon: Cigarette, color: "#6b8cae" },
-  { id: "thief",   label: "Holdup",   icon: Siren,  color: "#dc2626" },
+  { id: "thief",   label: "Weapon",   icon: Siren,  color: "#dc2626" },
   { id: "drinking", label: "Drinking", icon: Beer, color: "#8b5cf6" },
   { id: "disposal", label: "Waste", icon: Trash2, color: "#22c55e" },
   { id: "system", label: "System", icon: SlidersHorizontal, color: "#3b82f6" },
@@ -42,6 +42,8 @@ const STATIC_DEFAULTS = {
   disposal_owner_radius: 80, disposal_owner_away_seconds: 3,
   disposal_owner_max_hold: 3, disposal_suspect_confidence: 25,
   alert_cooldown: 120, evidence_retention_days: 30, evidence_auto_purge: false, show_testing_tools: false, auto_start_detection: false,
+  recording_enabled: true, recording_mode: "clip", recording_segment_minutes: 10,
+  recording_retention_days: 7, recording_max_gb: 50, recording_timestamp: true,
   sms_alerts_enabled: false,
   vlm_enabled: true, vlm_model: "qwen3-vl:2b-instruct", vlm_model_holdup: "qwen3-vl:4b-instruct", vlm_frames: 8,
 };
@@ -110,6 +112,24 @@ function Row({ label, desc, children }) {
         {desc && <div className="text-[13px] mt-0.5" style={{ color: "var(--muted-foreground)" }}>{desc}</div>}
       </div>
       <div className="flex items-center gap-1.5 flex-shrink-0">{children}</div>
+    </div>
+  );
+}
+
+function Choice({ value, onChange, options }) {
+  return (
+    <div className="flex rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
+      {options.map(([key, label]) => {
+        const active = value === key;
+        return (
+          <button key={key} onClick={() => onChange(key)}
+            className="px-2.5 py-1 text-[13px] transition-colors"
+            style={{ background: active ? "var(--primary)" : "var(--card)",
+                     color: active ? "#ffffff" : "var(--muted-foreground)" }}>
+            {label}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -361,7 +381,7 @@ export function SystemConfig({ role = "admin" }) {
     ),
     thief: (
       <TwoCols
-        left={detection("thief", "Holdup detection", "Watch for a person holding a knife.",
+        left={detection("thief", "Dangerous weapon detection", "Watch for a person holding a knife.",
           "How sure the system must be before it reports a knife. Lower catches more but makes more mistakes; higher is stricter.")}
         right={
           <Card title="Timings" onReset={() => resetKeys(["holdup_loiter_seconds", "holdup_near_person_heights"])}>
@@ -588,13 +608,49 @@ export function SystemConfig({ role = "admin" }) {
               value={alertSound} differs={!alertSound}
               onChange={(v) => { writeAlertSound(v); setAlertSound(v); }} />
             <Toggle label="SMS alerts"
-              desc="Off by default. The master switch for text messages: while this is off nobody is texted, whatever their own setting says. Who gets a text is set per person — their mobile number and SMS switch are on their account, in Personnel or under My account. A holdup or parking obstruction texts its assigned officer straight away; everything else is summed up every half hour, which also tells admins and dispatchers how many violations were detected. Each message uses a credit, and a quiet half hour sends nothing. Globe and DITO numbers only; Smart, TNT and Sun cannot be reached, and those officers rely on the app's push notification."
+              desc="Off by default. The master switch for text messages: while this is off nobody is texted, whatever their own setting says. Who gets a text is set per person — their mobile number and SMS switch are on their account, in Personnel or under My account. A dangerous weapon or parking obstruction texts its assigned officer straight away; everything else is summed up every half hour, which also tells admins and dispatchers how many violations were detected. Each message uses a credit, and a quiet half hour sends nothing. Globe and DITO numbers only; Smart, TNT and Sun cannot be reached, and those officers rely on the app's push notification."
               value={form.sms_alerts_enabled} differs={differs("sms_alerts_enabled")}
               onChange={(v) => set("sms_alerts_enabled", v)} />
           </Card>
         }
         right={
           <div className="space-y-4">
+            <Card title="Continuous recording"
+              note="The ordinary CCTV tape: everything the camera sees, not only the violations. It records whenever LookOut is running and the camera is reachable — whether or not detection is on — and the oldest footage is deleted automatically to make room for the newest."
+              onReset={() => resetKeys(["recording_enabled", "recording_mode", "recording_segment_minutes", "recording_retention_days", "recording_max_gb", "recording_timestamp"])}>
+              <Toggle label="Record continuously"
+                desc="On by default. Independent of detection: stopping monitoring on Feeds does not stop the tape. The archive is browsed from Feeds, under Recordings."
+                value={form.recording_enabled} differs={differs("recording_enabled")}
+                onChange={(v) => set("recording_enabled", v)} />
+              <Row label="Picture"
+                desc="Evidence-clip quality records at the same size and quality as the clips attached to violations, so the two look alike. The camera's own video is full resolution and uses no processing power at all, but takes roughly four times the disk."
+                differs={differs("recording_mode")}>
+                <Choice value={form.recording_mode} onChange={(v) => set("recording_mode", v)}
+                  options={[["clip", "Evidence-clip"], ["source", "Camera's own"]]} />
+              </Row>
+              <Row label="Length of each file"
+                desc="A file can only be played once it is finished, so this is also how far behind the present the archive ends."
+                differs={differs("recording_segment_minutes")}>
+                <NumberBox value={form.recording_segment_minutes} min={1} max={60} unit=" min"
+                  onChange={(v) => set("recording_segment_minutes", Math.round(v))} />
+              </Row>
+              <Row label="Keep footage for"
+                desc="Older footage is deleted to make room. Unlike alert evidence this has no off switch: the alternative is not that footage is kept, it is that the disk fills and recording stops."
+                differs={differs("recording_retention_days")}>
+                <NumberBox value={form.recording_retention_days} min={1} max={90} unit=" days"
+                  onChange={(v) => set("recording_retention_days", Math.round(v))} />
+              </Row>
+              <Row label="Disk the recordings may use"
+                desc="Whichever limit is reached first wins. Check the free space shown under Recordings before raising this."
+                differs={differs("recording_max_gb")}>
+                <NumberBox value={form.recording_max_gb} min={1} max={2000} unit=" GB"
+                  onChange={(v) => set("recording_max_gb", Math.round(v))} />
+              </Row>
+              <Toggle label="Show the date and time on the picture"
+                desc="Burnt into the video, as it is on the violation clips, so a file saved onto a USB stick still carries its own time. Not available with the camera's own video, which is recorded without being redrawn."
+                value={form.recording_timestamp} differs={differs("recording_timestamp")}
+                onChange={(v) => set("recording_timestamp", v)} />
+            </Card>
             <Card title="Event confirmation" onReset={() => resetKeys(["object_confirm_seconds", "cue_hold_seconds", "monitoring_min_seconds"])}>
               <Row label="How long an object must be seen"
                 desc="How long a bottle, cigarette or knife must stay in view before the system starts watching it."
@@ -626,8 +682,8 @@ export function SystemConfig({ role = "admin" }) {
                 <input type="text" value={form.vlm_model} onChange={(e) => set("vlm_model", e.target.value)}
                   className="w-48 px-2 py-1 rounded-lg text-[14px] outline-none" style={inputStyle} />
               </Row>
-              <Row label="Model for holdup"
-                desc="A larger model for holdups, where reading the scene correctly matters most. It is slower, so the AI note for a holdup appears a little later. Leave blank to use the model above."
+              <Row label="Model for dangerous weapons"
+                desc="A larger model for weapon sightings, where reading the scene correctly matters most. It is slower, so the AI note for one appears a little later. Leave blank to use the model above."
                 differs={differs("vlm_model_holdup")}>
                 <input type="text" value={form.vlm_model_holdup} onChange={(e) => set("vlm_model_holdup", e.target.value)}
                   className="w-48 px-2 py-1 rounded-lg text-[14px] outline-none" style={inputStyle} />

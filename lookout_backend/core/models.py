@@ -988,6 +988,42 @@ class SystemSettings(models.Model):
     # because the purge deletes files.
     evidence_auto_purge = models.BooleanField(default=False)
 
+    # --- the continuous tape (core/recording.py) ----------------------------
+    # Everything the camera sees, kept as dated MP4 segments, so the question
+    # "what happened at about four o'clock on Tuesday" has an answer that a
+    # folder of twenty-second violation clips cannot give.
+    #
+    # ON by default, unlike the two switches above it. Those are opt-in because
+    # turning them on SPENDS something outward (billed messages) or destroys
+    # evidence; this one is what an operator installing cameras already assumes
+    # is happening, and a system that silently kept no footage until somebody
+    # found the setting would be discovered the week it was first needed.
+    recording_enabled = models.BooleanField(default=True)
+    # "clip" re-encodes to exactly the evidence clips' ladder (1280 wide, CRF
+    # 28) so the tape and the clips are the same picture. "source" copies the
+    # camera's own H.264 untouched -- full resolution and no CPU at all, at
+    # roughly four times the disk -- for a detection PC that cannot afford to
+    # encode video all day beside three detectors and the VLM.
+    recording_mode = models.CharField(max_length=10, default="clip",
+                                      choices=[("clip", "Evidence-clip quality"),
+                                               ("source", "Camera's own video")])
+    # How long each file covers. The open segment is the only part of the tape
+    # that cannot be played yet (an MP4 is not playable until its moov atom is
+    # written at close), so this is also how far behind "now" the archive ends.
+    recording_segment_minutes = models.PositiveSmallIntegerField(default=10)
+    # The ring buffer's two bounds; whichever is reached first wins. Deleting
+    # the oldest footage is not optional here and has no master switch, because
+    # the alternative is not "footage is kept" but "the disk fills and
+    # recording stops" -- see core/recording.sweep.
+    recording_retention_days = models.PositiveSmallIntegerField(default=7)
+    recording_max_gb = models.PositiveSmallIntegerField(default=50)
+    # Burn the date and time into the picture, as the evidence clips do, so a
+    # segment copied onto a USB stick still carries its own time once the
+    # filename is gone. Ignored in "source" mode: drawing on the frames means
+    # decoding and re-encoding them, which is the cost that mode exists to
+    # avoid.
+    recording_timestamp = models.BooleanField(default=True)
+
     # Master switch for text notification, system-wide.
     #
     # This is NOT the removed `sms_alerts` column, and not a per-person

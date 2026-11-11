@@ -55,7 +55,7 @@ export function LiveMonitor({ actions = null }) {
             {status.label}{status.state === "running" && since ? ` · since ${since}` : ""}
           </div>
           <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>
-            Live monitoring · smoking, drinking, holdup and parking on the camera
+            Live monitoring · smoking, drinking, dangerous weapons and parking on the camera
           </div>
         </div>
         <div className="flex items-center gap-2 ml-auto">

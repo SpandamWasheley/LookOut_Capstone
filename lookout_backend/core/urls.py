@@ -44,6 +44,11 @@ urlpatterns = [
     path("monitor/start/", views.monitor_start, name="monitor_start"),
     path("monitor/stop/", views.monitor_stop, name="monitor_stop"),
     path("monitor/state/", views.monitor_state, name="monitor_state"),
+    # The continuous tape (core/recording.py): what days have footage, what a
+    # day holds, and the segments themselves. Outside the router because the
+    # archive is files on disk, not a model.
+    path("recordings/", views.recordings, name="recordings"),
+    path("recordings/file/<str:name>/", views.recording_file, name="recording_file"),
     path("officers/send-code/", views.send_officer_code, name="send_officer_code"),
     path("officers/verify-code/", views.verify_officer_code, name="verify_officer_code"),
     path("personnel/register/", views.register_personnel, name="register_personnel"),
