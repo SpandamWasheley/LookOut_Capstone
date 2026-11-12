@@ -401,5 +401,5 @@ class ClipTimelineTests(TestCase):
                 self.skipTest("ffmpeg is not available here")
             self.assertIsNone(rec.mark_offset)
 
-    def test_the_post_roll_is_twenty_seconds(self):
-        self.assertEqual(self._recognition().RAW_CLIP_POST_SECONDS, 20)
+    def test_the_post_roll_is_one_minute(self):
+        self.assertEqual(self._recognition().RAW_CLIP_POST_SECONDS, 60)

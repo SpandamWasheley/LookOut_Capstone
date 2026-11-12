@@ -16,17 +16,17 @@ import { getViolationTypes } from "../api.js";
 export const VIOLATION_TYPES = {
   smoking: {
     code: "smoking",
-    label: "Smoking",
+    label: "Potential Cigarette Smoking",
     short: "Smoking",
     icon: Cigarette,
-    aliases: ["smoking", "smoking in public places", "smoking in public area"],
+    aliases: ["smoking", "smoking in public places", "smoking in public area", "potential cigarette smoking"],
   },
   drinking: {
     code: "drinking",
-    label: "Drinking",
+    label: "Plausible Group Drinking",
     short: "Drinking",
     icon: Beer,
-    aliases: ["drinking", "drinking in public area", "drinking in public place"],
+    aliases: ["drinking", "drinking in public area", "drinking in public place", "plausible group drinking", "plausible group drinking noticed"],
   },
   parking: {
     code: "parking",
@@ -66,7 +66,7 @@ export const VIOLATION_TYPES = {
   },
   disposal: {
     code: "disposal",
-    label: "Discarded Waste",
+    label: "Potential Abandoned Waste",
     short: "Disposal",
     icon: Trash2,
     aliases: [
@@ -75,6 +75,8 @@ export const VIOLATION_TYPES = {
       "improper waste disposal",
       "illegal dumping",
       "garbage",
+      "discarded waste",
+      "potential abandoned waste",
     ],
   },
 };

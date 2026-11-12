@@ -111,8 +111,14 @@ def _few_people(r):
     return isinstance(pc, int) and not isinstance(pc, bool) and pc < 2
 
 
+def _top():
+    """Highest status the AI may suggest: Possible while scoring.LIKELY_ENABLED is off."""
+    return LIKELY if scoring.LIKELY_ENABLED else POSSIBLE
+
+
 def _step(level, delta):
-    return _ORDER[max(0, min(len(_ORDER) - 1, _ORDER.index(level) + delta))]
+    i = max(0, min(len(_ORDER) - 1, _ORDER.index(level) + delta))
+    return _ORDER[min(i, _ORDER.index(_top()))]
 
 
 def display_level(level):
@@ -184,6 +190,12 @@ def suggest_status(official_level, kind, reply, puff_only=False):
     def same(text):
         return {"text": text, "suggested": official, "changed": False, "direction": "none"}
 
+    # A row stored as Likely before the switch went off: the AI may never suggest Likely, so the
+    # suggestion is capped at Possible (the row itself is untouched).
+    if official == LIKELY and not scoring.LIKELY_ENABLED:
+        return {"text": "Likely → Possible (suggested) — Likely is switched off",
+                "suggested": POSSIBLE, "changed": True, "direction": "down"}
+
     # Only HIGH confidence moves the suggestion, up or down. Medium, low and any
     # other answer: no change.
     if r["confidence"] != HIGH:
@@ -204,6 +216,8 @@ def suggest_status(official_level, kind, reply, puff_only=False):
         if official == LIKELY:
             return same("Likely — AI agrees")
         higher = _step(official, +1)
+        if higher == official:      # Likely is switched off: Possible is the ceiling
+            return same(f"No change — {official}")
         if puff_only and higher == LIKELY:      # puff-only is never suggested above Possible
             return same(f"No change — {official}")
         return {"text": f"{official} → {higher} (suggested) — {_UP_REASON[kind]}",

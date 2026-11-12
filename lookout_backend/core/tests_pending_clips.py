@@ -215,9 +215,9 @@ class ClipWindowTests(TestCase):
         approach and then nothing."""
         self.assertGreaterEqual(recognition.RAW_CLIP_POST_SECONDS, 10)
 
-    def test_the_lead_in_is_the_longer_half(self):
+    def test_the_lead_in_is_at_least_as_long_as_the_post_roll(self):
         pre, post = recognition.RAW_CLIP_PRE_SECONDS, recognition.RAW_CLIP_POST_SECONDS
-        self.assertGreater(pre, post)
+        self.assertGreaterEqual(pre, post)
         # Far enough in that a viewer's instinct still finds it on the scrub
         # bar, rather than at the very end where it started.
-        self.assertLess(pre / (pre + post), 0.8)
+        self.assertLessEqual(pre / (pre + post), 0.8)

@@ -49,3 +49,11 @@ Proposal pending approval. No existing value changed.
 | Box that confirms a puff or shows a cigarette at hand or mouth | >= `POSSIBLE_MIN_CONF` = **0.45** (existing) | reading of "same as the object gate"; open question |
 | Status tied to the present (`cig_in_hand_or_mouth_now`, `puff_cap`) | **10 s** (`POSSIBLE_PUFF_WINDOW_SECONDS`) and **1.0 s** (`MOUTH_ACCEPT_FRESH_SECONDS`), both existing | banked puffs count in totals but cannot raise the status |
 | Puff-only path | unchanged (`PUFF_ONLY_ENABLED = False`) | |
+
+## Likely status switched off
+
+| setting | value | where |
+|---|---|---|
+| `scoring.LIKELY_ENABLED` | **False** | `core/vision/scoring.py` (code constant, not a settings column) |
+
+With it off no new decision can be Likely: any score >= 0.55 is Possible (`level_of`, `Score`, theft's `Evidence`, `_incidents.record`), a carried-over Likely never holds the status (`level_with_hysteresis`), and the AI checker's suggested status tops out at Possible (`ai_status.suggest_status`). `SCORE_VIOLATION` (0.75) and the Likely code are kept, unused. Rows already stored as Likely are not rewritten. Notifications fire at Possible and above (`NOTIFY_LEVELS`), so nothing waits on Likely. The AI prompt asks for `likely/possible/unlikely` about the scene, not for a status, so it is unchanged.

@@ -4,11 +4,12 @@ import {
   SkipBack, Download, Radio, CheckCircle, AlertTriangle,
   ChevronDown, Loader2, Search, Info,
   Clock, ListChecks, Check, Minus, MapPin, Sparkles, RotateCcw,
-  Maximize2, Minimize2,
+  Maximize2, Minimize2, Archive, MessageSquare,
 } from "lucide-react";
 import { violationDisplay, resolveViolationType } from "./constants/violationTypes";
 import { levelColor } from "./alertModel";
 import { useTestingTools } from "./useTestingTools";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { getViolationTypes, getBarangays, createCitation, searchViolators } from "./api";
 
 const SUFFIX_OPTIONS = ["", "Jr.", "Sr.", "II", "III", "IV"];
@@ -40,7 +41,7 @@ function formatStamp(ts) {
 // Evidence clips have no audio track (frame-only capture, no microphone
 // anywhere in this pipeline), so there's no mute/volume control here — it
 // would be a dead control implying an audio path that doesn't exist.
-export function RecordingPlayer({ alert, timeline = false }) {
+export function RecordingPlayer({ alert, timeline = false, testingTools = false }) {
   const videoRef = useRef(null);
   const hasRaw = !!alert.rawVideoUrl;
   const hasAnnotated = !!alert.videoUrl;
@@ -381,7 +382,7 @@ export function RecordingPlayer({ alert, timeline = false }) {
           </a>
           </div>
         </div>
-        <TriggeredBy alert={alert} />
+        {testingTools && <TriggeredBy alert={alert} />}
       </div>
     </div>
   );
@@ -1322,35 +1323,119 @@ function whenText(ts) {
   return `${date}, ${time}`;
 }
 
-// Directly under the header: who closed the alert, when, and why.
-function ClosedBanner({ alert }) {
-  const dismissed = alert.status === "acknowledged";
-  const tone = dismissed
-    ? { bg: "rgba(244,63,94,0.08)", border: "rgba(244,63,94,0.25)", icon: "#e11d48", Icon: X, title: "Dismissed" }
-    : { bg: "rgba(16,185,129,0.08)", border: "rgba(16,185,129,0.28)", icon: "#059669", Icon: Check, title: "Resolved" };
-  const Icon = tone.Icon;
+const DISMISS_REASONS = [
+  "False positive — no violation present",
+  "Duplicate alert — already handled",
+  "Outside barangay jurisdiction",
+  "Handled before an officer was assigned",
+  "Technical glitch / sensor error",
+  "Other",
+];
+
+// Dismiss stores `reason` or `reason: note` in one field (AlertFeed). Split it back apart.
+function splitDismissNotes(raw) {
+  const text = (raw || "").trim();
+  for (const r of DISMISS_REASONS) {
+    if (text === r) return { reason: r, note: "" };
+    if (text.startsWith(r + ":")) return { reason: r, note: text.slice(r.length + 1).trim() };
+  }
+  return { reason: "", note: text };
+}
+
+// Short chip label: "False positive — no violation present" -> "False positive".
+const reasonChip = (r) => r.split(/\s[—/]\s/)[0];
+
+function DismissedBanner({ alert, onReopen }) {
+  const [open, setOpen] = useState(false);
+  const { reason, note } = splitDismissNotes(alert.notes);
   const by = alert.reviewedBy ? `by ${alert.reviewedBy}` : "";
   const when = whenText(alert.reviewedAt);
+  const long = note.length > 110;
   return (
-    <div className="flex items-start gap-3 w-full rounded-lg px-4 py-3 mb-5"
-      style={{ background: tone.bg, border: `1px solid ${tone.border}` }}>
-      <span className="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5"
-        style={{ background: tone.icon + "22", color: tone.icon }}>
-        <Icon size={13} />
-      </span>
-      <div className="min-w-0">
-        <div className="text-[16px] font-semibold" style={{ color: "var(--foreground)" }}>{tone.title}</div>
+    <div className="flex items-start gap-3 w-full rounded-xl px-4 py-3 mb-5"
+      style={{ background: "rgba(100,116,139,0.14)", border: "1px solid rgba(100,116,139,0.35)" }}>
+      <Archive size={18} className="flex-shrink-0 mt-0.5" style={{ color: "var(--muted-foreground)" }} />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-[15px] font-semibold" style={{ color: "var(--foreground)" }}>Dismissed</span>
+          {reason && (
+            <span className="text-[12px] px-2 py-0.5 rounded-md"
+              style={{ border: "1px solid var(--border)", color: "var(--foreground)" }}>
+              {reasonChip(reason)}
+            </span>
+          )}
+        </div>
+        {note && (
+          <div className="flex items-start gap-2 rounded-lg px-3 py-2 mt-2"
+            style={{ background: "rgba(255,255,255,0.55)" }}>
+            <MessageSquare size={13} className="flex-shrink-0 mt-1" style={{ color: "var(--muted-foreground)" }} />
+            <div className="min-w-0 text-[13px] leading-relaxed break-words" style={{ color: "var(--foreground)" }}>
+              <div style={open ? undefined : { display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+                {note}
+              </div>
+              {long && (
+                <button type="button" onClick={() => setOpen((v) => !v)}
+                  className="text-[12px] mt-0.5 underline" style={{ color: "#3b82f6" }}>
+                  {open ? "Show less" : "Show more"}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
         {(by || when) && (
-          <div className="text-[13px] mt-0.5" style={{ color: "var(--muted-foreground)" }}>
+          <div className="text-[12px] mt-2" style={{ color: "var(--muted-foreground)" }}>
             {[by, when].filter(Boolean).join(" · ")}
           </div>
         )}
-        <div className="text-[14px] mt-1.5 leading-relaxed break-words" style={{ color: "var(--foreground)" }}>
-          {dismissed ? (alert.notes || "No reason provided.") : (alert.citationIssued ? "Citation issued" : "No citation")}
-        </div>
       </div>
+      {onReopen && (
+        <button onClick={onReopen}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium flex-shrink-0"
+          style={{ background: "var(--secondary)", color: "var(--foreground)", border: "1px solid var(--border)" }}>
+          <RotateCcw size={12} /> Reopen
+        </button>
+      )}
     </div>
   );
+}
+
+function ResolvedBanner({ alert, onReopen }) {
+  const by = alert.reviewedBy ? `by ${alert.reviewedBy}` : "";
+  const when = whenText(alert.reviewedAt);
+  return (
+    <div className="flex items-start gap-3 w-full rounded-xl px-4 py-3 mb-5"
+      style={{ background: "rgba(16,185,129,0.16)", border: "1px solid rgba(16,185,129,0.4)" }}>
+      <CheckCircle size={18} className="flex-shrink-0 mt-0.5" style={{ color: "#059669" }} />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-[15px] font-semibold" style={{ color: "var(--foreground)" }}>Resolved</span>
+          <span className="text-[12px] px-2 py-0.5 rounded-md"
+            style={{ border: "1px solid rgba(16,185,129,0.45)", color: "var(--foreground)" }}>
+            {alert.citationIssued ? "Record issued" : "No record"}
+          </span>
+        </div>
+        {(by || when) && (
+          <div className="text-[12px] mt-2" style={{ color: "var(--muted-foreground)" }}>
+            {[by, when].filter(Boolean).join(" · ")}
+          </div>
+        )}
+      </div>
+      {onReopen && (
+        <button onClick={onReopen}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium flex-shrink-0"
+          style={{ background: "var(--secondary)", color: "var(--foreground)", border: "1px solid var(--border)" }}>
+          <RotateCcw size={12} /> Reopen
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Directly under the header: who closed the alert, when, and why.
+function ClosedBanner({ alert, onReopen }) {
+  return alert.status === "acknowledged"
+    ? <DismissedBanner alert={alert} onReopen={onReopen} />
+    : <ResolvedBanner alert={alert} onReopen={onReopen} />;
 }
 
 // Detected -> status changes -> assigned -> dismissed / resolved, each with its time.
@@ -1434,6 +1519,7 @@ export function ViolationModal({
   // Testing view (score breakdown): admin only, and only while "Show testing tools" is on.
   const testingTools = useTestingTools(userRole === "admin");
   const [showResolveChecklist, setShowResolveChecklist] = useState(false);
+  const [confirmReopen, setConfirmReopen] = useState(false);
   const [showAllOfficers, setShowAllOfficers] = useState(false);
   const closed = alert.status === "acknowledged" || alert.status === "resolved";
 
@@ -1562,10 +1648,10 @@ export function ViolationModal({
           {/* Body: ONE scrolling area. Evidence ~60% on the left, cards ~40% on the right; on a
               narrow screen the video is on top and the cards stack below it. */}
           <div className="overflow-y-auto flex-1 p-6">
-            {closed && <ClosedBanner alert={alert} />}
+            {closed && <ClosedBanner alert={alert} onReopen={canReopen ? () => setConfirmReopen(true) : undefined} />}
             <div className="grid grid-cols-1 lg:grid-cols-[60fr_40fr] gap-5 items-start">
               <div className="min-w-0">
-                <RecordingPlayer alert={alert} timeline />
+                <RecordingPlayer alert={alert} timeline testingTools={testingTools} />
               </div>
 
               <div className="flex flex-col gap-3 min-w-0">
@@ -1624,18 +1710,19 @@ export function ViolationModal({
               )}
             </div>
           )}
-          {closed && canReopen && (
-            <div className="flex items-center px-6 py-3 flex-shrink-0" style={{ borderTop: "1px solid var(--border)" }}>
-              <div className="flex-1" />
-              <button onClick={onReopen}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium"
-                style={{ background: "var(--secondary)", color: "var(--foreground)", border: "1px solid var(--border)" }}>
-                <RotateCcw size={12} /> Reopen
-              </button>
-            </div>
-          )}
-        </div>
+                  </div>
       </div>
+
+      <ConfirmDialog
+        open={confirmReopen}
+        title="Reopen this alert?"
+        body={alert.status === "resolved"
+          ? "It goes back to Violations as unassigned, and its assigned officers are cleared. Any record already issued stays on file."
+          : "It goes back to Violations as unassigned."}
+        confirmLabel="Yes, reopen"
+        onConfirm={() => { setConfirmReopen(false); onReopen?.(); }}
+        onCancel={() => setConfirmReopen(false)}
+      />
 
       {showResolveChecklist && (
         <CitationFormModal

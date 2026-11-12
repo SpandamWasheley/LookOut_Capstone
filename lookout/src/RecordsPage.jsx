@@ -26,6 +26,7 @@ export function RecordsPage({ user, onOpenAlerts = () => {} }) {
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState(null);
+  const [toast, setToast] = useState(null);
 
   useEffect(() => {
     const refresh = () => {
@@ -245,6 +246,13 @@ export function RecordsPage({ user, onOpenAlerts = () => {} }) {
         </div>
       </div>
 
+      {toast && (
+        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-[70] flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium shadow-xl"
+          style={{ background: "rgba(16,185,129,0.15)", border: "1px solid rgba(16,185,129,0.25)", color: "#10b981", backdropFilter: "blur(8px)" }}>
+          <CheckCircle size={13} /> {toast}
+        </div>
+      )}
+
       {selected && (
         <ViolationModal
           alert={selected}
@@ -252,6 +260,8 @@ export function RecordsPage({ user, onOpenAlerts = () => {} }) {
           onReopen={async () => {
             await updateAlert(selected.dbId, { status: "active", officers_assigned: [] });
             setSelected(null);          // it leaves Records and returns to Violations
+            setToast("1 alert reopened");
+            setTimeout(() => setToast(null), 3000);
           }}
           onDismiss={() => {}}
           onDispatch={() => {}}

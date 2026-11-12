@@ -963,7 +963,7 @@ class Command(BaseCommand):
                 continue
             share = state.score / max(self.zone.alert_score, 1e-6)
             if state.alerted:
-                status = scoring.label_of(scoring.VIOLATION)      # "Likely"
+                status = scoring.label_of(scoring.clamp_level(scoring.VIOLATION))      # "Likely", or "Possible" while LIKELY_ENABLED is off
             elif state.inside and share >= scoring.SCORE_WARNING:
                 status = scoring.label_of(scoring.WARNING)        # "Possible"
             else:

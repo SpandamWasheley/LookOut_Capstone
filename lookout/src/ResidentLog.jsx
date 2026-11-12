@@ -2,9 +2,10 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   Search, User, ChevronLeft, Loader2, AlertTriangle, GitMerge, Shield, Calendar, FileText,
-  X, Filter, ChevronDown, Users, Repeat, Award, MapPin,
+  X, Filter, ChevronDown, Users, Repeat, Award, MapPin, Trash2, RotateCcw, CheckCircle,
 } from "lucide-react";
-import { getViolators, getCitations, searchViolators, mergeViolators } from "./api";
+import { getViolators, getCitations, searchViolators, mergeViolators, deleteCitation } from "./api";
+import { ConfirmDialog, NoticeDialog } from "./ConfirmDialog";
 import {
   VIOLATION_TYPES, UNKNOWN_VIOLATION_TYPE, resolveViolationType, loadViolationTypeIndex, violationChipStyle,
 } from "./constants/violationTypes.js";
@@ -62,7 +63,7 @@ function MergeModal({ violator, suggestions, onMerge, onClose }) {
         <div className="px-5 py-4 flex-shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
           <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Merge into {violator.full_name}</div>
           <div className="text-[13px] mt-0.5" style={{ color: "var(--muted-foreground)" }}>
-            Pick the duplicate record — its citations move here, and it's deleted.
+            Pick the duplicate record — its records move here, and it's deleted.
           </div>
         </div>
         <div className="px-5 py-3 flex-shrink-0">
@@ -92,7 +93,7 @@ function MergeModal({ violator, suggestions, onMerge, onClose }) {
               <div className="min-w-0">
                 <div className="text-[15px] font-medium truncate" style={{ color: "var(--foreground)" }}>{r.full_name}</div>
                 <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>
-                  {r.citation_count} citation{r.citation_count !== 1 ? "s" : ""}
+                  {r.citation_count} record{r.citation_count !== 1 ? "s" : ""}
                 </div>
               </div>
               <button
@@ -173,7 +174,10 @@ function DetailSkeletonEntry() {
 }
 
 // ── Detail view ───────────────────────────────────────────────────────────────
-function ViolatorDetail({ violator, onBack, onMerged }) {
+function ViolatorDetail({ violator, onBack, onMerged, canDelete = false }) {
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [toast, setToast] = useState(null);
+  const [deleteError, setDeleteError] = useState("");
   const [citations, setCitations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -199,7 +203,7 @@ function ViolatorDetail({ violator, onBack, onMerged }) {
       setCitations(citRes.results ?? citRes);
       setDupeSuggestions((dupeRes ?? []).filter((v) => v.id !== violator.id));
     } catch (err) {
-      setLoadError(err.message || "Failed to load citation history.");
+      setLoadError(err.message || "Failed to load record history.");
     } finally {
       setLoading(false);
     }
@@ -214,6 +218,21 @@ function ViolatorDetail({ violator, onBack, onMerged }) {
     setShowMerge(false);
     await refresh();
     onMerged?.();
+  };
+
+  const handleDelete = async () => {
+    const target = deleteTarget;
+    setDeleteTarget(null);
+    try {
+      const res = await deleteCitation(target.id);
+      setToast("1 record deleted");
+      setTimeout(() => setToast(null), 3000);
+      if (res?.violator_deleted) { setTimeout(() => onBack(), 900); return; }
+      await refresh();
+      onMerged?.();
+    } catch (err) {
+      setDeleteError(err.message || "Could not delete the record.");
+    }
   };
 
   const toggleTypeFilter = (code) => {
@@ -322,7 +341,7 @@ function ViolatorDetail({ violator, onBack, onMerged }) {
         {!loading && !loadError && totalCitations > 0 && (
           <div className="flex flex-wrap rounded-xl overflow-hidden" style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
             <div className="flex-1 min-w-[120px] px-4 py-3" style={{ borderRight: "1px solid var(--border)" }}>
-              <div className="text-[12px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted-foreground)" }}>Total citations</div>
+              <div className="text-[12px] uppercase tracking-wide font-semibold" style={{ color: "var(--muted-foreground)" }}>Total records</div>
               <div className="text-lg font-bold tabular-nums mt-1" style={{ color: "var(--foreground)" }}>{totalCitations}</div>
             </div>
             <div className="flex-1 min-w-[160px] px-4 py-3" style={{ borderRight: "1px solid var(--border)" }}>
@@ -367,11 +386,11 @@ function ViolatorDetail({ violator, onBack, onMerged }) {
         )}
 
         <div className="text-[12px] font-semibold uppercase tracking-wide" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
-          Citation history · {totalCitations}
+          Record history · {totalCitations}
         </div>
 
         {loading ? (
-          <div aria-busy="true" aria-label="Loading citation history">
+          <div aria-busy="true" aria-label="Loading record history">
             {Array.from({ length: 4 }).map((_, i) => <DetailSkeletonEntry key={i} />)}
           </div>
         ) : loadError ? (
@@ -382,12 +401,12 @@ function ViolatorDetail({ violator, onBack, onMerged }) {
         ) : citations.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-2 py-16">
             <FileText size={22} style={{ color: "var(--muted-foreground)" }} />
-            <div className="text-sm" style={{ color: "var(--muted-foreground)" }}>No citations recorded.</div>
+            <div className="text-sm" style={{ color: "var(--muted-foreground)" }}>No records yet.</div>
           </div>
         ) : sortedCitations.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-3 py-16">
             <Filter size={22} style={{ color: "var(--muted-foreground)" }} />
-            <div className="text-sm" style={{ color: "var(--muted-foreground)" }}>No citations match the selected type filter.</div>
+            <div className="text-sm" style={{ color: "var(--muted-foreground)" }}>No records match the selected type filter.</div>
             {hasActiveFilters && (
               <button onClick={clearFilters} className="text-[14px] font-medium px-3 py-1.5 rounded-lg"
                 style={{ background: "var(--secondary)", color: "var(--primary)", border: "1px solid var(--border)" }}>
@@ -420,10 +439,25 @@ function ViolatorDetail({ violator, onBack, onMerged }) {
                               <Calendar size={11} style={{ color: "var(--muted-foreground)" }} />
                               {fmtDateTime(c.created_at)}
                               <span className="text-[13px] font-normal" style={{ color: "var(--muted-foreground)" }}>· {relativeTime(c.created_at)}</span>
+                              {c.alert_reopened && (
+                                <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[12px] font-medium"
+                                  style={{ color: "#b45309", background: "rgba(245,158,11,0.16)", border: "1px solid rgba(245,158,11,0.4)" }}>
+                                  <RotateCcw size={10} /> Reopened
+                                </span>
+                              )}
                             </div>
-                            <div className="flex items-center gap-1 text-[13px] flex-shrink-0 px-2 py-0.5 rounded-full"
-                              style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}>
-                              <Shield size={10} /> {c.officer_name || `Officer #${c.officer}`}
+                            <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
+                              <div className="flex items-center gap-1 text-[13px] px-2 py-0.5 rounded-full"
+                                style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}>
+                                <Shield size={10} /> {c.officer_name || `Officer #${c.officer}`}
+                              </div>
+                              {canDelete && c.alert_reopened && (
+                                <button onClick={() => setDeleteTarget(c)} title="Delete this record" aria-label="Delete this record"
+                                  className="p-1.5 rounded-lg"
+                                  style={{ color: "#ef4444", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)" }}>
+                                  <Trash2 size={13} />
+                                </button>
+                              )}
                             </div>
                           </div>
 
@@ -464,6 +498,25 @@ function ViolatorDetail({ violator, onBack, onMerged }) {
           </div>
         )}
       </div>
+
+      {toast && (
+        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-[70] flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium shadow-xl"
+          style={{ background: "rgba(16,185,129,0.15)", border: "1px solid rgba(16,185,129,0.25)", color: "#10b981", backdropFilter: "blur(8px)" }}>
+          <CheckCircle size={13} /> {toast}
+        </div>
+      )}
+      <ConfirmDialog
+        open={!!deleteTarget}
+        title="Delete this record?"
+        body={citations.length <= 1
+          ? "This is the violator's only record, so they will be removed from the Violator Log too. This cannot be undone."
+          : "The violator stays in the Violator Log with their other records. This cannot be undone."}
+        confirmLabel="Yes, delete"
+        tone="#ef4444"
+        onConfirm={handleDelete}
+        onCancel={() => setDeleteTarget(null)}
+      />
+      <NoticeDialog open={!!deleteError} title="Could not delete" body={deleteError} onClose={() => setDeleteError("")} />
 
       {showMerge && (
         <MergeModal violator={violator} suggestions={dupeSuggestions} onMerge={handleMerge} onClose={() => setShowMerge(false)} />
@@ -529,8 +582,8 @@ const TIER_STYLE = {
 };
 
 const SORT_OPTIONS = [
-  { key: "citations", label: "Most citations" },
-  { key: "recent", label: "Recently cited" },
+  { key: "citations", label: "Most records" },
+  { key: "recent", label: "Most recent" },
   { key: "name", label: "Name A–Z" },
   { key: "repeat", label: "Repeat offenders" },
 ];
@@ -604,7 +657,7 @@ function SkeletonRow() {
 // `alerts` and `onOpenAlerts` feed the header's notification bell. They are
 // passed in rather than fetched here: the dashboard already polls /alerts/ for
 // every page, and a second poll on this one would only be a second answer.
-export function ResidentLog({ alerts = [], onOpenAlerts = () => {} }) {
+export function ResidentLog({ alerts = [], onOpenAlerts = () => {}, role }) {
   const [violators, setViolators] = useState([]);
   const [violationsByViolator, setViolationsByViolator] = useState(new Map());
   const [loading, setLoading] = useState(true);
@@ -702,6 +755,7 @@ export function ResidentLog({ alerts = [], onOpenAlerts = () => {} }) {
         violator={selected}
         onBack={() => { setSelected(null); refresh().catch(() => {}); }}
         onMerged={refresh}
+        canDelete={role === "admin"}
       />
     );
   }
@@ -765,7 +819,7 @@ export function ResidentLog({ alerts = [], onOpenAlerts = () => {} }) {
               <div className="mt-1">
                 <div className="text-[15px] font-semibold truncate" style={{ color: "var(--foreground)" }}>{mostCited.full_name}</div>
                 <div className="text-[13px] tabular-nums" style={{ color: "var(--muted-foreground)" }}>
-                  {mostCited.citation_count} citation{mostCited.citation_count !== 1 ? "s" : ""}
+                  {mostCited.citation_count} record{mostCited.citation_count !== 1 ? "s" : ""}
                 </div>
               </div>
             ) : (
@@ -881,7 +935,7 @@ export function ResidentLog({ alerts = [], onOpenAlerts = () => {} }) {
                     </div>
                     <ViolationIconCluster codes={violationsByViolator.get(v.id)} />
                     <span className="text-[13px] font-semibold px-2.5 py-1 rounded-full flex-shrink-0 tabular-nums" style={TIER_STYLE[tier]}>
-                      {v.citation_count} citation{v.citation_count !== 1 ? "s" : ""}
+                      {v.citation_count} record{v.citation_count !== 1 ? "s" : ""}
                     </span>
                   </button>
                 );

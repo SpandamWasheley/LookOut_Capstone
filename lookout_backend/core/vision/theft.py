@@ -173,10 +173,14 @@ WEIGHTS = {
     # Spec 4.3. Only the cues the spec prices for HOLDUP carry weight by
     # default; the legacy patterns above are gated behind --enable-legacy-theft
     # and contribute nothing unless asked for.
-    "E14": 0.45,   # knife present near a wrist -- GATE. Fernandez-Testa (2024)
-    "E12": 0.20,   # confrontation freeze       -- Ruiz-Santaquiteria (2021)
-    "E10": 0.10,   # loitering (remembered 60 s) -- citation pending (spec 12.2)
-    "E11E12": 0.10,  # rapid approach, then freeze within 5 s (E11 alone is worth 0)
+    "E14": 0.40,   # knife present near a wrist -- GATE. Fernandez-Testa (2024)
+    "momentum": 0.20,   # the knife persisted (2+ of the last 5 frames, remembered) -> 40 + 20 = 60 = Possible
+    # RETIRED from scoring a knife: Dangerous Weapon is the knife + its persistence only. The keys stay at 0.0
+    # (not deleted) so the pair / loiter pattern code that still names them keeps running and simply adds nothing.
+    # Old values: E12 0.20 (Ruiz-Santaquiteria 2021), E10 0.10, E11E12 0.10.
+    "E12": 0.0,
+    "E10": 0.0,
+    "E11E12": 0.0,
 
     # --- legacy theft patterns (spec 4.3: "disable by default") -------------
     # Retained at their original values so --enable-legacy-theft reproduces the
@@ -314,8 +318,9 @@ class Evidence:
         # status is held at Monitoring.
         # v6.2.1: with the location switch on, ONLY a frozen pair (E12, held 3 s) corroborates; loitering
         # (E10) is still scored but no longer lifts a knife above Monitoring on its own.
-        self.corroborated = bool(self.cues.keys() & (
-            {"E12"} if location_momentum.holdup_rules_on() else {"E10", "E12"}))
+        # Dangerous Weapon: the persistence cue ("momentum") is what lifts a knife to Possible; E12/E10 no longer do.
+        # (old: self.corroborated = bool(self.cues.keys() & ({"E12"} if location_momentum.holdup_rules_on() else {"E10", "E12"})))
+        self.corroborated = "momentum" in self.cues
         self.e20_table = self.cues.get("E20", 0.0)      # what the hour would add
         self.e20_capped = False
         if "E14" in self.cues:
@@ -326,7 +331,7 @@ class Evidence:
             #     base < 55        -> min(base + E20, 54)   (stays Monitoring)
             base = scoring._r(sum(w for r, w in self.cues.items() if r != "E20"))
             e20 = self.e20_table if self.corroborated else 0.0
-            if base >= scoring.SCORE_VIOLATION:
+            if base >= scoring.SCORE_VIOLATION and scoring.LIKELY_ENABLED:
                 final = base + e20
             elif base >= scoring.SCORE_WARNING:
                 final = min(base + e20, scoring.SCORE_VIOLATION - 0.01)
@@ -358,19 +363,21 @@ class Evidence:
             # v6.2.1 sticky: the caps only block the FIRST rise to Possible / Likely.
             sticky = (location_momentum.holdup_rules_on()
                       and previous_level in (scoring.WARNING, scoring.VIOLATION))
-            if ((not self.people_near or not self.corroborated) and not sticky
-                    and scoring.LEVEL_ORDER[level] > scoring.LEVEL_ORDER[scoring.MONITORING]):
-                level = scoring.MONITORING
-                self.holdup_capped = True
-                if location_momentum.holdup_rules_on() and not self.corroborated:
-                    self.capped = location_momentum.CAP_NO_FROZEN_PAIR_TEXT
+            # RETIRED: "needs a second person near AND a frozen pair / loiterer". The score alone decides now:
+            # 40 (knife) stays Monitoring, 60 (knife + persistence) is Possible.
+            # if ((not self.people_near or not self.corroborated) and not sticky
+            #         and scoring.LEVEL_ORDER[level] > scoring.LEVEL_ORDER[scoring.MONITORING]):
+            #     level = scoring.MONITORING
+            #     self.holdup_capped = True
+            #     if location_momentum.holdup_rules_on() and not self.corroborated:
+            #         self.capped = location_momentum.CAP_NO_FROZEN_PAIR_TEXT
         elif any(c in LEGACY_CUES for c in self.cues):
-            level = (scoring.VIOLATION if scoring._r(self.score) >= scoring.SCORE_VIOLATION
+            level = (scoring.VIOLATION if scoring._r(self.score) >= scoring.SCORE_VIOLATION and scoring.LIKELY_ENABLED
                      else scoring.WARNING if scoring._r(self.score) >= scoring.SCORE_WARNING
                      else scoring.NONE)
         else:
             level = scoring.NONE
-        self.band = level
+        self.band = scoring.clamp_level(level)
 
     @property
     def level(self):

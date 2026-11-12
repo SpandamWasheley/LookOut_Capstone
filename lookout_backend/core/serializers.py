@@ -236,6 +236,13 @@ class ViolatorSerializer(serializers.ModelSerializer):
         return annotated if annotated is not None else obj.citations.count()
 
 
+def is_reopened(alert):
+    """An alert somebody reopened that nobody has closed again."""
+    if alert is None or alert.status in (Alert.Status.RESOLVED, Alert.Status.ACKNOWLEDGED):
+        return False
+    return any(e.get("type") == "reopened" for e in (alert.timeline or []))
+
+
 class CitationSerializer(serializers.ModelSerializer):
     # Writable-optional: the client can pass an explicit id when the officer
     # picks a "did you mean" suggestion from /api/violators/search; if
@@ -245,6 +252,9 @@ class CitationSerializer(serializers.ModelSerializer):
     violator_name = serializers.SerializerMethodField()
     officer_name = serializers.CharField(source="officer.name", read_only=True)
     violation_labels = serializers.SerializerMethodField()
+    # True while the alert this citation belongs to has been REOPENED and not yet closed again:
+    # the one state in which an admin may delete the citation (see CitationViewSet.destroy).
+    alert_reopened = serializers.SerializerMethodField()
     # Web sends neither field and gets today's behaviour unchanged: resolve
     # the alert on save, no idempotency key. Mobile sends both — false while
     # more violators from the same scene are still being cited, and a
@@ -262,11 +272,14 @@ class CitationSerializer(serializers.ModelSerializer):
             "id", "alert", "violator", "violator_name",
             "first_name_entered", "middle_name_entered", "last_name_entered", "suffix_entered",
             "officer", "officer_name", "barangay_of_violation", "violator_barangay",
-            "violations", "violation_labels",
+            "violations", "violation_labels", "alert_reopened",
             "notes", "created_by", "created_at",
             "resolve_alert", "client_uuid",
         ]
         read_only_fields = ["created_by", "created_at"]
+
+    def get_alert_reopened(self, obj):
+        return is_reopened(obj.alert)
 
     def validate_violations(self, value):
         if not value:

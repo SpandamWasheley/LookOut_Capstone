@@ -526,7 +526,7 @@ class IncidentMixin:
         """
         book = self._incident_book()
         inc = book.get(key)
-        level = score.level
+        level = scoring.clamp_level(score.level)
 
         if level == scoring.NONE:
             # Behaviour points are still logged; the incident (if any) is no longer active and

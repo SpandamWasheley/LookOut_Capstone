@@ -735,6 +735,7 @@ export function AlertFeed({ showFilters = false, user }) {
       await updateAlert(alert.dbId, { status: "active", officers_assigned: [] });
       await refresh();
       setSelectedAlert(null);
+      showToast("1 alert reopened");
     } catch (err) {
       setActionError(err.message || "Could not reopen the alert.");
     }

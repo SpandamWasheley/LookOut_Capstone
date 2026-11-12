@@ -57,6 +57,12 @@ NONE = "none"               # not shown (behaviour points are still logged)
 SCORE_VIOLATION = 0.75
 SCORE_WARNING = 0.55
 
+# Master switch for the Likely status. While False, nothing the scoring model, the
+# detectors or the AI checker produces can be Likely: any score >= SCORE_WARNING is
+# Possible. The Likely code and SCORE_VIOLATION stay in place, unused. Rows already
+# stored as Likely are never rewritten; only new decisions are clamped.
+LIKELY_ENABLED = False
+
 # Hysteresis: a status is left only when the score is this far below the
 # threshold that admitted it.
 HYSTERESIS_DROP = 0.05
@@ -92,13 +98,20 @@ def _r(x):
     return round(x, 6)
 
 
+def clamp_level(level):
+    """Likely -> Possible while LIKELY_ENABLED is off; every other level passes through."""
+    if level == VIOLATION and not LIKELY_ENABLED:
+        return WARNING
+    return level
+
+
 def level_of(score, object_on=True):
     """Status for a score. With the object cue ON the floor is Monitoring; with it
     OFF nothing is shown (the puff-only path is handled in Score)."""
     if not object_on:
         return NONE
     score = _r(score)
-    if score >= SCORE_VIOLATION:
+    if LIKELY_ENABLED and score >= SCORE_VIOLATION:
         return VIOLATION
     if score >= SCORE_WARNING:
         return WARNING
@@ -124,6 +137,7 @@ def level_with_hysteresis(score, previous_level, object_on=True):
     Monitoring has no floor: it ends when the object cue goes OFF.
     """
     fresh = level_of(score, object_on)
+    previous_level = clamp_level(previous_level)    # a carried-over Likely can never hold the status there
     if previous_level is None or not object_on:
         return fresh
     if LEVEL_ORDER.get(fresh, 0) >= LEVEL_ORDER.get(previous_level, 0):
@@ -332,10 +346,15 @@ DISPOSAL_WEIGHTS = {            # total 1.15, capped at 1.00 (as SMOKING_WEIGHTS
     "dwell":     0.15,   # still on the watchlist N seconds later (needs `object`)
 }
 
-HOLDUP_WEIGHTS = {              # total 0.75 (theft.py E-codes)
-    "E14": 0.45,   # knife / weapon present -- GATE
-    "E12": 0.20,   # two people frozen close together
-    "E10": 0.10,   # someone loitering first
+# Dangerous Weapon (was "holdup"): the knife and how steadily it was seen, nothing else.
+#   knife alone                      40 -> Monitoring
+#   knife + momentum/persistence     60 -> Possible
+HOLDUP_WEIGHTS = {              # total 0.60 (theft.py WEIGHTS carries the same two)
+    "E14":      0.40,   # knife / weapon present -- GATE
+    "momentum": 0.20,   # the knife persisted (seen in 2+ of the last 5 frames, remembered)
+    # RETIRED -- pair/loiter cues no longer score a knife (kept for reference, not run):
+    # "E12": 0.20,   # two people frozen close together
+    # "E10": 0.10,   # someone loitering first
 }
 
 # The spec rejects a smoke-plume indicator by name: vision-language models fail
@@ -378,6 +397,11 @@ CONDITIONAL_CUES = {
 # able to quietly promote a weak object match to a full alert.
 DISPOSAL_BEHAVIOUR_CUES = frozenset({"arrival", "person", "left"})
 DISPOSAL_BEHAVIOUR_TAG = "Weak match on the object — reported on the behaviour"
+
+# Drinking's second gate: without a gathering (2+ people, stationary) the status is held at Monitoring, so a bottle
+# at the mouth alone can never reach Possible. Flip to False to let a lone drinker score on their own again.
+DRINKING_GATHERING_GATE = True
+DRINKING_NO_GATHERING_TEXT = "capped: drinking needs a gathering"
 
 # The puff-only path (smoking with NO cigarette detected, on hand-to-mouth movement alone) is OFF: a smoking event now
 # needs a cigarette, the same "no object, no event" rule every other detector follows. Vapes are no longer catered for,
@@ -460,6 +484,7 @@ class Score:
                 level = NONE
         else:
             level = NONE
+        level = clamp_level(level)
 
         # Holdup hard requirement (spec 7): a second person NEAR the knife holder.
         # Without one the event stays Monitoring, whatever else added up.
@@ -476,7 +501,13 @@ class Score:
         if cap is not None and not self.puff_only and LEVEL_ORDER[level] > LEVEL_ORDER.get(cap, 3):
             level = cap
             self.capped = cap_reason or "capped"
-        self.level = level
+        # Drinking is a GROUP violation: the gathering is a gate like the bottle. Bottle + at_mouth (+ time band)
+        # without a gathering can total 0.60, so the status is held at Monitoring; the score stays as computed.
+        if (kind == "drinking" and DRINKING_GATHERING_GATE and "gathering" not in self.fired
+                and LEVEL_ORDER[level] > LEVEL_ORDER[MONITORING]):
+            level = MONITORING
+            self.capped = DRINKING_NO_GATHERING_TEXT
+        self.level = clamp_level(level)
 
     @property
     def stored(self):
@@ -513,6 +544,7 @@ class Score:
         "near_mouth": "Smoking item at the mouth",
         # holdup (Layer E codes)
         "E14": "Knife seen near a hand",
+        "momentum": "Knife held steadily (kept appearing)",
         "E12": "Two people frozen close together",
         "E10": "Someone loitering first",
         "E11E12": "Approach, then freeze (E11→E12)",

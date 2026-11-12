@@ -295,6 +295,7 @@ function AdminDashboard({ user, onLogout }) {
             <ResidentLog
               alerts={activeAlerts.map(mapAlert)}
               onOpenAlerts={() => setActivePage("alerts")}
+              role={role}
             />
           </div>
         )}

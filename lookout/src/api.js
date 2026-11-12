@@ -430,6 +430,10 @@ export const getCitations = (params = {}) => {
   return apiFetch(`/citations/${qs ? `?${qs}` : ""}`);
 };
 
+// Admin only, and only for a citation whose alert has been reopened (the server refuses otherwise).
+// Resolves to { violator_deleted } — true when it was the violator's only citation.
+export const deleteCitation = (id) => apiFetch(`/citations/${id}/`, { method: "DELETE" });
+
 export const getViolators = () => apiFetch("/violators/");
 export const getViolator = (id) => apiFetch(`/violators/${id}/`);
 export const searchViolators = (q) => apiFetch(`/violators/search/?q=${encodeURIComponent(q)}`);

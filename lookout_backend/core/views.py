@@ -28,7 +28,7 @@ from django.utils.text import get_valid_filename
 from rapidfuzz import process as rapidfuzz_process
 from core import zones
 from django.db import connection
-from rest_framework import generics, permissions, viewsets
+from rest_framework import generics, permissions, status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes, throttle_classes
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
@@ -128,6 +128,7 @@ from .serializers import (
     AlertSerializer,
     CameraSerializer,
     CitationSerializer,
+    is_reopened,
     DetectionJobSerializer,
     DispatcherSerializer,
     OfficerSerializer,
@@ -1289,6 +1290,33 @@ class CitationViewSet(viewsets.ModelViewSet):
     serializer_class = CitationSerializer
     filterset_class = CitationFilter
     permission_classes = [permissions.IsAuthenticated, CanEditOwnOpenCitation]
+
+    def get_permissions(self):
+        # Deleting is an admin's deliberate act, not an officer correcting a typo, so it skips the
+        # own-citation rule and is gated in destroy() on the alert having been reopened.
+        if self.action == "destroy":
+            return [permissions.IsAuthenticated(), IsAdmin()]
+        return super().get_permissions()
+
+    def destroy(self, request, *args, **kwargs):
+        """Delete a citation whose alert has been REOPENED (and not closed again).
+
+        A closed alert's citation is the record of the incident and stays. Reopening is the
+        admin saying the closure was wrong, which is the only moment the citation can be wrong
+        with it. If it was the violator's only citation the violator goes too, so the Violator
+        Log never holds a person with nothing attached; one with other citations is kept."""
+        citation = self.get_object()
+        if not is_reopened(citation.alert):
+            return Response(
+                {"detail": "Only a citation whose alert has been reopened can be deleted."},
+                status=status.HTTP_409_CONFLICT)
+        with transaction.atomic():
+            violator = citation.violator
+            citation.delete()
+            violator_deleted = not violator.citations.exists()
+            if violator_deleted:
+                violator.delete()
+        return Response({"violator_deleted": violator_deleted}, status=status.HTTP_200_OK)
 
     def perform_create(self, serializer):
         """Filing a citation against an alert resolves that alert in the same

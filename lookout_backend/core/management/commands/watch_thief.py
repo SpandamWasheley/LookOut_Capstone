@@ -973,10 +973,12 @@ class Command(IncidentMixin, BaseCommand):
             self._debug_note("Dangerous Weapon", ("knife", track.id), track.id, track.box, None, cue.momentum)
             return
         persisted = self._knife_persist_at.get(track.id)
-        if persisted is None or now_ts - persisted > KNIFE_PERSIST_MEMORY_SECONDS:
-            self.stats["held back: knife in fewer than 2 of the last 5 frames"] += 1
-            self._debug_note("Dangerous Weapon", ("knife", track.id), track.id, track.box, None, cue.momentum)
-            return
+        is_persistent = persisted is not None and now_ts - persisted <= KNIFE_PERSIST_MEMORY_SECONDS
+        if not is_persistent:
+            # Dangerous Weapon: a knife that has NOT persisted is no longer thrown away -- it is scored on the
+            # knife alone (40 = Monitoring). Persistence is what adds the "momentum" cue (+20 = Possible).
+            # (old: stats["held back: knife in fewer than 2 of the last 5 frames"] += 1; return)
+            self.stats["knife not persistent: Monitoring only"] += 1
         best_label, best_score = cue.label, cue.conf
         present_for = cue.momentum
 
@@ -985,7 +987,7 @@ class Command(IncidentMixin, BaseCommand):
         # status now comes from the shared scoring rules: a knife is 45 points
         # times the time-of-day block, Monitoring until a second person is NEAR
         # the holder -- never the raw YOLO box confidence.
-        evidence = self._knife_evidence(track, best_label, present_for, now_ts, box)
+        evidence = self._knife_evidence(track, best_label, present_for, now_ts, box, persistent=is_persistent)
         self._ai_note(("partner", track.id), getattr(evidence, "partner_box", None))
         self._debug_note("Dangerous Weapon", ("knife", track.id), track.id, box, evidence, cue.momentum)
         who = track.display
@@ -1045,7 +1047,7 @@ class Command(IncidentMixin, BaseCommand):
     def _describe(self, ev, summary, who, present_for):
         return descriptions.holdup(summary, bool(ev.people_near))
 
-    def _knife_evidence(self, track, label, present_for, now_ts, box):
+    def _knife_evidence(self, track, label, present_for, now_ts, box, persistent=True):
         """Evidence for one knife holder (holdup scoring v2).
 
         Indicators, all judged on the holder at this moment:
@@ -1058,18 +1060,21 @@ class Command(IncidentMixin, BaseCommand):
           E20     time of day, 4-10 points, added only once E10 or E12 is present
                   and capped by theft.Evidence so it can never change the band
         """
+        # Dangerous Weapon: knife 40 (gate) + persistence 20. Nothing else scores a knife.
         cues = {"E14": theft.WEIGHTS["E14"]}
+        if persistent:
+            cues["momentum"] = theft.WEIGHTS["momentum"]
         engine = self.engine
-        if engine is not None:
-            if "e10" not in self.ablate and engine.loiter_recent(track, now_ts):
-                cues["E10"] = theft.WEIGHTS["E10"]
-            cues.update(engine.holdup_pair_cues(
-                track.id, self._e14_times.get(track.id, ()), now_ts, hold=self.cue_hold, holder=track))
-        # E20 as added points from the Manila table (Asia/Manila hour). Evidence
-        # decides whether it counts and how much of it fits under the cap.
-        bonus = scoring.manila_time_bonus(self._clock_now(now_ts))
-        if bonus and "e20" not in self.ablate:
-            cues["E20"] = bonus
+        # RETIRED (E10 loiter / E12 + E11E12 frozen pair no longer add to a knife):
+        # if engine is not None:
+        #     if "e10" not in self.ablate and engine.loiter_recent(track, now_ts):
+        #         cues["E10"] = theft.WEIGHTS["E10"]
+        #     cues.update(engine.holdup_pair_cues(
+        #         track.id, self._e14_times.get(track.id, ()), now_ts, hold=self.cue_hold, holder=track))
+        # RETIRED (E20 time-of-day points): the score is exactly 40 or 60.
+        # bonus = scoring.manila_time_bonus(self._clock_now(now_ts))
+        # if bonus and "e20" not in self.ablate:
+        #     cues["E20"] = bonus
         mult = {}
         near_limit = engine.near_person_heights if engine is not None else theft.NEAR_PERSON_HEIGHTS
         partner = self._valid_partner(track, near_limit, now_ts)

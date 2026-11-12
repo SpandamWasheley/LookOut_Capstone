@@ -275,7 +275,11 @@ class ClipRecorder:
 # the vehicle pull away, did the person put the bottle down, was the bag picked
 # up again.
 #
-# PRE is now TWICE post, deliberately, and the asymmetry is the point. A
+# (Both are now one minute, set by the operator: a reviewer wanted the whole
+# approach and the whole aftermath. The reasoning below for an asymmetric
+# window still describes why PRE must not be short.)
+#
+# PRE was TWICE post, deliberately, and the asymmetry is the point. A
 # detection is the end of something that was already happening: the rider
 # circling the junction before the knife comes out, the vehicle easing to a
 # stop, the person arriving with the sack. Fifteen seconds routinely opened on
@@ -285,8 +289,8 @@ class ClipRecorder:
 # violation in scope. Post-roll stays at 15s because what happens afterwards is
 # usually settled quickly, and because every second of post-roll is a second
 # the alert's clip is not yet written.
-RAW_CLIP_PRE_SECONDS = 30
-RAW_CLIP_POST_SECONDS = 20
+RAW_CLIP_PRE_SECONDS = 60
+RAW_CLIP_POST_SECONDS = 60
 
 # What a detector's rolling annotated buffer must hold to be able to produce
 # that clip: the lead-in, plus the post-roll it will still be filling when the
