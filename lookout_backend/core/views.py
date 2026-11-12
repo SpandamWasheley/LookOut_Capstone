@@ -859,7 +859,12 @@ def recording_file(request, name):
         return Response({"detail": "That segment is still being recorded."}, status=409)
 
     size = path.stat().st_size
-    start, end = _byte_range(request.headers.get("Range", ""), size)
+    try:
+        start, end = _byte_range(request.headers.get("Range", ""), size)
+    except UnsatisfiableRange:
+        response = Response(status=416)
+        response["Content-Range"] = f"bytes */{size}"
+        return response
     if start is None:
         response = FileResponse(open(path, "rb"), content_type="video/mp4")
         response["Content-Length"] = str(size)
@@ -926,10 +931,27 @@ def _recording_viewer(request, camera_code, name):
 RANGE_CHUNK_BYTES = 4 << 20
 
 
+class UnsatisfiableRange(Exception):
+    """The client asked for bytes that do not exist, or asked backwards."""
+
+
 def _byte_range(header, size):
     """(start, end) inclusive for a `Range: bytes=...` header, or (None, None)
-    when there is no usable single range. Only the single-range form is
-    honoured — it is the only one browsers send for video."""
+    when there is no range to honour and the whole file should be sent.
+
+    Only the single-range form is read — the only one browsers send for video.
+
+    EVERY range is capped at RANGE_CHUNK_BYTES, including one that names its
+    own end. Without that cap `bytes=0-999999999` is answered by reading the
+    whole segment into memory, and a handful of those at once is a hundreds-of-
+    megabytes spike on a machine that is also running detectors. A player asks
+    for what it needs next and is perfectly happy with a shorter 206 than it
+    requested; that is what Content-Range is for.
+
+    A backwards range (`bytes=500-100`) raises rather than returning: computed
+    naively its length is negative, and `read(-n)` reads to the end of the
+    file, which is the opposite of a cap.
+    """
     m = re.match(r"^\s*bytes=(\d*)-(\d*)\s*$", header or "")
     if not m or size <= 0:
         return None, None
@@ -937,14 +959,18 @@ def _byte_range(header, size):
     if first == "" and last == "":
         return None, None
     if first == "":                      # bytes=-500 → the last 500 bytes
-        start = max(0, size - int(last))
-        end = size - 1
+        want = int(last)
+        if want <= 0:
+            raise UnsatisfiableRange
+        start, end = max(0, size - want), size - 1
     else:
         start = int(first)
-        end = int(last) if last else min(start + RANGE_CHUNK_BYTES - 1, size - 1)
+        end = int(last) if last else start + RANGE_CHUNK_BYTES - 1
+        if end < start:
+            raise UnsatisfiableRange
     if start >= size:
-        return None, None
-    return start, min(end, size - 1)
+        raise UnsatisfiableRange
+    return start, min(end, start + RANGE_CHUNK_BYTES - 1, size - 1)
 
 
 @api_view(["GET"])

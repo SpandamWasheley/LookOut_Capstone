@@ -566,10 +566,37 @@ class ObstructionZone:
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, bt)
             gx, gy = (int(v) for v in _ground_point(st.box))
             cv2.circle(frame, (gx, gy), max(3, w // 500), color, -1)
-            if st.inside or st.alerted:
-                tag = f"#{st.display_id} {st.score:.0f}/{self.alert_score:.0f}s"
-                if st.stationary:
-                    tag += " STOP"
-                cv2.putText(frame, tag, (x1, max(15, y1 - 6)),
-                            cv2.FONT_HERSHEY_SIMPLEX, fs, color, thick, cv2.LINE_AA)
+            # The label carries everything the rule used to reach its verdict,
+            # so the clip can be checked without the run's log beside it:
+            #
+            #   car #106  100% in  42/60s  STOP
+            #    |    |      |        |      `- held still, so the timer runs
+            #    |    |      |        `- seconds banked against the threshold
+            #    |    |      `- share of its GROUND CONTACT inside the polygon
+            #    |    `- the identity a person sees (survives a renumber)
+            #    `- WHAT the model detected, which the box alone never said
+            #
+            # The class matters because a reviewer cannot otherwise tell
+            # whether the thing being timed is the car they are looking at or
+            # a box the detector drew around something else. The percentage is
+            # the zone check's own evidence: "half in, near the edge" is the
+            # hard case, and a number settles it where a colour cannot.
+            #
+            # Drawn for vehicles OUTSIDE the area too, not only those inside.
+            # A grey box with "32% in" is the proof that a near-miss was
+            # judged and rejected; without a label it looks like the detector
+            # simply ignored it.
+            tag = (f"{st.label or 'vehicle'} #{st.display_id}"
+                   f"  {st.fraction * 100:.0f}% in"
+                   f"  {st.score:.0f}/{self.alert_score:.0f}s")
+            if st.stationary:
+                tag += "  STOP"
+            # A dark plate behind the text: these frames are a night street or
+            # a sunlit road, and thin coloured glyphs vanish into both.
+            (tw, th), _ = cv2.getTextSize(tag, cv2.FONT_HERSHEY_SIMPLEX, fs, thick)
+            ty = max(th + 6, y1 - 6)
+            cv2.rectangle(frame, (x1 - 2, ty - th - 6), (x1 + tw + 6, ty + 6),
+                          (0, 0, 0), -1)
+            cv2.putText(frame, tag, (x1 + 2, ty),
+                        cv2.FONT_HERSHEY_SIMPLEX, fs, color, thick, cv2.LINE_AA)
         return frame

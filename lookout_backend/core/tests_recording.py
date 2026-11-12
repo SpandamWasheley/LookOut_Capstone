@@ -266,6 +266,30 @@ class RecordingApiTests(TestCase):
         self.assertEqual(part["Content-Range"], f"bytes 10-19/{len(self.body)}")
         self.assertEqual(part.content, self.body[10:20])
 
+    def test_a_range_naming_its_own_end_is_still_capped(self):
+        """`bytes=0-999999999` answered literally reads the whole segment into
+        memory, and a few of those at once is a hundreds-of-megabytes spike on
+        a machine also running detectors. A player is perfectly happy with a
+        shorter 206 than it asked for -- that is what Content-Range is for."""
+        from core.views import _byte_range, RANGE_CHUNK_BYTES
+        start, end = _byte_range("bytes=0-999999999", 1 << 30)
+        self.assertEqual(end - start + 1, RANGE_CHUNK_BYTES)
+
+    def test_a_backwards_range_is_refused_rather_than_read_to_the_end(self):
+        """Computed naively its length is negative, and read(-n) reads to the
+        end of the file -- the opposite of a cap."""
+        from core.views import _byte_range, UnsatisfiableRange
+        for header in ("bytes=500-100", "bytes=99999-", "bytes=-0"):
+            with self.assertRaises(UnsatisfiableRange, msg=header):
+                _byte_range(header, 1000)
+
+    def test_an_unsatisfiable_range_answers_416(self):
+        self.write("2026-11-11_10-00-00.mp4")
+        r = self.client.get("/api/recordings/file/2026-11-11_10-00-00.mp4/",
+                            headers={"Range": "bytes=999999-"})
+        self.assertEqual(r.status_code, 416)
+        self.assertIn("bytes */", r["Content-Range"])
+
     def test_an_open_ended_range_does_not_read_the_whole_segment_into_memory(self):
         self.write("2026-11-11_10-00-00.mp4")
         with self.settings():
@@ -278,6 +302,16 @@ class RecordingApiTests(TestCase):
         self.write("2026-11-11_10-00-00.mp4", finished=False)
         r = self.client.get("/api/recordings/file/2026-11-11_10-00-00.mp4/")
         self.assertEqual(r.status_code, 409)
+
+    def test_detector_logs_are_not_on_the_media_path(self):
+        """The stream URL carries the camera's password, and both ffmpeg and
+        the watch_* commands print it. Logging that where the media server
+        hands it to anyone who asks turns a local log into a credential
+        leak."""
+        from django.conf import settings as dj
+        from core import monitor
+        logs = str(monitor.log_dir().resolve())
+        self.assertFalse(logs.startswith(str(Path(dj.MEDIA_ROOT).resolve())))
 
     def test_the_tape_is_not_on_the_unauthenticated_media_path(self):
         """The authenticated view would be theatre if the same bytes were also

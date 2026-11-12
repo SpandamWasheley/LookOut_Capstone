@@ -51,6 +51,20 @@ BACKOFF_MAX = 120
 HEALTHY_AFTER = 60             # ran this long = the backoff starts over
 
 
+def log_dir():
+    """Where a detector's and the recorder's console output is kept.
+
+    NOT under MEDIA_ROOT, which is served as static files: the camera's stream
+    URL carries its password, and both ffmpeg and the watch_* commands print
+    that URL in their own messages. Logging it where the media server will
+    hand it to anyone who asks turns a local log into a credential leak.
+    `logs/` is already ignored by git for the same family of reasons.
+    """
+    path = settings.BASE_DIR / "logs"
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
 def live_dir():
     return settings.MEDIA_ROOT / LIVE_DIR_NAME / "live"
 
@@ -371,9 +385,8 @@ class LiveMonitor:
     def _spawn_recorder(self, camera):
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
-        log_dir = settings.MEDIA_ROOT / "uploads"
-        os.makedirs(log_dir, exist_ok=True)
-        log = open(log_dir / "live_recording.log", "w")
+        logs = log_dir()
+        log = open(logs / "live_recording.log", "w")
         try:
             return subprocess.Popen(
                 [sys.executable, "manage.py", "record_cctv", "--camera", camera.code],
@@ -533,12 +546,11 @@ class LiveMonitor:
         if args is None:
             args = ["watch_" + name, "--source", camera.resolved_stream_url, "--camera", camera.code]
         stream_url = camera.resolved_stream_url
-        log_dir = settings.MEDIA_ROOT / "uploads"
-        os.makedirs(log_dir, exist_ok=True)
+        logs = log_dir()
         child_env = dict(env)
         if name == "merged":
             child_env["LOOKOUT_DEBUG_DIR"] = str(ldir or live_dir())
-        log = open(log_dir / f"live_{name}.log", "w")
+        log = open(logs / f"live_{name}.log", "w")
         try:
             proc = subprocess.Popen([sys.executable, "manage.py", *args], cwd=str(base),
                                     stdout=log, stderr=subprocess.STDOUT, env=child_env)
@@ -563,8 +575,7 @@ class LiveMonitor:
                 os.remove(ldir / name)
             except OSError:
                 pass
-        log_dir = settings.MEDIA_ROOT / "uploads"
-        os.makedirs(log_dir, exist_ok=True)
+        logs = log_dir()
 
         # Resolved once: stream_url on the row if set, else settings.STREAM_URL from
         # this machine's .env (see Camera.resolved_stream_url).

@@ -994,6 +994,15 @@ class Command(BaseCommand):
                 ident=state.display_id, box=state.box, status=status, score_pct=pct,
                 indicators=indicators, multipliers={}, momentum=round(state.score, 1),
                 kind="vehicle",
+                # The short line for the box itself: what was detected, which
+                # one it is, how much of it is in, and the timer. The same
+                # phrase the evidence clip burns in, so the live view and the
+                # saved clip read identically. Everything else -- the cue
+                # list, momentum, the inheritance -- stays on the panel beside
+                # the picture, which is where detail belongs: on a busy street
+                # the assembled version was wider than the vehicles it
+                # labelled and hid the footage underneath.
+                tag=self._subject_tag(state, self.zone.alert_score),
             )
 
         # Vehicles the rule is NOT judging, published as "Below Monitoring".
@@ -1030,7 +1039,23 @@ class Command(BaseCommand):
                     {"name": "needs", "points": int(round(self.zone.enter_fraction * 100))},
                 ],
                 multipliers={}, momentum=0.0, kind="vehicle",
+                # Named too, so a vehicle the rule declined to judge is
+                # visibly a judged-and-rejected one rather than something the
+                # detector never saw.
+                tag=f"{label or 'vehicle'} #{tid} · {share:.0f}% in · needs "
+                    f"{self.zone.enter_fraction * 100:.0f}%",
             )
+
+    @staticmethod
+    def _subject_tag(state, threshold=None):
+        """`car #9 · 100% in · 24/60s · STOP` — the whole verdict in one line."""
+        parts = [f"{state.label or 'vehicle'} #{state.display_id}",
+                 f"{state.fraction * 100:.0f}% in"]
+        if threshold:
+            parts.append(f"{state.score:.0f}/{threshold:.0f}s")
+        if state.stationary:
+            parts.append("STOP")
+        return " · ".join(parts)
 
     # ---- shared alert creation --------------------------------------------
 

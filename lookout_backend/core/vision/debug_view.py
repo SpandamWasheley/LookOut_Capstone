@@ -76,8 +76,16 @@ class DebugPublisher:
             self._clean = frame.copy()
 
     def note(self, key, violation, ident, box, status, score_pct, indicators, multipliers, momentum,
-             kind="track", detail=""):
+             kind="track", detail="", tag=""):
         """Record the latest state of one subject. Called on every processed frame; cheap.
+
+        `tag` is an optional SHORT line for the box on the picture -- the whole
+        of what the rule used, in one phrase ("car #9 · 100% in · 24/60s ·
+        STOP"). The page falls back to assembling a line out of every field
+        when a detector does not set one, which on a busy street produced
+        labels wider than the vehicles they pointed at, overlapping each other
+        and hiding the footage underneath. The full breakdown is still on the
+        panel beside the picture, where it costs no pixels of the frame.
 
         `detail` is an optional sub-label shown beside the status. One status can
         mean several different things — disposal's Possible covers waiting for an
@@ -97,7 +105,7 @@ class DebugPublisher:
             "key": "%s:%s" % (key[0], key[1]) if isinstance(key, tuple) else str(key),
             "id": ident, "violation": violation, "kind": kind,
             "box": [int(v) for v in box] if box is not None else None,
-            "status": status, "detail": detail, "score": score_pct,
+            "status": status, "detail": detail, "score": score_pct, "tag": tag,
             "indicators": indicators, "multipliers": multipliers,
             "momentum": round(float(momentum), 2),
             "seen": now, "changed": changed,

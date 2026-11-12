@@ -4,6 +4,7 @@ import {
   SkipBack, Download, Radio, CheckCircle, AlertTriangle,
   ChevronDown, Loader2, Search, Info,
   Clock, ListChecks, Check, Minus, MapPin, Sparkles, RotateCcw,
+  Maximize2, Minimize2,
 } from "lucide-react";
 import { violationDisplay, resolveViolationType } from "./constants/violationTypes";
 import { levelColor } from "./alertModel";
@@ -55,6 +56,28 @@ export function RecordingPlayer({ alert, timeline = false }) {
   // copy, so neither is guaranteed to be 16:9 for every camera/upload. 16:9
   // is just the pre-metadata default so the box doesn't jump from 0 height.
   const [aspectRatio, setAspectRatio] = useState(16 / 9);
+  // Expanded to the whole screen. The NATIVE fullscreen API rather than a
+  // fixed-position overlay of our own, because the overlay would have to
+  // re-mount the <video> somewhere else in the tree: the clip reloads, the
+  // playhead jumps back to zero, and whatever the reviewer was looking at is
+  // gone. Fullscreen leaves the element exactly where it is. Escape closes it
+  // without us binding a key, and the browser's own controls stay out of the
+  // way because ours are inside the element being expanded.
+  const shellRef = useRef(null);
+  const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    const sync = () => setExpanded(document.fullscreenElement === shellRef.current);
+    document.addEventListener("fullscreenchange", sync);
+    return () => document.removeEventListener("fullscreenchange", sync);
+  }, []);
+
+  const toggleExpand = () => {
+    const shell = shellRef.current;
+    if (!shell) return;
+    if (document.fullscreenElement === shell) document.exitFullscreen?.();
+    else shell.requestFullscreen?.().catch(() => { /* blocked or unsupported */ });
+  };
   // Dragging the scrub bar. While true, `elapsed` follows the POINTER rather
   // than the video's own timeupdate events — otherwise the thumb fights the
   // playhead and stutters backwards under the finger on every seek.
@@ -133,8 +156,23 @@ export function RecordingPlayer({ alert, timeline = false }) {
   }
 
   return (
-    <div className="rounded-xl overflow-hidden" style={{ background: "#000", border: "1px solid var(--border)" }}>
-      <div className="relative w-full" style={{ aspectRatio: aspectRatio }}>
+    <div
+      ref={shellRef}
+      className="rounded-xl overflow-hidden"
+      style={{
+        background: "#000",
+        border: expanded ? "none" : "1px solid var(--border)",
+        // Expanded, the shell IS the screen, so the controls below the
+        // picture have to stay on it: the column holds the video to whatever
+        // is left after them rather than letting the aspect ratio push them
+        // off the bottom.
+        ...(expanded ? { display: "flex", flexDirection: "column", height: "100%" } : {}),
+      }}
+    >
+      <div
+        className="relative w-full"
+        style={expanded ? { flex: 1, minHeight: 0 } : { aspectRatio: aspectRatio }}
+      >
         <video
           key={src}
           ref={videoRef}
@@ -317,6 +355,20 @@ export function RecordingPlayer({ alert, timeline = false }) {
               </button>
             )}
           </div>
+          <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={toggleExpand}
+            title={expanded ? "Leave full screen (Esc)" : "Expand to full screen"}
+            aria-label={expanded ? "Leave full screen" : "Expand the clip to full screen"}
+            className="flex items-center gap-1 text-[13px] px-2 py-1 rounded-md"
+            style={{ color: "var(--muted-foreground)" }}
+            onMouseEnter={(e) => { e.currentTarget.style.color = "var(--foreground)"; e.currentTarget.style.background = "var(--border)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.color = "var(--muted-foreground)"; e.currentTarget.style.background = "transparent"; }}
+          >
+            {expanded ? <Minimize2 size={11} /> : <Maximize2 size={11} />}
+            {expanded ? "Exit" : "Expand"}
+          </button>
           <a
             href={src}
             download
@@ -327,6 +379,7 @@ export function RecordingPlayer({ alert, timeline = false }) {
           >
             <Download size={11} /> Save clip
           </a>
+          </div>
         </div>
         <TriggeredBy alert={alert} />
       </div>
