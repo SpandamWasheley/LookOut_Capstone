@@ -531,7 +531,7 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
             "drinking_held_dwell", "drinking_evidence_max_age",
             "drinking_mouth_proximity", "drinking_cooldown_center_dist",
             "drinking_hours_enabled", "drinking_start", "drinking_end",
-            "drinking_min_group", "drinking_group_duration",
+            "drinking_min_group", "drinking_group_duration", "drinking_passerby_filter",
             "disposal_enabled", "disposal_confidence",
             "disposal_static_seconds", "disposal_cooldown",
             "disposal_cooldown_dist", "disposal_min_area", "disposal_max_area",

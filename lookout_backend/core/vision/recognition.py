@@ -546,7 +546,7 @@ VISION_DIR = Path(__file__).resolve().parent
 MODEL_PATH = Path(os.environ.get("LOOKOUT_MODEL", str(VISION_DIR / "merged_v2.pt")))
 SMOKING_MODEL_PATH = THIEF_MODEL_PATH = DRINKING_MODEL_PATH = MERGED_MODEL_PATH = MODEL_PATH
 
-SMOKING_CLASSES = {"cigarette", "vape"}
+SMOKING_CLASSES = {"cigarette"}   # vapes are no longer detected as smoking
 DRINKING_CLASSES = {"bottle"}
 THIEF_CLASSES = {"knife"}
 
@@ -556,6 +556,9 @@ def _only(dets, classes):
     return [d for d in dets if str(d[5]).lower() in classes]
 
 PERSON_CLASS_ID = 0  # COCO class id for "person"
+MOTORCYCLE_CLASS_ID = 3      # COCO "motorcycle" (a tricycle is usually detected as one too)
+MOTORCYCLE_MIN_CONF = 0.3
+LAST_MOTORCYCLES = []        # motorcycle boxes (x1, y1, x2, y2, conf) from the latest detect_persons_tracked call
 
 # COCO drinking-vessel classes. The custom drinking model recognises exactly one
 # brand, so anything poured into a glass — or any other brand of bottle — is
@@ -962,15 +965,22 @@ def detect_persons_tracked(frame, conf=0.5, tracker="bytetrack.yaml", imgsz=None
     # detection resolution, not the tracker association (Phase 0.3 verified).
     results = model.track(frame, verbose=False, persist=True, tracker=tracker,
                           imgsz=imgsz or NEAR_IMGSZ)[0]
-    boxes, ids = [], []
+    boxes, ids, motos = [], [], []
     for box in results.boxes:
-        if int(box.cls[0]) != PERSON_CLASS_ID:
+        cls = int(box.cls[0])
+        if cls == MOTORCYCLE_CLASS_ID and float(box.conf[0]) >= MOTORCYCLE_MIN_CONF:
+            mx1, my1, mx2, my2 = (int(v) for v in box.xyxy[0].tolist())
+            motos.append((mx1, my1, mx2, my2, float(box.conf[0])))      # the same pass already saw them: free
+            continue
+        if cls != PERSON_CLASS_ID:
             continue
         if float(box.conf[0]) < conf:
             continue
         x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
         boxes.append((x1, y1, x2, y2, float(box.conf[0])))
         ids.append(int(box.id[0]) if box.id is not None else None)
+    global LAST_MOTORCYCLES
+    LAST_MOTORCYCLES = motos            # read by tracking.PasserbyFilter (riders are not part of a gathering)
     return boxes, ids
 
 

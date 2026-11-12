@@ -300,6 +300,7 @@ class Command(BaseCommand):
             self._setup_engine(name, cmd)
             self.engines[name] = {"cmd": cmd, "tracker": tracking.PersonTracker()}
         self.engines["drinking"]["group_tracker"] = tracking.GroupTracker()
+        self.engines["drinking"]["passerby"] = tracking.PasserbyFilter()
 
         refused = self._setup_extra(options)
         if refused:
@@ -760,7 +761,11 @@ class Command(BaseCommand):
         group_tracker = eng["group_tracker"]
         min_group = cfg.drinking_min_group
         group_duration = cfg.drinking_group_duration
-        clusters = group_tracker.update(tracks, now, min_group)
+        # Riders and people walking past are not part of a gathering: leave them out of group formation.
+        passers = (eng["passerby"].exclude([t for t in tracks if not t.is_scene and t.seen_at(now)],
+                                           recognition.LAST_MOTORCYCLES, now)
+                   if getattr(cfg, "drinking_passerby_filter", True) else {})
+        clusters = group_tracker.update([t for t in tracks if t.id not in passers], now, min_group)
         cmd.note_clusters(clusters, min_group, group_duration)
         for cluster in clusters:
             member_dets = [d for t, dets in per_track.items()

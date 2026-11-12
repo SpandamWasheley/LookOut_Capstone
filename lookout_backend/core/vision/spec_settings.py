@@ -14,8 +14,9 @@ SPEC_DEFAULTS = {
     "object_confirm_seconds": 2.0,          # all: object must stay detected about 2 s before Monitoring
     "cue_hold_seconds": 5.0,                # all: a behaviour (hand at the mouth) still counts this long
     "monitoring_min_seconds": 3.0,          # all: a Monitoring event shorter than this that never grew is dropped
-    "drinking_group_duration": 600,         # drinking: stayed 10+ minutes (seconds)
+    "drinking_group_duration": 60,          # drinking: stayed 1+ minute (seconds; the API floor)
     "drinking_min_group": 2,                # drinking: group of 2+
+    "drinking_passerby_filter": True,       # drinking: riders and walkers are left out of group formation
     "drinking_start": datetime.time(16, 0),  # drinking: evening band 16:00-24:00
     "drinking_end": datetime.time(0, 0),
     "smoking_puff_count": 3,                # smoking: 3+ puffs ...
@@ -30,7 +31,7 @@ SPEC_DEFAULTS = {
 
 GROUPS = {
     "all": ["object_confirm_seconds", "cue_hold_seconds", "monitoring_min_seconds"],
-    "drinking": ["drinking_group_duration", "drinking_min_group", "drinking_start", "drinking_end"],
+    "drinking": ["drinking_group_duration", "drinking_min_group", "drinking_passerby_filter", "drinking_start", "drinking_end"],
     "smoking": ["smoking_puff_count", "smoking_puff_window_minutes"],
     "holdup": ["holdup_loiter_seconds", "holdup_near_person_heights"],
     "disposal": ["disposal_collection_enabled", "disposal_collection_start",

@@ -13,6 +13,7 @@ from core.models import Alert, Camera, ViolationType
 from unittest import mock
 
 from core.vision import ai_checker, location_momentum, scoring, tracking
+from core.tests_puff_only_off import needs_puff_only
 
 BOX = (400, 200, 520, 500)
 CIG = (440, 230, 450, 245, 0.8, "Cigarette")
@@ -86,16 +87,18 @@ class SmokingIncidentTests(TestCase):
             self.step(8.0 + i * 0.25, [CIG])                 # + 1 puff = 60 -> Possible
         self.assertEqual(self.rows()[-1].level, scoring.WARNING)
         self.assertTrue(self.clip_calls, "no clip written on reaching Possible")
+        self.puff(10.0)
         for i in range(8):
-            self.step(10.0 + i * 0.25, [CIG], near_mouth=True)   # + at mouth = 75 -> Likely
+            self.step(12.0 + i * 0.25, [CIG], near_mouth=True)   # + 2nd puff (80) + at mouth (5) = 85 -> Likely
         rows = self.rows()
         self.assertEqual(len(rows), 1, "a new row was created instead of updating the old one")
         self.assertEqual(rows[0].level, scoring.VIOLATION)
-        self.assertAlmostEqual(rows[0].confidence, 0.75, places=2)
+        self.assertAlmostEqual(rows[0].confidence, 0.85, places=2)
         self.assertTrue(rows[0].video_url)
         self.assertEqual(rows[0].cues["level"], scoring.VIOLATION)
         self.assertIn("near_mouth", rows[0].cues["cues"])
 
+    @needs_puff_only
     def test_puff_only_without_any_item_is_held_at_monitoring(self):
         for t in (1.0, 20.0, 40.0):
             self.puff(t)
@@ -106,6 +109,7 @@ class SmokingIncidentTests(TestCase):
         self.assertTrue(rows[0].cues["puff_only"])
         self.assertEqual(rows[0].video_url, "")              # Monitoring writes no clip
 
+    @needs_puff_only
     def test_puff_only_is_possible_capped_and_tagged(self):
         self.track.smoke_item_seen = True                    # an item was seen on this person at some point
         for t in (1.0, 20.0, 40.0):
@@ -346,8 +350,9 @@ class AICheckerWiringTests(SmokingIncidentTests):
 
     def test_rising_on_to_likely_does_not_call_it_again(self):
         self.rise_to_possible()
+        self.puff(10.0)
         for i in range(8):
-            self.frame_step(10.0 + i * 0.25, [CIG], near_mouth=True)   # -> Likely
+            self.frame_step(12.0 + i * 0.25, [CIG], near_mouth=True)   # -> Likely (2nd puff)
         self.assertEqual(self.rows()[0].level, scoring.VIOLATION)
         self.assertEqual(self.client.calls, 1, "Possible -> Likely asked again")
 
@@ -379,6 +384,7 @@ class AICheckerWiringTests(SmokingIncidentTests):
         self.assertLess(self.cmd.ai_ring._items[0][0], min(sent),
                         "the ring held nothing older than the window, so this proves nothing")
 
+    @needs_puff_only
     def test_an_event_opening_straight_at_possible_is_checked_at_that_moment(self):
         # Puff-only smoking: the row is CREATED at Possible rather than rising
         # into it, so the trigger has to fire on the frame it is announced.
@@ -459,8 +465,9 @@ class StickyAndContinuityTests(SmokingIncidentTests):
         for i in range(12):
             self.step(i * 0.25, [CIG])                       # object confirmed (2 s) -> Monitoring
         self.puff(3.0)
+        self.puff(6.0)
         for i in range(12):
-            self.step(3.0 + i * 0.25, [CIG], near_mouth=True)   # item 40 + puff 20 + at mouth 15 = 75
+            self.step(6.5 + i * 0.25, [CIG], near_mouth=True)   # item 40 + 2 puffs 40 + at mouth 5 = 85
         self.assertEqual(self.rows()[-1].level, scoring.VIOLATION)
 
     def mouth(self, t, near):
@@ -478,12 +485,14 @@ class StickyAndContinuityTests(SmokingIncidentTests):
         self.assertEqual(self.rows()[-1].level, scoring.VIOLATION)
         self.assertEqual(self.cmd.stats["status changes (flips)"], before)
 
-    def test_absent_longer_than_the_hold_window_drops_it_by_hysteresis(self):
+    def test_losing_the_position_cue_no_longer_lowers_a_likely_event(self):
+        # near_mouth is worth only 5 points: with two puffs on the person (80) an item that leaves the mouth for good
+        # (cue_hold long gone) still scores 80, so Likely stands. Position used to carry 15 and dropped this to Possible.
         self.reach_likely()
         t = 6.0
         for i in range(int((self.cmd.cue_hold + 3) / 0.25)):   # never near again
             self.mouth(t + i * 0.25, near=False)
-        self.assertEqual(self.rows()[-1].level, scoring.WARNING)   # 60 < 70: back to Possible
+        self.assertEqual(self.rows()[-1].level, scoring.VIOLATION)
 
     def test_no_row_before_the_object_has_stayed_on_for_the_confirmation_time(self):
         for i in range(6):                                   # 1.5 s of a confident detection
@@ -568,7 +577,7 @@ class LevelSurvivesACuelessFrameTests(SmokingIncidentTests):
         return score
 
     def open_at_possible(self):
-        self.sync({"cigarette", "near_mouth"}, 0.0, puffed=True)      # puffed: not capped, 0.55
+        self.sync({"cigarette", "gesture"}, 0.0, puffed=True)         # puffed: not capped, 0.60
         row = self.rows()[-1]
         self.assertEqual(row.level, scoring.WARNING)
         return row
@@ -578,7 +587,7 @@ class LevelSurvivesACuelessFrameTests(SmokingIncidentTests):
         none = self.sync(set(), 0.25)                                  # the cue-less frame
         self.assertEqual(none.level, scoring.NONE)
         self.assertEqual(self.cmd._incident_level(self.KEY), scoring.WARNING, "the incident's level was reset")
-        again = self.sync({"cigarette", "near_mouth"}, 0.5)            # same cues, no puff this time
+        again = self.sync({"cigarette", "gesture"}, 0.5)               # same cues, no puff this time
         self.assertEqual(again.level, scoring.WARNING, "the sticky cap did not hold after the gap")
         row.refresh_from_db()
         self.assertEqual(row.level, scoring.WARNING)

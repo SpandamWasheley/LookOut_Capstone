@@ -9,6 +9,7 @@ from core.management.commands import watch_thief
 from core.management.commands.watch_smoking import Command as Smoking
 from core.vision import location_momentum as lm
 from core.vision import scoring, theft, tracking
+from core.tests_puff_only_off import needs_puff_only
 
 
 def track(tid=1, box=(100, 100, 140, 300)):
@@ -153,6 +154,7 @@ class GestureFromZoom(unittest.TestCase):
                 u.update_gesture(r, now)
             self.assertEqual(u.gesture_count(3.0), 2)
 
+    @needs_puff_only
     def test_the_vaper_pattern_reaches_the_puff_only_threshold(self):
         # 3 raises 1.2 s apart inside the 5 minute window = the puff_pattern cue (>= 3) -> a tagged puff-only Possible
         for _ in range(3):

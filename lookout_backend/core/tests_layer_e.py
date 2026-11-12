@@ -674,7 +674,7 @@ class WeightedScoringTests(unittest.TestCase):
         orphan = scoring.Score("smoking", scoring.SMOKING_WEIGHTS,
                                {"near_mouth"})
         self.assertAlmostEqual(seen.score, 0.40)
-        self.assertAlmostEqual(at_lips.score, 0.55)
+        self.assertAlmostEqual(at_lips.score, 0.45)
         self.assertNotIn("near_mouth", orphan.cues)
 
     def test_score_is_capped_and_cue_vector_is_retained(self):

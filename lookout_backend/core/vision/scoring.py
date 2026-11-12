@@ -264,17 +264,18 @@ def in_time_band(now, start, end):
 DRINKING_WEIGHTS = {            # total 0.85
     "bottle":             0.40,  # GATE -- Omamalin (2022)
     "gathering":          0.10,  # group of 2+ (stationary) -- Omamalin; Setti (2015)
-    "gathering_duration": 0.15,  # stayed 10+ minutes -- Omamalin
+    "gathering_duration": 0.15,  # stayed 1+ minute (was 10; Settings > drinking_group_duration) -- Omamalin
     "at_mouth":           0.15,  # bottle at the mouth (needs the bottle) -- arXiv 2507.00566
     "time_band":          0.05,  # evening 4PM-midnight -- Thai ED (2021)
 }
 
-SMOKING_WEIGHTS = {             # total 1.10, capped at 1.00
+SMOKING_WEIGHTS = {             # total 1.00 (near_mouth was 0.15 / total 1.10: held low so behaviour outweighs position)
     "cigarette":     0.40,   # GATE -- YOLOv8-MNC (2023)
     "gesture":       0.20,   # hand to mouth, 1 puff (pose)
     "puffs":         0.20,   # did it again, 2+ puffs (pose)
     "puff_pattern":  0.15,   # 3+ puffs within 5 minutes (pose)
-    "near_mouth":    0.15,   # smoking item at the mouth (needs the item)
+    "near_mouth":    0.05,   # smoking item at the mouth (needs the item) -- deliberately small: where the item is
+                             # counts for far less than what the person does with it (gesture / puffs)
 }
 
 # Improper disposal. UNLIKE the three tables above, these weights are OURS --
@@ -378,6 +379,10 @@ CONDITIONAL_CUES = {
 DISPOSAL_BEHAVIOUR_CUES = frozenset({"arrival", "person", "left"})
 DISPOSAL_BEHAVIOUR_TAG = "Weak match on the object — reported on the behaviour"
 
+# The puff-only path (smoking with NO cigarette detected, on hand-to-mouth movement alone) is OFF: a smoking event now
+# needs a cigarette, the same "no object, no event" rule every other detector follows. Vapes are no longer catered for,
+# and the puff-only path was the only route a vape could take. Flip to True to bring the capped path back.
+PUFF_ONLY_ENABLED = False
 # The smoking cue that opens the capped puff-only path.
 PUFF_ONLY_CUE = "puff_pattern"
 PUFF_ONLY_TAG = "No smoking item detected — based on hand movement only"
@@ -443,7 +448,7 @@ class Score:
 
         # Puff-only: no item, but a repeated pose pattern (3+ puffs). Capped at
         # Possible and always tagged; fewer puffs are logged and never shown.
-        self.puff_only = (kind == "smoking" and not self.object_on
+        self.puff_only = (PUFF_ONLY_ENABLED and kind == "smoking" and not self.object_on
                           and PUFF_ONLY_CUE in self.fired)
         self.tag = (PUFF_ONLY_STRONG_TAG if strong_gesture else PUFF_ONLY_TAG) if self.puff_only else ""
 
@@ -497,7 +502,7 @@ class Score:
         # drinking
         "bottle": "Bottle seen",
         "gathering": "Group of 2 or more",
-        "gathering_duration": "Stayed 10+ minutes",
+        "gathering_duration": "Stayed 1+ minute",
         "at_mouth": "Bottle raised to the mouth",
         "time_band": "Evening (4PM - midnight)",
         # smoking

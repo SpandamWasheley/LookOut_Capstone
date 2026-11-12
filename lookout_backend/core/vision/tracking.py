@@ -1095,6 +1095,71 @@ def _union_box(boxes):
     )
 
 
+# --- Passers-by are not a gathering ---------------------------------------------------------------------------------
+# GroupTracker links ANY two person boxes within GROUP_CLUSTER_DIST, so a rider on a motorcycle or somebody walking past
+# joins a group for as long as they are near a member. PasserbyFilter says which tracks to leave out of group formation.
+# Causal (uses only what has been seen so far), so it can run live. Evaluated on recorded footage in drinking_eval/.
+PASSERBY_RIDER_OVERLAP = 0.35    # overlap / the smaller of (person box, motorcycle box) areas
+PASSERBY_RIDER_FRAC = 0.50       # share of the last PASSERBY_RIDER_WINDOW_S a track must overlap a motorcycle to be a rider
+PASSERBY_RIDER_WINDOW_S = 1.0
+PASSERBY_RIDER_MIN_SAMPLES = 3
+PASSERBY_MIN_AGE_S = 1.0         # tracks younger than this are never excluded (too little evidence)
+PASSERBY_STILL_S = 5.0           # = the stationary requirement in watch_drinking._gathering_cues
+PASSERBY_WALK_WINDOW_S = 2.0
+PASSERBY_WALK_MIN_NET = 0.6      # box-heights moved in the window
+PASSERBY_WALK_STRAIGHT = 0.6     # net displacement / path length
+
+
+def _on_motorcycle(person_box, moto_boxes):
+    px1, py1, px2, py2 = person_box
+    pa = max(px2 - px1, 0) * max(py2 - py1, 0)
+    for m in moto_boxes:
+        mx1, my1, mx2, my2 = m[:4]
+        ma = max(mx2 - mx1, 0) * max(my2 - my1, 0)
+        iw, ih = min(px2, mx2) - max(px1, mx1), min(py2, my2) - max(py1, my1)
+        if iw > 0 and ih > 0 and iw * ih / max(min(pa, ma), 1) >= PASSERBY_RIDER_OVERLAP:
+            return True
+    return False
+
+
+class PasserbyFilter:
+    """exclude(tracks, motorcycles, now) -> {track id: "rider" | "walker"} for this frame's person tracks.
+    A track that has been still for PASSERBY_STILL_S is "settled" and is never excluded again, as a walker OR as a
+    rider, so someone who stands up briefly or sits while a motorcycle passes stays a member; a newcomer who walks
+    in joins once they sit still for 5 s."""
+
+    def __init__(self):
+        self._state = {}
+
+    def exclude(self, tracks, motorcycles, now):
+        out = {}
+        for t in tracks:
+            st = self._state.setdefault(t.id, {"bike": deque(), "settled": False})
+            st["bike"].append((now, bool(motorcycles) and _on_motorcycle(t.box, motorcycles)))
+            while st["bike"] and now - st["bike"][0][0] > PASSERBY_RIDER_WINDOW_S:
+                st["bike"].popleft()
+            age = t.age(now)
+            if not st["settled"] and age >= PASSERBY_STILL_S and t.stationary(now, PASSERBY_STILL_S):
+                st["settled"] = True
+            # A person who has already been still for PASSERBY_STILL_S is a lingerer, not a rider: a motorcycle passing
+            # in front of a seated member overlaps their box without them being on it (same protection as the walker rule).
+            if (not st["settled"] and len(st["bike"]) >= PASSERBY_RIDER_MIN_SAMPLES
+                    and sum(1 for _, b in st["bike"] if b) / len(st["bike"]) >= PASSERBY_RIDER_FRAC):
+                out[t.id] = "rider"          # on a motorcycle right now (last second); needs no minimum age
+            elif age >= PASSERBY_MIN_AGE_S and not st["settled"] and self._walking(t, now):
+                out[t.id] = "walker"
+        return out
+
+    @staticmethod
+    def _walking(t, now):
+        pts = [p for p in t.trail if now - p[0] <= PASSERBY_WALK_WINDOW_S]
+        if len(pts) < 3 or pts[-1][0] - pts[0][0] < 0.5 * min(PASSERBY_WALK_WINDOW_S, t.age(now)):
+            return False
+        net = math.hypot(pts[-1][1] - pts[0][1], pts[-1][2] - pts[0][2])
+        path = sum(math.hypot(b[1] - a[1], b[2] - a[2]) for a, b in zip(pts, pts[1:]))
+        return net / t.height >= PASSERBY_WALK_MIN_NET and path > 0 and net / path >= PASSERBY_WALK_STRAIGHT
+
+
 class Cluster:
     """A persistent gathering of 2+ nearby person tracks (watch_drinking's
     Path B / "inuman"), identified by spatial footprint — a union bbox of its

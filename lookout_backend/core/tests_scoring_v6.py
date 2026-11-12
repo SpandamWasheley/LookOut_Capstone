@@ -11,6 +11,7 @@ from django.test import SimpleTestCase
 from core.vision import ai_status, scoring, theft
 from core.vision.scoring import (MONITORING, NONE, VIOLATION, WARNING, DRINKING_WEIGHTS,
                                  HOLDUP_WEIGHTS, SMOKING_WEIGHTS, Score)
+from core.tests_puff_only_off import needs_puff_only
 
 
 def drinking(cues, **kw):
@@ -29,7 +30,7 @@ def holdup(cues, hour, **kw):
 class Tables(SimpleTestCase):
     def test_point_tables_match_the_spec_totals(self):
         self.assertAlmostEqual(sum(DRINKING_WEIGHTS.values()), 0.85)
-        self.assertAlmostEqual(sum(SMOKING_WEIGHTS.values()), 1.10)
+        self.assertAlmostEqual(sum(SMOKING_WEIGHTS.values()), 1.00)
         self.assertAlmostEqual(sum(HOLDUP_WEIGHTS.values()), 0.75)
 
     def test_no_ai_points_anywhere_in_the_official_score(self):
@@ -102,8 +103,10 @@ class SmokingExamples(SimpleTestCase):
         self.assertEqual((round(s.score * 100), s.level), (40, MONITORING))
         s = smoking({"cigarette", "gesture"})
         self.assertEqual((round(s.score * 100), s.level), (60, WARNING))
-        s = smoking({"cigarette", "gesture", "near_mouth"})
-        self.assertEqual((round(s.score * 100), s.level), (75, VIOLATION))
+        s = smoking({"cigarette", "gesture", "near_mouth"})      # position is worth only 5: still Possible
+        self.assertEqual((round(s.score * 100), s.level), (65, WARNING))
+        s = smoking({"cigarette", "gesture", "puffs"})           # a second puff is what makes it Likely
+        self.assertEqual((round(s.score * 100), s.level), (80, VIOLATION))
 
     def test_walking_smoker_cigarette_missed_then_found(self):
         s = smoking({"gesture"})                       # one puff, no item
@@ -111,6 +114,7 @@ class SmokingExamples(SimpleTestCase):
         s = smoking({"gesture", "cigarette"})          # the high-res check finds it
         self.assertEqual((round(s.score * 100), s.level), (60, WARNING))
 
+    @needs_puff_only
     def test_lingering_puff_only(self):
         self.assertEqual(smoking({"gesture"}).level, NONE)
         two = smoking({"gesture", "puffs"})
@@ -121,6 +125,7 @@ class SmokingExamples(SimpleTestCase):
         self.assertTrue(three.puff_only)
         self.assertIn("based on hand movement only", three.tag)
 
+    @needs_puff_only
     def test_puff_only_is_never_above_possible_even_as_a_suggestion(self):
         three = smoking({"gesture", "puffs", "puff_pattern"})
         reply = {"observations": "x", "smoking_item_visible": False,
@@ -138,7 +143,7 @@ class SmokingExamples(SimpleTestCase):
 
     def test_cap_at_100(self):
         s = smoking({"cigarette", "gesture", "puffs", "puff_pattern", "near_mouth"})
-        self.assertAlmostEqual(s.raw_score, 1.10)
+        self.assertAlmostEqual(s.raw_score, 1.00)
         self.assertEqual(s.score, 1.0)
         self.assertEqual(s.level, VIOLATION)
 
@@ -310,7 +315,7 @@ class AiSuggestion(SimpleTestCase):
 class Cap(SimpleTestCase):
     def test_a_score_over_100_is_capped(self):
         s = smoking({"cigarette", "gesture", "puffs", "puff_pattern", "near_mouth"})
-        self.assertEqual(round(s.raw_score * 100), 110)
+        self.assertEqual(round(s.raw_score * 100), 100)
         self.assertEqual(round(s.score * 100), 100)
 
 

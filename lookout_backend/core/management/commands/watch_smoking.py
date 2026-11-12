@@ -62,7 +62,6 @@ ABLATABLE = ("class-floor", "mouth", "vote", "dwell", "cooldown", "puff", "prepr
 CLASS_POLICY = {
     "cigarette": {"conf_scale": 1.0, "dwell_scale": 1.0},
     "smoking":   {"conf_scale": 1.0, "dwell_scale": 1.0},
-    "vape":      {"conf_scale": 1.0, "dwell_scale": 1.0},
     "smoke":     {"conf_scale": 1.5, "dwell_scale": 2.0},
     "vapor":     {"conf_scale": 1.5, "dwell_scale": 2.0},
 }
@@ -80,7 +79,7 @@ DEFAULT_POLICY = {"conf_scale": 1.0, "dwell_scale": 1.0}
 # Matched case-insensitively, for the same reason as CLASS_POLICY: a model that
 # exports "Cigarette" instead of "cigarette" would otherwise skip the rule
 # entirely and no longer check the mouth at all.
-MOUTH_ANCHORED_CLASSES = {"cigarette", "vape", "smoking"}
+MOUTH_ANCHORED_CLASSES = {"cigarette", "smoking"}
 MOUTH_PROXIMITY = 2.5    # allowed distance from the mouth, in face widths
 
 # How recently an at-the-mouth sighting must have happened for the `near_mouth`
@@ -1025,7 +1024,8 @@ class Command(IncidentMixin, BaseCommand):
 
         # Small-Bottle puffs (a vape the model reads as a Bottle) join this person's no-item draws -- only while no smoking
         # item has been seen on them, and never the cigarette puff counter (location_momentum.update_puffs).
-        if not getattr(track, "smoke_item_seen", False):
+        # Vapes are no longer catered for: small-Bottle "vape puffs" are not pulled into smoking's draws.
+        if scoring.PUFF_ONLY_ENABLED and not getattr(track, "smoke_item_seen", False):
             self._absorb_object_puffs(track, now_ts)
 
         # --- the cues (spec v6 section 6) ---

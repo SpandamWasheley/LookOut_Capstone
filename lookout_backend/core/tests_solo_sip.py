@@ -107,10 +107,17 @@ class GateTests(unittest.TestCase):
 
 
 class SoloDrinkingTests(TestCase):
+    # Solo drinking is OFF in production (watch_drinking.SOLO_DRINKING_ENABLED); these tests cover the
+    # gate's own behaviour for when the switch is flipped back on.
+    solo_on = True
+
     def setUp(self):
         patcher = mock.patch.object(location_momentum, "LOCATION_AWARE_MOMENTUM", False)
         patcher.start()
         self.addCleanup(patcher.stop)
+        solo = mock.patch("core.management.commands.watch_drinking.SOLO_DRINKING_ENABLED", self.solo_on)
+        solo.start()
+        self.addCleanup(solo.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.cam = Camera.objects.create(code="CAM-SMOKE-01", name="Hikvision DS-2CD1047G2")
@@ -139,6 +146,15 @@ class SoloDrinkingTests(TestCase):
     def level(self):
         row = Alert.objects.order_by("id").last()
         return row.level if row else None
+
+    def test_solo_drinking_is_off_by_default(self):
+        from core.management.commands import watch_drinking
+        self.assertFalse(watch_drinking.SOLO_DRINKING_ENABLED is True and not self.solo_on)
+        with mock.patch.object(watch_drinking, "SOLO_DRINKING_ENABLED", False):
+            for i in range(30):                                    # bottle held, sipping: would reach Possible if solo were on
+                self.step(i * 0.25, zone=(8 <= i < 14))
+        self.assertIsNone(self.level())
+        self.assertEqual(Alert.objects.count(), 0)
 
     def test_bottle_at_the_mouth_without_three_seconds_stays_monitoring(self):
         for i in range(12):                                        # 0 - 2.75 s, at the mouth throughout

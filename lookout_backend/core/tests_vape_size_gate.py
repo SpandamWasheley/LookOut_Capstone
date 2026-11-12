@@ -12,6 +12,7 @@ from core.management.commands.watch_merged import holds_real_bottle
 from core.management.commands.watch_smoking import Command as SmokingCommand
 from core.models import Alert, Camera, ViolationType
 from core.vision import location_momentum, scoring, tracking
+from core.tests_puff_only_off import needs_puff_only
 
 BOX = (400, 200, 520, 500)           # 300 px tall: 10% is 30 px
 SMALL = (440, 260, 460, 275, 0.8, "Bottle")     # 15 px  = 5%
@@ -152,6 +153,7 @@ class SmokingTakesObjectPuffs(TestCase):
     def levels(self):
         return [a.level for a in Alert.objects.order_by("id")]
 
+    @needs_puff_only
     def test_two_small_bottle_puffs_reach_possible_never_likely(self):
         self.cmd.vape_puffs += [{"key": ("d", 1), "ext": 5, "box": BOX, "t": 10.0, "hold": 0.9},
                                 {"key": ("d", 2), "ext": 5, "box": BOX, "t": 40.0, "hold": 1.0}]

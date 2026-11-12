@@ -6,6 +6,7 @@ import numpy as np
 
 from core.vision import location_momentum as lm
 from core.vision import scoring
+from core.tests_puff_only_off import needs_puff_only
 
 
 def kpts(lw=None, rw=None, nose=(100, 40), shoulders=((60, 80), (140, 80))):
@@ -299,7 +300,7 @@ class PuffTests(unittest.TestCase):
 
 class ScoreCapTests(unittest.TestCase):
     def test_cap_lowers_status_not_score(self):
-        cues = {"cigarette", "near_mouth", "gesture"}                      # 0.75 = Likely
+        cues = {"cigarette", "gesture", "puffs"}                           # 0.80 = Likely
         free = scoring.Score("smoking", scoring.SMOKING_WEIGHTS, cues, object_on=True)
         capped = scoring.Score("smoking", scoring.SMOKING_WEIGHTS, cues, object_on=True,
                                cap=scoring.MONITORING, cap_reason="capped: no puff")
@@ -309,6 +310,7 @@ class ScoreCapTests(unittest.TestCase):
         self.assertEqual(capped.as_dict()["checklist"]["capped"], "capped: no puff")
         self.assertEqual(capped.as_dict()["spec"], scoring.SCORING_SPEC_VERSION)
 
+    @needs_puff_only
     def test_puff_only_path_is_not_capped(self):
         s = scoring.Score("smoking", scoring.SMOKING_WEIGHTS, {"gesture", "puffs", "puff_pattern"},
                           object_on=False, cap=scoring.MONITORING, cap_reason="x")

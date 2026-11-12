@@ -100,6 +100,10 @@ ABLATABLE = (
 # Path A already checks — see _cooldown_blocks and _process_cluster.
 GATHERING_ALERT_COLOR = (200, 40, 160)
 
+# Path A (a person alone with a bottle) is OFF: drinking is only ever reported as a gathering (Path B).
+# Flip to True to bring the solo path back (solo_sip's held-bottle + sip rule still governs it).
+SOLO_DRINKING_ENABLED = False
+
 
 def _within_window(now_time, start, end):
     """True if now_time falls in [start, end), handling windows that wrap
@@ -146,7 +150,7 @@ class Command(IncidentMixin, BaseCommand):
         self.dry_run = False
         self._cluster_of = {}                 # track id -> its Cluster this frame
         self.clock_start = None               # --clock footage start (file sources only)
-        self._gathering_params = (2, 600)     # (min_group, group_duration)
+        self._gathering_params = (2, 60)      # (min_group, group_duration)
         self.tracker_name = "bytetrack"
         self.mouth_check = True
         self.include_generic = False
@@ -1060,6 +1064,11 @@ class Command(IncidentMixin, BaseCommand):
             # One gathering is ONE event for the whole group (its own row, below). This person's
             # bottle already counts there, so they do not get a second event of their own.
             self.stats["person event folded into the group's event"] += 1
+            return
+        if not SOLO_DRINKING_ENABLED:
+            # Drinking is a GROUP violation here (an "inuman"): one person with a bottle is not an event,
+            # not even a Monitoring row. Only a gathering (_process_cluster) can alert.
+            self.stats["discarded: solo drinker (solo drinking is off)"] += 1
             return
         if not score.stored:
             self._incident_sync(key, score, now_ts, create=None)

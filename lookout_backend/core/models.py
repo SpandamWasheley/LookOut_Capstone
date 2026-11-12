@@ -724,15 +724,16 @@ class SystemSettings(models.Model):
     # gathering still is — so this scales the evidence standard with what the
     # camera can actually establish, instead of one fixed per-person rule.
     drinking_min_group = models.PositiveSmallIntegerField(default=2)
-    # 600s (10 minutes), the low end of the 10-15 minute range implied by
-    # Omamalin's (2022) 3-5 hour tagay sessions. Raised from a 25s testing
-    # value: at 25s a few people briefly standing near each other registered as
-    # a drinking session.
-    #
-    # NOTE FOR CALIBRATION: sub-minute test clips can no longer complete a
-    # gathering. Use real long-form footage, or lower this in Settings for the
-    # duration of a clip-based test run.
-    drinking_group_duration = models.PositiveSmallIntegerField(default=600)
+    # 60s (1 minute), the lowest the API accepts (spec_settings.LIMITS). It was 600s (10 minutes, the low end of the
+    # 10-15 minute range implied by Omamalin's (2022) 3-5 hour tagay sessions), lowered so a gathering earns its
+    # duration points on shorter footage and sooner on the live camera. The trade-off: a group that merely stands
+    # together for a minute now counts as "stayed", so the Bottle gate and the stationary check carry more of the load.
+    # Sub-minute test clips still cannot complete a gathering.
+    drinking_group_duration = models.PositiveSmallIntegerField(default=60)
+    # Leave riders (a person's box on a detected motorcycle) and people walking past out of group formation, so a
+    # passer-by is not counted as a member of a gathering. Causal and cheap; thresholds are the PASSERBY_* constants in
+    # vision/tracking.py. Off restores the previous behaviour (anyone near a member joins the cluster).
+    drinking_passerby_filter = models.BooleanField(default=True)
 
     # A bottle merely HELD (not raised to the mouth, or no face resolvable to
     # check) still counts as evidence, but only after this much longer than

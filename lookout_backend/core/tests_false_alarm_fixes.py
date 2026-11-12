@@ -7,6 +7,7 @@ import numpy as np
 from core.management.commands.watch_smoking import Command as Smoking
 from core.vision import location_momentum as lm
 from core.vision import recognition, scoring, theft, tracking
+from core.tests_puff_only_off import needs_puff_only
 
 
 def kp(ratio=2.0, nose=0.9, eyes=0.9, wrist=0.9, shoulder_px=80.0):
@@ -297,6 +298,7 @@ class FeedPoseSkips(unittest.TestCase):
 class PuffOnlyCap(unittest.TestCase):
     CUES = {"gesture", "puffs", "puff_pattern"}
 
+    @needs_puff_only
     def test_no_item_ever_seen_holds_the_status_at_monitoring(self):
         s = scoring.Score("smoking", scoring.SMOKING_WEIGHTS, self.CUES, object_on=False, puff_only_max=scoring.MONITORING)
         self.assertTrue(s.puff_only)
@@ -304,6 +306,7 @@ class PuffOnlyCap(unittest.TestCase):
         self.assertEqual(s.capped, scoring.PUFF_ONLY_NO_ITEM_TEXT)
         self.assertAlmostEqual(s.score, 0.55)
 
+    @needs_puff_only
     def test_an_item_seen_earlier_restores_possible(self):
         s = scoring.Score("smoking", scoring.SMOKING_WEIGHTS, self.CUES, object_on=False)
         self.assertEqual(s.level, scoring.WARNING)
@@ -506,12 +509,14 @@ class StrongGesture(unittest.TestCase):
         self.two(t, strong=False)
         self.assertFalse(t.strong_gesture(32.0))
 
+    @needs_puff_only
     def test_the_exception_lifts_the_cap_and_tags_the_alert(self):
         s = scoring.Score("smoking", scoring.SMOKING_WEIGHTS, {"gesture", "puffs", "puff_pattern"}, object_on=False,
                           puff_only_max=scoring.WARNING, strong_gesture=True)
         self.assertEqual(s.level, scoring.WARNING)
         self.assertEqual(s.tag, scoring.PUFF_ONLY_STRONG_TAG)
 
+    @needs_puff_only
     def test_repeated_draws_reach_possible_without_a_cigarette_and_never_likely(self):
         # every cue on, no smoking item: the item-less cap (PUFF_ONLY_NEEDS_ITEM_FOR_POSSIBLE) holds at Monitoring...
         cues = {"gesture", "puffs", "puff_pattern"}
