@@ -165,9 +165,7 @@ export function NotificationBell({ alerts, onOpenAlerts }) {
                         )}
                       </span>
                       <span className="flex items-center gap-1.5 text-[12px] mt-0.5" style={{ color: "var(--muted-foreground)" }}>
-                        <span style={{ fontFamily: "'DM Mono', monospace" }}>{a.id}</span>
-                        <span>·</span>
-                        <span className="truncate">{a.cameraZone || a.camera || "Unknown camera"}</span>
+                        <span className="whitespace-nowrap" style={{ fontFamily: "'DM Mono', monospace" }}>{a.id}</span>
                       </span>
                     </span>
                     <span className="text-[11px] flex-shrink-0 mt-0.5" style={{ color: "var(--muted-foreground)" }}>
