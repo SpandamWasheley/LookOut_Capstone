@@ -312,7 +312,7 @@ function ViolatorDetail({ violator, onBack, onMerged, canDelete = false }) {
         <div className="text-right flex-shrink-0">
           <div className="text-lg font-bold tabular-nums leading-none" style={{ color: "var(--foreground)" }}>{violator.citation_count}</div>
           <div className="text-[12px] uppercase tracking-wide font-semibold mt-0.5" style={{ color: "var(--muted-foreground)" }}>
-            Citation{violator.citation_count !== 1 ? "s" : ""}
+            Record{violator.citation_count !== 1 ? "s" : ""}
           </div>
         </div>
         <button onClick={() => setShowMerge(true)} aria-label="Merge duplicate record"
@@ -433,9 +433,9 @@ function ViolatorDetail({ violator, onBack, onMerged, canDelete = false }) {
                         )}
                         <div className="absolute left-0 top-1.5 w-2.5 h-2.5 rounded-full" style={{ background: `var(--violation-${dot.code}-dot)` }} />
 
-                        <div className="rounded-xl px-4 py-3" style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
-                          <div className="flex items-start justify-between gap-3 flex-wrap">
-                            <div className="flex items-center gap-1.5 text-[14px] font-medium" style={{ color: "var(--foreground)" }}>
+                        <div className="rounded-xl px-4 py-3 flex items-start justify-between gap-3" style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center flex-wrap gap-1.5 text-[14px] font-medium" style={{ color: "var(--foreground)" }}>
                               <Calendar size={11} style={{ color: "var(--muted-foreground)" }} />
                               {fmtDateTime(c.created_at)}
                               <span className="text-[13px] font-normal" style={{ color: "var(--muted-foreground)" }}>· {relativeTime(c.created_at)}</span>
@@ -446,20 +446,6 @@ function ViolatorDetail({ violator, onBack, onMerged, canDelete = false }) {
                                 </span>
                               )}
                             </div>
-                            <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
-                              <div className="flex items-center gap-1 text-[13px] px-2 py-0.5 rounded-full"
-                                style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}>
-                                <Shield size={10} /> {c.officer_name || `Officer #${c.officer}`}
-                              </div>
-                              {canDelete && c.alert_reopened && (
-                                <button onClick={() => setDeleteTarget(c)} title="Delete this record" aria-label="Delete this record"
-                                  className="p-1.5 rounded-lg"
-                                  style={{ color: "#ef4444", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)" }}>
-                                  <Trash2 size={13} />
-                                </button>
-                              )}
-                            </div>
-                          </div>
 
                           <div className="flex flex-wrap items-center gap-1.5 mt-2">
                             {types.map((t) => {
@@ -488,6 +474,20 @@ function ViolatorDetail({ violator, onBack, onMerged, canDelete = false }) {
                           {c.notes && (
                             <div className="text-[13px] mt-2 italic" style={{ color: "var(--muted-foreground)" }}>{c.notes}</div>
                           )}
+                          </div>
+                            <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
+                              <div className="flex items-center gap-1 text-[13px] px-2 py-0.5 rounded-full"
+                                style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}>
+                                <Shield size={10} /> {c.officer_name || `Officer #${c.officer}`}
+                              </div>
+                              {canDelete && c.alert_reopened && (
+                                <button onClick={() => setDeleteTarget(c)} title="Delete this record" aria-label="Delete this record"
+                                  className="p-1.5 rounded-lg"
+                                  style={{ color: "#ef4444", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)" }}>
+                                  <Trash2 size={13} />
+                                </button>
+                              )}
+                            </div>
                         </div>
                       </div>
                     );
