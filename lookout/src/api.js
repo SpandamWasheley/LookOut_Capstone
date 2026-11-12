@@ -493,11 +493,62 @@ export const getDetectionJobs = () => apiFetch("/detection-jobs/");
 const sinceQuery = (since) => (since != null ? `?since=${since}` : "");
 export const getJobState = (id, since) => apiFetch(`/detection-jobs/${id}/state/${sinceQuery(since)}`);
 
+// ---- Evaluating a finished obstruction run --------------------------------
+// Every vehicle the run watched, and why each one did or did not alert — the
+// evidence behind a result, which is a different question from "was there a
+// violation". Only the alerting vehicles reach the Alert table; checking an
+// accuracy table needs the ones it left alone just as much.
+//
+// `truth` is the reviewer's own answer ("parked" | "passing"), the half of a
+// verdict no camera can supply. Without it the server reports what it saw and
+// stops short of calling it right or wrong.
+export const getRunVehicles = (jobId, { id, truth, realEnter } = {}) => {
+  const q = new URLSearchParams();
+  if (id != null && id !== "") q.set("id", String(id).replace(/^#/, ""));
+  if (truth) q.set("truth", truth);
+  if (realEnter != null && realEnter !== "") q.set("real_enter", realEnter);
+  const query = q.toString();
+  return apiFetch(`/detection-jobs/${jobId}/vehicles/${query ? `?${query}` : ""}`);
+};
+
+// A still of one vehicle, cut from the clip at the moment it mattered. Fetched
+// as a blob for the same reason getCameraSnapshotUrl is: an <img> cannot carry
+// the Authorization header. Revoke the URL when replacing it.
+export async function getRunVehicleFrameUrl(jobId, vehicleId, signal) {
+  const response = await authedFetch(
+    `${API_BASE_URL}/detection-jobs/${jobId}/vehicles/${vehicleId}/frame/`,
+    (token) => ({
+      headers: { ...TUNNEL_HEADERS, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      signal,
+    }),
+  );
+  if (!response.ok) throw new Error(`frame ${response.status}`);
+  return URL.createObjectURL(await response.blob());
+}
+
 // Live monitoring of the camera (admin only): start / stop / status / processing view.
 export const getMonitor = () => apiFetch("/monitor/");
 export const startMonitor = () => apiFetch("/monitor/start/", { method: "POST", body: "{}" });
 export const stopMonitor = () => apiFetch("/monitor/stop/", { method: "POST", body: "{}" });
 export const getMonitorState = (since) => apiFetch(`/monitor/state/${sinceQuery(since)}`);
+
+// ---- The continuous tape (core/recording.py) ------------------------------
+// The archive of everything the camera saw, not just the violations. No date
+// gives the days that have footage; a date gives that day's segments.
+export const getRecordings = (date) =>
+  apiFetch(`/recordings/${date ? `?date=${encodeURIComponent(date)}` : ""}`);
+
+// There is no helper here for a segment's own URL, on purpose. A <video src>
+// cannot send an Authorization header, so the URL has to carry its own
+// credential — and the server is the only place that may mint one. Each
+// segment in the list above arrives with a `url` that already has a short-
+// lived ticket for that one file; use it as it comes and do not keep it, since
+// it expires in minutes and the list refreshes it.
+//
+// What this deliberately does NOT do is put the account's access token in the
+// query string. That token opens every endpoint for thirty minutes, and a URL
+// is the most leak-prone place to put one: proxy logs, browser history, a
+// "copy link" away from being shared.
 // Stages a clip in ONE request and returns its first frame (native resolution)
 // plus a staged_token — the "upload -> draw edges -> start" flow, where the
 // clip must only cross the wire once even though drawing happens before the

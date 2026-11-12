@@ -100,6 +100,10 @@ def _centre_dist(a, b):
     return math.hypot(ax - bx, ay - by) / max(_width(a), _width(b))
 
 
+def _box_list(box):
+    return [round(float(v), 1) for v in box]
+
+
 def _ground_point(box):
     x1, _, x2, y2 = box
     return (x1 + x2) / 2.0, y2
@@ -161,6 +165,14 @@ class VehicleState:
         self.label = ""
         self.conf = 0.0
         self.inside = False
+        # When this vehicle first entered the zone and when it was last still
+        # in it, in the caller's own clock -- video position for a file run,
+        # wall clock for a live one. Bookkeeping only: nothing reads these to
+        # decide anything, they exist so a run can be MEASURED against ground
+        # truth (which second did the system think the car arrived and left?)
+        # without that answer having to be inferred from the alert backwards.
+        self.first_inside = None
+        self.last_inside = None
         self.fraction = 0.0      # share of the footprint inside the polygon
         self.stationary = False
         self.alerted = False
@@ -219,6 +231,14 @@ class ObstructionZone:
         self.enter_fraction = min(max(float(enter_fraction), 0.05), 1.0)
         self.exit_fraction = max(self.enter_fraction - FRACTION_HYSTERESIS, 0.02)
         self.states = {}
+        # display_id -> what this vehicle did, for evaluating a run against
+        # ground truth. `states` cannot answer that: it is working memory and
+        # a vehicle is deleted from it FORGET_AFTER seconds after it leaves,
+        # so by the end of a clip the entries for everything that drove off
+        # are gone -- which is most of what an accuracy table is about.
+        # Capped so a live run that goes for days cannot grow it without
+        # bound; the oldest entry goes first.
+        self.seen = {}
         self._alert_log = []     # (t, box)
         self._poly = None
         self._shape = None
@@ -304,6 +324,10 @@ class ObstructionZone:
             if st.stationary:
                 st.remember_clean(box)
             st.inside = inside
+            if inside:
+                if st.first_inside is None:
+                    st.first_inside = t
+                st.last_inside = t
             st.fraction = fraction
             # Claim a lost track's banked seconds — AFTER `stationary` is known,
             # because standing still is the test a passing vehicle fails.
@@ -314,6 +338,8 @@ class ObstructionZone:
                 st.score += dt * weight
             else:
                 st.score = max(0.0, st.score - dt * DECAY_PER_SEC)
+
+            self._remember(st, t)
 
             if st.inside and not st.alerted and st.score >= self.alert_score:
                 st.alerted = True  # one alert per stay, even if cooldown blocks it
@@ -327,7 +353,15 @@ class ObstructionZone:
                         "score": round(st.score, 1),
                         "ground_point": _ground_point(box),
                         "t": t,
+                        # The identity a person sees, and when the system
+                        # first put this vehicle in the zone -- so an alert
+                        # can be checked against the clip without working
+                        # backwards from the dwell.
+                        "display_id": st.display_id,
+                        "first_inside": st.first_inside,
+                        "fraction": round(st.fraction, 3),
                     })
+                    self._remember(st, t, alerted_at=t)
 
         # vehicles not seen this frame: grace, then decay, then forget
         for tid in list(self.states):
@@ -343,6 +377,91 @@ class ObstructionZone:
 
         self._alert_log = [(at, b) for at, b in self._alert_log if t - at < COOLDOWN_SECONDS]
         return fired
+
+    # Deliberately generous: a busy street puts hundreds of vehicles past the
+    # camera in a few minutes, and each row is a small dict.
+    MAX_REMEMBERED = 2000
+
+    def _forget_one(self):
+        """Make room, and NEVER for a vehicle that matters.
+
+        Dropping the oldest row is precisely wrong here. The oldest rows
+        include the vehicle that has been parked since the clip began -- the
+        one the whole rule exists to catch -- while the rows worth losing are
+        the hundreds of cars that drove through banking nothing. Evicting by
+        age alone deleted a car that had ALERTED, and the run's own table then
+        reported it as never having alerted at all, which in an accuracy count
+        reads as a miss the system did not make.
+        """
+        for vid, row in self.seen.items():
+            if row["alerted_at"] is None and not row["max_score"]:
+                del self.seen[vid]
+                return
+        self.seen.pop(next(iter(self.seen)))       # all of them matter; oldest goes
+
+    def _remember(self, st, t, alerted_at=None):
+        """Record what this vehicle did, for the run's evaluation table."""
+        row = self.seen.get(st.display_id)
+        if row is None:
+            if len(self.seen) >= self.MAX_REMEMBERED:
+                self._forget_one()
+            row = self.seen[st.display_id] = {
+                "display_id": st.display_id, "label": st.label,
+                "first_seen": t, "first_inside": None, "last_inside": None,
+                "alerted_at": None, "max_score": 0.0, "ever_inside": False,
+                # Where it was, and when, so a frame showing WHICH vehicle this
+                # is can be cut out of the clip afterwards. Without it an
+                # evaluation is a row of numbers nobody can check against the
+                # footage.
+                "box": None, "box_at": None,
+                # The three moments a reviewer has to put a time against:
+                # when it turned up, when it stopped (if it ever did), and
+                # when it was last in the area. Each keeps the box as well as
+                # the clock, so the frame can be cut AND the vehicle pointed
+                # at -- a still of a busy street with no box on it does not
+                # tell anybody which vehicle the row is about.
+                "moments": {"arrive": None, "stopped": None, "leave": None},
+            }
+            if st.box is not None:
+                row["moments"]["arrive"] = {"t": t, "box": _box_list(st.box)}
+        row["label"] = st.label or row["label"]
+        row["last_seen"] = t
+        # EARLIEST in, LATEST out -- never simply the current state's view.
+        # One identity can be carried by several states in a row (the tracker
+        # drops a parked vehicle and renumbers it, or forgets it and starts
+        # again), and the last state to write here has only its own, later,
+        # entry time. Taking it verbatim reported a motorcycle that parked at
+        # 0:13 as entering at 2:29 -- after the alert it had already caused.
+        if st.first_inside is not None:
+            row["first_inside"] = (st.first_inside if row["first_inside"] is None
+                                   else min(row["first_inside"], st.first_inside))
+        if st.last_inside is not None:
+            row["last_inside"] = (st.last_inside if row["last_inside"] is None
+                                  else max(row["last_inside"], st.last_inside))
+        row["ever_inside"] = row["ever_inside"] or bool(st.first_inside is not None)
+        row["max_score"] = max(row["max_score"], round(st.score, 1))
+        moments = row["moments"]
+        if moments["arrive"] is None and st.box is not None:
+            moments["arrive"] = {"t": t, "box": _box_list(st.box)}
+        # The first time it was BOTH inside and stopped: the moment the timer
+        # starts, and the one a person checks a stopwatch against.
+        if (moments["stopped"] is None and st.inside and st.stationary
+                and st.box is not None):
+            moments["stopped"] = {"t": t, "box": _box_list(st.box)}
+        # Overwritten while it is still in the area, so what survives is the
+        # LAST frame it was in -- which is what "left at" means.
+        if st.inside and st.box is not None:
+            moments["leave"] = {"t": t, "box": _box_list(st.box)}
+
+        # The box from the most telling moment: the alert if there was one,
+        # otherwise the last frame it was inside the area.
+        if st.box is not None and (alerted_at is not None
+                                   or row["box"] is None or st.inside):
+            row["box"] = [round(float(v), 1) for v in st.box]
+            row["box_at"] = t
+        if alerted_at is not None:
+            row["alerted_at"] = alerted_at
+        return row
 
     def _absorb_lost(self, st, t, current_ids):
         """A parked vehicle that comes back under a new tracker id keeps the
@@ -400,6 +519,16 @@ class ObstructionZone:
         # The name goes with the seconds: this is the same vehicle, and the
         # operator should not have to work that out from the numbers.
         st.display_id = lost.display_id
+        # The ENTRY TIME goes with the name, for the same reason. The identity
+        # an operator sees has been in the zone since the lost track first
+        # entered it, so reporting the new track's own entry would say the
+        # vehicle arrived later than it did -- by exactly the seconds that were
+        # just inherited. That is invisible in normal operation (the alert is
+        # unaffected) and wrong in precisely one place: an accuracy table,
+        # where "system enter" is then compared against a stopwatch.
+        if lost.first_inside is not None:
+            st.first_inside = (lost.first_inside if st.first_inside is None
+                               else min(st.first_inside, lost.first_inside))
         st.inherited_from = lost.display_id
         st.inherited_seconds = lost.score
         # Carried so a vehicle that already alerted under its old id cannot be
@@ -437,10 +566,37 @@ class ObstructionZone:
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, bt)
             gx, gy = (int(v) for v in _ground_point(st.box))
             cv2.circle(frame, (gx, gy), max(3, w // 500), color, -1)
-            if st.inside or st.alerted:
-                tag = f"#{st.display_id} {st.score:.0f}/{self.alert_score:.0f}s"
-                if st.stationary:
-                    tag += " STOP"
-                cv2.putText(frame, tag, (x1, max(15, y1 - 6)),
-                            cv2.FONT_HERSHEY_SIMPLEX, fs, color, thick, cv2.LINE_AA)
+            # The label carries everything the rule used to reach its verdict,
+            # so the clip can be checked without the run's log beside it:
+            #
+            #   car #106  100% in  42/60s  STOP
+            #    |    |      |        |      `- held still, so the timer runs
+            #    |    |      |        `- seconds banked against the threshold
+            #    |    |      `- share of its GROUND CONTACT inside the polygon
+            #    |    `- the identity a person sees (survives a renumber)
+            #    `- WHAT the model detected, which the box alone never said
+            #
+            # The class matters because a reviewer cannot otherwise tell
+            # whether the thing being timed is the car they are looking at or
+            # a box the detector drew around something else. The percentage is
+            # the zone check's own evidence: "half in, near the edge" is the
+            # hard case, and a number settles it where a colour cannot.
+            #
+            # Drawn for vehicles OUTSIDE the area too, not only those inside.
+            # A grey box with "32% in" is the proof that a near-miss was
+            # judged and rejected; without a label it looks like the detector
+            # simply ignored it.
+            tag = (f"{st.label or 'vehicle'} #{st.display_id}"
+                   f"  {st.fraction * 100:.0f}% in"
+                   f"  {st.score:.0f}/{self.alert_score:.0f}s")
+            if st.stationary:
+                tag += "  STOP"
+            # A dark plate behind the text: these frames are a night street or
+            # a sunlit road, and thin coloured glyphs vanish into both.
+            (tw, th), _ = cv2.getTextSize(tag, cv2.FONT_HERSHEY_SIMPLEX, fs, thick)
+            ty = max(th + 6, y1 - 6)
+            cv2.rectangle(frame, (x1 - 2, ty - th - 6), (x1 + tw + 6, ty + 6),
+                          (0, 0, 0), -1)
+            cv2.putText(frame, tag, (x1 + 2, ty),
+                        cv2.FONT_HERSHEY_SIMPLEX, fs, color, thick, cv2.LINE_AA)
         return frame

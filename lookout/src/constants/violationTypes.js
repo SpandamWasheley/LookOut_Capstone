@@ -49,12 +49,19 @@ export const VIOLATION_TYPES = {
   // a safety net for any row/citation text created before that fix.
   theft: {
     code: "theft",
-    label: "Holdup in Public Area",
-    short: "Holdup",
+    // "Holdup" named a crime the camera cannot establish; what the detector
+    // finds is a knife in someone's hand near another person. The code stays
+    // "theft" -- every alert, citation and statistic already filed points at
+    // that row (see migration 0079).
+    label: "Dangerous Weapon Observed",
+    short: "Weapon",
     icon: ShieldAlert,
+    // The old names STAY. Aliases are how free text from before the rename --
+    // a citation's violation_labels, an older alert row -- still resolves to
+    // this type; dropping them would strand that history under "Unknown".
     aliases: [
       "theft", "thief", "theft violation", "theft / robbery", "theft (holdup)",
-      "holdup in public area", "holdup",
+      "holdup in public area", "holdup", "dangerous weapon observed",
     ],
   },
   disposal: {

@@ -271,7 +271,7 @@ export default function ProfileScreen() {
               always attempted.
 
               It also must not promise that every assignment arrives the moment
-              it is made. Only a holdup or an obstruction texts immediately
+              it is made. Only a dangerous weapon or an obstruction texts immediately
               (core/sms.py's URGENT_TYPE_CODES); the rest are counted into a
               half-hourly digest, so an officer assigned a smoking violation
               gets a text saying how many are theirs, not one per violation.

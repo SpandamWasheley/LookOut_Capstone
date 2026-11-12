@@ -301,7 +301,7 @@ class Command(BaseCommand):
 
         cfg = SystemSettings.load()
         cfg_loaded_at = time.time()
-        self.clip = recognition.ClipRecorder(seconds=30, label=self.camera.code)
+        self.clip = recognition.ClipRecorder(seconds=recognition.CLIP_BUFFER_SECONDS, label=self.camera.code)
 
         area, area_from = self._load_area(self._options)
         if area is not None:
@@ -1555,12 +1555,15 @@ class Command(BaseCommand):
         video_url = ""
         annotated_offset = None
         if self.clip is not None:
-            self.clip.add(frame, now if now is not None else time.time())
-            if self.clip.save(self.violations_dir / video_name):
+            fired_at = now if now is not None else time.time()
+            self.clip.add(frame, fired_at)
+            if self.clip.save(self.violations_dir / video_name, mark_at=fired_at):
                 video_url = violation_media_path(video_name)
                 # Pre-roll only for now, so the detection is the last frame.
                 # _drain_pending moves it when the centred copy lands.
-                annotated_offset = self.clip.span()
+                # In PLAYBACK seconds (what the player seeks in), not the
+                # capture clock span() reports.
+                annotated_offset = self.clip.mark_offset
 
         suspect_image_url, suspect_status = self._save_suspect(
             cand, scale, ts_label, tag, cfg)

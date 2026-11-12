@@ -34,7 +34,20 @@ function ago(seen, published) {
   return s < 1 ? "this frame" : `${s}s before this frame`;
 }
 
+// The line drawn on the picture itself.
+//
+// A detector that knows how to say its own verdict in one phrase sends a
+// `tag` ("car #9 · 100% in · 24/60s · STOP") and that is used verbatim: what
+// was detected, which one it is, how much of it is inside, and the timer.
+//
+// Everything else — the cue list, momentum, the sub-label — stays on the panel
+// beside the picture, where it costs no pixels of the frame. Assembling the
+// line out of every field is the fallback for detectors that send no tag, and
+// it is what made a busy street unreadable: the labels came out wider than the
+// vehicles they pointed at, overlapped each other, and hid the footage the
+// view exists to show.
 function testingLabel(e) {
+  if (e.tag) return e.tag;
   const parts = [
     `ID ${e.id}`,
     e.violation,

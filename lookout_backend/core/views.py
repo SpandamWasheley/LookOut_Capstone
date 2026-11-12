@@ -11,6 +11,7 @@ import threading
 import time
 import uuid
 from datetime import timedelta
+from pathlib import Path
 
 import cv2
 import django_filters
@@ -745,6 +746,231 @@ def monitor_state(request):
     data = debug_state.payload(live_dir(), int(since) if since and since.isdigit() else None)
     data["monitor"] = monitor.status()
     return Response(data)
+
+
+# --- the continuous tape ----------------------------------------------------
+#
+# Browsing and playing what core/recording.py wrote. Three endpoints: the days
+# that have footage, the segments inside one day, and the file itself.
+
+
+@api_view(["GET"])
+@permission_classes([permissions.IsAuthenticated])
+def recordings(request):
+    """The CCTV archive. No `date` gives the days that have footage; `date`
+    (YYYY-MM-DD) gives that day's segments.
+
+    Read by any signed-in account, not admin-only like the monitor controls:
+    the person who needs to look back at four o'clock on Tuesday is the
+    dispatcher at the desk, and looking is not controlling. Starting, stopping
+    and configuring the recorder stay with the admin, through Settings.
+    """
+    from core import recording
+    from core.monitor import CAMERA_CODE, monitor
+
+    cfg = SystemSettings.load()
+    code = request.query_params.get("camera") or CAMERA_CODE
+    max_seconds = max(60, int(cfg.recording_segment_minutes) * 60)
+    body = {"camera": code, "recording": monitor.recording_status()}
+
+    raw_date = request.query_params.get("date")
+    if not raw_date:
+        body["days"] = [
+            {"date": d["date"].isoformat(), "segments": d["segments"], "bytes": d["bytes"],
+             "first": d["first"].isoformat(), "last": d["last"].isoformat()}
+            for d in recording.list_days(code, max_seconds=max_seconds)
+        ]
+        return Response(body)
+
+    try:
+        day = timezone.datetime.strptime(raw_date, "%Y-%m-%d").date()
+    except ValueError:
+        return Response({"detail": "date must be YYYY-MM-DD."}, status=400)
+
+    body["date"] = raw_date
+    body["segments"] = [
+        {
+            "name": e["name"],
+            "started_at": e["started_at"].isoformat(),
+            "seconds": round(e["seconds"], 1),
+            "bytes": e["bytes"],
+            # A segment is playable only once ffmpeg has closed it (its moov
+            # atom is written at close), so the one being recorded right now is
+            # listed — the operator should see that the tape is live — but
+            # marked, because a player handed it would show an error.
+            "playable": e["finished"],
+            "recording": e["recording"],
+            # Carries its own ticket (see _recording_ticket): the listing is
+            # authenticated, so this is where a credential for the file can be
+            # minted, and the player never has to produce one.
+            "url": request.build_absolute_uri(
+                f"/api/recordings/file/{e['name']}/?t={_recording_ticket(code, e['name'])}"),
+        }
+        for e in recording.list_segments(code, day=day, max_seconds=max_seconds)
+    ]
+    return Response(body)
+
+
+@api_view(["GET"])
+@permission_classes([permissions.AllowAny])
+def recording_file(request, name):
+    """Stream one segment, with HTTP Range support.
+
+    Not served from /media/ like alert evidence, for two reasons. Django serves
+    MEDIA_URL through django.views.static.serve, which answers no Range
+    requests at all — so a browser could play a ten-minute segment from the
+    start but never seek inside it, which is most of what an archive is for.
+    And hours of continuous footage of a public street is a larger privacy
+    object than one clip attached to one alert: it does not belong on an
+    unauthenticated path, which is why RECORDINGS_ROOT sits outside MEDIA_ROOT
+    entirely rather than relying on nobody guessing the URL.
+
+    Two credentials are accepted. An ordinary Authorization header, for API
+    clients — and, because a <video src> cannot send a header, a TICKET in the
+    query string (see _recording_ticket).
+
+    The ticket is deliberately not the account's access token. That token opens
+    every endpoint in the system for thirty minutes, and a URL is the most
+    leak-prone place to put a credential: proxy logs, browser history, the
+    "copy link" in a context menu. A ticket is a capability for ONE segment on
+    ONE camera for a few minutes — the blast radius of a leaked player URL is
+    then the clip it was already showing. The alternative, fetching each
+    segment into a blob so the header can be used, downloads every byte before
+    the first frame plays and gives up ranged seeking.
+    """
+    from django.http import FileResponse, HttpResponse
+
+    from core import recording
+    from core.monitor import CAMERA_CODE
+
+    code = request.query_params.get("camera") or CAMERA_CODE
+    if not _recording_viewer(request, code, name):
+        return Response({"detail": "Authentication credentials were not provided."}, status=401)
+
+    try:
+        path = recording.segment_path(code, name)
+    except ValueError:
+        path = None
+    if path is None:
+        return Response({"detail": "No such recording."}, status=404)
+    if not recording.is_finished(path):
+        # Being written right now: it has no index yet, so a player would open
+        # it only to fail. Say so rather than serving bytes that cannot decode.
+        return Response({"detail": "That segment is still being recorded."}, status=409)
+
+    size = path.stat().st_size
+    try:
+        start, end = _byte_range(request.headers.get("Range", ""), size)
+    except UnsatisfiableRange:
+        response = Response(status=416)
+        response["Content-Range"] = f"bytes */{size}"
+        return response
+    if start is None:
+        response = FileResponse(open(path, "rb"), content_type="video/mp4")
+        response["Content-Length"] = str(size)
+    else:
+        with open(path, "rb") as fh:
+            fh.seek(start)
+            chunk = fh.read(end - start + 1)
+        response = HttpResponse(chunk, status=206, content_type="video/mp4")
+        response["Content-Range"] = f"bytes {start}-{end}/{size}"
+        response["Content-Length"] = str(len(chunk))
+    response["Accept-Ranges"] = "bytes"
+    response["Content-Disposition"] = f'inline; filename="{name}"'
+    # Footage never changes once written, and a player re-requests ranges
+    # constantly while scrubbing. Private, because this is not public media.
+    response["Cache-Control"] = "private, max-age=604800"
+    return response
+
+
+# How long a player's ticket stays good for. Long enough to open a segment and
+# scrub around inside it; short enough that a URL out of a proxy log or a
+# shoulder-read address bar is worth nothing by the time anyone tries it. The
+# archive panel re-lists the day every 15 seconds, so tickets refresh under the
+# operator without them noticing one expire.
+RECORDING_TICKET_SECONDS = 600
+RECORDING_TICKET_SALT = "lookout.recordings"
+
+
+def _recording_ticket(camera_code, name):
+    """A signed capability for ONE segment of ONE camera.
+
+    django.core.signing, so it is SECRET_KEY-derived and needs nothing stored:
+    there is no ticket table to clean up, and a ticket cannot be forged or
+    edited to name a different file. It carries no user — it is a bearer
+    capability by necessity, since the <video> element it is for cannot
+    authenticate — which is exactly why it names one file and expires."""
+    from django.core.signing import TimestampSigner
+    return TimestampSigner(salt=RECORDING_TICKET_SALT).sign(f"{camera_code}|{name}")
+
+
+def _ticket_is_for(raw, camera_code, name):
+    """True when `raw` is an unexpired ticket for this exact segment."""
+    from django.core.signing import BadSignature, SignatureExpired, TimestampSigner
+    if not raw:
+        return False
+    try:
+        value = TimestampSigner(salt=RECORDING_TICKET_SALT).unsign(
+            raw, max_age=RECORDING_TICKET_SECONDS)
+    except (BadSignature, SignatureExpired):
+        return False
+    return value == f"{camera_code}|{name}"
+
+
+def _recording_viewer(request, camera_code, name):
+    """Whether this request may have this segment: a signed-in account (the
+    Authorization header, for API clients) or a ticket for this exact file."""
+    if request.user and request.user.is_authenticated:
+        return True
+    return _ticket_is_for(request.query_params.get("t"), camera_code, name)
+
+
+# How much of a file one ranged request may return. A player asking for
+# "bytes=0-" means "the rest of the file", and answering that literally reads a
+# whole segment into memory; it only ever needs the next part.
+RANGE_CHUNK_BYTES = 4 << 20
+
+
+class UnsatisfiableRange(Exception):
+    """The client asked for bytes that do not exist, or asked backwards."""
+
+
+def _byte_range(header, size):
+    """(start, end) inclusive for a `Range: bytes=...` header, or (None, None)
+    when there is no range to honour and the whole file should be sent.
+
+    Only the single-range form is read — the only one browsers send for video.
+
+    EVERY range is capped at RANGE_CHUNK_BYTES, including one that names its
+    own end. Without that cap `bytes=0-999999999` is answered by reading the
+    whole segment into memory, and a handful of those at once is a hundreds-of-
+    megabytes spike on a machine that is also running detectors. A player asks
+    for what it needs next and is perfectly happy with a shorter 206 than it
+    requested; that is what Content-Range is for.
+
+    A backwards range (`bytes=500-100`) raises rather than returning: computed
+    naively its length is negative, and `read(-n)` reads to the end of the
+    file, which is the opposite of a cap.
+    """
+    m = re.match(r"^\s*bytes=(\d*)-(\d*)\s*$", header or "")
+    if not m or size <= 0:
+        return None, None
+    first, last = m.group(1), m.group(2)
+    if first == "" and last == "":
+        return None, None
+    if first == "":                      # bytes=-500 → the last 500 bytes
+        want = int(last)
+        if want <= 0:
+            raise UnsatisfiableRange
+        start, end = max(0, size - want), size - 1
+    else:
+        start = int(first)
+        end = int(last) if last else start + RANGE_CHUNK_BYTES - 1
+        if end < start:
+            raise UnsatisfiableRange
+    if start >= size:
+        raise UnsatisfiableRange
+    return start, min(end, start + RANGE_CHUNK_BYTES - 1, size - 1)
 
 
 @api_view(["GET"])
@@ -2475,6 +2701,115 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
         data["job"] = {"id": job.id, "status": job.status, "violation_type": job.violation_type,
                        "started_at": job.started_at, "finished_at": job.finished_at}
         return Response(data)
+
+    @action(detail=True, methods=["get"], url_path="vehicles")
+    def vehicles(self, request, pk=None):
+        """Every vehicle one obstruction run watched, and why each did or did
+        not alert.
+
+        The evidence behind a result, which is a different question from "was
+        there a violation". A reviewer checking an accuracy table needs the
+        vehicle the system DIDN'T alert on as much as the one it did, and only
+        the alerting ones reach the Alert table.
+
+        `?id=<n>` narrows to one vehicle and adds the rule walked step by step
+        against it. `?truth=parked|passing` is the reviewer's own answer -- the
+        half of a verdict no camera can supply -- and turns it into TP/FP/TN/FN.
+        """
+        from core import evaluation
+        job = self.get_object()
+        log = ""
+        try:
+            log_path = Path(str(job.source_path) + ".log")
+            if log_path.is_file():
+                log = log_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            pass
+        data = evaluation.read_ledger(job.source_path, log)
+        rows = data.get("vehicles") or []
+        threshold = data.get("threshold_seconds")
+
+        body = {
+            "job": job.id,
+            "clip": job.source_filename,
+            "source": data.get("source"),          # ledger | log | none
+            "threshold_seconds": threshold,
+            "enter_fraction": data.get("enter_fraction"),
+            "counts": {
+                "monitored": len(rows),
+                "alerted": sum(1 for r in rows if r.get("alerted_at") is not None),
+                "banked_time": sum(1 for r in rows if (r.get("max_score") or 0) > 0),
+            },
+        }
+
+        wanted = request.query_params.get("id")
+        if wanted is None:
+            body["vehicles"] = [{
+                "display_id": r.get("display_id"), "label": r.get("label"),
+                "first_inside": r.get("first_inside"), "last_inside": r.get("last_inside"),
+                "alerted_at": r.get("alerted_at"), "max_score": r.get("max_score"),
+                "alerted": r.get("alerted_at") is not None,
+            } for r in rows]
+            return Response(body)
+
+        if not str(wanted).strip().lstrip("#").isdigit():
+            return Response({"detail": "id must be a vehicle number."}, status=400)
+        row = evaluation.find(rows, str(wanted).strip().lstrip("#"))
+        if row is None:
+            return Response({"detail": f"This run has no vehicle #{wanted}. "
+                                       f"It watched {len(rows)}."}, status=404)
+
+        body["vehicle"] = row
+        body["explain"] = evaluation.explain(row, threshold)
+        truth = request.query_params.get("truth")
+        if truth in ("parked", "passing"):
+            code, name, why = evaluation.verdict(truth, row.get("alerted_at") is not None)
+            body["verdict"] = {"code": code, "name": name, "why": why, "truth": truth}
+            enter = request.query_params.get("real_enter")
+            if enter:
+                try:
+                    body["timer"] = evaluation.timer_check(row, float(enter), threshold)
+                except ValueError:
+                    pass
+        elif truth:
+            return Response({"detail": "truth must be 'parked' or 'passing'."}, status=400)
+        return Response(body)
+
+    @action(detail=True, methods=["get"], url_path=r"vehicles/(?P<vid>\d+)/frame")
+    def vehicle_frame(self, request, pk=None, vid=None):
+        """A still of that vehicle, cut from the clip at the moment it mattered.
+
+        Cached on disk: the same frame is asked for every time the page is
+        opened, and seeking a 300 MB clip is not free. Regenerated only when
+        the file is missing."""
+        from django.http import FileResponse
+
+        from core import evaluation
+        job = self.get_object()
+        log = ""
+        try:
+            log_path = Path(str(job.source_path) + ".log")
+            if log_path.is_file():
+                log = log_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            pass
+        data = evaluation.read_ledger(job.source_path, log)
+        row = evaluation.find(data.get("vehicles") or [], vid)
+        if row is None:
+            return Response({"detail": "No such vehicle in this run."}, status=404)
+        at = row.get("box_at") or row.get("alerted_at") or row.get("first_inside") or 0.0
+
+        out_dir = Path(django_settings.MEDIA_ROOT) / "uploads" / "frames"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out = out_dir / f"job{job.id}_v{int(vid)}.jpg"
+        if not out.is_file():
+            if not Path(str(job.source_path)).is_file():
+                return Response({"detail": "The clip for this run is no longer on "
+                                           "disk, so no frame can be cut."}, status=404)
+            if not evaluation.extract_frame(job.source_path, at, out, row.get("box")):
+                return Response({"detail": "Could not read a frame from the clip."},
+                                status=500)
+        return FileResponse(open(out, "rb"), content_type="image/jpeg")
 
     @action(detail=True, methods=["post"])
     def cancel(self, request, pk=None):

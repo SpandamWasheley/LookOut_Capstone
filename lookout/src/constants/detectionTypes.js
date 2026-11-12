@@ -10,7 +10,9 @@ import { Cigarette, Beer, Car, ShieldAlert, Trash2, Layers, Layers3, SquareStack
 export const DETECTION_TYPES = [
   { key: "smoking", label: "Smoking", icon: Cigarette, color: "#6b8cae" },
   { key: "drinking", label: "Drinking", icon: Beer, color: "#8b5cf6" },
-  { key: "thief", label: "Holdup", icon: ShieldAlert, color: "#ef4444" },
+  // The KEY stays "thief" -- it is the watch_thief command's own name, which
+  // DETECTION_COMMANDS matches on. Only the label an operator reads changes.
+  { key: "thief", label: "Dangerous Weapon", icon: ShieldAlert, color: "#ef4444" },
   { key: "parking", label: "Parking", icon: Car, color: "#f97316" },
   // green-600, not the green-500 the violation chip uses: "Merged (All 3)"
   // below already owns #22c55e, and these two appear in the SAME picker list.

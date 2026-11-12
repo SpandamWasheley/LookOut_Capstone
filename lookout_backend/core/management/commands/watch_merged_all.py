@@ -116,7 +116,7 @@ class Command(MergedCommand):
         # The 30s annotated evidence clip, plus the raw-clip plumbing
         # _create_alert reads. _extra_source fills the last three in once the
         # source is known; set here so a failure before that can't AttributeError.
-        cmd.clip = recognition.ClipRecorder(seconds=30, label=self.camera.code)
+        cmd.clip = recognition.ClipRecorder(seconds=recognition.CLIP_BUFFER_SECONDS, label=self.camera.code)
         cmd._source_path = None
         cmd._video_pos_sec = None
         cmd._raw_buffer = None

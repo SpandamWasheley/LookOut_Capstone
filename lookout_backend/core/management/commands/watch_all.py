@@ -236,7 +236,7 @@ class Command(BaseCommand):
         # AND thief) — without this, _create_alert's getattr(self, "clip",
         # None) silently no-ops and every alert through this command loses
         # its evidence video.
-        cmd.clip = recognition.ClipRecorder(seconds=30, label=self.camera.code)
+        cmd.clip = recognition.ClipRecorder(seconds=recognition.CLIP_BUFFER_SECONDS, label=self.camera.code)
         # detector-specific extras
         if hasattr(cmd, "mouth_check"):
             cmd.mouth_check = True
@@ -249,7 +249,7 @@ class Command(BaseCommand):
         cmd.smoking_type = self._vtype("smoking", "Public Smoking", "#f59e0b", "cigarette")
         # code="theft" (not "thief") — matches watch_thief.py's own fix; see
         # migration 0026 for why the two codes must never diverge again.
-        cmd.thief_type = self._vtype("theft", "Holdup in Public Area", "#ef4444", "siren")
+        cmd.thief_type = self._vtype("theft", "Dangerous Weapon Observed", "#ef4444", "siren")
         cmd.drinking_type = self._vtype("drinking", "Public Drinking", "#8b5cf6", "beer")
 
     def _vtype(self, code, label, color, icon):

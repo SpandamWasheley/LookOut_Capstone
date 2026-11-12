@@ -190,14 +190,22 @@ class AnnotatedOffsetTests(TestCase):
     def test_both_detectors_record_it_on_the_first_save(self):
         """Pre-roll only at that point, so the detection is the last frame —
         recorded rather than left null, because "the marker is at the end" is
-        the truth and explains the missing aftermath."""
+        the truth and explains the missing aftermath.
+
+        Taken from the RECORDER (mark_offset, playback seconds), never from
+        span() (capture seconds). The two are the same number only when frames
+        arrived evenly, and when they did not the marker pointed at the wrong
+        frame: a detection at the end of a clip was marked a fifth of the way
+        in."""
         import inspect
         from importlib import import_module
         for name in ("watch_parking", "watch_disposal"):
             with self.subTest(watcher=name):
                 source = inspect.getsource(
                     import_module(f"core.management.commands.{name}"))
-                self.assertIn("annotated_offset = self.clip.span()", source)
+                self.assertIn("annotated_offset = self.clip.mark_offset", source)
+                self.assertNotIn("annotated_offset = self.clip.span()", source)
+                self.assertIn("mark_at=fired_at", source)
                 self.assertIn("annotated_offset=annotated_offset", source)
 
     def test_both_detectors_move_it_when_the_centred_copy_lands(self):
@@ -222,3 +230,176 @@ class AnnotatedOffsetTests(TestCase):
                 self.assertIn(guarded, source)
                 after = source[source.index(guarded):]
                 self.assertIn('fields["clip_offset"] = offset', after[:200])
+
+
+class EvidenceLeadInTests(TestCase):
+    """How much footage an evidence clip carries BEFORE the detection.
+
+    A detection is the end of something that was already happening. Fifteen
+    seconds opened on a scene in progress -- a reviewer could see what was
+    detected but not how it came about, which is the hardest kind of clip to
+    judge and the easiest to dispute.
+    """
+
+    def _recognition(self):
+        try:
+            from core.vision import recognition
+        except Exception:                                        # noqa: BLE001
+            self.skipTest("the CV dependencies are not installed here")
+        return recognition
+
+    def test_the_clip_reaches_back_half_a_minute(self):
+        r = self._recognition()
+        self.assertGreaterEqual(r.RAW_CLIP_PRE_SECONDS, 30)
+
+    def test_the_buffer_can_actually_hold_the_lead_in_plus_the_post_roll(self):
+        """The window is only honoured if the rolling buffer is big enough to
+        still contain it once the post-roll has played -- a buffer sized to the
+        lead-in alone loses the start of the clip while waiting."""
+        r = self._recognition()
+        self.assertEqual(r.CLIP_BUFFER_SECONDS,
+                         r.RAW_CLIP_PRE_SECONDS + r.RAW_CLIP_POST_SECONDS)
+        self.assertEqual(r.ClipRecorder().seconds, r.CLIP_BUFFER_SECONDS)
+        self.assertEqual(r.RawFrameRecorder().seconds, r.CLIP_BUFFER_SECONDS)
+
+    def test_every_detector_sizes_its_buffer_from_the_shared_window(self):
+        """Nine detectors, one number. Each used to carry its own literal, so a
+        change to the lead-in silently applied to some violations and not
+        others."""
+        import pathlib
+        from django.conf import settings as dj
+        commands = pathlib.Path(dj.BASE_DIR) / "core" / "management" / "commands"
+        found = 0
+        for path in commands.glob("watch_*.py"):
+            source = path.read_text(encoding="utf-8")
+            for line in source.splitlines():
+                if "ClipRecorder(" in line and "seconds=" in line:
+                    found += 1
+                    self.assertIn("CLIP_BUFFER_SECONDS", line, f"{path.name}: {line.strip()}")
+        self.assertGreaterEqual(found, 5)
+
+    def test_both_buffers_are_bounded_by_frames_as_well_as_seconds(self):
+        """The window assumes a steady frame rate; a fast source would grow the
+        deque until the machine ran out of memory, which is a crash that does
+        not name its own cause."""
+        r = self._recognition()
+        self.assertTrue(r.ClipRecorder.MAX_FRAMES > 0)
+        self.assertTrue(r.RawFrameRecorder.MAX_FRAMES > 0)
+
+    def test_a_fast_source_cannot_grow_the_raw_buffer_without_bound(self):
+        r = self._recognition()
+        import numpy as np
+        buf = r.RawFrameRecorder(seconds=10_000)      # time can never evict
+        frame = np.zeros((48, 64, 3), np.uint8)
+        for i in range(r.RawFrameRecorder.MAX_FRAMES + 50):
+            buf.add(frame, float(i))
+        self.assertEqual(len(buf._buf), r.RawFrameRecorder.MAX_FRAMES)
+
+
+class ClipTimelineTests(TestCase):
+    """The clip's own timeline against the capture clock.
+
+    The failure these close, measured on a real run: a 60 fps source filled the
+    450-frame buffer with 7.3 seconds of footage, which the writer then played
+    back one frame at a time at 12 fps -- a 37.5-second clip of 7 seconds of
+    life, five times slower than it happened. The detection was its LAST frame,
+    and the marker, stored in capture seconds, pointed 7.3 s into a 37.5 s clip:
+    a fifth of the way in. Nothing about either number was wrong on its own;
+    they were in different units.
+    """
+
+    def _recognition(self):
+        try:
+            from core.vision import recognition
+        except Exception:                                        # noqa: BLE001
+            self.skipTest("the CV dependencies are not installed here")
+        return recognition
+
+    def _frames(self, rec, fps, seconds, start=0.0):
+        import numpy as np
+        frame = np.zeros((36, 64, 3), np.uint8)
+        n = int(fps * seconds)
+        for i in range(n):
+            rec.add(frame, start + i / fps)
+        return rec
+
+    def test_a_fast_source_does_not_shrink_the_window(self):
+        """450 frames of a 60 fps stream is seven seconds of footage. Keeping
+        every frame spends the whole buffer on the last few seconds -- and the
+        lead-in, which is what the alert is judged on, is what falls out."""
+        r = self._recognition()
+        rec = r.ClipRecorder(seconds=50)
+        self._frames(rec, fps=60, seconds=50)
+        self.assertGreaterEqual(rec.span(), 45,
+                                "the buffer should still hold the window in SECONDS")
+        self.assertLessEqual(len(rec._buf), r.ClipRecorder.MAX_FRAMES)
+
+    def test_frames_are_kept_at_the_rate_they_are_played_back_at(self):
+        """So the clip runs at life speed. Any other pairing is slow motion or
+        fast forward, and every position in the clip then means something
+        different from what it says."""
+        r = self._recognition()
+        rec = r.ClipRecorder(seconds=50)
+        self._frames(rec, fps=60, seconds=10, start=100.0)
+        kept = len(rec._buf)
+        expected = 10 * rec.playback_fps
+        self.assertAlmostEqual(kept, expected, delta=expected * 0.1)
+
+    def test_the_rate_never_asks_for_more_frames_than_the_buffer_may_hold(self):
+        r = self._recognition()
+        rec = r.ClipRecorder(seconds=50)
+        self.assertLessEqual(rec.playback_fps * rec.seconds,
+                             r.ClipRecorder.MAX_FRAMES + 1)
+
+    def test_a_slow_detector_is_not_sped_up(self):
+        """The throttle only ever DROPS surplus frames; a detector running
+        below the playback rate keeps everything it produced."""
+        r = self._recognition()
+        rec = r.ClipRecorder(seconds=50)
+        self._frames(rec, fps=2, seconds=20, start=500.0)
+        self.assertEqual(len(rec._buf), 40)
+
+    def test_the_marker_is_in_playback_seconds_not_capture_seconds(self):
+        import tempfile, os
+        r = self._recognition()
+        if not r.have_ffmpeg() if hasattr(r, "have_ffmpeg") else False:
+            pass
+        rec = r.ClipRecorder(seconds=50)
+        self._frames(rec, fps=8, seconds=20, start=1000.0)
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "clip.mp4")
+            # The last buffered moment: a pre-roll-only save, which is what a
+            # detector writes the instant an alert fires.
+            last = rec._buf[-1][0]
+            if not rec.save(out, mark_at=last):
+                self.skipTest("ffmpeg is not available here")
+            self.assertIsNotNone(rec.mark_offset)
+            # At the END of the clip, because the detection is its last frame.
+            self.assertGreater(rec.mark_offset, 0)
+            self.assertLessEqual(rec.mark_offset, rec.span() + 1)
+
+    def test_a_marker_for_a_moment_mid_buffer_lands_mid_clip(self):
+        import tempfile, os
+        r = self._recognition()
+        rec = r.ClipRecorder(seconds=50)
+        self._frames(rec, fps=8, seconds=20, start=2000.0)
+        middle = rec._buf[len(rec._buf) // 2][0]
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "clip.mp4")
+            if not rec.save(out, mark_at=middle):
+                self.skipTest("ffmpeg is not available here")
+            self.assertAlmostEqual(rec.mark_offset, rec.span() / 2, delta=2.0)
+
+    def test_saving_without_a_mark_reports_none(self):
+        import tempfile, os
+        r = self._recognition()
+        rec = r.ClipRecorder(seconds=50)
+        self._frames(rec, fps=8, seconds=5, start=3000.0)
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "clip.mp4")
+            if not rec.save(out):
+                self.skipTest("ffmpeg is not available here")
+            self.assertIsNone(rec.mark_offset)
+
+    def test_the_post_roll_is_twenty_seconds(self):
+        self.assertEqual(self._recognition().RAW_CLIP_POST_SECONDS, 20)

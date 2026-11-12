@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Maximize2, WifiOff, LayoutGrid, Check, X, Upload, Loader2, CheckCircle2, AlertTriangle, History, Shapes, Ban, Link2 } from "lucide-react";
+import { Maximize2, WifiOff, LayoutGrid, Check, X, Upload, Loader2, CheckCircle2, AlertTriangle, History, Shapes, Ban, Link2, Video } from "lucide-react";
 import { getAlerts, getCameras, getCameraSnapshotUrl, getDetectionJobs, cancelDetectionJob } from "./api";
 import { UploadDetectionModal } from "./UploadDetectionModal";
 import { DetectionJobHistoryModal } from "./DetectionJobHistoryModal";
@@ -7,6 +7,7 @@ import { useTestingTools } from "./useTestingTools";
 import { LiveMonitor } from "./LiveMonitor";
 import { EdgeEditorModal } from "./EdgeEditorModal";
 import { CameraStreamModal } from "./CameraStreamModal";
+import { RecordingsModal } from "./RecordingsModal";
 import { NoticeDialog } from "./ConfirmDialog";
 import { detectionLabel } from "./constants/detectionTypes";
 
@@ -546,6 +547,7 @@ export function CameraGrid({ compact = false, isAdmin: isAdminRole = false }) {
   const menuRef = useRef(null);
   const [showUpload, setShowUpload] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [showRecordings, setShowRecordings] = useState(false);
   const [detectionJobs, setDetectionJobs] = useState([]);
   const [dismissedJobIds, setDismissedJobIds] = useState(() => new Set());
 
@@ -672,6 +674,17 @@ export function CameraGrid({ compact = false, isAdmin: isAdminRole = false }) {
         </div>
 
         <div className="flex items-center gap-2">
+          {/* The continuous tape, beside the layout switcher rather than under
+              testing tools: looking back at what the camera saw is ordinary
+              operation for the desk, not a test harness. */}
+          <button
+            onClick={() => setShowRecordings(true)}
+            className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[14px] transition-colors"
+            style={{ border: "1px solid var(--border)", background: "var(--card)", color: "var(--foreground)" }}
+          >
+            <Video size={14} />
+            <span>Recordings</span>
+          </button>
           <div className="relative" ref={menuRef}>
           <button
             onClick={() => setMenuOpen((o) => !o)}
@@ -777,6 +790,8 @@ export function CameraGrid({ compact = false, isAdmin: isAdminRole = false }) {
           onJobStarted={(job) => setDetectionJobs((prev) => [mapDetectionJob(job), ...prev])}
         />
       )}
+
+      {showRecordings && <RecordingsModal onClose={() => setShowRecordings(false)} />}
 
       {testingTools && showHistory && (
         <DetectionJobHistoryModal jobs={detectionJobs} onClose={() => setShowHistory(false)} onCancel={handleCancelJob} />

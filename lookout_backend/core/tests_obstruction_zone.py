@@ -232,3 +232,155 @@ class ForgivingGapTests(SimpleTestCase):
         self.assertEqual(oz.ALERT_SCORE, 120.0)       # 2 minutes
         self.assertEqual(oz.ENTER_FRACTION, 0.35)
 
+
+
+class RunLedgerTests(SimpleTestCase):
+    """What the run RECORDS about each vehicle, for checking it against the
+    clip afterwards. `states` cannot answer that — it is working memory, and a
+    vehicle is deleted from it shortly after it leaves, which is most of what
+    an accuracy table is about.
+    """
+
+    def test_it_records_when_a_vehicle_entered_and_was_last_inside(self):
+        z = zone()
+        end = park(z, tid=5, seconds=20.0, start=10.0)
+        row = z.seen[5]
+        self.assertAlmostEqual(row["first_inside"], 10.0, places=1)
+        self.assertAlmostEqual(row["last_inside"], end - 0.5, places=1)
+        self.assertTrue(row["ever_inside"])
+
+    def test_an_inherited_timer_keeps_the_vehicle_s_real_entry_time(self):
+        """When the tracker renumbers a parked vehicle, the banked seconds and
+        the display id carry over -- and so must the entry time. Reporting the
+        NEW track's entry says the vehicle arrived later than it did, by
+        exactly the seconds just inherited, which is wrong in the one place it
+        matters: an accuracy table compared against a stopwatch.
+        """
+        z = zone()
+        park(z, tid=5, seconds=16.0, start=0.0)          # banks ~16s as #5
+        entered = z.states[5].first_inside
+        self.assertAlmostEqual(entered, 0.0, places=1)
+
+        # Same place, new tracker id, after a gap short enough to still match.
+        t = 17.0
+        while t < 40.0:
+            z.update([(9, PARKED, "car", 0.9)], t, SHAPE)
+            t += 0.5
+
+        st = z.states[9]
+        self.assertEqual(st.display_id, 5)               # the identity carried over
+        self.assertGreater(st.inherited_seconds, 10)     # so did the seconds
+        self.assertAlmostEqual(st.first_inside, entered, places=1)
+        self.assertAlmostEqual(z.seen[5]["first_inside"], entered, places=1)
+
+    def test_the_ledger_keeps_the_earliest_entry_not_the_latest_state_s(self):
+        """One identity can be carried by several states in a row -- the
+        tracker drops a parked vehicle and renumbers it, or forgets it and
+        starts fresh. The last state to write has only its OWN, later, entry
+        time; taking that verbatim reported a motorcycle that parked at 0:13 as
+        entering at 2:29, after the alert it had already caused.
+        """
+        z = zone()
+        park(z, tid=5, seconds=10.0, start=0.0)
+        first = z.seen[5]["first_inside"]
+        self.assertAlmostEqual(first, 0.0, places=1)
+
+        # The same display id, written again by a state that entered later.
+        st = VehicleState(5, 100.0)
+        st.display_id = 5
+        st.label = "car"
+        st.first_inside = 100.0
+        st.last_inside = 120.0
+        z._remember(st, 120.0)
+
+        self.assertAlmostEqual(z.seen[5]["first_inside"], first, places=1)
+        self.assertAlmostEqual(z.seen[5]["last_inside"], 120.0, places=1)
+
+    def test_a_vehicle_that_drove_off_is_still_in_the_ledger(self):
+        # The point of the ledger. After FORGET_AFTER the state is gone, and
+        # with it any way to say what the system thought that car did.
+        z = zone()
+        park(z, tid=5, seconds=5.0)
+        t = 5.0
+        while t < 200.0:                       # long past FORGET_AFTER
+            z.update([], t, SHAPE)
+            t += 1.0
+        self.assertNotIn(5, z.states)
+        self.assertIn(5, z.seen)
+        self.assertAlmostEqual(z.seen[5]["first_inside"], 0.0, places=1)
+
+    def test_an_alert_carries_the_moment_the_vehicle_entered(self):
+        """So "entered 0:11, alerted 2:11" can be read off the alert itself
+        rather than worked backwards from the dwell."""
+        z = zone(alert_score=10)
+        fired = []
+        t = 0.0
+        while t < 20.0 and not fired:
+            fired = z.update([(5, PARKED, "car", 0.9)], t, SHAPE)
+            t += 0.5
+        self.assertTrue(fired)
+        hit = fired[0]
+        self.assertAlmostEqual(hit["first_inside"], 0.0, places=1)
+        self.assertEqual(hit["display_id"], 5)
+        self.assertGreaterEqual(hit["score"], 10)
+        self.assertGreater(hit["fraction"], 0)
+        self.assertAlmostEqual(z.seen[5]["alerted_at"], hit["t"], places=3)
+
+    def test_a_vehicle_that_never_entered_is_recorded_as_such(self):
+        """An FN and a vehicle that was never in the zone are different
+        failures and the table has different columns for them."""
+        z = zone()
+        t = 0.0
+        while t < 5.0:
+            z.update([(7, ABOVE, "car", 0.9)], t, SHAPE)
+            t += 0.5
+        row = z.seen.get(7)
+        if row is not None:                    # outside vehicles may not be stated
+            self.assertFalse(row["ever_inside"])
+            self.assertIsNone(row["first_inside"])
+
+    def test_the_ledger_cannot_grow_without_bound_on_a_live_run(self):
+        z = zone()
+        for tid in range(ObstructionZone.MAX_REMEMBERED + 25):
+            z.update([(tid, PARKED, "car", 0.9)], tid * 0.1, SHAPE)
+        self.assertLessEqual(len(z.seen), ObstructionZone.MAX_REMEMBERED)
+
+    def test_making_room_never_drops_a_vehicle_that_alerted(self):
+        """The oldest rows include the vehicle parked since the clip began --
+        the one the rule exists to catch. Evicting by age deleted a car that
+        had ALERTED, and the run's table then reported it as never alerting,
+        which in an accuracy count reads as a miss the system did not make."""
+        z = zone(alert_score=5)
+        t = 0.0
+        while t < 12.0:                                  # #1 parks and alerts
+            z.update([(1, PARKED, "car", 0.9)], t, SHAPE)
+            t += 0.5
+        self.assertIsNotNone(z.seen[1]["alerted_at"])
+
+        # Then a flood of pass-bys, far more than the ledger may hold.
+        for i in range(ObstructionZone.MAX_REMEMBERED + 50):
+            z.update([(1000 + i, passing(i % 400), "car", 0.9)], t, SHAPE)
+            t += 0.05
+
+        self.assertIn(1, z.seen, "the alerting vehicle must survive")
+        self.assertIsNotNone(z.seen[1]["alerted_at"])
+        self.assertLessEqual(len(z.seen), ObstructionZone.MAX_REMEMBERED)
+
+    def test_a_vehicle_with_banked_time_also_survives_the_cull(self):
+        z = zone(alert_score=600)
+        park(z, tid=2, seconds=20.0)
+        t = 20.0
+        for i in range(ObstructionZone.MAX_REMEMBERED + 50):
+            z.update([(2000 + i, passing(i % 400), "car", 0.9)], t, SHAPE)
+            t += 0.05
+        self.assertIn(2, z.seen)
+        self.assertGreater(z.seen[2]["max_score"], 0)
+
+
+class ClockFormatTests(SimpleTestCase):
+    def test_seconds_read_as_a_scrub_bar_position(self):
+        from core.management.commands.watch_parking import Command
+        self.assertEqual(Command._clock(0), "0:00")
+        self.assertEqual(Command._clock(11), "0:11")
+        self.assertEqual(Command._clock(131.6), "2:11")
+        self.assertEqual(Command._clock(None), "-")

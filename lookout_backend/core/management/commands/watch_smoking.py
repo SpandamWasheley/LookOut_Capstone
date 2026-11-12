@@ -837,7 +837,7 @@ class Command(IncidentMixin, BaseCommand):
         # 30-second evidence clip: the ~27s approach to the violation plus the
         # dwell, ending at the alert. Raise toward 60 for more context (costs
         # more memory — it buffers every processed frame for the window).
-        self.clip = recognition.ClipRecorder(seconds=30, label=self.camera.code)
+        self.clip = recognition.ClipRecorder(seconds=recognition.CLIP_BUFFER_SECONDS, label=self.camera.code)
 
         mode = f"FAR {self.tiles[0]}x{self.tiles[1]} tiling + person-crop" if self.far else "near"
         self.stdout.write(self.style.SUCCESS(

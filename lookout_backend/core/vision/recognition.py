@@ -81,6 +81,17 @@ def draw_dashed_rect(frame, pt1, pt2, color, thickness=2, dash_len=8, gap_len=6)
     dashed_line((x1, y2), (x1, y1))
 
 
+# The encode every piece of LookOut footage is written with. Named rather than
+# repeated inline because the continuous recorder (core/recording.py) has to
+# match it exactly -- the tape and the evidence clips are meant to be the same
+# picture, so that a reviewer moving between them is not also judging two
+# different pictures. CRF 28 at 1280 wide is the quality/size trade that makes
+# a clip playable in a browser panel a few hundred pixels across.
+EVIDENCE_SCALE = "scale=1280:-2"
+H264_ARGS = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
+             "-pix_fmt", "yuv420p"]
+
+
 class ClipRecorder:
     """Rolling buffer of recent annotated frames, written out as an MP4 when a
     violation fires — so evidence is a ~N-second clip with the detection boxes
@@ -111,9 +122,25 @@ class ClipRecorder:
     # with fewer frames in it.
     MAX_FRAMES = 450
 
-    def __init__(self, seconds=10, playback_fps=12, label="", max_edge=None):
+    def __init__(self, seconds=None, playback_fps=12, label="", max_edge=None):
+        # Defaults to the shared evidence window (CLIP_BUFFER_SECONDS, defined
+        # below this class) so a caller that does not care cannot accidentally
+        # keep a buffer too short to hold the lead-in.
+        seconds = CLIP_BUFFER_SECONDS if seconds is None else seconds
         self.seconds = seconds
-        self.playback_fps = playback_fps
+        # The rate frames are KEPT at, which is also the rate they are played
+        # back at -- the two must be the same number or the clip is in slow
+        # motion and every position in it means something other than it says.
+        #
+        # Derived, not taken on trust, because MAX_FRAMES is the real ceiling:
+        # a window of `seconds` is only achievable at MAX_FRAMES / seconds
+        # frames a second, and asking for more silently buys a SHORTER window
+        # instead of a smoother clip. That is what happened on a 60 fps source:
+        # 450 frames covered 7 seconds of footage, the buffer never held the
+        # lead-in at all, and the clip played back five times slower than life.
+        self.playback_fps = max(1.0, min(float(playback_fps),
+                                         self.MAX_FRAMES / max(seconds, 1e-6)))
+        self._min_gap = 1.0 / self.playback_fps
         self.label = label            # e.g. camera code, drawn next to the time
         self.max_edge = max_edge or self.MAX_EDGE
         self._buf = deque()  # (timestamp, annotated_frame)
@@ -124,6 +151,15 @@ class ClipRecorder:
         self._max_hold_seconds = 2.0
 
     def add(self, frame, now):
+        """Keep this frame, unless one was kept less than 1/playback_fps ago.
+
+        Dropping the surplus is what makes the window mean seconds. A 60 fps
+        source offers five frames for every one the clip can show, and keeping
+        all five costs five times the memory to buy nothing a viewer can see --
+        while pushing the oldest footage, which is the part the alert is
+        judged on, straight out of the buffer."""
+        if self._buf and (now - self._buf[-1][0]) < self._min_gap:
+            return
         self._buf.append((now, self._fit(frame)))
         cutoff = now - self.seconds
         while self._buf and self._buf[0][0] < cutoff:
@@ -167,8 +203,21 @@ class ClipRecorder:
             return 0.0
         return max(0.0, self._buf[-1][0] - self._buf[0][0])
 
-    def save(self, path):
-        """Writes the buffered clip to `path` (MP4). Returns True on success."""
+    def save(self, path, mark_at=None):
+        """Writes the buffered clip to `path` (MP4). Returns True on success.
+
+        `mark_at` is a moment in the CAPTURE clock (the same clock add() is
+        fed) that the caller wants to point a player at. Its position in the
+        written clip is recorded on `self.mark_offset`, in PLAYBACK seconds.
+
+        Those are not the same seconds. A buffered frame is held for as long as
+        the real gap after it, so a stall stretches the clip against real time
+        and the cap on that hold compresses it -- the two timelines drift
+        wherever frames did not arrive evenly. Storing a real-time position in
+        a field a <video> element seeks with put the marker at the wrong frame,
+        which is how a detection sitting at the END of a clip came to be
+        marked a fifth of the way in."""
+        self.mark_offset = None
         if len(self._buf) < 2:
             return False
         frames = list(self._buf)
@@ -185,12 +234,19 @@ class ClipRecorder:
             )
             if not writer.isOpened():
                 return False
+            written = 0
             for i, (ts, frame) in enumerate(frames):
+                # Where this frame lands in the clip, before it is written, so
+                # the marker is the position of the frame the caller asked
+                # about rather than a conversion of its timestamp.
+                if mark_at is not None and (self.mark_offset is None or ts <= mark_at):
+                    self.mark_offset = written / self.playback_fps
                 self._stamp(frame, ts)   # real date/time of THIS frame
                 nxt = frames[i + 1][0] if i + 1 < len(frames) else ts + 1.0 / self.playback_fps
                 reps = _hold_reps(ts, nxt, self.playback_fps, self._max_hold_seconds)
                 for _ in range(reps):
                     writer.write(frame)
+                written += reps
             writer.release()
 
             # Transcode to H.264 with ffmpeg for browser compatibility.
@@ -198,11 +254,8 @@ class ClipRecorder:
             # downloading the whole file. -crf 28 provides good quality/size tradeoff.
             return _run_ffmpeg([
                 "-i", temp_path,
-                "-vf", "scale=1280:-2",
-                "-c:v", "libx264",
-                "-preset", "veryfast",
-                "-crf", "28",
-                "-pix_fmt", "yuv420p",
+                "-vf", EVIDENCE_SCALE,
+                *H264_ARGS,
                 "-movflags", "+faststart",
                 str(path),
             ])
@@ -214,20 +267,40 @@ class ClipRecorder:
                 pass
 
 
-# How much context a RAW evidence clip carries around the alert-firing moment.
-# Kept short of the annotated buffer's window on purpose — this is cut from the
-# original source at full frame rate/resolution, so it doesn't need to be long
-# to be useful, and shorter keeps the -c copy cut fast.
 # How much footage an evidence clip carries either side of the detection.
 #
 # POST was 2s, which put the moment at 15s of a 17s clip -- the thing the alert
 # is ABOUT arrived just as the clip ended, so a reviewer saw the approach and
 # then nothing. What they actually need to judge it is what happened NEXT: did
 # the vehicle pull away, did the person put the bottle down, was the bag picked
-# up again. Symmetric puts the detection in the middle, which is also where a
-# viewer's instinct looks for it on a scrub bar.
-RAW_CLIP_PRE_SECONDS = 15
-RAW_CLIP_POST_SECONDS = 15
+# up again.
+#
+# PRE is now TWICE post, deliberately, and the asymmetry is the point. A
+# detection is the end of something that was already happening: the rider
+# circling the junction before the knife comes out, the vehicle easing to a
+# stop, the person arriving with the sack. Fifteen seconds routinely opened on
+# a scene already in progress, which is the hardest kind of clip to judge and
+# the easiest to dispute -- a reviewer could see WHAT was detected but not how
+# it came about. Thirty seconds reaches back past the approach for every
+# violation in scope. Post-roll stays at 15s because what happens afterwards is
+# usually settled quickly, and because every second of post-roll is a second
+# the alert's clip is not yet written.
+RAW_CLIP_PRE_SECONDS = 30
+RAW_CLIP_POST_SECONDS = 20
+
+# What a detector's rolling annotated buffer must hold to be able to produce
+# that clip: the lead-in, plus the post-roll it will still be filling when the
+# alert fires. Every watch_* command sizes its ClipRecorder from this, so the
+# pre-roll is one number rather than nine.
+#
+# Read it together with ClipRecorder.MAX_FRAMES, which is the real ceiling:
+# the buffer holds this many seconds OR that many processed frames, whichever
+# runs out first. At the 1-10 processed frames a second these detectors
+# actually run at, the window is the binding limit and the full lead-in is
+# there. A detector running faster than ~10 fps trades window length for the
+# memory ceiling -- which exists because of a real out-of-memory crash, and is
+# not worth raising for a longer clip.
+CLIP_BUFFER_SECONDS = RAW_CLIP_PRE_SECONDS + RAW_CLIP_POST_SECONDS
 
 
 def _run_ffmpeg(args, timeout=300):
@@ -338,17 +411,19 @@ class PendingClips:
 
     @staticmethod
     def _flush(ready, now):
+        """Save each clip and report where its detection landed INSIDE it.
+
+        The recorder answers that, because only it knows how long each frame
+        was held: the clip's timeline and the capture clock are the same length
+        only when frames arrived evenly. This used to be worked out here from
+        `now` and the buffer's span, which assumed both -- and assumed the
+        buffer still ended at `now`, which is false for the final flush at the
+        end of a run."""
         out = []
         for _due, token, recorder, path, fired_at in ready:
-            if not recorder.save(path):
+            if not recorder.save(path, mark_at=fired_at):
                 continue
-            span = recorder.span() if hasattr(recorder, "span") else None
-            if span:
-                start = now - span
-                offset = max(0.0, min(fired_at - start, span))
-            else:
-                offset = None
-            out.append((token, path, offset))
+            out.append((token, path, getattr(recorder, "mark_offset", None)))
         return out
 
 
@@ -372,9 +447,20 @@ class RawFrameRecorder:
     is why no continuous recorder is needed for evidence capture.
     """
 
-    def __init__(self, seconds=RAW_CLIP_PRE_SECONDS + RAW_CLIP_POST_SECONDS,
-                 quality=85, playback_fps=12):
-        self.seconds = seconds
+    # A hard ceiling on frames as well as the time window, for the same reason
+    # ClipRecorder has one: the window alone assumes a steady frame rate, and a
+    # fast source or a stalled cutoff lets the deque grow until the machine is
+    # out of memory. JPEG makes each frame cheap (~200 KB, against ~2.8 MB for
+    # a raw 1280-wide one), so this sits far above the frames a 45-second
+    # window holds at the rate these detectors process at -- it is a backstop,
+    # not the normal limit.
+    MAX_FRAMES = 900
+
+    def __init__(self, seconds=None, quality=85, playback_fps=12):
+        # The full window by default. On a LIVE source this buffer is saved at
+        # the moment of detection, so what it holds is pre-roll: the lead-in
+        # the alert is judged on.
+        self.seconds = CLIP_BUFFER_SECONDS if seconds is None else seconds
         self.quality = quality
         self.playback_fps = playback_fps
         self._max_hold_seconds = 2.0
@@ -386,6 +472,8 @@ class RawFrameRecorder:
             self._buf.append((now, enc.tobytes()))
         cutoff = now - self.seconds
         while self._buf and self._buf[0][0] < cutoff:
+            self._buf.popleft()
+        while len(self._buf) > self.MAX_FRAMES:
             self._buf.popleft()
 
     def span(self):
@@ -426,11 +514,8 @@ class RawFrameRecorder:
 
             return _run_ffmpeg([
                 "-i", temp_path,
-                "-vf", "scale=1280:-2",
-                "-c:v", "libx264",
-                "-preset", "veryfast",
-                "-crf", "28",
-                "-pix_fmt", "yuv420p",
+                "-vf", EVIDENCE_SCALE,
+                *H264_ARGS,
                 "-movflags", "+faststart",
                 str(path),
             ])

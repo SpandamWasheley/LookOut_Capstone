@@ -17,6 +17,15 @@ from core.models import ViolationType
 SLIP = (Path(settings.BASE_DIR).parent / "officer_app" / "app"
         / "assignment" / "[id].tsx")
 
+# The override map started life inside the slip screen and has since moved to
+# its own module, applied wherever the app shows a label rather than on the
+# slip alone -- which is the point of it: the alert an officer opens and the
+# citation they write from it must not disagree about what the offence is
+# called. These tests follow it there; they were asserting against a constant
+# that no longer existed, and so had stopped guarding anything.
+LABELS = (Path(settings.BASE_DIR).parent / "officer_app" / "lib"
+          / "violationLabels.ts")
+
 
 def slip_source():
     return SLIP.read_text(encoding="utf-8")
@@ -28,9 +37,13 @@ def allowlist():
     return re.findall(r'"([^"]+)"', block[:block.index("]")])
 
 
+def labels_source():
+    return LABELS.read_text(encoding="utf-8")
+
+
 def slip_labels():
-    source = slip_source()
-    start = source.index("const SLIP_LABELS: Record<string, string> = {")
+    source = labels_source()
+    start = source.index("export const DISPLAY_LABELS: Record<string, string> = {")
     block = source[start:source.index("};", start)]
     return dict(re.findall(r"(\w+):\s*\"([^\"]+)\"", block))
 
@@ -80,7 +93,7 @@ class SlipWordingTests(TestCase):
     def test_an_un_overridden_type_keeps_its_own_label(self):
         """The map is a fallback chain, not a replacement list — adding one
         entry must not blank the other four."""
-        self.assertIn("SLIP_LABELS[type.code] ?? type.label", slip_source())
+        self.assertIn("DISPLAY_LABELS[type.code] ?? type.label", labels_source())
         for code in ("smoking", "drinking", "parking", "theft"):
             self.assertNotIn(code, slip_labels())
 
@@ -92,3 +105,12 @@ class SlipWordingTests(TestCase):
         body = source[source.index("export default function"):]
         self.assertNotIn("{t.label}", body)
         self.assertNotIn(".map((t) => t.label)", body)
+
+    def test_theft_is_named_for_what_the_camera_can_establish(self):
+        """"Holdup" named a crime; the detector finds a knife near someone.
+        The CODE stays "theft", so nothing already filed has to be re-matched
+        -- see migration 0079."""
+        from django.core.management import call_command
+        call_command("seed_core", verbosity=0)
+        row = ViolationType.objects.get(code="theft")
+        self.assertEqual(row.label, "Dangerous Weapon Observed")

@@ -34,6 +34,7 @@ lerna-debug.log*
 # ML training output & runtime-generated media (keep code + model, not artifacts)
 detection_sandbox/runs/
 lookout_backend/media/
+lookout_backend/recordings/
 
 # Editor / OS
 .vscode/*

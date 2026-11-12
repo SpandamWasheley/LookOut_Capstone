@@ -19,7 +19,7 @@ const VIOLATIONS = [
   { icon: Cigarette, color: "#6b8cae", name: "Smoking", law: "", note: "Smoking in public places." },
   { icon: Beer, color: "#8b5cf6", name: "Drinking", law: "", note: "Drinking in public." },
   { icon: Car, color: "#ef4444", name: "Parking Obstruction", law: "", note: "Vehicles obstructing the road." },
-  { icon: Siren, color: "#dc2626", name: "Holdup", law: "", note: "A person holding a knife near another person. Loitering first, or the two people freezing close together, makes it stronger." },
+  { icon: Siren, color: "#dc2626", name: "Dangerous Weapon Observed", law: "", note: "A person holding a knife near another person. Loitering first, or the two people freezing close together, makes it stronger." },
   { icon: Trash2, color: "#22c55e", name: "Discarded Waste", law: "", note: "A big item, such as a bag of rubbish, left in the frame or zone. Only large items trigger an alert, not small litter." },
 ];
 
@@ -80,7 +80,7 @@ export function AboutPage() {
           <Section icon={ShieldCheck} title="The system proposes, the officer confirms">
             <p className="text-[14px] leading-relaxed mb-3" style={{ color: "var(--muted-foreground)" }}>
               LookOut detects 4 types of classes or objects: a bottle for the drinking violation, a cigarette for smoking,
-              a knife for Holdup and a vehicle for parking obstruction. Some violations have no object in the model, such
+              a knife for a dangerous weapon and a vehicle for parking obstruction. Some violations have no object in the model, such
               as vaping, so LookOut also uses YOLO pose to track body keypoints and spot the hand-to-mouth gesture.
               Once the heuristic rules are applied, it proposes an alert with a status. An officer then reviews
               the alert and marks it accordingly. A person always makes the final call.

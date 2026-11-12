@@ -547,6 +547,8 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
             "holdup_loiter_seconds", "holdup_near_person_heights",
             "vlm_frames", "vlm_max_edge", "vlm_async",
             "alert_cooldown", "evidence_retention_days", "evidence_auto_purge", "show_testing_tools", "auto_start_detection",
+            "recording_enabled", "recording_mode", "recording_segment_minutes",
+            "recording_retention_days", "recording_max_gb", "recording_timestamp",
             "sms_alerts_enabled",
             "updated_at", "spec_defaults",
         ]
