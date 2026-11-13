@@ -111,6 +111,9 @@ LIKELY_MIN_PUFFS = 2
 # accepted by the location gate ON THE MOUTH anchor with momentum >= POSSIBLE_MOUTH_MOMENTUM). Otherwise Monitoring at most.
 POSSIBLE_MIN_CONF = 0.45
 POSSIBLE_MOUTH_MOMENTUM = 1.0
+# A "cigarette" box that overlaps a Bottle the drinking engine has seen (smoking Command._bottle_near_box) is the bottle, not smoke:
+# it is dropped from puff evidence (the cigarette-at-wrist / at-mouth sightings that pair with a reach).
+BOTTLE_OVERLAP_VETO = True
 MOUTH_ACCEPT_FRESH_SECONDS = 1.0    # "accepted at the mouth" must be this recent to count as now
 CAP_NO_PUFF_TEXT = "capped: no puff"
 CAP_LOW_CONF_TEXT = "capped: cigarette confidence under 0.45"
@@ -591,7 +594,8 @@ def update_puffs(cmd, track, dets, now):
     # for Possible (POSSIBLE_MIN_CONF); a weaker box is not evidence of a puff.
     cig_dets = [(tuple(d[:4]), float(d[4])) for d in dets if str(d[5]).lower() == "cigarette"
                 and float(d[4]) >= POSSIBLE_MIN_CONF
-                and not class_flipped(now, tuple(d[:4]), "cigarette")]
+                and not class_flipped(now, tuple(d[:4]), "cigarette")
+                and not (BOTTLE_OVERLAP_VETO and hasattr(cmd, "_bottle_near_box") and cmd._bottle_near_box(tuple(d[:4]), now))]
     cigs = [b for b, _c in cig_dets]
 
     def _ratio(b):

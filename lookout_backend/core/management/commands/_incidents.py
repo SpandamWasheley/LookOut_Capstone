@@ -23,7 +23,7 @@ from django.utils import timezone
 from core.media import violation_media_path
 from core.models import Alert, SystemSettings
 from core import timeline
-from core.vision import ai_checker, debug_view, location_momentum, momentum, recognition, scoring, spec_settings, tracking
+from core.vision import ai_checker, debug_view, location_momentum, momentum, recognition, run_log, scoring, spec_settings, tracking
 
 CLIP_REFRESH_SECONDS = 15.0     # while Possible / Likely continues
 ROW_UPDATE_SECONDS = 5.0        # throttle for score / last_seen writes
@@ -526,6 +526,7 @@ class IncidentMixin:
         """
         book = self._incident_book()
         inc = book.get(key)
+        run_log.note_score(self, key, score, now, extra_cues)     # alpha log only; no effect on scoring
         level = scoring.clamp_level(score.level)
 
         if level == scoring.NONE:
@@ -571,6 +572,7 @@ class IncidentMixin:
                 return None
             alert = create(level, score.alerting)
             inc.alert = alert
+            run_log.note_alert(self, key, alert, now, level)
             if alert is not None:
                 # Log the active settings with the alert, so the timings behind this status
                 # are on record (calibration, and answering "why did this fire?"), and where its

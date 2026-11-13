@@ -16,7 +16,7 @@ from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
 from core.vision import trim as trimming
 from core.vision import clock as vclock
-from core.vision import recognition, scoring, theft, tracking, ai_checker, location_momentum
+from core.vision import recognition, run_log, scoring, theft, tracking, ai_checker, location_momentum
 from ._incidents import IncidentMixin
 
 THIEF_CAMERA_CODE = "CAM-SMOKE-01"
@@ -573,6 +573,7 @@ class Command(IncidentMixin, BaseCommand):
                     continue
                 kcx, kcy = (x1 + x2) / 2, (y1 + y2) / 2
                 dist = min(math.hypot(kcx - wx, kcy - wy) for wx, wy in wrists)
+                run_log.note_wrist(track.id, dist / person_height)     # alpha log only
                 if dist / person_height > KNIFE_MAX_WRIST_DIST_FRAC:
                     self.stats[f"cut by spatial rule (far from wrist):{label}"] += 1
                     continue

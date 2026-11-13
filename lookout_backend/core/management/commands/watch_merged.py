@@ -56,7 +56,7 @@ from django.core.management.base import BaseCommand
 
 from core.models import Camera, SystemSettings, ViolationType
 from core.vision import clock as vclock
-from core.vision import recognition, tracking
+from core.vision import recognition, run_log, tracking
 from core.vision import trim as trimming
 
 from core.vision import debug_view
@@ -427,6 +427,7 @@ class Command(BaseCommand):
             return
 
         is_live = source.isdigit() or "://" in source
+        run_log.start(self, source)             # alpha log: recorded clips only
         reader = recognition.LatestFrameReader(
             cap, open_fn=lambda: self._open(source),
             log=lambda m: self.stdout.write(self.style.WARNING(m)),
@@ -561,6 +562,9 @@ class Command(BaseCommand):
                 elapsed = time.time() - started
                 for eng in self.engines.values():
                     eng["cmd"]._print_stats(elapsed)
+            log_path = run_log.finish()
+            if log_path:
+                self.stdout.write(self.style.SUCCESS(f"Run log written: {log_path}"))
             self.stdout.write(self.style.SUCCESS("Stopped."))
 
     # ---- per-frame: one merged pass, routed to each engine ------------------
@@ -765,6 +769,7 @@ class Command(BaseCommand):
         passers = (eng["passerby"].exclude([t for t in tracks if not t.is_scene and t.seen_at(now)],
                                            recognition.LAST_MOTORCYCLES, now)
                    if getattr(cfg, "drinking_passerby_filter", True) else {})
+        run_log.note_passers(len(passers))      # alpha log only
         clusters = group_tracker.update([t for t in tracks if t.id not in passers], now, min_group)
         cmd.note_clusters(clusters, min_group, group_duration)
         for cluster in clusters:

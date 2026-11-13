@@ -507,6 +507,9 @@ class Score:
                 and LEVEL_ORDER[level] > LEVEL_ORDER[MONITORING]):
             level = MONITORING
             self.capped = DRINKING_NO_GATHERING_TEXT
+        # ... and the SCORE is held under the Possible line too (raw_score / system_score keep the true sum).
+        if kind == "drinking" and DRINKING_GATHERING_GATE and "gathering" not in self.fired:
+            self.score = min(self.score, _r(SCORE_WARNING - 0.01))
         self.level = clamp_level(level)
 
     @property

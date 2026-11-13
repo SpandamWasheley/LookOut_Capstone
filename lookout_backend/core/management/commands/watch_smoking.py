@@ -12,7 +12,7 @@ from core.media import violation_media_path
 from core.models import Alert, Camera, SystemSettings, ViolationType
 from core.vision import preprocess as preproc
 from core.vision import trim as trimming
-from core.vision import recognition, scoring, tracking, ai_checker, location_momentum, gesture_handover
+from core.vision import recognition, run_log, scoring, tracking, ai_checker, location_momentum, gesture_handover
 from ._incidents import IncidentMixin
 
 SMOKING_CAMERA_CODE = "CAM-SMOKE-01"
@@ -1056,6 +1056,7 @@ class Command(IncidentMixin, BaseCommand):
         cap, cap_reason = None, ""
         if location_momentum.LOCATION_AWARE_MOMENTUM:
             location_momentum.update_puffs(self, track, dets, now_ts)
+            run_log.note_puffs(track.id, location_momentum.puffs_within(track, now_ts, location_momentum.LIKELY_PUFF_WINDOW_SECONDS))     # alpha log only
             if object_on:
                 # sticky: the caps only block the FIRST rise to Possible / Likely
                 cap, cap_reason = location_momentum.puff_cap(track, now_ts, self._incident_level(("smoke", track.id)),
