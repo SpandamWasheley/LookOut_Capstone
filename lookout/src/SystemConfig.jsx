@@ -383,23 +383,6 @@ export function SystemConfig({ role = "admin" }) {
       <TwoCols
         left={detection("thief", "Dangerous weapon detection", "Watch for a person holding a knife.",
           "How sure the system must be before it reports a knife. Lower catches more but makes more mistakes; higher is stricter.")}
-        right={
-          <Card title="Timings" onReset={() => resetKeys(["holdup_loiter_seconds", "holdup_near_person_heights"])}>
-            <Row label="Lingering before the incident"
-              desc="How long someone must hang around before it counts as loitering. They are remembered for 1 minute, so a knife shown shortly afterwards still counts."
-              differs={differs("holdup_loiter_seconds")}>
-              <DurationBox seconds={form.holdup_loiter_seconds} version={version}
-                onChange={(s) => set("holdup_loiter_seconds", Math.round(s))} />
-            </Row>
-            <Row label="How close the second person must be"
-              desc="How near another person must be to the person holding the knife."
-              differs={differs("holdup_near_person_heights")}>
-              <NumberBox value={form.holdup_near_person_heights} min={0.5} max={4} step={0.25} unit="body heights"
-                onChange={(v) => set("holdup_near_person_heights", v)} />
-            </Row>
-            <div className="text-[12px]" style={{ color: "var(--muted-foreground)" }}>{TIMINGS_FOOTER}</div>
-          </Card>
-        }
         below={<InfoBox color="#dc2626">
           A knife alone is flagged for monitoring. It rises to Possible or Likely only when another person is close by
           and there is a second sign: someone loitering first, or the two people frozen close together.
