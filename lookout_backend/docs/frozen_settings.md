@@ -10,7 +10,7 @@ changes without a new entry and a re-score. Parking and improper disposal are ou
 |---|---|---|
 | Possible (`SCORE_WARNING`) | **0.55** (score >= 55) | `core/vision/scoring.py:58` |
 | Likely (`SCORE_VIOLATION`) | 0.75, **kept but unused** | `core/vision/scoring.py:57` |
-| Likely switch (`LIKELY_ENABLED`) | **False**: any score >= 0.55 is Possible; the AI checker cannot suggest Likely either | `core/vision/scoring.py:64`, `core/vision/ai_status.py:116,195` |
+| Likely switch (`LIKELY_ENABLED`) | **False**: any score >= 0.55 is Possible; the AI checker cannot suggest Likely either | `core/vision/scoring.py:64`, `core/vision/ai_status.py:116,194` |
 | `clamp_level` (Likely -> Possible) | applied to every new decision and to a carried-over previous level | `core/vision/scoring.py:101` |
 | Monitoring | gate cue present but score < 0.55 (quiet watchlist, notifies nobody) | `core/vision/scoring.py:108` (`level_of`) |
 | Hysteresis (`HYSTERESIS_DROP`) | a status is left only 0.05 below the threshold that admitted it | `core/vision/scoring.py:68`, `:131` |
@@ -95,6 +95,17 @@ steadily it was seen; nothing else scores it.
 Knife alone 0.40 (Monitoring); knife + persistence **0.60 = Possible**, no second person needed. The old "needs a second person and a
 frozen pair" cap is retired. `WEAPON_REACH` 0.5 (`theft.py:97`) is the knife-to-person distance used by the standalone
 weapon evidence; the Run Detection path uses the wrist rule above. There is no wrist fallback: with no confident wrist the knife is rejected.
+
+**AI status suggestion for the knife** (display only: the official score and status never change; `core/vision/ai_status.py`, `suggest_status` `:174`,
+`_supports_up` `:153`, badge `:137`). Knife is object-only: a people count is a reason to step DOWN, never a blocker. Only HIGH-confidence replies move it.
+
+| AI reply | suggestion | file:line |
+|---|---|---|
+| ordinary activity (any people count) | `Possible -> Monitoring (suggested) - AI sees ordinary activity` | `ai_status.py:208-213` |
+| `people_count` < 2 and `object_pointed_at_a_person` not true | `Possible -> Monitoring (suggested) - AI sees only one person, no one threatened` | `ai_status.py:216-222` |
+| `people_count` < 2 and `object_pointed_at_a_person` true | `No change - Possible (AI count may be off)`; badge stays "AI: unclear" | `ai_status.py:216-218`, `:137-139` |
+| likely + confrontation (no people-count requirement; Likely is off, so Possible is the ceiling) | one step up | `ai_status.py:153-158` |
+| `people_count` missing | blocks nothing | `ai_status.py:108-111` |
 
 ## 5. Unscored guards (they stop an event; they add no points)
 

@@ -90,29 +90,53 @@ class HoldupQwenTests(unittest.TestCase):
             self.assertIn("System detections (from the object and pose models): bottle detected", text)
             self.assertNotIn("people_count", text)
 
+    @mock.patch.object(scoring, "LIKELY_ENABLED", True)     # the mechanism, with the freeze's switch on
     def test_two_people_confrontation_high_confidence_may_suggest_an_upgrade(self):
         sug = ai_status.suggest_status("warning", "holdup", REPLY)
         self.assertEqual((sug["suggested"], sug["direction"]), ("Likely", "up"))
 
-    def test_fewer_than_two_people_is_ordinary_and_never_upgrades(self):
+    def test_ordinary_activity_high_confidence_suggests_monitoring_at_any_people_count(self):
+        for pc in (0, 1, 2, 3):
+            r = dict(REPLY, people_count=pc, scene_type="other_activity", holdup_likelihood="unlikely")
+            sug = ai_status.suggest_status("warning", "holdup", r)
+            self.assertEqual((sug["suggested"], sug["changed"], sug["direction"]), ("Monitoring", True, "down"), pc)
+            self.assertEqual(sug["text"], "Possible → Monitoring (suggested) — AI sees ordinary activity")
+        r = dict(REPLY, people_count=1, scene_type="other_activity", object_pointed_at_a_person=False)
+        self.assertEqual(ai_status.ai_badge("holdup", r)["code"], "ordinary")
+
+    def test_one_person_no_one_threatened_steps_down(self):
         one = dict(REPLY, people_count=1, object_pointed_at_a_person=False)
         self.assertEqual(ai_status.ai_badge("holdup", one)["code"], "ordinary")
         sug = ai_status.suggest_status("warning", "holdup", one)
-        self.assertEqual((sug["suggested"], sug["changed"]), ("Possible", False))
+        self.assertEqual((sug["suggested"], sug["changed"]), ("Monitoring", True))
+        self.assertEqual(sug["text"], "Possible → Monitoring (suggested) — AI sees only one person, no one threatened")
 
-    def test_one_person_but_something_pointed_at_a_person_is_contradictory(self):
+    def test_one_person_but_something_pointed_at_a_person_is_no_change_and_unclear(self):
         bad = dict(REPLY, people_count=1, object_pointed_at_a_person=True)
         self.assertEqual(ai_status.ai_badge("holdup", bad)["code"], "unclear")
-        self.assertFalse(ai_status.suggest_status("warning", "holdup", bad)["changed"])
+        sug = ai_status.suggest_status("warning", "holdup", bad)
+        self.assertEqual((sug["suggested"], sug["changed"]), ("Possible", False))
+        self.assertEqual(sug["text"], "No change — Possible (AI count may be off)")
+
+    def test_one_person_does_not_change_low_confidence_or_official_monitoring(self):
+        one = dict(REPLY, people_count=1, object_pointed_at_a_person=False)
+        self.assertFalse(ai_status.suggest_status("warning", "holdup", dict(one, confidence="medium"))["changed"])
+        self.assertFalse(ai_status.suggest_status("monitoring", "holdup", one)["changed"])
 
     def test_the_upgrade_needs_confrontation_and_high_confidence_too(self):
         for change in ({"scene_type": "unclear"}, {"confidence": "medium"}, {"holdup_likelihood": "possible"}):
             self.assertFalse(ai_status.suggest_status("warning", "holdup", dict(REPLY, **change))["changed"], change)
 
-    def test_a_reply_without_people_count_stays_valid_but_cannot_upgrade(self):
+    def test_a_reply_without_people_count_stays_valid_and_blocks_nothing(self):
         legacy = {k: v for k, v in REPLY.items() if k != "people_count"}
         self.assertIsNotNone(ai_status.validate_reply("holdup", legacy))
+        # Likely is switched off, so the upward ceiling is Possible: nothing to raise from Possible...
         self.assertFalse(ai_status.suggest_status("warning", "holdup", legacy)["changed"])
+        # ...but a downward verdict is not blocked by the missing count.
+        ordinary = dict(legacy, scene_type="other_activity")
+        self.assertEqual(ai_status.suggest_status("warning", "holdup", ordinary)["suggested"], "Monitoring")
+        # and an upward one needs no count either: Monitoring -> Possible on a high-confidence confrontation.
+        self.assertEqual(ai_status.suggest_status("monitoring", "holdup", legacy)["suggested"], "Possible")
 
     def test_people_count_must_be_a_whole_number(self):
         for bad in ("two", 2.5, -1, True):

@@ -157,11 +157,10 @@ def _supports_up(kind, r):
     if kind == "smoking":
         return r.get("hand_to_mouth_activity") == "smoking"
     if kind == "holdup":
-        # v6.2.4: the AI may push a holdup up only when it counts two real people AND calls it a confrontation
-        # (high confidence is required for every upward suggestion, see suggest_status).
+        # Knife is object-only: no people_count requirement (high confidence is required for every upward
+        # suggestion, see suggest_status; a one-person reply never gets here, it is handled as a downward reason).
         return (r.get("holdup_likelihood") == "likely"
-                and r.get("scene_type") == "confrontation"
-                and isinstance(r.get("people_count"), int) and r["people_count"] >= 2)
+                and r.get("scene_type") == "confrontation")
     return False
 
 
@@ -201,16 +200,25 @@ def suggest_status(official_level, kind, reply, puff_only=False):
     if r["confidence"] != HIGH:
         return same(f"No change — {official}")
 
-    if kind == "holdup" and _few_people(r):
-        return same(f"No change — {official} (AI sees fewer than 2 people)")
+    def down(reason):
+        lower = _step(official, -1)
+        return {"text": f"{official} → {lower} (suggested) — {reason}",
+                "suggested": lower, "changed": True, "direction": "down"}
 
     ordinary = r.get("scene_type") == "other_activity" or r.get("hand_to_mouth_activity") == "other_activity"
     if ordinary:
         if official == MONITORING:
             return same("No change — Monitoring (AI: likely ordinary activity)")
-        lower = _step(official, -1)
-        return {"text": f"{official} → {lower} (suggested) — AI sees ordinary activity",
-                "suggested": lower, "changed": True, "direction": "down"}
+        return down("AI sees ordinary activity")
+
+    # Knife (holdup kind) is object-only: one person is a reason to step DOWN, never a blocker, and a
+    # missing people_count counts for nothing either way.
+    if kind == "holdup" and _few_people(r):
+        if r.get("object_pointed_at_a_person") is True:
+            return same(f"No change — {official} (AI count may be off)")
+        if official == MONITORING:
+            return same("No change — Monitoring (AI sees only one person, no one threatened)")
+        return down("AI sees only one person, no one threatened")
 
     if _supports_up(kind, r):
         if official == LIKELY:
