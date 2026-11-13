@@ -44,16 +44,9 @@ Possible**; cigarette + 2 puffs 0.85; + pattern 1.00 (capped at 1.00).
 | sticky | the caps only block the FIRST rise; a Possible event never falls back to Monitoring | `puff_cap` `location_momentum.py:748` |
 | puff-only path | **off** (`PUFF_ONLY_ENABLED = False`): a cigarette is required | `scoring.py:409` |
 
-### Smoking puff definition (puff fix)
+### Smoking puff definition (puff fix REVERTED in Freeze v3)
 
-| item | value | file:line |
-|---|---|---|
-| puff needs a completed hand-to-mouth cycle for every pose reach | True | `location_momentum.py:74` (`PUFF_NEEDS_COMPLETED_GESTURE`) |
-| zoomed-pose reach also needs the cycle (slack 0.5 s) | True | `location_momentum.py:68-69` |
-| one puff per person per moment | 2.0 s | `location_momentum.py:77` |
-| reach <-> cigarette pairing window | 5.0 s either order | `location_momentum.py:46` |
-| minimum gap between reaches | 1.0 s | `location_momentum.py:50` |
-| far-person object puff | on, only where pose cannot measure the person | `location_momentum.py:54` |
+The strict puff rules (completed cycle for every pose reach, 2.0 s one-puff-per-moment gap, cigarette >= 0.45 filter on puff evidence, cigarette-at-hand-now cap) are removed. Only a zoomed-pose reach needs a completed cycle (`PUFF_ZOOM_NEEDS_GESTURE_CYCLE`, `location_momentum.py`). Pairing window 5.0 s, reach gap 1.0 s, far-person object puff unchanged.
 
 ## 3. Drinking
 

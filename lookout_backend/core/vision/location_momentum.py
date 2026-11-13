@@ -67,14 +67,6 @@ WALK_SPEED_HEIGHTS_PER_SEC = 0.3
 # zoomed pose therefore also needs a cycle completed at or after its reach (within the pair window, which is how long a reach waits).
 PUFF_ZOOM_NEEDS_GESTURE_CYCLE = True
 PUFF_GESTURE_SLACK_SECONDS = 0.5    # the cycle may complete this long before the reach was registered (frame / keypoint jitter)
-# Puff fix (manuscript definition): a puff is a COMPLETED hand-to-mouth gesture -- the pose counter's cycle (wrist at the face
-# <= tracking.HAND_RAISED_RATIO shoulder-widths held tracking.GESTURE_APEX_HOLD_SECONDS, then out past tracking.HAND_LOWERED_RATIO).
-# Until now only a zoomed-pose reach had to be followed by one; a reach from the whole-frame pose counted the moment it touched the
-# zone. True = every pose reach needs the completed cycle (the far-range object puff has no wrist and is unchanged).
-PUFF_NEEDS_COMPLETED_GESTURE = True
-# One puff per person per moment: a second puff (the other wrist, or the object path) within this long of the last one is the same
-# gesture seen twice and is not counted again.
-PUFF_ONE_PER_MOMENT_SECONDS = 2.0
 FAR_PUFF_BELOW_FRAC = 0.25          # legacy size trigger: NOT used since v6.2.11 (the object puff needs pose to be unable to measure)
 FAR_PUFF_HEAD_ZONE = 0.22           # head zone = top this fraction of the person box (0 = top, 1 = bottom)
 FAR_PUFF_BODY_ZONE = (0.30, 0.70)   # chest / hand zone
@@ -118,7 +110,6 @@ MOUTH_ACCEPT_FRESH_SECONDS = 1.0    # "accepted at the mouth" must be this recen
 CAP_NO_PUFF_TEXT = "capped: no puff"
 CAP_LOW_CONF_TEXT = "capped: cigarette confidence under 0.45"
 CAP_FEW_PUFFS_TEXT = "capped: needs 2 puffs in 30 s for Likely"
-CAP_NOT_NOW_TEXT = "capped: no cigarette at the hand or mouth now"
 
 # holdup (v6.2.1, reworked in v6.2.5). True = knife stability rules, E12 as "stayed close" with pass-through rejection, the
 # "knife + E12" gate (capped at Monitoring without it) and the sticky holdup status. False = the pre-v6.2 (v6) holdup rules.
@@ -590,10 +581,7 @@ def update_puffs(cmd, track, dets, now):
                    if anchors.get("has_shoulders") else anchors["close"])
     mouth = anchors.get(MOUTH)
     shoulder_w = anchors["close"] / CLOSE_SHOULDER_FRAC if anchors.get("has_shoulders") else 0.0
-    # A box that confirms a puff (or shows a cigarette at the hand / mouth now) must reach the same confidence the cigarette needs
-    # for Possible (POSSIBLE_MIN_CONF); a weaker box is not evidence of a puff.
     cig_dets = [(tuple(d[:4]), float(d[4])) for d in dets if str(d[5]).lower() == "cigarette"
-                and float(d[4]) >= POSSIBLE_MIN_CONF
                 and not class_flipped(now, tuple(d[:4]), "cigarette")
                 and not (BOTTLE_OVERLAP_VETO and hasattr(cmd, "_bottle_near_box") and cmd._bottle_near_box(tuple(d[:4]), now))]
     cigs = [b for b, _c in cig_dets]
@@ -636,13 +624,9 @@ def update_puffs(cmd, track, dets, now):
     for w, t_reach in list(loc.reaches.items()):
         seen = {"wrist": loc.cig_at_wrist.get(w), "mouth": loc.cig_at_mouth}
         ok = {k: t for k, t in seen.items() if t is not None and abs(t - t_reach) <= PUFF_PAIR_WINDOW_SECONDS}
-        needs_cycle = PUFF_NEEDS_COMPLETED_GESTURE or (PUFF_ZOOM_NEEDS_GESTURE_CYCLE and loc.reach_src.get(w) == "zoom")
-        if ok and needs_cycle and not _cycle_after(track, t_reach):
-            continue                                # no completed hand-to-mouth cycle yet (still at the mouth): keep waiting (the reach expires)
+        if ok and PUFF_ZOOM_NEEDS_GESTURE_CYCLE and loc.reach_src.get(w) == "zoom" and not _cycle_after(track, t_reach):
+            continue                                # zoomed-pose reach with no completed hand-to-mouth cycle yet: keep waiting (the reach expires)
         if not walking and ok:
-            if _puffed_this_moment(loc, now):
-                del loc.reaches[w]                  # the other wrist of the same gesture: one puff per person per moment
-                continue
             loc.puffs.append(now)
             loc.n_pose_puffs += 1
             where = min(ok, key=lambda k: abs(ok[k] - t_reach))
@@ -697,33 +681,12 @@ def _update_object_puff(loc, track, dets, now):
         return
     if loc.last_object_puff is not None and now - loc.last_object_puff < FAR_PUFF_MIN_GAP_SECONDS:
         return
-    if _puffed_this_moment(loc, now):
-        return
     loc.puffs.append(now)
     loc.n_object_puffs += 1
     loc.last_object_puff = now
     loc.puff_log.append(dict(t=round(now, 2), source="object", head_seen=round(loc.head_seen, 2), body_seen=round(loc.body_seen, 2),
                              kp_source=loc.kp_source))
     loc.head_seen = loc.body_seen = None                 # consumed: the next puff needs fresh sightings of both
-
-
-def _puffed_this_moment(loc, now):
-    """True when this person already counted a puff within PUFF_ONE_PER_MOMENT_SECONDS."""
-    return bool(loc.puffs) and now - loc.puffs[-1] < PUFF_ONE_PER_MOMENT_SECONDS
-
-
-def cig_in_hand_or_mouth_now(track, now):
-    """True when a cigarette (at POSSIBLE_MIN_CONF or better) was seen at one of this person's wrists or at their mouth within
-    MOUTH_ACCEPT_FRESH_SECONDS, or the location gate accepted a cigarette hit on one of those anchors that recently. A box
-    merely somewhere on the body box does not count."""
-    loc = getattr(track, "loc", None)
-    if loc is None:
-        return False
-    seen = [t for t in list(loc.cig_at_wrist.values()) + [loc.cig_at_mouth] if t is not None]
-    if seen and now - max(seen) <= MOUTH_ACCEPT_FRESH_SECONDS:
-        return True
-    last = loc.last_hit.get("cigarette")
-    return last is not None and bool(last[2]) and now - last[3] <= MOUTH_ACCEPT_FRESH_SECONDS
 
 
 def _expire_reaches(loc, now):
@@ -754,15 +717,11 @@ def puff_cap(track, now, previous_level=None, conf=None, momentum=None):
 
     `conf` (the Cigarette detection confidence) and `momentum` switch on the Possible evidence rule (see POSSIBLE_MIN_CONF);
     left None, only the puff rule applies."""
-    # Tied to the present: a puff in the last POSSIBLE_PUFF_WINDOW_SECONDS only raises the status while a cigarette is at the hand
-    # or mouth NOW. Older puffs still count toward the totals (and the Likely count below) but cannot raise it on their own.
     puffed = puffs_within(track, now, POSSIBLE_PUFF_WINDOW_SECONDS) >= POSSIBLE_MIN_PUFFS
-    banked_only = puffed and not cig_in_hand_or_mouth_now(track, now)
-    puffed = puffed and not banked_only
     if not puffed and (conf is None or not (accepted_at_mouth(track, now) and (momentum or 0.0) >= POSSIBLE_MOUTH_MOMENTUM)):
         if previous_level in ("warning", "violation"):
             return None, ""
-        return "monitoring", (CAP_NOT_NOW_TEXT if banked_only else CAP_NO_PUFF_TEXT)
+        return "monitoring", CAP_NO_PUFF_TEXT
     if conf is not None and conf < POSSIBLE_MIN_CONF:
         if previous_level in ("warning", "violation"):
             return None, ""
