@@ -412,8 +412,28 @@ export const deleteDispatcher = (id) =>
 // Both split on the event's PEAK status, not its current one, so an event that
 // reached Possible and then faded stays in the default list (still badged with
 // whatever it is now) instead of dropping back onto the watchlist.
-export const getAlerts = (params) =>
-  apiFetch("/alerts/" + (params ? `?${new URLSearchParams(params)}` : ""));
+//
+// The server paginates (PAGE_SIZE 50). Every caller wants the WHOLE list — the
+// counters, Records and the feed all derive from it — so this follows the pages
+// and hands back one {results} object, the same shape a single page has. Reading
+// only page 1 silently capped every total at 50.
+export const getAlerts = async (params) => {
+  const first = await apiFetch(
+    "/alerts/" + (params ? `?${new URLSearchParams(params)}` : "")
+  );
+  if (!first || !Array.isArray(first.results) || !first.next) return first;
+
+  const results = [...first.results];
+  const MAX_PAGES = 200; // safety stop against a server that never ends the chain
+  for (let page = 2, more = true; more && page <= MAX_PAGES; page++) {
+    const next = await apiFetch(
+      "/alerts/?" + new URLSearchParams({ ...(params || {}), page })
+    );
+    results.push(...(next.results || []));
+    more = Boolean(next.next);
+  }
+  return { ...first, results, next: null };
+};
 export const updateAlert = (id, payload) =>
   apiFetch(`/alerts/${id}/`, { method: "PATCH", body: JSON.stringify(payload) });
 
