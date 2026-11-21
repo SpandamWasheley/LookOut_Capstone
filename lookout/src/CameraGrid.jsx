@@ -428,12 +428,6 @@ function ExpandedCamera({ cam, alert, onClose, isAdmin, onCameraUpdated }) {
               LIVE
             </div>
           )}
-          {alert && (
-            <div className="absolute top-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded text-xs font-semibold"
-              style={{ background: "rgba(239,68,68,0.9)", color: "#fff" }}>
-              ⚠ VIOLATION DETECTED
-            </div>
-          )}
           <button
             type="button"
             onClick={onClose}
