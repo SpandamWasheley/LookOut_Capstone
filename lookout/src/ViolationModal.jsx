@@ -234,7 +234,7 @@ export function RecordingPlayer({ alert, timeline = false, testingTools = false 
         <div className="absolute top-2 left-2 flex items-center gap-2 pointer-events-none">
           <span className="text-[12px] font-medium px-1.5 py-0.5 rounded"
             style={{ background: "rgba(239,68,68,0.9)", color: "#fff", fontFamily: "'DM Mono', monospace" }}>
-            ● {useRaw && hasRaw ? "RAW" : "ANNOTATED"}
+            ● {useRaw && hasRaw ? "NORMAL" : "PROCESSED"}
           </span>
           <span className="text-[12px]"
             style={{ color: "rgba(255,255,255,0.8)", fontFamily: "'DM Mono', monospace",
@@ -271,7 +271,7 @@ export function RecordingPlayer({ alert, timeline = false, testingTools = false 
                 background: useRaw ? "var(--primary)" : "var(--secondary)",
                 color: useRaw ? "#0c0f16" : "var(--muted-foreground)",
               }}>
-              Raw
+              Normal
             </button>
             <button
               onClick={() => setUseRaw(false)}
@@ -280,7 +280,7 @@ export function RecordingPlayer({ alert, timeline = false, testingTools = false 
                 background: !useRaw ? "var(--primary)" : "var(--secondary)",
                 color: !useRaw ? "#0c0f16" : "var(--muted-foreground)",
               }}>
-              Annotated
+              Processed
             </button>
           </div>
         )}
