@@ -16,6 +16,7 @@ import { AssignmentProvider } from "@/context/AssignmentContext";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
 import { ThemeProvider, useTheme } from "@/context/ThemeContext";
 import { useAssignmentNotifications } from "@/hooks/useAssignmentNotifications";
+import { useAutoUpdate } from "@/hooks/useAutoUpdate";
 import { useColors } from "@/hooks/useColors";
 
 SplashScreen.preventAutoHideAsync();
@@ -59,6 +60,9 @@ function RootLayoutNav() {
   // tapped notification. Here rather than in a screen for the same
   // reason NavigationGuard is: there is exactly one of it.
   useAssignmentNotifications();
+  // Applies a published update on this launch rather than the next one, so a
+  // fix does not wait on an officer happening to cold-start the app twice.
+  useAutoUpdate();
   return (
     <>
       <NavigationGuard />
