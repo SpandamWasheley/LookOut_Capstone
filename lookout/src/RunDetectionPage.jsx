@@ -495,18 +495,16 @@ export function RunDetectionPage() {
             <div className="rounded-xl p-3 flex flex-wrap items-center gap-x-5 gap-y-3" style={barStyle}>
               <div className="flex items-center flex-wrap gap-1.5">
                 {DETECTION_TYPES.map((t) => {
-                  const Icon = t.icon;
                   const isActive = violationType === t.key;
                   return (
                     <button key={t.key} onClick={() => setViolationType(t.key)}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[14px] font-medium transition-all"
+                      title={t.label} aria-label={t.label} aria-pressed={isActive}
+                      className="w-14 h-7 rounded-full transition-all"
                       style={{
-                        background: isActive ? `${t.color}1a` : "var(--secondary)",
-                        border: `1px solid ${isActive ? `${t.color}66` : "var(--border)"}`,
-                        color: isActive ? t.color : "var(--foreground)",
-                      }}>
-                      <Icon size={13} /> {t.label}
-                    </button>
+                        background: isActive ? t.color : "var(--secondary)",
+                        border: `1px solid ${isActive ? t.color : "var(--border)"}`,
+                      }}
+                    />
                   );
                 })}
               </div>
