@@ -1193,24 +1193,11 @@ function AIContextCard({ ai, testingTools = false, alertId = null, onRetry = nul
       )}
     </CardDetails>
   );
-  const retryBtn = canRetry && (
-    <button
-      onClick={handleRetry}
-      disabled={retrying}
-      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg text-[11px] font-medium transition-all"
-      style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)", opacity: retrying ? 0.6 : 1 }}>
-      {retrying ? <Loader2 size={10} className="animate-spin" /> : <RotateCcw size={10} />}
-      {retrying ? "Checking…" : "Retry AI check"}
-    </button>
-  );
-
   return (
     <InfoCard dashed label="AI context" icon={<Sparkles size={12} />}
       aside={
-        <div className="flex flex-col items-end gap-1">
-          <div className="flex items-center gap-1.5"><span>AI-generated · may be wrong</span>{details || null}</div>
-          {retryBtn}
-          {retryError && <div className="text-[11px]" style={{ color: "#ef4444" }}>{retryError}</div>}
+        <div className="flex items-center gap-1.5">
+          <span>AI-generated · may be wrong</span>{details || null}
         </div>
       }>
       {state === "pending" ? (
@@ -1229,6 +1216,19 @@ function AIContextCard({ ai, testingTools = false, alertId = null, onRetry = nul
               &ldquo;{ai.observations}&rdquo;
             </div>
           )}
+          {canRetry && (
+            <div className="mt-2">
+              <button
+                onClick={handleRetry}
+                disabled={retrying}
+                className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg text-[11px] font-medium transition-all"
+                style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)", opacity: retrying ? 0.6 : 1 }}>
+                {retrying ? <Loader2 size={10} className="animate-spin" /> : <RotateCcw size={10} />}
+                {retrying ? "Checking…" : "Retry AI check"}
+              </button>
+              {retryError && <div className="mt-1 text-[11px]" style={{ color: "#ef4444" }}>{retryError}</div>}
+            </div>
+          )}
         </>
       )}
     </InfoCard>
@@ -1240,7 +1240,8 @@ function AIContextCard({ ai, testingTools = false, alertId = null, onRetry = nul
 function SuggestedStatusCard({ ai, official }) {
   const sug = ai?.suggestion;
   const grey = { color: "var(--muted-foreground)" };
-  const text = ai?.state === "pending" ? "AI context pending…" : (sug?.text || "AI Turned Off");
+  const rawText = ai?.state === "pending" ? "AI context pending…" : (sug?.text || "");
+  const text = (!rawText || rawText.toLowerCase().includes("unavailable")) ? "AI Turned Off" : rawText;
   const reason = text.includes(" — ") ? text.split(" — ").slice(1).join(" — ") : "";
   let body;
   if (sug?.changed && sug.suggested && official) {
