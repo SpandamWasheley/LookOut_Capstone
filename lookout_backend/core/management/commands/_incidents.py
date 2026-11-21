@@ -477,8 +477,9 @@ class IncidentMixin:
     def _draw_object_cue(self, frame, track, dets, cue, color_on, color_building=(0, 200, 0)):
         """Draw the violation boxes ALWAYS (green while momentum builds, `color_on`
         once the cue is ON). With no detection this frame the track's last known
-        boxes are drawn dashed and dimmed."""
-        draw_dets = dets if dets else (track.dets if cue.on else [])
+        boxes are drawn dashed and dimmed — always, so the processed clip always
+        shows the object that triggered the alert even if it left the frame."""
+        draw_dets = dets if dets else track.dets
         is_historical = not dets and bool(draw_dets)
         for (x1, y1, x2, y2, score, label) in draw_dets:
             color = color_on if cue.on else color_building
