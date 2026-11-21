@@ -24,7 +24,16 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
+# api.expo.dev rather than Expo's older exp.host. The two serve the same push
+# API and the same ticket format, but they are not reachable from the same
+# places: exp.host resolves to a Google Cloud address (34.110.201.56) that the
+# barangay's network answers with ICMP host-unreachable, while api.expo.dev is
+# behind Cloudflare and answers normally. `deliver` only logs a connection
+# failure -- correctly, since a nudge must never fail a dispatcher's Assign --
+# so on exp.host every push died silently and the officer app looked broken
+# with nothing wrong in it. Verified on the detection PC: ticket and delivery
+# receipt both "ok" through this host, no route at all through the other.
+EXPO_PUSH_URL = "https://api.expo.dev/v2/push/send"
 
 # Expo rejects more than 100 messages in one request.
 BATCH_SIZE = 100
