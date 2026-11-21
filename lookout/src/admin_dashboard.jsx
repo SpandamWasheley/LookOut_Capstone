@@ -15,7 +15,7 @@ import { ResidentLog } from "./ResidentLog";
 import { RunDetectionPage } from "./RunDetectionPage";
 import { AboutPage } from "./AboutPage";
 import { useTestingTools } from "./useTestingTools";
-import { getAlerts, getCameras, getOfficers } from "./api";
+import { getAlerts, getAlertCounts, getCameras, getOfficers } from "./api";
 
 // `onAlerts` is handed each polled alert list so arrivals can be spotted where
 // they actually arrive — in the response — rather than by an effect trying to
@@ -24,6 +24,7 @@ function useLiveOverviewData(onAlerts) {
   const [alerts, setAlerts] = useState([]);
   const [cameras, setCameras] = useState([]);
   const [officers, setOfficers] = useState([]);
+  const [counts, setCounts] = useState(null);
 
   // Kept in a ref so a new callback identity cannot restart the poll.
   const onAlertsRef = useRef(onAlerts);
@@ -31,11 +32,16 @@ function useLiveOverviewData(onAlerts) {
 
   useEffect(() => {
     const refresh = () => {
+      // Page 1 only — the compact panel and toaster only need recent alerts,
+      // and new arrivals are always newest (ordered by -id).
       getAlerts().then((res) => {
         const list = res.results ?? res;
         setAlerts(list);
         onAlertsRef.current?.(list);
       }).catch(() => {});
+      // Counts come from a dedicated endpoint so KPI tiles are always accurate
+      // regardless of how many pages of alerts exist.
+      getAlertCounts().then(setCounts).catch(() => {});
       getCameras().then((res) => setCameras(res.results ?? res)).catch(() => {});
       getOfficers().then((res) => setOfficers(res.results ?? res)).catch(() => {});
     };
@@ -44,7 +50,7 @@ function useLiveOverviewData(onAlerts) {
     return () => clearInterval(interval);
   }, []);
 
-  return { alerts, cameras, officers };
+  return { alerts, cameras, officers, counts };
 }
 
 // "config" is on EVERY role, because My Account is a section of Settings
@@ -93,7 +99,20 @@ function AdminDashboard({ user, onLogout }) {
   const safePage = allowed.includes(activePage) ? activePage : allowed[0];
 
   const { toast, dismiss, handleAlerts, setSuppressed } = useAlertToaster();
-  const { alerts } = useLiveOverviewData(handleAlerts);
+  const { alerts, counts } = useLiveOverviewData(handleAlerts);
+
+  // Capture the timestamp from the event and store it so it survives the page
+  // switch — CameraGrid may not be mounted yet when the event fires, so passing
+  // it as a prop is the only way it reaches the RecordingsModal reliably.
+  const [recordingsJumpTo, setRecordingsJumpTo] = useState(null);
+  useEffect(() => {
+    const onOpenRec = (e) => {
+      setActivePage("cameras");
+      setRecordingsJumpTo(e.detail?.timestamp ?? null);
+    };
+    window.addEventListener("lookout:open-recordings", onOpenRec);
+    return () => window.removeEventListener("lookout:open-recordings", onOpenRec);
+  }, []);
 
   // No toasts on the Violations tab: the list there already shows every
   // arrival, so a popup would be covering the thing it is announcing.
@@ -104,23 +123,20 @@ function AdminDashboard({ user, onLogout }) {
   // while it decides whether the page is allowed to make a sound.
   useEffect(() => armAlertSound(), []);
 
-  const activeAlerts = alerts.filter((a) => a.status === "active");
-  const dispatchedAlerts = alerts.filter((a) => a.status === "dispatched");
-  const alertCount = activeAlerts.length;
-
-  // Alerts raised since local midnight. The comparison is on the VIEWER's day,
-  // not UTC: a dispatcher in Zamboanga reading "today" means their today, and
-  // the two diverge for the eight hours either side of midnight UTC.
-  const startOfToday = new Date();
-  startOfToday.setHours(0, 0, 0, 0);
-  const todays = alerts.filter((a) => new Date(a.timestamp) >= startOfToday);
-  const unassignedToday = todays.filter((a) => a.status === "active").length;
+  // KPI values come from the counts endpoint (accurate totals, no page cap).
+  // Fall back to 0 until the first counts response arrives.
+  const alertCount     = counts?.active     ?? 0;
+  const dispatchedCount = counts?.dispatched ?? 0;
+  const totalCount     = counts?.total      ?? 0;
+  const resolvedCount  = counts?.resolved   ?? 0;
+  const todayCount     = counts?.today      ?? 0;
+  const todayActiveCount = counts?.today_active ?? 0;
 
   const kpis = [
-    { label: "Pending Review", value: alertCount, sub: "Not yet assigned", accent: "#ef4444", icon: AlertTriangle },
-    { label: "Assigned", value: dispatchedAlerts.length, sub: `${activeAlerts.length} awaiting assignment`, accent: "#3b82f6", icon: Radio },
-    { label: "Alerts Today", value: todays.length, sub: `${unassignedToday} unassigned`, accent: "#3b82f6", icon: CalendarDays },
-    { label: "Total Alerts", value: alerts.length, sub: `${alerts.filter((a) => a.status === "resolved").length} resolved`, accent: "#a855f7", icon: Zap },
+    { label: "Pending Review", value: alertCount,      sub: "Not yet assigned",                   accent: "#ef4444", icon: AlertTriangle },
+    { label: "Assigned",       value: dispatchedCount,  sub: `${alertCount} awaiting assignment`, accent: "#3b82f6", icon: Radio },
+    { label: "Alerts Today",   value: todayCount,       sub: `${todayActiveCount} unassigned`,    accent: "#3b82f6", icon: CalendarDays },
+    { label: "Total Alerts",   value: totalCount,       sub: `${resolvedCount} resolved`,         accent: "#a855f7", icon: Zap },
   ];
 
   return (
@@ -160,7 +176,7 @@ function AdminDashboard({ user, onLogout }) {
                 {/* mapAlert because the bell works in the UI shape, not raw
                     API rows — see NotificationBell. */}
                 <NotificationBell
-                  alerts={activeAlerts.map(mapAlert)}
+                  alerts={alerts.filter((a) => a.status === "active").map(mapAlert)}
                   onOpenAlerts={() => setActivePage("alerts")}
                 />
                 <LiveClock />
@@ -250,7 +266,7 @@ function AdminDashboard({ user, onLogout }) {
                   )}
                 </div>
                 <div className="flex-1 min-h-0 overflow-hidden p-4">
-                  <AlertFeed compact user={user} />
+                  <AlertFeed compact externalAlerts={alerts} user={user} />
                 </div>
               </div>
             </div>
@@ -268,13 +284,14 @@ function AdminDashboard({ user, onLogout }) {
         {safePage === "cameras" && (
           <div className="flex flex-col h-full overflow-hidden">
             <div
-              className="flex items-center px-6 h-14 flex-shrink-0"
+              className="flex items-center justify-between px-6 h-14 flex-shrink-0"
               style={{ borderBottom: "1px solid var(--border)" }}
             >
               <h1 className="text-xl font-bold" style={{ color: "var(--foreground)" }}>Feeds</h1>
+              <LiveClock />
             </div>
             <div className="flex-1 overflow-auto p-6">
-              <CameraGrid isAdmin={role === "admin"} />
+              <CameraGrid isAdmin={role === "admin"} jumpToTimestamp={recordingsJumpTo} onRecordingsOpened={() => setRecordingsJumpTo(null)} />
             </div>
           </div>
         )}
@@ -284,7 +301,7 @@ function AdminDashboard({ user, onLogout }) {
         {safePage === "officers" && (
           <div className="h-full">
             <OfficersPage
-              alerts={activeAlerts.map(mapAlert)}
+              alerts={alerts.filter((a) => a.status === "active").map(mapAlert)}
               onOpenAlerts={() => setActivePage("alerts")}
             />
           </div>
@@ -293,7 +310,7 @@ function AdminDashboard({ user, onLogout }) {
         {safePage === "residentlog" && (
           <div className="h-full">
             <ResidentLog
-              alerts={activeAlerts.map(mapAlert)}
+              alerts={alerts.filter((a) => a.status === "active").map(mapAlert)}
               onOpenAlerts={() => setActivePage("alerts")}
               role={role}
             />

@@ -13,7 +13,12 @@ callables: how to create the row, and how to describe it.
 
 import dataclasses
 import datetime
+import atexit
+import logging
 import os
+import queue
+import threading
+import time
 from collections import namedtuple
 from zoneinfo import ZoneInfo
 
@@ -68,6 +73,84 @@ class Incident:
         self.pending_ai = None      # AI check waiting until the event has proved it is not a flicker
 
 
+# ---- clip writing happens OFF the detection thread --------------------------------------------
+#
+# Encoding an evidence clip is slow (a raw one took ~27 s here) and used to run
+# on the detection thread: every alert, every 15-second refresh and every
+# post-roll save froze the detector, so the frames those very clips are made
+# from were never captured. A log line said it plainly: "35 frames over 120s,
+# longest gap 106.8s". One worker thread now does the encoding, one clip at a
+# time, from a snapshot of the buffer taken at the moment it was asked for.
+#
+# Jobs are keyed by clip name: asking again before the first has started
+# replaces it (a refresh queued behind a long encode is stale by the time it
+# would run), so a continuing event costs one encode, not one per refresh.
+_clip_lock = threading.Lock()
+_clip_pending = {}          # base -> callable
+_clip_queue = queue.Queue()
+_clip_state = {"thread": None, "busy": False}
+
+
+def _clip_worker():
+    while True:
+        base = _clip_queue.get()
+        with _clip_lock:
+            job = _clip_pending.pop(base, None)
+            _clip_state["busy"] = job is not None
+        if job is None:
+            continue
+        try:
+            job()
+        except Exception:                                              # noqa: BLE001
+            logging.getLogger(__name__).exception("clip writer failed for %s", base)
+        finally:
+            with _clip_lock:
+                _clip_state["busy"] = False
+            try:
+                from django.db import connection
+                connection.close()          # this thread's own connection
+            except Exception:                                          # noqa: BLE001
+                pass
+
+
+def enqueue_clip(base, job):
+    with _clip_lock:
+        is_new = base not in _clip_pending
+        _clip_pending[base] = job
+        if _clip_state["thread"] is None:
+            t = threading.Thread(target=_clip_worker, name="clip-writer", daemon=True)
+            _clip_state["thread"] = t
+            t.start()
+    if is_new:
+        _clip_queue.put(base)
+
+
+def flush_clip_jobs(timeout=300.0):
+    """Wait for queued clips to be written. For the end of a run: a file run
+    that finishes must not exit with its last alert's clip still in memory."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with _clip_lock:
+            if not _clip_pending and not _clip_state["busy"]:
+                return True
+        time.sleep(0.3)
+    return False
+
+
+atexit.register(flush_clip_jobs)
+
+
+def _apply_clip_fields(base, fields, tries=6):
+    """Put finished clip URLs on the alert row. The row is created right after
+    the clip is asked for, so a very fast job can finish first: look again."""
+    if not fields:
+        return
+    for _ in range(tries):
+        if Alert.objects.filter(image_url__contains=base).update(**fields):
+            return
+        time.sleep(2.0)
+
+
 def ai_setup(stdout, off=False):
     """Build the AI checker's shared state from SystemSettings: the Ollama client (None
     when switched off or unusable, with the reason printed), the full-resolution frame
@@ -100,7 +183,9 @@ def ai_setup(stdout, off=False):
     return {
         "ai_client": client,
         "ai_clients": by_kind,
-        "ai_ring": ai_checker.FrameRing() if client else None,
+        # The ring runs even with no checker: its frames are what a deferred
+        # check is made from later. Only an explicit --no-ai (`off`) skips it.
+        "ai_ring": ai_checker.FrameRing() if (client or not off) else None,
         "ai_frames": cfg.vlm_frames,
         "ai_edge": cfg.vlm_max_edge,
         "ai_wait": not cfg.vlm_async,
@@ -112,7 +197,9 @@ def store_ai_result(alert_id, result, trigger_level):
     the one row by primary key."""
     data = result.as_dict()
     data.update({
-        "state": "done" if result.ok else "unavailable",
+        "state": ("done" if result.ok
+                  else "deferred" if getattr(result, "deferred", False) else "unavailable"),
+        "kind": result.kind,
         "trigger_level": trigger_level,
         "finished_at": timezone.now().isoformat(),
     })
@@ -203,6 +290,7 @@ class IncidentMixin:
     confirm_seconds = 2.0       # an object must stay detected this long before it counts
     cue_hold = 5.0              # a behaviour cue (at the mouth) is held this long after it last fired
     monitoring_min = 3.0        # a Monitoring event shorter than this that never rose is dropped
+    monitoring_first = 0.0      # live runs: a new event stays Monitoring this long before it may rise (see _incident_sync)
     puff_count = 3
     puff_window = 300.0
     drinking_band = scoring.DRINKING_HIGH_BAND
@@ -212,6 +300,12 @@ class IncidentMixin:
         """Read the adjustable indicator timings from SystemSettings. Cheap to call every
         frame (it only acts when the settings row changed), so edits made in Settings take
         effect within the runner's normal 5-second settings refresh."""
+        # Before the unchanged-settings early return, on purpose: it depends on
+        # whether the source is live, which is settled AFTER some callers first
+        # apply the settings, and a value cached from that first call would be
+        # wrong for the rest of a file run.
+        self.monitoring_first = (float(getattr(cfg, "monitoring_min_seconds", 3.0))
+                                 if self.__dict__.get("_source_path") is None else 0.0)
         stamp = getattr(cfg, "updated_at", None)
         if stamp is not None and stamp == self.__dict__.get("_spec_stamp"):
             return
@@ -259,14 +353,18 @@ class IncidentMixin:
     def _ai_trigger(self, alert, ai, key, now, level):
         """Start the check for a NEW incident row (entering Monitoring, or a puff-only
         incident reaching Possible -- both are the moment the row is created)."""
-        if alert is None or self.ai_client is None or self.ai_ring is None:
+        if alert is None or self.ai_ring is None:
             return
         keys = list(ai.get("keys") or [("track", key[1])])
+        # No client = the checker is off or Ollama is down. The frames are still
+        # cut and kept (check_async with client None), and the alert is marked
+        # "deferred" so core/ai_backfill.py can make the call when it is back.
         client = self.ai_clients.get(ai["kind"], self.ai_client)
         pk = alert.pk
         Alert.objects.filter(pk=pk).update(ai={
-            "state": "pending", "trigger_level": level, "system_note": ai["note"],
-            "model": client.model})
+            "state": "pending" if client is not None else "deferred",
+            "kind": ai["kind"], "trigger_level": level, "system_note": ai["note"],
+            "model": client.model if client is not None else ""})
         root = str(self.violations_dir)
         ai_checker.check_async(
             client, self.ai_ring, ai["kind"], keys, now, ai["note"],
@@ -539,18 +637,35 @@ class IncidentMixin:
             # level now falls only through Score's own drop-out rule.
             return inc.alert if inc is not None else None
 
+        # Resolved BEFORE the level is settled (it used to follow the drawing): the
+        # Monitoring-first rule below needs to know whether this is a brand-new
+        # incident or the continuation of one that already reached Possible.
+        if inc is None:
+            inc = self._incident_continue(key, box, now) or Incident(now)
+            book[key] = inc
+
         # An event that reached Possible or Likely never goes back to Monitoring: it keeps (at least) Possible until the
         # incident closes. Monitoring is the quiet watchlist, and a reviewer must not see a Possible alert turn into one.
-        if inc is not None and level == scoring.MONITORING and inc.peak in scoring.NOTIFY_LEVELS:
+        if level == scoring.MONITORING and inc.peak in scoring.NOTIFY_LEVELS:
             level = scoring.WARNING
+
+        # MONITORING FIRST. Every live event opens on the watchlist and may rise
+        # only once it has been watched for `monitoring_first` seconds. Without
+        # this, a cigarette and a hand at the mouth seen together score 60 on the
+        # very first frame, and the dashboard showed Possible with no Monitoring
+        # stage before it -- which reads as the system having decided instantly.
+        # Score keeps accruing underneath; only what is SHOWN is held back.
+        # File runs are untouched (monitoring_first is 0 there), so accuracy
+        # evaluation measures the same thing it always did.
+        if (self.monitoring_first > 0 and level in scoring.NOTIFY_LEVELS
+                and inc.peak not in scoring.NOTIFY_LEVELS
+                and now - inc.started < self.monitoring_first):
+            level = scoring.MONITORING
 
         trigger = self._trigger_info(key, score, partner)
         self._draw_trigger(frame, key, box, level, trigger, partner, now)
         extra_cues = {**(extra_cues or {}), "trigger": trigger}
 
-        if inc is None:
-            inc = self._incident_continue(key, box, now) or Incident(now)
-            book[key] = inc
         inc.last_active = now
         if box is not None:
             inc.box = tuple(box)
@@ -682,6 +797,11 @@ class IncidentMixin:
             ev["level"] = level
             fields["timeline"] = timeline.appended(row.get("timeline"), ev)
         cues.update(score.as_dict())
+        # If the ratchet (or monitoring_first) changed the level vs what Score computed,
+        # correct it in the stored cues so the testing view's status row matches the alert.
+        if level != cues.get("level"):
+            cues["level"] = level
+            cues["label"] = scoring.label_of(level)
         if self.spec_snapshot is not None:
             cues["settings"] = self.spec_snapshot
         if extra_cues:
@@ -690,6 +810,14 @@ class IncidentMixin:
         Alert.objects.filter(pk=alert.pk).update(**fields)
         for name, value in fields.items():
             setattr(alert, name, value)
+
+    def _first_mark(self, base, now):
+        """The moment of the FIRST save for `base`: where the player's marker belongs.
+
+        A refresh re-saves the clip with a later `now`; the marker must stay on the
+        detection, not follow the refresh."""
+        marks = self.__dict__.setdefault("_first_marks", {})
+        return marks.setdefault(base, now if now is not None else time.time())
 
     def _incident_clip(self, inc, frame, now):
         """(Re)write the evidence clip for a Possible / Likely incident."""
@@ -700,6 +828,9 @@ class IncidentMixin:
         update = {}
         if video_url:
             update["video_url"] = video_url
+            mark = getattr(getattr(self, "clip", None), "mark_offset", None)
+            if mark is not None:
+                update["annotated_offset"] = mark
         if raw_video_url:
             update["raw_video_url"] = raw_video_url
             # The clip was re-cut, so the detection sits somewhere new inside
@@ -711,12 +842,113 @@ class IncidentMixin:
             for name, value in update.items():
                 setattr(alert, name, value)
 
+    # ---- post-roll: the clip is finished AFTER the violator has gone ----------
+
+    def _postroll_arm(self, base, now):
+        """Owe `base` one more clip save, RAW_CLIP_POST_SECONDS from `now`.
+
+        Called at the end of every _save_clips. That save is the guarantee --
+        it exists the instant the alert does -- but it can only hold what has
+        already happened, so a reviewer sees the approach and the act and
+        never the part that settles it: the person walking out of frame. The
+        second save runs once a full post-roll has been buffered, so the clip
+        is [60 s before ... 60 s after].
+
+        Re-arming the same `base` (the clip is refreshed every
+        CLIP_REFRESH_SECONDS while the event continues, and once more when it
+        ends) pushes the due time out rather than queueing another encode:
+        encoding runs on the detection thread, so one save per incident is
+        the cost, not one per refresh. The marker keeps pointing at the FIRST
+        moment, which is the detection.
+        """
+        if getattr(self, "dry_run", False):
+            return
+        now = float(now) if now is not None else time.time()
+        book = self.__dict__.setdefault("_postroll", {})
+        fired_at = book[base][1] if base in book else now
+        book[base] = (now + recognition.RAW_CLIP_POST_SECONDS, fired_at)
+
+    def _postroll_drain(self, now, final=False):
+        """Write every clip whose post-roll has now been recorded.
+
+        Runs each frame from _incident_gc, so it needs no loop of its own in
+        any command, standalone or merged. `final` empties the queue whatever
+        the clock says -- the end of a file run, where the footage after the
+        last alert simply stops.
+        """
+        book = self.__dict__.get("_postroll")
+        if not book:
+            return
+        due = [b for b, (due_at, _f) in book.items() if final or due_at <= now]
+        for base in due:
+            _due_at, fired_at = book.pop(base)
+            try:
+                self._postroll_write(base, fired_at)
+            except Exception as exc:                                   # noqa: BLE001
+                # Losing the longer copy costs the aftermath, never the clip:
+                # the first save is already on the row.
+                self.stdout.write(self.style.WARNING(
+                    f"  post-roll clip for {base} not written: {exc}"))
+
+    def _postroll_write(self, base, fired_at):
+        self._clip_job(base, fired_at)
+
+    def _clips_async(self):
+        """True when clips should be written by the background worker: a LIVE
+        run with a buffer to write from. A file run keeps the old synchronous
+        path -- nothing is being missed while it encodes, and its results are
+        wanted on the row the moment the alert is."""
+        return (self.__dict__.get("_source_path") is None
+                and not getattr(self, "dry_run", False)
+                and getattr(self, "clip", None) is not None)
+
+    def _save_clips_async(self, base, frame, now):
+        """The live replacement for the body of every _save_clips: buffer the
+        alert frame, ask for the clip, return at once with no URLs (the
+        worker puts them on the row when the files exist)."""
+        now = now if now is not None else time.time()
+        self.clip.add(frame, now)
+        self._postroll_arm(base, now)
+        self._clip_job(base, self._postroll[base][1])
+        return "", "", None
+
+    def _clip_job(self, base, fired_at):
+        """Snapshot the buffers NOW and queue the encode of both clips."""
+        clip = getattr(self, "clip", None)
+        raw = getattr(self, "_raw_buffer", None)
+        live = self.__dict__.get("_source_path") is None
+        csnap = clip.snapshot() if (clip is not None and hasattr(clip, "snapshot")) else clip
+        rsnap = (raw.snapshot() if hasattr(raw, "snapshot") else raw) if (raw is not None and live) else None
+        out_dir, stdout, style = self.violations_dir, self.stdout, self.style
+
+        def run():
+            if csnap is not None:
+                name = f"{base}.mp4"
+                held = csnap.describe() if hasattr(csnap, "describe") else ""
+                if csnap.save(out_dir / name, mark_at=fired_at):
+                    fields = {"video_url": violation_media_path(name)}
+                    if csnap.mark_offset is not None:
+                        fields["annotated_offset"] = csnap.mark_offset
+                    _apply_clip_fields(base, fields)
+                    stdout.write(style.SUCCESS(f"  clip written: {name}") + (f"  [{held}]" if held else ""))
+            if rsnap is not None:
+                name = f"{base}_raw.mp4"
+                if rsnap.save(out_dir / name, mark_at=fired_at):
+                    fields = {"raw_video_url": violation_media_path(name)}
+                    if rsnap.mark_offset is not None:
+                        fields["clip_offset"] = rsnap.mark_offset
+                    _apply_clip_fields(base, fields)
+                    stdout.write(style.SUCCESS(f"  raw clip written: {name}"))
+
+        enqueue_clip(base, run)
+
     def _incident_gc(self, now, frame=None):
         """Close incidents that have not been updated for END_GRACE_SECONDS.
 
         The row stays (it is the record); it simply stops being active:
         `last_seen_at` is the last moment the object cue was ON.
         """
+        self._postroll_drain(now)
         # Momentum slots of tracks that were not processed this frame are lost
         # with their track (no leak, no carry-over to a new id).
         if self.ai_ring is not None:

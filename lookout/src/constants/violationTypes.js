@@ -30,7 +30,7 @@ export const VIOLATION_TYPES = {
   },
   parking: {
     code: "parking",
-    label: "Parking Obstruction in Road",
+    label: "Potential Parking Obstruction in Road",
     short: "Parking",
     icon: Car,
     aliases: [
@@ -39,6 +39,8 @@ export const VIOLATION_TYPES = {
       "illegal parking / obstruction",
       "parking obstruction",
       "parking obstruction in area",
+      "parking obstruction in road",
+      "potential parking obstruction in road",
     ],
   },
   // watch_thief.py used to create a SECOND ViolationType row (code "thief")

@@ -412,6 +412,9 @@ class CheckResult:
         self.note = note
         self.raw = raw
         self.frame_files = list(frame_files or [])
+        # True when no checker was available at the time: the frames were kept
+        # and the call is owed (core/ai_backfill.py makes it later).
+        self.deferred = False
 
     @property
     def ok(self):
@@ -545,7 +548,14 @@ def check_async(client, ring, kind, keys, t0, note, on_done, save_dir=None, labe
                     with open(path, "wb") as fh:
                         fh.write(data)
                     files.append(url_for(path) if url_for else path)
-            result = check(client, kind, note, images, frame_files=files)
+            if client is None:
+                # No checker (Ollama off or unreachable): keep what it would have
+                # been shown, so the suggestion can be produced once it is back.
+                result = CheckResult(kind, error="AI checker was off when this alert was raised",
+                                     note=note, frames=len(images), frame_files=files)
+                result.deferred = bool(files)
+            else:
+                result = check(client, kind, note, images, frame_files=files)
         except Exception as exc:                               # noqa: BLE001
             result = CheckResult(kind, error=f"{type(exc).__name__}: {exc}")
         try:

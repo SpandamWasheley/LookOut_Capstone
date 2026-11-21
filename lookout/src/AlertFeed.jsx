@@ -7,7 +7,7 @@ import { DispatchModal } from "./DispatchModal";
 import { TypeFilterDropdown } from "./TypeFilterDropdown";
 import { useTestingTools } from "./useTestingTools";
 import { ErrorBoundary } from "./components/ErrorBoundary";
-import { getAlerts, getOfficers, getCameras, updateAlert } from "./api";
+import { getAlerts, getAllAlerts, getAlertCounts, getOfficers, getCameras, updateAlert } from "./api";
 
 function mapOfficer(raw) {
   return { id: raw.id, name: raw.name, status: raw.status, location: raw.location, badge: raw.badge, address: raw.address ?? "" };
@@ -420,16 +420,20 @@ function ShiftInfo() {
 }
 
 // ── Right panel ───────────────────────────────────────────────────────────────
-function RightPanel({ alerts, cameras }) {
+// `counts` comes from /api/alerts/counts/ — accurate totals regardless of how
+// many alert pages were fetched. Falls back to computing from `alerts` when
+// counts are still loading (first render).
+function RightPanel({ alerts, cameras, counts }) {
   const onlineCount = cameras.filter((c) => c.status === "online").length;
-  const activeCount = alerts.filter((a) => a.status === "active").length;
-  const dispatchedCount = alerts.filter((a) => a.status === "dispatched").length;
-  const allTimeTotal = alerts.length;
   const todayStr = new Date().toDateString();
   const todayAlerts = alerts.filter((a) => new Date(a.timestamp).toDateString() === todayStr);
-  const todayTotal = todayAlerts.length;
-  const todayResolved = todayAlerts.filter((a) => a.status === "resolved").length;
-  const todayDismissed = todayAlerts.filter((a) => a.status === "acknowledged").length;
+
+  const allTimeTotal   = counts?.total           ?? alerts.length;
+  const activeCount    = counts?.active          ?? alerts.filter((a) => a.status === "active").length;
+  const dispatchedCount = counts?.dispatched     ?? alerts.filter((a) => a.status === "dispatched").length;
+  const todayTotal     = counts?.today           ?? todayAlerts.length;
+  const todayResolved  = counts?.today_resolved  ?? todayAlerts.filter((a) => a.status === "resolved").length;
+  const todayDismissed = counts?.today_dismissed ?? todayAlerts.filter((a) => a.status === "acknowledged").length;
 
   const recentAlerts = [...alerts]
     .filter((a) => a.status === "active" || a.status === "dispatched")
@@ -476,7 +480,7 @@ function RightPanel({ alerts, cameras }) {
         {sectionLabel("Violations")}
         <div className="grid grid-cols-2 gap-2">
           {[
-            { label: "All",             value: allTimeTotal,    color: "#a855f7" },
+            { label: "Open",            value: activeCount + dispatchedCount, color: "#a855f7" },
             { label: "Today",           value: todayTotal,      color: "#f59e0b" },
             { label: "Assigned",        value: dispatchedCount, color: "#3b82f6" },
             { label: "Unassigned",      value: activeCount,     color: "#ef4444" },
@@ -533,10 +537,14 @@ function RightPanel({ alerts, cameras }) {
 }
 
 // ── Main export ───────────────────────────────────────────────────────────────
-export function AlertFeed({ showFilters = false, user }) {
-  const [alerts, setAlerts] = useState([]);
+// `externalAlerts` — raw API objects from the parent's poll. When provided the
+// component skips its own polling (compact overview panel case). When absent
+// the component fetches independently (full Violations tab).
+export function AlertFeed({ showFilters = false, externalAlerts = null, user }) {
+  const [ownAlerts, setOwnAlerts] = useState([]);
   const [officers, setOfficers] = useState([]);
   const [cameras, setCameras] = useState([]);
+  const [alertCounts, setAlertCounts] = useState(null);
   const [selectedAlert, setSelectedAlert] = useState(null);
   const [dispatchingAlert, setDispatchingAlert] = useState(null);
   const [dismissTarget, setDismissTarget] = useState(null);
@@ -562,6 +570,10 @@ export function AlertFeed({ showFilters = false, user }) {
     setToast(msg);
     setTimeout(() => setToast(null), 3000);
   };
+
+  // When the parent provides alerts (compact panel), use those directly.
+  // When polling independently (full Violations tab), use own state.
+  const alerts = externalAlerts !== null ? externalAlerts.map(mapAlert) : ownAlerts;
 
   const ongoing = alerts.filter((a) => a.status === "active" || a.status === "dispatched");
   const filtered = ongoing.filter((a) => {
@@ -693,17 +705,27 @@ export function AlertFeed({ showFilters = false, user }) {
   const refresh = async (force = true) => {
     const slowDue = force || Date.now() - lastSlowRef.current > 30000;
     if (slowDue) lastSlowRef.current = Date.now();
-    const [alertsRes, officersRes, camerasRes] = await Promise.all([
-      getAlerts(showMonitoringRef.current ? { include_monitoring: 1 } : undefined),
+    // ?ongoing=1 filters to active+dispatched only — this feed never shows
+    // resolved/acknowledged (Records handles those). getAllAlerts follows
+    // pagination so all ongoing alerts appear in the list, not just page 1.
+    const alertParams = showMonitoringRef.current
+      ? { include_monitoring: 1, ongoing: 1 }
+      : { ongoing: 1 };
+    const [alertsRes, officersRes, camerasRes, countsRes] = await Promise.all([
+      getAllAlerts(alertParams),
       slowDue ? getOfficers() : null,
       slowDue ? getCameras() : null,
+      getAlertCounts(),
     ]);
-    setAlerts((alertsRes.results ?? alertsRes).map(mapAlert));
+    setOwnAlerts((alertsRes.results ?? alertsRes).map(mapAlert));
     if (officersRes) setOfficers((officersRes.results ?? officersRes).map(mapOfficer));
     if (camerasRes) setCameras(camerasRes.results ?? camerasRes);
+    if (countsRes) setAlertCounts(countsRes);
   };
 
   useEffect(() => {
+    // Parent manages fetching in compact mode — no own poll needed there.
+    if (externalAlerts !== null) return;
     refresh().catch(() => {});
     // Skip ticks while the tab is hidden; catch up as soon as it is visible.
     const tick = () => { if (!document.hidden) refresh(false).catch(() => {}); };
@@ -1087,7 +1109,7 @@ export function AlertFeed({ showFilters = false, user }) {
         <div className="w-[280px] flex-shrink-0 flex flex-col pt-3 pr-3 pb-3">
           <div className="flex-1 min-h-0 flex flex-col overflow-hidden rounded-2xl"
             style={{ border: "1px solid var(--border)", background: "var(--card)" }}>
-            <RightPanel alerts={alerts} cameras={cameras} />
+            <RightPanel alerts={alerts} cameras={cameras} counts={alertCounts} />
           </div>
         </div>
 

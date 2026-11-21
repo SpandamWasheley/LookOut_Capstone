@@ -428,9 +428,22 @@ class Alert(models.Model):
         ordering = ["-id"]
 
     def save(self, *args, **kwargs):
-        if not self.code:
+        if self.code:
+            return super().save(*args, **kwargs)
+        # The next code is read, then used: two detectors raising an alert in the
+        # same instant read the same "last" row and both write ALT-0551. The
+        # second used to die on the UNIQUE constraint -- and a detector that
+        # dies loses everything it had buffered. Take the next number and retry.
+        from django.db import IntegrityError, transaction
+        for attempt in range(8):
             self.code = _next_code(Alert, "ALT", width=4)
-        super().save(*args, **kwargs)
+            try:
+                with transaction.atomic():
+                    return super().save(*args, **kwargs)
+            except IntegrityError:
+                if attempt == 7 or not Alert.objects.filter(code=self.code).exists():
+                    raise
+                self.code = ""
 
     def __str__(self):
         return self.code
@@ -886,6 +899,13 @@ class SystemSettings(models.Model):
     # is the context geometry can't see (is this inuman or a family lunch? a
     # holdup or a fish vendor?) and a readable reason on the alert card.
     vlm_enabled = models.BooleanField(default=True)
+    # FAR 2x2: the detector reads the frame as four tiles plus the whole, which
+    # is what finds a cigarette or a knife from the motor building across the
+    # road, and costs roughly five forward passes a frame (about 0.8 fps here).
+    # Close in -- the school -- the objects are large enough for one pass, so
+    # turning it off buys several times the frame rate. Read when the live
+    # detector LAUNCHES (monitor._launch passes --fast), so saving it restarts it.
+    far_mode = models.BooleanField(default=True)
     # Where the local Ollama server listens. v3 §8 runs the checker on this
     # machine, so there is no API key and no outbound request -- what used to
     # be "is the credential valid" is now "is the server up and is the model
@@ -1006,8 +1026,9 @@ class SystemSettings(models.Model):
     # roughly four times the disk -- for a detection PC that cannot afford to
     # encode video all day beside three detectors and the VLM.
     recording_mode = models.CharField(max_length=10, default="clip",
-                                      choices=[("clip", "Evidence-clip quality"),
-                                               ("source", "Camera's own video")])
+                                      choices=[("clip", "Processed"),
+                                               ("source", "Normal"),
+                                               ("both", "Both")])
     # How long each file covers. The open segment is the only part of the tape
     # that cannot be played yet (an MP4 is not playable until its moov atom is
     # written at close), so this is also how far behind "now" the archive ends.

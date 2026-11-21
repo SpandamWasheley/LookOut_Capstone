@@ -552,6 +552,16 @@ class Command(BaseCommand):
             pass
         finally:
             reader.stop() if is_live else cap.release()
+            # Clips still waiting for their minute afterwards: a file run that
+            # reaches the end of its footage owes them with however much
+            # follows. (A live run killed outright keeps the first save.)
+            for _name in ("smoking", "drinking", "thief"):
+                try:
+                    self.engines[_name]["cmd"]._postroll_drain(0.0, final=True)
+                except Exception:                                      # noqa: BLE001
+                    pass
+            from core.management.commands._incidents import flush_clip_jobs
+            flush_clip_jobs()           # the clips queued above are written before the process exits
             if self.calibration_file is not None:
                 self.calibration_file.close()
                 self.stdout.write(self.style.SUCCESS(

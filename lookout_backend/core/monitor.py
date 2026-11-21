@@ -120,6 +120,8 @@ class LiveMonitor:
         self._job_ids = []
         self._last_error = ""
         self._rec_proc = None           # manage.py record_cctv (it owns the ffmpeg)
+        self._rec_proc_extra = None     # second recorder in "both" mode (source)
+        self._rec_mode = None           # mode the running recorder(s) were started with
         self._rec_thread = None
         self._recording_wanted = False  # the tape's own switch, independent of _want
 
@@ -216,6 +218,22 @@ class LiveMonitor:
                                              daemon=True, name="parking-swap")
         self._swap_thread.start()
         return "restarting" if had_old else "started"
+
+    def restart_detectors(self):
+        """Relaunch the detectors so a setting read only at launch (FAR on/off)
+        takes effect. -> True if anything was running.
+
+        Killing the merged process is enough: the supervisor sees it exit and
+        launches the whole set again, reading the settings afresh. The tape is
+        not touched."""
+        with self._lock:
+            if not self._want:
+                return False
+            proc = self._procs.get("merged")
+        if proc is None:
+            return False
+        self._kill(proc)
+        return True
 
     def _retire(self, proc):
         from core.models import DetectionJob
@@ -316,6 +334,28 @@ class LiveMonitor:
 
     # ---- the continuous tape -----------------------------------------------------
 
+    def ensure_ai_backfill(self, every=60):
+        """Start the loop that adds AI context to alerts raised while Ollama
+        was off (core/ai_backfill.py). Idempotent, like ensure_recording.
+
+        It asks Ollama whether it is up before doing anything, so while it is
+        off this costs one failed local request a minute."""
+        if _running_tests() or getattr(self, "_ai_thread", None) is not None:
+            return
+
+        def _loop():
+            from core import ai_backfill
+            while True:
+                time.sleep(every)
+                try:
+                    ai_backfill.backfill_once(limit=3)
+                except Exception:                                    # noqa: BLE001
+                    import logging
+                    logging.getLogger(__name__).exception("AI backfill pass failed")
+
+        self._ai_thread = threading.Thread(target=_loop, daemon=True, name="ai-backfill")
+        self._ai_thread.start()
+
     def ensure_recording(self):
         """Make sure the tape's supervisor is running. Idempotent.
 
@@ -354,48 +394,68 @@ class LiveMonitor:
         from core.models import Camera, SystemSettings
         while self._recording_wanted:
             try:
-                wanted = SystemSettings.load().recording_enabled
+                cfg = SystemSettings.load()
+                wanted = cfg.recording_enabled
+                mode = cfg.recording_mode
             except Exception:                                    # noqa: BLE001
-                wanted = False      # the database is unreachable; do not guess
+                wanted = False
+                mode = "clip"
             proc = self._rec_proc
             alive = proc is not None and proc.poll() is None
-            if wanted and not alive:
+            extra = self._rec_proc_extra
+            extra_alive = extra is not None and extra.poll() is None
+            # Mode changed while running: stop everything so the right mode
+            # is started on the next pass.
+            if (alive or extra_alive) and self._rec_mode != mode:
+                self._stop_recording()
+                alive = False
+                extra_alive = False
+            if wanted and mode == "both":
                 camera = Camera.objects.filter(code=CAMERA_CODE).first()
                 if camera is not None and camera.resolved_stream_url:
-                    # A recorder from a previous run of this server, or one still
-                    # finalising its last segment, would be a second ffmpeg writing
-                    # into the same directory. Waiting happens HERE, on a background
-                    # thread, rather than in _reap_orphans, which a request calls.
+                    from core import recording
+                    if not alive or not extra_alive:
+                        if recording.is_running(CAMERA_CODE):
+                            recording.terminate_running(CAMERA_CODE)
+                        self._rec_proc = self._spawn_recorder(camera, "clip")
+                        self._rec_proc_extra = self._spawn_recorder(camera, "source")
+                        self._rec_mode = "both"
+                        if not self._recording_wanted:
+                            self._stop_recording()
+                            break
+            elif wanted and not alive:
+                camera = Camera.objects.filter(code=CAMERA_CODE).first()
+                if camera is not None and camera.resolved_stream_url:
                     from core import recording
                     if recording.is_running(CAMERA_CODE):
                         recording.terminate_running(CAMERA_CODE)
-                    self._rec_proc = self._spawn_recorder(camera)
-                    # Terminating a recorder takes seconds, and the server may have
-                    # been shutting down for all of them. Without this check the last
-                    # thing a dying process does is start an ffmpeg nobody will ever
-                    # stop.
+                    self._rec_proc = self._spawn_recorder(camera, mode)
+                    self._rec_mode = mode
                     if not self._recording_wanted:
                         self._stop_recording()
                         break
-            elif alive and not wanted:
+            elif (alive or extra_alive) and not wanted:
                 self._stop_recording()
             time.sleep(5.0)
         self._stop_recording()
 
-    def _spawn_recorder(self, camera):
+    def _spawn_recorder(self, camera, mode=None):
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
         logs = log_dir()
-        log = open(logs / "live_recording.log", "w")
+        log_name = f"live_recording{'_source' if mode == 'source' else ''}.log"
+        log = open(logs / log_name, "w")
+        args = [sys.executable, "manage.py", "record_cctv", "--camera", camera.code]
+        if mode in ("clip", "source"):
+            args += ["--mode", mode]
         try:
             return subprocess.Popen(
-                [sys.executable, "manage.py", "record_cctv", "--camera", camera.code],
-                cwd=str(settings.BASE_DIR), stdout=log, stderr=subprocess.STDOUT, env=env)
+                args, cwd=str(settings.BASE_DIR), stdout=log, stderr=subprocess.STDOUT, env=env)
         finally:
             log.close()
 
     def _stop_recording(self):
-        """End the recorder, and the ffmpeg underneath it.
+        """End the recorder(s), and the ffmpeg underneath each.
 
         Through recording.terminate_running, which ASKS first (a flag file the recorder
         polls) and waits before killing anything. That order is the difference between
@@ -409,16 +469,19 @@ class LiveMonitor:
         """
         from core import recording
         proc, self._rec_proc = self._rec_proc, None
+        extra, self._rec_proc_extra = self._rec_proc_extra, None
+        self._rec_mode = None
         try:
             recording.terminate_running(CAMERA_CODE)
         except Exception:                                        # noqa: BLE001
             pass
-        if proc is None:
-            return
-        try:
-            proc.wait(timeout=20)       # it is finalising the open segment
-        except subprocess.TimeoutExpired:
-            self._kill(proc)
+        for p in (proc, extra):
+            if p is None:
+                continue
+            try:
+                p.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                self._kill(p)
 
     def recording_status(self):
         """What the dashboard shows about the tape: whether it is recording now, and
@@ -580,7 +643,11 @@ class LiveMonitor:
         # Resolved once: stream_url on the row if set, else settings.STREAM_URL from
         # this machine's .env (see Camera.resolved_stream_url).
         stream_url = camera.resolved_stream_url
-        commands = {"merged": ["watch_merged", "--source", stream_url, "--camera", camera.code]}
+        from core.models import SystemSettings
+        merged = ["watch_merged", "--source", stream_url, "--camera", camera.code]
+        if not SystemSettings.load().far_mode:
+            merged.append("--fast")         # one pass over the whole frame, no 2x2 tiles
+        commands = {"merged": merged}
         if has_road_edge(camera):
             commands["parking"] = ["watch_parking", "--source", stream_url, "--camera", camera.code]
         # Improper disposal runs as its OWN process rather than joining the

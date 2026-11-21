@@ -412,19 +412,23 @@ export const deleteDispatcher = (id) =>
 // Both split on the event's PEAK status, not its current one, so an event that
 // reached Possible and then faded stays in the default list (still badged with
 // whatever it is now) instead of dropping back onto the watchlist.
-//
-// The server paginates (PAGE_SIZE 50). Every caller wants the WHOLE list — the
-// counters, Records and the feed all derive from it — so this follows the pages
-// and hands back one {results} object, the same shape a single page has. Reading
-// only page 1 silently capped every total at 50.
-export const getAlerts = async (params) => {
+// Returns one page of alerts (the server's PAGE_SIZE=50, ordered by newest id
+// first). Callers that need all pages (Records) use getAllAlerts instead, but
+// background polling should NEVER use getAllAlerts — 8 sequential HTTP requests
+// every 4 seconds was the source of the 11-second perceived delay.
+export const getAlerts = (params) =>
+  apiFetch("/alerts/" + (params ? `?${new URLSearchParams(params)}` : ""));
+
+// Fetches every page and merges into one {results} array. Only use this for
+// one-shot loads where the user explicitly navigates to a page (Records).
+// NEVER call this in a polling interval.
+export const getAllAlerts = async (params) => {
   const first = await apiFetch(
     "/alerts/" + (params ? `?${new URLSearchParams(params)}` : "")
   );
   if (!first || !Array.isArray(first.results) || !first.next) return first;
-
   const results = [...first.results];
-  const MAX_PAGES = 200; // safety stop against a server that never ends the chain
+  const MAX_PAGES = 200;
   for (let page = 2, more = true; more && page <= MAX_PAGES; page++) {
     const next = await apiFetch(
       "/alerts/?" + new URLSearchParams({ ...(params || {}), page })
@@ -434,8 +438,13 @@ export const getAlerts = async (params) => {
   }
   return { ...first, results, next: null };
 };
+
+// Fast COUNT-only endpoint — no serialization, no pagination. Used for KPI tiles.
+export const getAlertCounts = () => apiFetch("/alerts/counts/");
 export const updateAlert = (id, payload) =>
   apiFetch(`/alerts/${id}/`, { method: "PATCH", body: JSON.stringify(payload) });
+export const retryAlertAI = (id) =>
+  apiFetch(`/alerts/${id}/retry-ai/`, { method: "POST", body: "{}" });
 
 
 export const getViolationTypes = () => apiFetch("/violation-types/");

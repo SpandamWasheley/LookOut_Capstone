@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { Play, Square, Loader2, AlertTriangle, Info, ChevronDown, ChevronUp } from "lucide-react";
-import { getMonitor, startMonitor, stopMonitor, getMonitorState } from "./api";
+import { getMonitor, startMonitor, stopMonitor, getMonitorState, getSettings, saveSettings } from "./api";
 import { ProcessingView } from "./ProcessingView";
 import { useTestingTools } from "./useTestingTools";
 
 const DOT = { running: "#22c55e", starting: "#f59e0b", unreachable: "#ef4444", stopped: "#64748b" };
 
-// Live monitoring of the camera, started and stopped from Live Feeds (admin only, and only while "Show testing tools" is on).
+// Live monitoring of the camera — testing tools must be on to show this panel in Live Feeds.
 // One live monitor for the whole system. The server restarts the detector by itself if it stops or
 // the stream drops, and shows a warning here while that is happening.
 export function LiveMonitor({ actions = null }) {
@@ -15,6 +15,27 @@ export function LiveMonitor({ actions = null }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [showView, setShowView] = useState(true);
+  // Two switches that are read when the detector launches; saving either relaunches it.
+  const [cfg, setCfg] = useState(null);
+  const [cfgBusy, setCfgBusy] = useState(false);
+
+  useEffect(() => {
+    getSettings().then((s) => setCfg({ far_mode: s.far_mode, vlm_enabled: s.vlm_enabled })).catch(() => {});
+  }, []);
+
+  const flip = async (key) => {
+    if (cfgBusy || !cfg) return;
+    setCfgBusy(true);
+    setError("");
+    try {
+      const saved = await saveSettings({ [key]: !cfg[key] });
+      setCfg({ far_mode: saved.far_mode, vlm_enabled: saved.vlm_enabled });
+    } catch (e) {
+      setError(e.message || "Could not save that setting.");
+    } finally {
+      setCfgBusy(false);
+    }
+  };
 
   useEffect(() => {
     let alive = true;
@@ -76,6 +97,28 @@ export function LiveMonitor({ actions = null }) {
             {stopped ? "Start monitoring" : "Stop monitoring"}
           </button>
         </div>
+        {cfg && (
+          <div className="basis-full flex flex-wrap items-center gap-2 text-[13px]">
+            {[
+              { key: "far_mode", label: "Long-range scanning",
+                on: "On: frame scanned in 4 sections — catches objects far from the camera. Slower.",
+                off: "Off: one pass, for close range. Several times faster." },
+              { key: "vlm_enabled", label: "AI checker",
+                on: "On: Ollama adds context to each alert.",
+                off: "Off: frames are saved with each alert; context is added when it is back on." },
+            ].map(({ key, label, on, off }) => (
+              <button key={key} onClick={() => flip(key)} disabled={cfgBusy} title={cfg[key] ? on : off}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-lg"
+                style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}>
+                <span className="w-2 h-2 rounded-full" style={{ background: cfg[key] ? "#22c55e" : "#64748b" }} />
+                {label}: {cfg[key] ? "On" : "Off"}
+              </button>
+            ))}
+            <span style={{ color: "var(--muted-foreground)" }}>
+              {cfg.far_mode ? "Far range" : "Close range"} · changing either restarts detection for a few seconds
+            </span>
+          </div>
+        )}
         {(status.warning || error) && (
           <div className="basis-full flex items-start gap-2 text-[13px]" style={{ color: "#f59e0b" }}>
             <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" /> <span>{error || status.warning}</span>

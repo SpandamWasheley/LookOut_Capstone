@@ -280,7 +280,8 @@ class HoldupTests(unittest.TestCase):
         # the Monitoring floor entirely. Behaviour without a weapon is a group
         # of people standing close together, and the spec's whole argument is
         # that this must not reach a screen.
-        self.assertAlmostEqual(ev.score, 0.30, places=6)
+        # Dangerous Weapon: E12 / E10 still FIRE (the engine detects the pattern) but are priced at 0.0 now.
+        self.assertAlmostEqual(ev.score, 0.0, places=6)
         self.assertEqual(ev.band, theft.DISCARD)
         self.assertFalse(theft.alerts_at(ev.band))
 
@@ -294,9 +295,11 @@ class HoldupTests(unittest.TestCase):
         # detector yet (see theft.MISSING_HOLDUP_CUES), so this is the current
         # ceiling for an unaided geometric case -- the VLM's 0.45 is what
         # carries it clear of the boundary in practice.
-        self.assertAlmostEqual(ev.score, 0.75, places=6)
-        self.assertTrue(theft.alerts_at(ev.band))
-        self.assertEqual(ev.band, theft.VIOLATION)
+        # Dangerous Weapon: the pair and loiter cues are priced at 0.0, so the knife is 0.40 (Monitoring) here; only
+        # the knife's own persistence ("momentum", added by watch_thief) lifts it to 0.60 / Possible.
+        self.assertAlmostEqual(ev.score, 0.40, places=6)
+        self.assertFalse(theft.alerts_at(ev.band))
+        self.assertEqual(ev.band, theft.MONITORING)
 
     def test_time_of_day_multiplier_lifts_the_freeze_over_the_band(self):
         """E20, now driven by the Manila block table rather than a flat 1.3.
@@ -316,7 +319,7 @@ class HoldupTests(unittest.TestCase):
         ev = s.best("holdup")
         self.assertIsNotNone(ev)
         self.assertIn("E20", ev.cues)
-        self.assertAlmostEqual(ev.score, 0.30 + 0.10, places=6)
+        self.assertAlmostEqual(ev.score, 0.0 + 0.10, places=6)
         self.assertEqual(ev.band, theft.DISCARD)      # no knife: not shown
         self.assertFalse(theft.alerts_at(ev.band))
 
@@ -329,7 +332,7 @@ class HoldupTests(unittest.TestCase):
         s = self._run_holdup(now_dt=datetime.datetime(2026, 5, 1, 7, 0))
         ev = s.best("holdup")
         self.assertIsNotNone(ev)
-        self.assertAlmostEqual(ev.score, 0.30 + 0.04, places=6)
+        self.assertAlmostEqual(ev.score, 0.0 + 0.04, places=6)
         self.assertFalse(theft.alerts_at(ev.band))
 
 
@@ -655,7 +658,7 @@ class WeightedScoringTests(unittest.TestCase):
         raised = scoring.Score("drinking", scoring.DRINKING_WEIGHTS,
                                {"bottle", "at_mouth"})
         self.assertAlmostEqual(held.score, 0.40)
-        self.assertAlmostEqual(raised.score, 0.55)
+        self.assertAlmostEqual(raised.raw_score, 0.55)   # (the score is held under 0.55 with no gathering)
         self.assertGreater(raised.score, held.score)
 
     def test_a_dependent_cue_cannot_fire_alone(self):

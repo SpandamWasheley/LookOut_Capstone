@@ -23,12 +23,13 @@ import threading
 from django.core.validators import validate_email
 from django.db import transaction
 from django.db.models import Count, Q
+from django.db.models.deletion import ProtectedError
 from django.utils import timezone
 from django.utils.text import get_valid_filename
 from rapidfuzz import process as rapidfuzz_process
 from core import zones
 from django.db import connection
-from rest_framework import generics, permissions, status, viewsets
+from rest_framework import generics, permissions, serializers, status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes, throttle_classes
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
@@ -693,6 +694,18 @@ class SystemSettingsView(generics.RetrieveUpdateAPIView):
     def get_object(self):
         return SystemSettings.load()
 
+    def update(self, request, *args, **kwargs):
+        cfg = SystemSettings.load()
+        before = (cfg.far_mode, cfg.vlm_enabled)
+        response = super().update(request, *args, **kwargs)
+        # FAR and the AI checker are both set up when the detector launches, so
+        # changing either has to relaunch it.
+        cfg = SystemSettings.load()
+        if response.status_code < 300 and (cfg.far_mode, cfg.vlm_enabled) != before:
+            from core.monitor import monitor
+            response.data["detectors_restarted"] = monitor.restart_detectors()
+        return response
+
 
 @api_view(["POST"])
 @permission_classes([permissions.IsAuthenticated, IsAdmin])
@@ -1251,7 +1264,12 @@ class OfficerViewSet(viewsets.ModelViewSet):
 
     def perform_destroy(self, instance):
         user = instance.user
-        instance.delete()
+        try:
+            instance.delete()
+        except ProtectedError:
+            raise serializers.ValidationError(
+                "This officer has citations on record and cannot be deleted."
+            )
         if user:
             user.delete()
 
@@ -1268,7 +1286,12 @@ class DispatcherViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsAdmin]
 
     def perform_destroy(self, instance):
-        Officer.objects.filter(user=instance).delete()
+        try:
+            Officer.objects.filter(user=instance).delete()
+        except ProtectedError:
+            raise serializers.ValidationError(
+                "This account has citations on record as an officer and cannot be deleted."
+            )
         instance.delete()
 
 
@@ -1507,6 +1530,85 @@ def barangays(request):
     return Response([{"value": value, "label": label} for value, label in ZAMBOANGA_BARANGAYS])
 
 
+@api_view(["GET"])
+@permission_classes([permissions.IsAuthenticated])
+def alert_counts(request):
+    """Fast COUNT queries for dashboard KPI tiles — no serialization, no pagination."""
+    from django.utils import timezone
+    quiet = Q(peak_level="monitoring") | Q(peak_level="", level="monitoring")
+    qs = Alert.objects.exclude(quiet)
+    today_start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_qs = qs.filter(timestamp__gte=today_start)
+    return Response({
+        "total":           qs.count(),
+        "active":          qs.filter(status=Alert.Status.ACTIVE).count(),
+        "dispatched":      qs.filter(status=Alert.Status.DISPATCHED).count(),
+        "resolved":        qs.filter(status=Alert.Status.RESOLVED).count(),
+        "today":           today_qs.count(),
+        "today_active":    today_qs.filter(status=Alert.Status.ACTIVE).count(),
+        "today_resolved":  today_qs.filter(status=Alert.Status.RESOLVED).count(),
+        "today_dismissed": today_qs.filter(status=Alert.Status.ACKNOWLEDGED).count(),
+    })
+
+
+def _frames_from_clip(alert, media_root, n=8):
+    """Extract n evenly-spaced JPEG frames from the alert's evidence clip.
+
+    Prefers the raw (unannotated) clip; falls back to the annotated one.
+    Returns a list of JPEG bytes, or [] if no readable clip is found.
+    """
+    try:
+        import cv2 as _cv2
+    except ImportError:
+        return []
+
+    for url in (alert.raw_video_url or "", alert.video_url or ""):
+        if not url:
+            continue
+        # Strip query string; find the "violations/" segment in the URL path.
+        path_part = url.split("?")[0]
+        idx = path_part.find("violations/")
+        if idx == -1:
+            continue
+        rel = path_part[idx + len("violations/"):]
+        file_path = Path(media_root) / "violations" / rel
+        if not file_path.is_file():
+            continue
+
+        cap = _cv2.VideoCapture(str(file_path))
+        if not cap.isOpened():
+            cap.release()
+            continue
+        total = int(cap.get(_cv2.CAP_PROP_FRAME_COUNT))
+        if total < 1:
+            cap.release()
+            continue
+
+        # Clamp n to however many frames the clip actually has.
+        take = min(n, total)
+        images = []
+        for i in range(take):
+            frame_idx = int(total * i / take)
+            cap.set(_cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ok, frame = cap.read()
+            if not ok:
+                continue
+            # Downscale so the longest edge is at most 640 px (same as ai_checker.SEND_EDGE).
+            h, w = frame.shape[:2]
+            edge = max(h, w)
+            if edge > 640:
+                scale = 640 / edge
+                frame = _cv2.resize(frame, (int(w * scale), int(h * scale)),
+                                    interpolation=_cv2.INTER_AREA)
+            ok2, buf = _cv2.imencode(".jpg", frame, [_cv2.IMWRITE_JPEG_QUALITY, 85])
+            if ok2:
+                images.append(bytes(buf))
+        cap.release()
+        if images:
+            return images
+    return []
+
+
 class AlertViewSet(viewsets.ModelViewSet):
     queryset = (
         Alert.objects
@@ -1539,6 +1641,12 @@ class AlertViewSet(viewsets.ModelViewSet):
                 return qs.filter(quiet)
             if params.get("include_monitoring") not in ("1", "true"):
                 qs = qs.exclude(quiet)
+            # ?ongoing=1 → active + dispatched only (what the Violations feed shows)
+            if params.get("ongoing") == "1":
+                qs = qs.filter(status__in=[Alert.Status.ACTIVE, Alert.Status.DISPATCHED])
+            # ?closed=1 → resolved + acknowledged only (what the Records page shows)
+            elif params.get("closed") == "1":
+                qs = qs.filter(status__in=[Alert.Status.RESOLVED, Alert.Status.ACKNOWLEDGED])
         return qs
 
     # Statuses that mean somebody has looked at the footage and closed the
@@ -1679,6 +1787,64 @@ class AlertViewSet(viewsets.ModelViewSet):
             timeline.add(alert.pk, "assigned", f"Assigned to {officer.name}", by=officer.name)
             Alert.objects.filter(pk=alert.pk).update(reviewed_valid=True)
 
+        return Response(self.get_serializer(alert).data)
+
+    @action(detail=True, methods=["post"], url_path="retry-ai")
+    def retry_ai(self, request, pk=None):
+        """Re-run the AI checker on the saved frames for this alert.
+
+        Only meaningful for alerts where frames were saved (state deferred or
+        unavailable with frame_files present). Admin / dispatcher only."""
+        from core import ai_backfill
+
+        role = getattr(request.user, "role", "")
+        if role not in ("admin", "dispatcher", "both"):
+            return Response({"detail": "Admin or dispatcher access required."}, status=403)
+
+        alert = self.get_object()
+        ai = alert.ai or {}
+        kind = ai.get("kind")
+        if not kind:
+            return Response({"detail": "This alert has no AI checker kind on record — nothing to retry."}, status=400)
+
+        from pathlib import Path
+        from django.conf import settings
+        from django.utils import timezone as tz
+        from core.vision import ai_checker
+        from core.models import SystemSettings
+
+        cfg = SystemSettings.load()
+        if not cfg.vlm_enabled:
+            return Response({"detail": "AI checker is disabled in Settings."}, status=503)
+
+        client = ai_backfill._client_for(cfg, kind)
+        if client is None:
+            return Response({"detail": "Ollama is not reachable right now. Turn it on and try again."}, status=503)
+
+        frames_dir = Path(settings.MEDIA_ROOT) / "violations" / "ai" / f"alert{alert.pk}"
+        files = sorted(frames_dir.glob("ai_*.jpg"))
+        images = [p.read_bytes() for p in files]
+        if not images:
+            images = _frames_from_clip(alert, settings.MEDIA_ROOT)
+        if not images:
+            return Response({"detail": "No frames available for this alert. Neither pre-saved AI frames nor an evidence clip were found."}, status=400)
+
+        result = ai_checker.check(client, kind, ai.get("system_note", ""), images,
+                                  frame_files=ai.get("frame_files"))
+        attempts = int(ai.get("attempts") or 0) + 1
+        data = result.as_dict()
+        data.update({
+            "kind": kind,
+            "system_note": ai.get("system_note", ""),
+            "frame_files": ai.get("frame_files"),
+            "trigger_level": ai.get("trigger_level"),
+            "finished_at": tz.now().isoformat(),
+            "attempts": attempts,
+            "backfilled": True,
+            "state": "done" if result.ok else "unavailable",
+        })
+        Alert.objects.filter(pk=alert.pk).update(ai=data)
+        alert.refresh_from_db()
         return Response(self.get_serializer(alert).data)
 
 

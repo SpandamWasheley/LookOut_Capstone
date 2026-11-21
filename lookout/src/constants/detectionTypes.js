@@ -16,7 +16,7 @@ export const DETECTION_TYPES = [
   { key: "parking", label: "Parking", icon: Car, color: "#f97316" },
   // green-600, not the green-500 the violation chip uses: "Merged (All 3)"
   // below already owns #22c55e, and these two appear in the SAME picker list.
-  { key: "disposal", label: "Disposal", icon: Trash2, color: "#16a34a" },
+  { key: "disposal", label: "Waste", icon: Trash2, color: "#16a34a" },
   { key: "merged", label: "Merged (All 3)", icon: Layers, color: "#22c55e" },
   // Smoking + drinking + theft off one merged-model pass, plus road-edge
   // obstruction running its own vehicle model beside them (watch_merged_all).

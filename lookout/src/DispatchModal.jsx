@@ -172,7 +172,7 @@ export function DispatchModal({ alert, officers, alerts, onAssign, onClose }) {
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search officers by name, zone or badge…"
+                placeholder="Search"
                 className="w-full pl-9 pr-3 py-2 rounded-xl text-[15px] outline-none"
                 style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }}
               />

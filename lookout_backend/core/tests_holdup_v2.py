@@ -33,85 +33,55 @@ def pts(ev):
 
 
 class BaseScoreTests(unittest.TestCase):
-    """The expected base scores and levels (no time of day)."""
+    """Dangerous Weapon: the knife (40, gate) + persistence "momentum" (20). Nothing else scores a knife."""
 
     def test_knife_only_is_monitoring(self):
         ev = evidence({"E14"})
-        self.assertEqual((pts(ev), ev.band), (45, MONITORING))
+        self.assertEqual((pts(ev), ev.band), (40, MONITORING))
 
-    def test_knife_and_loitering_is_possible(self):
-        # pre-v6.2.1 rule (location switch off): loitering corroborated a knife
-        with mock.patch("core.vision.location_momentum.LOCATION_AWARE_MOMENTUM", False):
-            ev = evidence({"E14", "E10"})
-            self.assertEqual((pts(ev), ev.band), (55, WARNING))
+    def test_knife_and_persistence_is_possible(self):
+        ev = evidence({"E14", "momentum"})
+        self.assertEqual((pts(ev), ev.band), (60, WARNING))
 
-    def test_knife_and_loitering_alone_stay_monitoring_in_v621(self):
-        with mock.patch("core.vision.location_momentum.HOLDUP_V621_RULES", True):
-            ev = evidence({"E14", "E10"})
-            self.assertEqual((pts(ev), ev.band), (55, MONITORING))
-            self.assertEqual(ev.capped, "capped: no frozen pair")
+    def test_possible_needs_no_second_person(self):
+        ev = evidence({"E14", "momentum"}, near=False)
+        self.assertEqual((pts(ev), ev.band), (60, WARNING))
 
-    def test_knife_and_loitering_is_possible_with_the_v6_holdup_rules(self):
-        with mock.patch("core.vision.location_momentum.HOLDUP_V621_RULES", False):
-            ev = evidence({"E14", "E10"})
-            self.assertEqual((pts(ev), ev.band), (55, WARNING))
+    def test_the_retired_cues_add_nothing(self):
+        # E12 / E10 / E11E12 are kept as keys at 0.0: a pair or loiter pattern can no longer lift a knife.
+        self.assertEqual((W["E12"], W["E10"], W["E11E12"]), (0.0, 0.0, 0.0))
+        ev = evidence({"E14", "E12", "E10", "E11E12"})
+        self.assertEqual((pts(ev), ev.band), (40, MONITORING))
 
-    def test_knife_and_freeze_is_possible(self):
-        ev = evidence({"E14", "E12"})
-        self.assertEqual((pts(ev), ev.band), (65, WARNING))
-
-    def test_knife_freeze_and_loitering_is_likely(self):
-        ev = evidence({"E14", "E12", "E10"})
-        self.assertEqual((pts(ev), ev.band), (75, VIOLATION))
-
-    def test_knife_and_approach_then_freeze_is_likely(self):
-        # E11->E12 is E12 (20) plus the sequence's own 10: 45 + 20 + 10 = 75
-        ev = evidence({"E14", "E12", "E11E12"})
-        self.assertEqual((pts(ev), ev.band), (75, VIOLATION))
+    def test_the_two_tables_agree(self):
+        self.assertEqual(scoring.HOLDUP_WEIGHTS, {"E14": W["E14"], "momentum": W["momentum"]})
+        self.assertAlmostEqual(sum(scoring.HOLDUP_WEIGHTS.values()), 0.60)
 
     def test_no_knife_nothing_is_shown(self):
-        self.assertEqual(evidence({"E12", "E10"}).band, scoring.NONE)
-
-    def test_nobody_near_the_holder_stays_monitoring(self):
-        ev = evidence({"E14", "E12", "E10"}, near=False)
-        self.assertEqual(ev.band, MONITORING)
+        self.assertEqual(evidence({"momentum"}).band, scoring.NONE)
 
     def test_e11_alone_is_worth_nothing(self):
-        # There is no E11 weight: only the E11->E12 sequence scores.
+        # There is no E11 weight at all.
         self.assertNotIn("E11", W)
-        self.assertEqual(W["E11E12"], 0.10)
 
 
 class TimeOfDayCapTests(unittest.TestCase):
-    """E20 is added points, capped so it can never change the band."""
+    """E20 is no longer fed to a knife by watch_thief; Evidence still caps it so it can never change the band."""
 
     def test_e20_cannot_lift_possible_into_likely(self):
-        # base 65 (Possible) + 10 would be 75 (Likely): capped at 74.
-        ev = evidence({"E14", "E12"}, e20=10)
+        ev = evidence({"E14", "momentum"}, e20=20)            # 60 + 20 would be 80: held under Likely at 74
         self.assertEqual((pts(ev), ev.band), (74, WARNING))
         self.assertTrue(ev.e20_capped)
-        self.assertEqual(round(ev.cues["E20"] * 100), 9)     # the points actually added
 
     def test_e20_adds_in_full_when_it_fits(self):
-        ev = evidence({"E14", "E12"}, e20=5)                  # 65 + 5 = 70
-        self.assertEqual((pts(ev), ev.band), (70, WARNING))
+        ev = evidence({"E14", "momentum"}, e20=5)             # 60 + 5 = 65
+        self.assertEqual((pts(ev), ev.band), (65, WARNING))
         self.assertFalse(ev.e20_capped)
 
-    def test_e20_adds_in_full_once_likely(self):
-        ev = evidence({"E14", "E12", "E10"}, e20=10)          # base 75 -> 85
-        self.assertEqual((pts(ev), ev.band), (85, VIOLATION))
-
-    def test_e20_is_not_counted_without_a_behavioural_cue(self):
+    def test_e20_is_not_counted_without_persistence(self):
         ev = evidence({"E14"}, e20=10)
-        self.assertEqual((pts(ev), ev.band), (45, MONITORING))
+        self.assertEqual((pts(ev), ev.band), (40, MONITORING))
         self.assertNotIn("E20", ev.cues)
-
-    def test_a_base_under_55_never_reaches_possible_through_e20(self):
-        # (guard) a corroborated base is always >= 55, so this exercises the
-        # arithmetic of the lowest branch directly.
-        ev = theft.Evidence("weapon", (0, 0, 10, 10), {"E14": 0.45, "E10": 0.0, "E20": 0.10},
-                            {}, set(), [1], "x")
-        self.assertLess(ev.score, scoring.SCORE_WARNING)
 
     def test_points_follow_the_manila_probabilities(self):
         by_block = {start: scoring.manila_time_points(datetime.datetime(2026, 10, 10, start, 30))

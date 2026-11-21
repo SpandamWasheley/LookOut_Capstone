@@ -46,6 +46,7 @@ class CoreConfig(AppConfig):
                 # the camera is reachable, and its only switch is `recording_enabled`
                 # (checked inside, every few seconds, so this call is safe either way).
                 monitor.ensure_recording()
+                monitor.ensure_ai_backfill()
                 if SystemSettings.load().auto_start_detection:
                     monitor.start()
             except Exception:                                        # noqa: BLE001

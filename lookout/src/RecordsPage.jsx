@@ -4,7 +4,7 @@ import { violationDisplay } from "./constants/violationTypes";
 import { ViolationModal } from "./ViolationModal";
 import { mapAlert } from "./alertModel";
 import { NotificationBell } from "./NotificationBell";
-import { getAlerts, updateAlert } from "./api";
+import { getAllAlerts, updateAlert } from "./api";
 
 const outcomeConfig = {
   resolved:     { label: "Resolved",  color: "#10b981", bg: "rgba(16,185,129,0.1)",  icon: CheckCircle },
@@ -30,7 +30,9 @@ export function RecordsPage({ user, onOpenAlerts = () => {} }) {
 
   useEffect(() => {
     const refresh = () => {
-      getAlerts()
+      // ?closed=1 restricts to resolved+acknowledged only — active/dispatched
+      // alerts are not shown here and downloading them wastes bandwidth.
+      getAllAlerts({ closed: 1 })
         .then((res) => setAllAlerts((res.results ?? res).map(mapAlert)))
         .catch(() => {});
     };

@@ -99,7 +99,6 @@ ABLATABLE = (
 # going forward (not retroactively) by sharing the SAME spatial cooldown log
 # Path A already checks — see _cooldown_blocks and _process_cluster.
 GATHERING_ALERT_COLOR = (200, 40, 160)
-
 # Path A (a person alone with a bottle) is OFF: drinking is only ever reported as a gathering (Path B).
 # Flip to True to bring the solo path back (solo_sip's held-bottle + sip rule still governs it).
 SOLO_DRINKING_ENABLED = False
@@ -1011,7 +1010,6 @@ class Command(IncidentMixin, BaseCommand):
             own = [d for d in dets if d[5] == best_label] or dets
             posture = self._posture(frame, track, own, now_ts, mouth_proximity)
             self.stats[f"posture:{posture}"] += 1
-        self._draw_object_cue(frame, track, dets, cue, color_on=(200, 80, 160))
         if not object_on and dets:
             self.stats["held back: momentum below ON"] += 1
 
@@ -1058,8 +1056,6 @@ class Command(IncidentMixin, BaseCommand):
                               previous_level=self._incident_level(key), object_on=object_on,
                               cap=solo_cap, cap_reason=solo_sip.CAP_TEXT)
         gate_summary = gate.summary(now_ts)
-        self._debug_note("Drinking", key, track.id, track.box, score, cue.momentum,
-                         extra_indicators=solo_sip.indicators(gate_summary) if gate_summary["bottle_held_s"] or gate_summary["sip_s"] else None)
         if folded:
             # One gathering is ONE event for the whole group (its own row, below). This person's
             # bottle already counts there, so they do not get a second event of their own.
@@ -1070,6 +1066,13 @@ class Command(IncidentMixin, BaseCommand):
             # not even a Monitoring row. Only a gathering (_process_cluster) can alert.
             self.stats["discarded: solo drinker (solo drinking is off)"] += 1
             return
+        self._draw_object_cue(frame, track, dets, cue, color_on=(200, 80, 160))
+        self._debug_note("Drinking", key, track.id, track.box, score, cue.momentum,
+                         # solo_sip gate indicators (bottle_held / sip labels) are hidden:
+                         # the solo path is off (SOLO_DRINKING_ENABLED = False) and "sip" is not
+                         # a scored indicator in Table 10 — it was only a gate for Path A.
+                         # extra_indicators=solo_sip.indicators(gate_summary) if gate_summary["bottle_held_s"] or gate_summary["sip_s"] else None
+                         )
         if not score.stored:
             self._incident_sync(key, score, now_ts, create=None)
             return
@@ -1134,8 +1137,8 @@ class Command(IncidentMixin, BaseCommand):
                          evidence_max_age, cooldown_center_dist):
         """Scores ONE gathering and keeps its incident up to date.
 
-        The gathering itself is evidence (group of 2+ stationary, stayed 10+
-        minutes). The object cue is a bottle seen anywhere around the group --
+        The gathering itself is evidence (group of 2+, still for a few seconds;
+        staying group_duration seconds adds the gathering_duration cue). The object cue is a bottle seen anywhere around the group --
         in a member's hand OR on the table they sit around -- within
         `evidence_max_age`. Without the bottle the points are logged only.
         """
@@ -1240,6 +1243,9 @@ class Command(IncidentMixin, BaseCommand):
     def _save_clips(self, base, frame, now):
         """Write (or rewrite) the annotated and raw evidence clips named `base`.
         Returns (video_url, raw_video_url); either may be empty on failure."""
+        if self._clips_async():
+            # Live: encoded by the background writer so detection never stops for it.
+            return self._save_clips_async(base, frame, now)
         # Write the ~10s evidence clip (annotated frames leading up to the alert).
         video_url = ""
         clip = getattr(self, "clip", None)
@@ -1258,7 +1264,7 @@ class Command(IncidentMixin, BaseCommand):
             # test mode, which never touches self.clip anyway).
             self.clip.add(frame, now if now is not None else time.time())
             video_name = f"{base}.mp4"
-            if clip.save(self.violations_dir / video_name):
+            if clip.save(self.violations_dir / video_name, mark_at=self._first_mark(base, now)):
                 video_url = violation_media_path(video_name)
 
         # RAW (unannotated, full source frame rate/resolution) clip. File
@@ -1290,6 +1296,7 @@ class Command(IncidentMixin, BaseCommand):
             self.stdout.write(self.style.WARNING(
                 "  raw clip not produced (see ffmpeg log above if one was attempted)"
             ))
+        self._postroll_arm(base, now)       # finished once the minute AFTER has been recorded
         return video_url, raw_video_url, clip_offset
 
     def _create_alert(self, score, label, frame, description, suspect=None, filename_tag=None,

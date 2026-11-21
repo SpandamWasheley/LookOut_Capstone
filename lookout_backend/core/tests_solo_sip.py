@@ -118,6 +118,10 @@ class SoloDrinkingTests(TestCase):
         solo = mock.patch("core.management.commands.watch_drinking.SOLO_DRINKING_ENABLED", self.solo_on)
         solo.start()
         self.addCleanup(solo.stop)
+        # these cases cover the solo gate's own rule, so the gathering gate (drinking needs a group) is lifted here
+        gate = mock.patch.object(scoring, "DRINKING_GATHERING_GATE", False)
+        gate.start()
+        self.addCleanup(gate.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.cam = Camera.objects.create(code="CAM-SMOKE-01", name="Hikvision DS-2CD1047G2")

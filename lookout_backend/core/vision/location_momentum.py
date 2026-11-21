@@ -103,6 +103,9 @@ LIKELY_MIN_PUFFS = 2
 # accepted by the location gate ON THE MOUTH anchor with momentum >= POSSIBLE_MOUTH_MOMENTUM). Otherwise Monitoring at most.
 POSSIBLE_MIN_CONF = 0.45
 POSSIBLE_MOUTH_MOMENTUM = 1.0
+# True = a cigarette sitting on the mouth anchor with momentum >= POSSIBLE_MOUTH_MOMENTUM may reach Possible WITHOUT a counted puff.
+# False (the default) = a counted puff is REQUIRED for Possible: gesture + cigarette near the mouth alone stays Monitoring.
+POSSIBLE_MOUTH_WITHOUT_PUFF = False
 # A "cigarette" box that overlaps a Bottle the drinking engine has seen (smoking Command._bottle_near_box) is the bottle, not smoke:
 # it is dropped from puff evidence (the cigarette-at-wrist / at-mouth sightings that pair with a reach).
 BOTTLE_OVERLAP_VETO = True
@@ -718,7 +721,9 @@ def puff_cap(track, now, previous_level=None, conf=None, momentum=None):
     `conf` (the Cigarette detection confidence) and `momentum` switch on the Possible evidence rule (see POSSIBLE_MIN_CONF);
     left None, only the puff rule applies."""
     puffed = puffs_within(track, now, POSSIBLE_PUFF_WINDOW_SECONDS) >= POSSIBLE_MIN_PUFFS
-    if not puffed and (conf is None or not (accepted_at_mouth(track, now) and (momentum or 0.0) >= POSSIBLE_MOUTH_MOMENTUM)):
+    mouth_ok = (POSSIBLE_MOUTH_WITHOUT_PUFF and conf is not None
+                and accepted_at_mouth(track, now) and (momentum or 0.0) >= POSSIBLE_MOUTH_MOMENTUM)
+    if not puffed and not mouth_ok:
         if previous_level in ("warning", "violation"):
             return None, ""
         return "monitoring", CAP_NO_PUFF_TEXT

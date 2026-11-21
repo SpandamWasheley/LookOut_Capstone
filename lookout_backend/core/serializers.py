@@ -555,7 +555,7 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
             "disposal_collection_enabled", "disposal_collection_start",
             "disposal_collection_end", "disposal_collection_days",
             "vlm_enabled", "vlm_model", "vlm_model_holdup", "vlm_endpoint",
-            "vlm_timeout",
+            "vlm_timeout", "far_mode",
             "object_confirm_seconds", "cue_hold_seconds", "monitoring_min_seconds", "smoking_puff_count", "smoking_puff_window_minutes",
             "holdup_loiter_seconds", "holdup_near_person_heights",
             "vlm_frames", "vlm_max_edge", "vlm_async",

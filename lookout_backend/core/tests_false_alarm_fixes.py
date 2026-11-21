@@ -318,7 +318,7 @@ class PuffOnlyCap(unittest.TestCase):
         self.assertEqual(s.level, scoring.NONE)
 
     def test_the_object_path_is_untouched(self):
-        s = scoring.Score("smoking", scoring.SMOKING_WEIGHTS, {"cigarette", "gesture"}, object_on=True,
+        s = scoring.Score("smoking", scoring.SMOKING_WEIGHTS, {"cigarette", "gesture", "puffs"}, object_on=True,
                           puff_only_max=scoring.MONITORING)
         self.assertEqual(s.level, scoring.WARNING)
 
@@ -565,9 +565,15 @@ class PossibleEvidenceRule(unittest.TestCase):
         lm.loc_of(t).last_hit["cigarette"] = (0.5, 0.5, frozenset({lm.LEFT_WRIST}), 5.0)
         self.assertEqual(lm.puff_cap(t, 5.0, conf=0.9, momentum=2.0)[0], "monitoring")
 
-    def test_on_the_mouth_with_momentum_reaches_possible_not_likely(self):
+    def test_on_the_mouth_with_momentum_is_monitoring_without_a_puff(self):
+        """A puff is required: gesture + a cigarette near the mouth alone no longer reaches Possible."""
         t = self.track(mouth_at=5.0)
-        self.assertEqual(lm.puff_cap(t, 5.0, conf=0.9, momentum=1.0), ("warning", lm.CAP_FEW_PUFFS_TEXT))
+        self.assertEqual(lm.puff_cap(t, 5.0, conf=0.9, momentum=2.0), ("monitoring", lm.CAP_NO_PUFF_TEXT))
+
+    def test_on_the_mouth_with_momentum_reaches_possible_when_the_switch_is_on(self):
+        t = self.track(mouth_at=5.0)
+        with mock.patch.object(lm, "POSSIBLE_MOUTH_WITHOUT_PUFF", True):
+            self.assertEqual(lm.puff_cap(t, 5.0, conf=0.9, momentum=1.0), ("warning", lm.CAP_FEW_PUFFS_TEXT))
 
     def test_on_the_mouth_under_momentum_1_is_monitoring(self):
         t = self.track(mouth_at=5.0)
@@ -584,7 +590,7 @@ class PossibleEvidenceRule(unittest.TestCase):
     def test_low_confidence_is_monitoring_even_with_a_puff(self):
         t = self.track(puff_at=4.0, mouth_at=5.0)
         self.assertEqual(lm.puff_cap(t, 5.0, conf=0.44, momentum=2.0), ("monitoring", lm.CAP_LOW_CONF_TEXT))
-        self.assertEqual(lm.puff_cap(t, 5.0, conf=0.45, momentum=2.0)[0], "warning")
+        self.assertEqual(lm.puff_cap(t, 5.0, conf=0.45, momentum=2.0)[0], "warning")   # the puff carries it
 
     def test_an_incident_already_at_possible_keeps_it(self):
         self.assertEqual(lm.puff_cap(self.track(), 5.0, "warning", conf=0.3, momentum=0.1), (None, ""))

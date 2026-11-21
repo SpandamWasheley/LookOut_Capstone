@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { Save, RotateCcw, Car, Cigarette, Siren, Beer, Trash2, AlertTriangle, Loader2, SlidersHorizontal, User } from "lucide-react";
-import { getSettings, saveSettings } from "./api";
+import { Save, RotateCcw, Car, Cigarette, Siren, Beer, Trash2, AlertTriangle, Loader2, SlidersHorizontal, User, Play, Square } from "lucide-react";
+import { getSettings, saveSettings, getMonitor, startMonitor, stopMonitor } from "./api";
 import { readTestingTools, writeTestingTools } from "./useTestingTools";
 import { readAlertSound, writeAlertSound } from "./alertSound";
 import { NoticeDialog } from "./ConfirmDialog";
@@ -41,10 +41,10 @@ const STATIC_DEFAULTS = {
   disposal_warmup_seconds: 5, disposal_recheck_seconds: 10,
   disposal_owner_radius: 80, disposal_owner_away_seconds: 3,
   disposal_owner_max_hold: 3, disposal_suspect_confidence: 25,
-  alert_cooldown: 120, evidence_retention_days: 30, evidence_auto_purge: false, show_testing_tools: false, auto_start_detection: false,
+  evidence_retention_days: 30, evidence_auto_purge: false, show_testing_tools: false, auto_start_detection: false,
+  far_mode: true,
   recording_enabled: true, recording_mode: "clip", recording_segment_minutes: 10,
   recording_retention_days: 7, recording_max_gb: 50, recording_timestamp: true,
-  sms_alerts_enabled: false,
   vlm_enabled: true, vlm_model: "qwen3-vl:2b-instruct", vlm_model_holdup: "qwen3-vl:4b-instruct", vlm_frames: 8,
 };
 
@@ -263,6 +263,9 @@ export function SystemConfig({ role = "admin" }) {
   const [server, setServer] = useState(null);       // last saved values
   const [defaults, setDefaults] = useState(STATIC_DEFAULTS);
   const [version, setVersion] = useState(0);        // bumped to re-sync uncontrolled inputs
+  const [monitorState, setMonitorState] = useState(null);  // "running" | "stopped" | "starting" | null
+  const [monitorBusy, setMonitorBusy] = useState(false);
+  const [monitorError, setMonitorError] = useState("");
 
   const adopt = (data) => {
     const f = fromApi(data);
@@ -290,6 +293,25 @@ export function SystemConfig({ role = "admin" }) {
     if (isAdmin) load();
     else setLoading(false);
   }, [isAdmin]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    getMonitor().then((s) => setMonitorState(s.state)).catch(() => {});
+  }, [isAdmin]);
+
+  const toggleMonitor = async () => {
+    if (monitorBusy) return;
+    setMonitorBusy(true);
+    setMonitorError("");
+    try {
+      const s = monitorState === "stopped" ? await startMonitor() : await stopMonitor();
+      setMonitorState(s.state);
+    } catch (e) {
+      setMonitorError(e.message || "Could not change detection.");
+    } finally {
+      setMonitorBusy(false);
+    }
+  };
 
   const changedKeys = form && server ? FIELD_KEYS.filter((k) => form[k] !== server[k]) : [];
   const isDirty = changedKeys.length > 0;
@@ -411,8 +433,8 @@ export function SystemConfig({ role = "admin" }) {
         right={
           <Card title="Timings"
             onReset={() => resetKeys(["drinking_group_duration", "drinking_min_group", "drinking_start", "drinking_end"])}>
-            <Row label="Stay time that counts as a long stay"
-              desc="How long a group must stay together to be treated as a long gathering."
+            <Row label="Gathering stay time before an alert"
+              desc="How long a group with a bottle must stay together before the alert appears. It is counted first; the alert shows when this time is reached (minimum 1 minute)."
               differs={differs("drinking_group_duration")}>
               <DurationBox seconds={form.drinking_group_duration} version={version}
                 onChange={(s) => set("drinking_group_duration", Math.round(s))} />
@@ -441,35 +463,35 @@ export function SystemConfig({ role = "admin" }) {
       <TwoCols
         left={detection("disposal", "Improper disposal detection",
           "Flag rubbish that is dumped and then left behind.",
-          "How sure the system must be that a left-behind object is rubbish before it counts at all. Below this number nothing is recorded. At or above it, recognising the rubbish is worth 40 of the 100 points — the rest comes from the evidence that it was DUMPED: the spot visibly changing, somebody being beside it, and that person walking away. So this is the control for what gets considered, and the Possible and Likely lines decide what gets reported. This detector reads low numbers on purpose — it recognises bags by description rather than from trained examples, so a correct match usually scores 15-25%, and one far down the street can score as little as 10%.")}
+          "Minimum bag-recognition score before the system considers an object at all. This detector uses description-based matching rather than trained examples, so a correct match typically scores 15–25% and a far-away one as low as 10% — keep this low. Recognition alone is 40 of 100 points; the rest comes from drop evidence (spot change, person beside it, person leaving).")}
         right={
           <Card title="Timings" onReset={() => resetKeys(["disposal_static_seconds", "disposal_cooldown"])}>
             <Row label="Time before it counts as left behind"
-              desc="How long something must sit completely still before the system checks whether it is garbage. Rubbish being carried past the camera never stops, so it never reaches this. Keep this generous at night: headlights, reflections off wet road and moving shadows all sit still for a second or two."
+              desc="How long an object must sit completely still before it is checked for garbage. Moving objects (people, vehicles) never trigger this. Increase at night to avoid false positives from headlights and shadows."
               differs={differs("disposal_static_seconds")}>
               <DurationBox seconds={form.disposal_static_seconds} version={version}
                 onChange={(s) => set("disposal_static_seconds", Math.round(s))} />
             </Row>
             <Row label="Keep a spot claimed for"
-              desc="Rubbish on one spot is one violation for as long as it stays there, however many times the system re-checks it. This is how long after it stops being seen the spot is released, so that anything dumped there afterwards counts as a new violation. Rubbish somewhere else is always its own violation."
+              desc="After rubbish disappears from a spot, how long before the same spot can register a new violation. Rubbish at a different location always counts separately."
               differs={differs("disposal_cooldown")}>
               <DurationBox seconds={form.disposal_cooldown} version={version}
                 onChange={(s) => set("disposal_cooldown", Math.round(s))} />
             </Row>
             <Row label="Wait before checking a rejected object again"
-              desc="If the check decides an object is not rubbish, how long before it looks again. A bag half-hidden by a passer-by deserves a second look, but every recheck costs processing."
+              desc="After an object fails the bag check, how long before it is re-examined. Useful when a passer-by briefly obscures a real bag."
               differs={differs("disposal_recheck_seconds")}>
               <DurationBox seconds={form.disposal_recheck_seconds} version={version}
                 onChange={(s) => set("disposal_recheck_seconds", Math.round(s))} />
             </Row>
             <Row label="Learn the empty scene for"
-              desc="How long the camera studies the view before it starts detecting. Longer is steadier on a busy or windy view. Anything already lying there when it starts is treated as part of the scene."
+              desc="Warm-up time before detection starts. Objects already on the ground at startup are treated as background and ignored."
               differs={differs("disposal_warmup_seconds")}>
               <DurationBox seconds={form.disposal_warmup_seconds} version={version}
                 onChange={(s) => set("disposal_warmup_seconds", Math.round(s))} />
             </Row>
             <Row label="Same-spot radius"
-              desc="How close a second piece of rubbish must be to count as the same place, and so the same violation. Anything further away is reported separately — rubbish on the left and rubbish on the right are two things to go and clear."
+              desc="Two pieces of rubbish within this distance share one violation record. Anything further apart is reported as a separate violation."
               differs={differs("disposal_cooldown_dist")}>
               <NumberBox value={form.disposal_cooldown_dist} min={10} max={300} step={5} unit="px"
                 onChange={(v) => set("disposal_cooldown_dist", v)} />
@@ -479,20 +501,20 @@ export function SystemConfig({ role = "admin" }) {
         }
         below={<>
         <Card title="Waste collection hours"
-          note="Garbage may be set out for collection only during these hours. A bag put out inside them is kept on the Monitoring watchlist with no alert, and is checked again when the hours end: if it is still there, it is reported then. Outside these hours, and on days not ticked, it is reported straight away."
+          note="Bags set out during collection hours are held on the watchlist and only reported if still there when the window ends. Outside these hours they are reported immediately."
           onReset={() => resetKeys(["disposal_collection_enabled", "disposal_collection_start",
                                     "disposal_collection_end", "disposal_collection_days"])}>
           <Toggle label="Allow garbage during collection hours"
-            desc="Turn off to report every left-behind bag whatever the time."
+            desc="Disable to report every left-behind bag regardless of time."
             value={form.disposal_collection_enabled}
             onChange={(v) => set("disposal_collection_enabled", v)} />
-          <Row label="Collection hours" desc="When garbage may be set out. The end time must be later than the start time."
+          <Row label="Collection hours" desc="Window when garbage may be set out. End time must be after start time."
             differs={differs("disposal_collection_start") || differs("disposal_collection_end")}>
             <TimeBox value={form.disposal_collection_start} onChange={(v) => set("disposal_collection_start", v)} />
             <span className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>to</span>
             <TimeBox value={form.disposal_collection_end} onChange={(v) => set("disposal_collection_end", v)} />
           </Row>
-          <Row label="Collection days" desc="Days with collection. Leave Sunday unticked: there is no collection, so a bag put out then is reported."
+          <Row label="Collection days" desc="Days when the collection window applies. Bags set out on unticked days are reported immediately."
             differs={differs("disposal_collection_days")}>
             <DayPicker value={form.disposal_collection_days} onChange={(v) => set("disposal_collection_days", v)} />
           </Row>
@@ -500,54 +522,54 @@ export function SystemConfig({ role = "admin" }) {
         <Card title="What to ignore"
           onReset={() => resetKeys(["disposal_ignore_movers"])}>
           <Toggle label="Ignore people and vehicles"
-            desc="Skip anything sitting inside a detected person, car, motorbike or bicycle. Someone standing still looks exactly like an object that arrived and stopped, so without this they are the most common thing reported. Leave on unless the view has no people or traffic."
+            desc="Skip objects overlapping a detected person, car, motorbike, or bicycle. A person standing still mimics a dumped object — keep this on unless the camera sees no people or traffic."
             value={form.disposal_ignore_movers}
             onChange={(v) => set("disposal_ignore_movers", v)} />
         </Card>
         <Card title="Waiting for the owner to leave"
-          note="Rubbish is only dumped once the person who put it there walks away. Whoever is standing beside something as it appears is treated as its owner, and the report is held until they go. Anyone who walks past afterwards is just a passer-by and does not hold it."
+          note="A report is held while the person who placed the object is still beside it. Passers-by after the drop do not hold it."
           onReset={() => resetKeys(["disposal_owner_radius", "disposal_owner_away_seconds",
                                     "disposal_owner_max_hold"])}>
           <Row label="How close counts as standing over it"
-            desc="A person within this distance of something as it appears is treated as its owner. Too wide and everyone on the pavement holds the report; too narrow and the real owner is missed."
+            desc="A person within this distance when the object appears is treated as its owner. Set too wide and bystanders hold the report; too narrow and the real owner is missed."
             differs={differs("disposal_owner_radius")}>
             <NumberBox value={form.disposal_owner_radius} min={20} max={400} step={10} unit="px"
               onChange={(v) => set("disposal_owner_radius", v)} />
           </Row>
           <Row label="Owner must be away for"
-            desc="How long the owner has to have left before the object is reported. This is the difference between a vendor standing over their own goods and rubbish that has been abandoned."
+            desc="How long the owner must be gone before the report is filed. Distinguishes a vendor tending their goods from someone who has abandoned rubbish."
             differs={differs("disposal_owner_away_seconds")}>
             <DurationBox seconds={form.disposal_owner_away_seconds} version={version}
               onChange={(s) => set("disposal_owner_away_seconds", Math.round(s))} />
           </Row>
           <Row label="Report anyway after"
-            desc="The longest the system will wait for an owner to leave. Someone who never leaves the pavement would otherwise hold the report all shift, and at that point the rubbish is still dumped rubbish. Counted from when the object appeared."
+            desc="Maximum wait for an owner to leave. If they never go, the object is still reported after this time. Counted from when the object appeared."
             differs={differs("disposal_owner_max_hold")}>
             <DurationBox seconds={form.disposal_owner_max_hold} version={version}
               onChange={(s) => set("disposal_owner_max_hold", Math.round(s))} />
           </Row>
         </Card>
         <Card title="Suspect photo"
-          note="When something is reported, the system also saves a photo of whoever was beside it as it appeared — taken from the moment of the drop, not the moment of the report, which can be a minute later with the street empty."
+          note="A photo of whoever was beside the object is saved at the moment of the drop — not at the moment of the report, which can be minutes later with the scene empty."
           onReset={() => resetKeys(["disposal_suspect_confidence"])}>
-          <Row label="How sure it must be that it found a person"
-            desc="Deliberately lower than the setting above. Missing a suspect costs a photo; a doubtful one costs nothing a reviewer cannot judge for themselves, because the photo is only ever shown for identification."
+          <Row label="Person confidence for suspect photo"
+            desc="Minimum confidence to save a suspect photo. Set lower than the detection threshold — a blurry photo is still useful; a missing one is not."
             differs={differs("disposal_suspect_confidence")}>
             <NumberBox value={form.disposal_suspect_confidence} min={5} max={90} step={5} unit="%"
               onChange={(v) => set("disposal_suspect_confidence", v)} />
           </Row>
         </Card>
         <Card title="Object size"
-          note="How big something must be to be considered at all. These decide how much the detector looks at in the first place — raise the smallest if it reports a lot of things that are not rubbish."
+          note="Size limits for objects the detector will consider. Raise the minimum if too many small specks or shadows are being flagged."
           onReset={() => resetKeys(["disposal_min_area", "disposal_max_area"])}>
           <Row label="Smallest object to consider"
-            desc="As a share of the whole view. Too low and camera grain, shadows and compression specks are picked up as objects; on a 4MP camera at night that can be hundreds an hour."
+            desc="Minimum size as a share of the frame. Too small and camera grain, shadows, and compression artifacts register as objects."
             differs={differs("disposal_min_area")}>
             <NumberBox value={form.disposal_min_area} min={0.01} max={5} step={0.01} unit="% of view"
               width="w-24" onChange={(v) => set("disposal_min_area", v)} />
           </Row>
           <Row label="Largest object to consider"
-            desc="Anything bigger is ignored. This is what stops a cloud crossing the sun — which re-lights the whole view at once — from being read as one enormous object."
+            desc="Objects larger than this are ignored — prevents sudden lighting changes (a cloud crossing the sun) from registering as one enormous object."
             differs={differs("disposal_max_area")}>
             <NumberBox value={form.disposal_max_area} min={1} max={100} step={1} unit="% of view"
               width="w-24" onChange={(v) => set("disposal_max_area", v)} />
@@ -565,51 +587,75 @@ export function SystemConfig({ role = "admin" }) {
     system: (
       <TwoCols
         left={
-          <Card title="Alerts and records" onReset={() => resetKeys(["alert_cooldown", "evidence_retention_days", "evidence_auto_purge", "auto_start_detection", "sms_alerts_enabled"])}>
-            <Slider label="Alert cooldown" value={form.alert_cooldown} min={30} max={600} unit=" sec"
-              differs={differs("alert_cooldown")}
-              desc="How long the system waits before reporting the same spot again."
-              onChange={(v) => set("alert_cooldown", v)} />
+          <Card title="Alerts and records" onReset={() => resetKeys(["evidence_retention_days", "evidence_auto_purge", "auto_start_detection", "far_mode"])}>
             <Slider label="Evidence retention" value={form.evidence_retention_days} min={7} max={90} unit=" days"
               differs={differs("evidence_retention_days")}
               desc="How long alert images and clips are kept before they may be deleted (RA 10173 storage limitation). The alert records themselves are always kept."
               onChange={(v) => set("evidence_retention_days", v)} />
             <Toggle label="Delete old evidence automatically"
-              desc="Off by default. When on, evidence older than the retention period is deleted on a schedule. Nothing is deleted while this is off."
+              desc="When on, images and clips older than the retention period are deleted on a schedule."
               value={form.evidence_auto_purge} differs={differs("evidence_auto_purge")}
               onChange={(v) => set("evidence_auto_purge", v)} />
-            <Toggle label="Start detection automatically when LookOut starts"
-              desc="Off by default. When on, live monitoring of the camera starts by itself a few seconds after LookOut starts. You can still stop it from Feeds."
+            <Toggle label="Start detection automatically"
+              desc="When on, live monitoring starts a few seconds after LookOut starts."
               value={form.auto_start_detection} differs={differs("auto_start_detection")}
               onChange={(v) => set("auto_start_detection", v)} />
+            {/* Start Detection button — available without testing tools */}
+            <div className="rounded-xl px-3.5 py-3 space-y-2"
+              style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[14px] font-medium" style={{ color: "var(--foreground)" }}>Start Detection</div>
+                  <div className="text-[13px] mt-0.5" style={{ color: "var(--muted-foreground)" }}>
+                    Starts all detectors on the live camera if reachable: smoking, drinking, dangerous weapon, parking, and waste.
+                  </div>
+                </div>
+                {monitorState !== null && (
+                  <button onClick={toggleMonitor} disabled={monitorBusy}
+                    className="flex items-center gap-2 px-3.5 py-2 rounded-xl text-[13px] font-medium flex-shrink-0"
+                    style={monitorState === "stopped"
+                      ? { background: "#22c55e", color: "#08130a" }
+                      : { background: "rgba(239,68,68,0.12)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.35)" }}>
+                    {monitorBusy ? <Loader2 size={12} className="animate-spin" /> : monitorState === "stopped" ? <Play size={12} /> : <Square size={12} />}
+                    {monitorState === "stopped" ? "Start" : monitorState === "starting" ? "Starting…" : "Stop"}
+                  </button>
+                )}
+              </div>
+              <div className="text-[12px] px-1" style={{ color: "var(--muted-foreground)" }}>
+                Parking and Waste require a zone drawn in Feeds → Edge Zones before they can run.
+              </div>
+              {monitorError && (
+                <div className="text-[12px] px-1" style={{ color: "#ef4444" }}>{monitorError}</div>
+              )}
+            </div>
+            <Toggle label="Long-range scanning"
+              desc="When on, each frame is scanned in four sections to catch objects far from the camera. Slower but more sensitive at distance. Turn off when the camera is close to what it watches — runs several times faster."
+              value={form.far_mode} differs={differs("far_mode")}
+              onChange={(v) => set("far_mode", v)} />
             <Toggle label="Show testing tools"
-              desc="Shows Run Detection, and Upload Video and History on Feeds, for trying the system on recorded footage. Leave off for normal use. Applies right away on this computer only, so there is no need to press Save."
+              desc="Shows Run Detection and Upload Video on Feeds, for trying the system on recorded clips. Leave off for normal use. Takes effect right away — no need to save."
               value={testingTools} differs={testingTools}
               onChange={(v) => { writeTestingTools(v); setTestingTools(v); }} />
             <Toggle label="Alert sound"
-              desc="On by default. Plays a short chime on this computer when a new violation arrives, so the desk hears it without watching the screen. Applies right away on this computer only, so there is no need to press Save — it is also one click away under the bell, for anyone who cannot open this page."
+              desc="Plays a chime when a new violation arrives. Takes effect right away — no need to save. Also reachable from the notification bell."
               value={alertSound} differs={!alertSound}
               onChange={(v) => { writeAlertSound(v); setAlertSound(v); }} />
-            <Toggle label="SMS alerts"
-              desc="Off by default. The master switch for text messages: while this is off nobody is texted, whatever their own setting says. Who gets a text is set per person — their mobile number and SMS switch are on their account, in Personnel or under My account. A dangerous weapon or parking obstruction texts its assigned officer straight away; everything else is summed up every half hour, which also tells admins and dispatchers how many violations were detected. Each message uses a credit, and a quiet half hour sends nothing. Globe and DITO numbers only; Smart, TNT and Sun cannot be reached, and those officers rely on the app's push notification."
-              value={form.sms_alerts_enabled} differs={differs("sms_alerts_enabled")}
-              onChange={(v) => set("sms_alerts_enabled", v)} />
           </Card>
         }
         right={
           <div className="space-y-4">
             <Card title="Continuous recording"
-              note="The ordinary CCTV tape: everything the camera sees, not only the violations. It records whenever LookOut is running and the camera is reachable — whether or not detection is on — and the oldest footage is deleted automatically to make room for the newest."
+              note="Everything the camera sees, not only the violations. It records whenever LookOut is running and the camera is reachable — whether or not detection is on — and the oldest footage is deleted automatically to make room for the newest."
               onReset={() => resetKeys(["recording_enabled", "recording_mode", "recording_segment_minutes", "recording_retention_days", "recording_max_gb", "recording_timestamp"])}>
               <Toggle label="Record continuously"
                 desc="On by default. Independent of detection: stopping monitoring on Feeds does not stop the tape. The archive is browsed from Feeds, under Recordings."
                 value={form.recording_enabled} differs={differs("recording_enabled")}
                 onChange={(v) => set("recording_enabled", v)} />
-              <Row label="Picture"
-                desc="Evidence-clip quality records at the same size and quality as the clips attached to violations, so the two look alike. The camera's own video is full resolution and uses no processing power at all, but takes roughly four times the disk."
+              <Row label="Recording quality"
+                desc="Processed: matches alert clip quality (1280px). Normal: full-resolution stream copy, no re-encoding, ~4× more disk. Both: runs two recordings simultaneously."
                 differs={differs("recording_mode")}>
                 <Choice value={form.recording_mode} onChange={(v) => set("recording_mode", v)}
-                  options={[["clip", "Evidence-clip"], ["source", "Camera's own"]]} />
+                  options={[["clip", "Processed"], ["source", "Normal"], ["both", "Both"]]} />
               </Row>
               <Row label="Length of each file"
                 desc="A file can only be played once it is finished, so this is also how far behind the present the archive ends."
@@ -629,8 +675,8 @@ export function SystemConfig({ role = "admin" }) {
                 <NumberBox value={form.recording_max_gb} min={1} max={2000} unit=" GB"
                   onChange={(v) => set("recording_max_gb", Math.round(v))} />
               </Row>
-              <Toggle label="Show the date and time on the picture"
-                desc="Burnt into the video, as it is on the violation clips, so a file saved onto a USB stick still carries its own time. Not available with the camera's own video, which is recorded without being redrawn."
+              <Toggle label="Show the date and time on the recording"
+                desc="Stamps the date and time onto the video, so a file saved to USB still carries its own time. Not available in Original mode, which copies the camera stream without re-encoding."
                 value={form.recording_timestamp} differs={differs("recording_timestamp")}
                 onChange={(v) => set("recording_timestamp", v)} />
             </Card>
@@ -658,7 +704,7 @@ export function SystemConfig({ role = "admin" }) {
             <Card title="AI checker"
               note="A local AI model looks at a short clip and describes the scene. It only adds context and a suggestion; it never changes an alert's status."
               onReset={() => resetKeys(["vlm_enabled", "vlm_model", "vlm_model_holdup", "vlm_frames"])}>
-              <Toggle label="AI checker" desc="Everything stays on this computer. Nothing is sent anywhere."
+              <Toggle label="AI checker" desc="Turn the AI checker on or off. Everything runs on this computer — nothing is sent anywhere."
                 value={form.vlm_enabled} differs={differs("vlm_enabled")} onChange={(v) => set("vlm_enabled", v)} />
               <Row label="Model for smoking and drinking" desc="A smaller model is faster and fits alongside detection."
                 differs={differs("vlm_model")}>

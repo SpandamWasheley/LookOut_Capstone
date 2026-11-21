@@ -4,13 +4,48 @@ import {
   SkipBack, Download, Radio, CheckCircle, AlertTriangle,
   ChevronDown, Loader2, Search, Info,
   Clock, ListChecks, Check, Minus, MapPin, Sparkles, RotateCcw,
-  Maximize2, Minimize2, Archive, MessageSquare,
+  Maximize2, Minimize2, Archive, MessageSquare, Film,
 } from "lucide-react";
 import { violationDisplay, resolveViolationType } from "./constants/violationTypes";
 import { levelColor } from "./alertModel";
 import { useTestingTools } from "./useTestingTools";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { getViolationTypes, getBarangays, createCitation, searchViolators } from "./api";
+import { getViolationTypes, getBarangays, createCitation, searchViolators, getAccessToken, retryAlertAI } from "./api";
+
+// Fetches a clip URL with the auth token and returns a stable blob URL that the
+// browser can seek inside without server-side Range support. Without this,
+// Django's media serving returns 200 (no Accept-Ranges) so the browser can only
+// play from the start and snaps back to 0:00 on any seek attempt.
+// The blob URL is revoked when the source changes or the component unmounts.
+function useClipBlobUrl(src) {
+  const [blobUrl, setBlobUrl] = useState(null);
+  const [loading, setLoading] = useState(false);
+  useEffect(() => {
+    if (!src) { setBlobUrl(null); return; }
+    let cancelled = false;
+    let created = null;
+    setLoading(true);
+    setBlobUrl(null);
+    const token = getAccessToken();
+    fetch(src, token ? { headers: { Authorization: `Bearer ${token}` } } : {})
+      .then((r) => r.ok ? r.blob() : Promise.reject(r.status))
+      .then((blob) => {
+        if (cancelled) return;
+        const url = URL.createObjectURL(blob);
+        created = url;
+        setBlobUrl(url);
+      })
+      .catch(() => {
+        if (!cancelled) setBlobUrl(src); // fall back to direct URL
+      })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => {
+      cancelled = true;
+      if (created) URL.revokeObjectURL(created);
+    };
+  }, [src]);
+  return { blobUrl, loading };
+}
 
 const SUFFIX_OPTIONS = ["", "Jr.", "Sr.", "II", "III", "IV"];
 
@@ -81,12 +116,14 @@ export function RecordingPlayer({ alert, timeline = false, testingTools = false 
   };
   // Dragging the scrub bar. While true, `elapsed` follows the POINTER rather
   // than the video's own timeupdate events — otherwise the thumb fights the
-  // playhead and stutters backwards under the finger on every seek.
-  const [scrubbing, setScrubbing] = useState(false);
-  const barRef = useRef(null);
+  // playhead and stutters back under the finger on every seek.
+  // Cleared only on mouse/touch release, never in onSeeked (which fires for
+  // browser-internal seeks and would drop the guard mid-drag).
+  const scrubDraggingRef = useRef(false);
 
   const showingRaw = useRaw && hasRaw;
   const src = showingRaw ? alert.rawVideoUrl : (hasAnnotated ? alert.videoUrl : alert.rawVideoUrl);
+  const { blobUrl: blobSrc, loading: clipLoading } = useClipBlobUrl(src);
 
   // Where in THIS clip the detector fired, in seconds, or null.
   //
@@ -114,25 +151,16 @@ export function RecordingPlayer({ alert, timeline = false, testingTools = false 
   }, [src]);
 
   const fmtSec = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
-  const pct = duration > 0 ? (elapsed / duration) * 100 : 0;
   const markPct = detectedAt != null && duration > 0
     ? Math.min(100, (detectedAt / duration) * 100)
     : null;
 
   // Seconds under a pointer x, clamped to the clip.
-  const timeAt = (clientX) => {
-    const bar = barRef.current;
-    if (!bar || !duration) return null;
-    const r = bar.getBoundingClientRect();
-    const ratio = (clientX - r.left) / r.width;
-    return Math.max(0, Math.min(ratio * duration, duration));
-  };
-
   const seekTo = (seconds) => {
     const v = videoRef.current;
     if (!v || seconds == null) return;
+    setElapsed(seconds);
     v.currentTime = seconds;
-    setElapsed(seconds);     // immediate, so the thumb tracks the finger
   };
 
   const togglePlay = () => {
@@ -174,37 +202,51 @@ export function RecordingPlayer({ alert, timeline = false, testingTools = false 
         className="relative w-full"
         style={expanded ? { flex: 1, minHeight: 0 } : { aspectRatio: aspectRatio }}
       >
+        {clipLoading && (
+          <div className="absolute inset-0 flex items-center justify-center z-10"
+            style={{ background: "#000" }}>
+            <Loader2 size={28} className="animate-spin" style={{ color: "var(--muted-foreground)" }} />
+          </div>
+        )}
         <video
-          key={src}
+          key={blobSrc || src}
           ref={videoRef}
-          src={src}
+          src={blobSrc || undefined}
           playsInline
+          preload="auto"
           className="absolute inset-0 w-full h-full object-contain bg-black"
           onLoadedMetadata={(e) => {
             const v = e.currentTarget;
             setDuration(v.duration || 0);
             if (v.videoWidth && v.videoHeight) setAspectRatio(v.videoWidth / v.videoHeight);
           }}
-          // Ignored mid-drag: the pointer owns `elapsed` then, and letting
-          // the video's own events through makes the thumb jump backwards
-          // under the finger on every seek.
-          onTimeUpdate={(e) => { if (!scrubbing) setElapsed(e.currentTarget.currentTime); }}
+          onTimeUpdate={(e) => { if (!scrubDraggingRef.current) setElapsed(e.currentTarget.currentTime); }}
           onEnded={() => setPlaying(false)}
           onClick={togglePlay}
         />
         {timeline && <TimelineButton alert={alert} />}
-        <div className="absolute top-0 left-0 right-0 pl-3 pr-12 py-2 flex items-center justify-between pointer-events-none"
-          style={{ background: "linear-gradient(to bottom, rgba(0,0,0,0.72), transparent)" }}>
-          <div className="flex items-center gap-2">
-            <span className="text-[12px] font-medium px-1.5 py-0.5 rounded"
-              style={{ background: "rgba(239,68,68,0.85)", color: "#fff", fontFamily: "'DM Mono', monospace" }}>
-              ● {useRaw && hasRaw ? "RAW" : "ANNOTATED"}
-            </span>
-            <span className="text-[12px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
-              {alert.camera}
-            </span>
-          </div>
-          <span className="text-[12px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+        {/* Gradient across the top — separate element so the two badge groups
+            never crowd each other regardless of content width. */}
+        <div className="absolute top-0 left-0 right-0 h-14 pointer-events-none"
+          style={{ background: "linear-gradient(to bottom, rgba(0,0,0,0.72), transparent)" }} />
+        {/* Top-left: clip type + camera ID — anchored independently so the
+            timestamp on the right can never push it off-screen. */}
+        <div className="absolute top-2 left-2 flex items-center gap-2 pointer-events-none">
+          <span className="text-[12px] font-medium px-1.5 py-0.5 rounded"
+            style={{ background: "rgba(239,68,68,0.9)", color: "#fff", fontFamily: "'DM Mono', monospace" }}>
+            ● {useRaw && hasRaw ? "RAW" : "ANNOTATED"}
+          </span>
+          <span className="text-[12px]"
+            style={{ color: "rgba(255,255,255,0.8)", fontFamily: "'DM Mono', monospace",
+                     textShadow: "0 1px 2px rgba(0,0,0,0.9)" }}>
+            {alert.camera}
+          </span>
+        </div>
+        {/* Top-right: timestamp + tape jump — anchored to the right corner. */}
+        <div className="absolute top-2 right-2 flex items-center gap-1.5" style={{ pointerEvents: "auto" }}>
+          <span className="text-[12px]"
+            style={{ color: "rgba(255,255,255,0.7)", fontFamily: "'DM Mono', monospace",
+                     textShadow: "0 1px 2px rgba(0,0,0,0.9)" }}>
             {formatFull(alert.timestamp)}
           </span>
         </div>
@@ -242,82 +284,68 @@ export function RecordingPlayer({ alert, timeline = false, testingTools = false 
             </button>
           </div>
         )}
-        {/* Scrub bar. The visible track is thin, but the POINTER TARGET is the
-            padded wrapper around it — a 4px-tall hit area is a coin toss with a
-            mouse and unusable with a thumb on a phone. */}
-        <div
-          className="relative mb-2 py-2 cursor-pointer touch-none select-none group"
-          role="slider"
-          tabIndex={0}
-          aria-label="Seek"
-          aria-valuemin={0}
-          aria-valuemax={Math.round(duration) || 0}
-          aria-valuenow={Math.round(elapsed) || 0}
-          aria-valuetext={`${fmtSec(elapsed)} of ${fmtSec(duration)}`}
-          onPointerDown={(e) => {
-            if (!duration) return;
-            // Capture, so a drag that leaves the bar (or the window) still
-            // tracks and still ends — without this, releasing outside leaves
-            // the player stuck in scrubbing state.
-            e.currentTarget.setPointerCapture(e.pointerId);
-            setScrubbing(true);
-            seekTo(timeAt(e.clientX));
-          }}
-          onPointerMove={(e) => { if (scrubbing) seekTo(timeAt(e.clientX)); }}
-          onPointerUp={(e) => {
-            if (!scrubbing) return;
-            e.currentTarget.releasePointerCapture?.(e.pointerId);
-            setScrubbing(false);
-          }}
-          onPointerCancel={() => setScrubbing(false)}
-          onKeyDown={(e) => {
-            if (!duration) return;
-            const step = e.shiftKey ? 10 : 1;
-            if (e.key === "ArrowRight") { e.preventDefault(); seekTo(Math.min(elapsed + step, duration)); }
-            else if (e.key === "ArrowLeft") { e.preventDefault(); seekTo(Math.max(elapsed - step, 0)); }
-            else if (e.key === "Home") { e.preventDefault(); seekTo(0); }
-            else if (e.key === "End") { e.preventDefault(); seekTo(duration); }
-            else if (e.key.toLowerCase() === "d" && detectedAt != null) { e.preventDefault(); seekTo(detectedAt); }
-          }}
-        >
-          <div ref={barRef} className="relative h-1.5 rounded-full transition-all group-hover:h-2"
-            style={{ background: "var(--border)" }}>
-            <div className="absolute left-0 top-0 h-full rounded-full"
-              style={{ width: `${pct}%`, background: "var(--primary)",
-                       transition: scrubbing ? "none" : "width 120ms linear" }} />
-
-            {/* Where the detector fired. A reviewer opening a clip wants that
-                moment, not the beginning — and on a raw clip with a lead-in,
-                hunting for it is most of the time spent on an alert. */}
-            {markPct != null && (
-              <button
-                type="button"
-                title={`Detected at ${fmtSec(detectedAt)} — click to jump here`}
-                aria-label={`Jump to the detection at ${fmtSec(detectedAt)}`}
-                onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) => { e.stopPropagation(); seekTo(detectedAt); }}
-                className="absolute -top-1 w-[3px] h-[14px] rounded-sm cursor-pointer"
-                style={{ left: `calc(${markPct}% - 1.5px)`,
-                         background: violationDisplay(alert.type).color,
-                         boxShadow: "0 0 0 1px rgba(0,0,0,0.45)" }}
-              />
-            )}
-
-            {/* The handle. Its presence is what says "this is draggable" —
-                a bare filled bar reads as a progress indicator. */}
-            <div className="absolute rounded-full pointer-events-none"
-              style={{ left: `calc(${pct}% - 6px)`, top: "50%",
-                       width: 12, height: 12, transform: "translateY(-50%)",
-                       background: "var(--primary)",
-                       boxShadow: "0 1px 3px rgba(0,0,0,0.5)",
-                       opacity: duration ? 1 : 0,
-                       transition: scrubbing ? "none" : "left 120ms linear" }} />
-          </div>
+        {/* Native range scrubber — avoids the React re-render / seek-snap issue
+            that the old pointer-capture implementation caused. Same pattern as
+            RecordingsModal. The detection marker is a pointer-events-none overlay. */}
+        <div className="relative mb-2">
+          {markPct != null && (
+            <div
+              className="absolute pointer-events-none z-10"
+              style={{
+                left: `calc(${markPct}% - 1.5px)`,
+                top: "50%",
+                transform: "translateY(-50%)",
+                width: 3,
+                height: 10,
+                background: violationDisplay(alert.type).color,
+                borderRadius: 2,
+                boxShadow: "0 0 0 1px rgba(0,0,0,0.45)",
+              }}
+            />
+          )}
+          <input
+            type="range"
+            min={0}
+            max={duration || 0.001}
+            step={0.1}
+            value={elapsed}
+            aria-label={`Seek · ${fmtSec(elapsed)} of ${fmtSec(duration)}`}
+            className="w-full block"
+            style={{ cursor: "pointer", accentColor: "var(--primary)" }}
+            onMouseDown={() => { scrubDraggingRef.current = true; }}
+            onChange={(e) => {
+              const t = Number(e.target.value);
+              setElapsed(t);
+              if (videoRef.current) videoRef.current.currentTime = t;
+            }}
+            onMouseUp={(e) => {
+              const t = Number(e.currentTarget.value);
+              setElapsed(t);
+              if (videoRef.current) videoRef.current.currentTime = t;
+              scrubDraggingRef.current = false;
+            }}
+            onTouchStart={() => { scrubDraggingRef.current = true; }}
+            onTouchEnd={(e) => {
+              const t = Number(e.currentTarget.value);
+              setElapsed(t);
+              if (videoRef.current) videoRef.current.currentTime = t;
+              scrubDraggingRef.current = false;
+            }}
+            onKeyDown={(e) => {
+              if (!duration) return;
+              const step = e.shiftKey ? 10 : 1;
+              if (e.key === "ArrowRight") { e.preventDefault(); seekTo(Math.min(elapsed + step, duration)); }
+              else if (e.key === "ArrowLeft") { e.preventDefault(); seekTo(Math.max(elapsed - step, 0)); }
+              else if (e.key === "Home") { e.preventDefault(); seekTo(0); }
+              else if (e.key === "End") { e.preventDefault(); seekTo(duration); }
+              else if (e.key.toLowerCase() === "d" && detectedAt != null) { e.preventDefault(); seekTo(detectedAt); }
+            }}
+          />
         </div>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <button
-              onClick={() => { const v = videoRef.current; if (v) v.currentTime = 0; }}
+              onClick={() => seekTo(0)}
               className="p-1 rounded transition-colors"
               style={{ color: "var(--muted-foreground)" }}
               onMouseEnter={(e) => (e.currentTarget.style.color = "var(--foreground)")}
@@ -357,6 +385,17 @@ export function RecordingPlayer({ alert, timeline = false, testingTools = false 
             )}
           </div>
           <div className="flex items-center gap-1">
+          <button
+            type="button"
+            title="Find this moment in the recordings tape"
+            onClick={() => window.dispatchEvent(new CustomEvent("lookout:open-recordings", { detail: { timestamp: alert.timestamp } }))}
+            className="flex items-center gap-1 text-[13px] px-2 py-1 rounded-md"
+            style={{ color: "var(--muted-foreground)" }}
+            onMouseEnter={(e) => { e.currentTarget.style.color = "var(--foreground)"; e.currentTarget.style.background = "var(--border)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.color = "var(--muted-foreground)"; e.currentTarget.style.background = "transparent"; }}
+          >
+            <Film size={11} /> In Tape
+          </button>
           <button
             type="button"
             onClick={toggleExpand}
@@ -919,7 +958,8 @@ const SUGGESTED_TOOLTIP = (
   </>
 );
 
-const OBJECT_TOOLTIP = "How certain the YOLOv8 model detected the respective object of the violation.";
+const OBJECT_TOOLTIP_YOLO = "How certain the YOLOv8 model detected the respective object of the violation.";
+const OBJECT_TOOLTIP_WORLD = "How certain the YOLO-World model detected the respective object of the violation.";
 
 function InfoCard({ label, tooltip, tooltipAlign, dashed, icon, aside, children, className = "" }) {
   return (
@@ -952,7 +992,7 @@ function LevelPill({ label }) {
   );
 }
 
-// Small icon in a card's top-right corner that opens a popover (testing tools only). Click outside or Esc closes it.
+// Small icon in a card's top-right corner that opens a popover. Click outside or Esc closes it.
 function CardDetails({ title, children }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
@@ -983,14 +1023,16 @@ function CardDetails({ title, children }) {
   );
 }
 
-export function StatusCard({ alert, testingTools = false }) {
+// The "Evidence found" icon is always shown (not a testing tool): Likely is gone, so the checklist is
+// the only proof behind a Possible status and reviewers need it with testing tools off too.
+export function StatusCard({ alert }) {
   const label = alert.levelLabel || "—";
   const color = levelColor(label);
   const found = alert.checklist?.found ?? [];
   const adjusted = alert.checklist?.adjusted_by ?? alert.checklist?.reduced_by ?? [];
   const tag = alert.checklist?.tag;
   const hasDetails = found.length > 0 || adjusted.length > 0 || !!tag;
-  const details = testingTools && hasDetails && (
+  const details = hasDetails && (
     <CardDetails title="Evidence found">
       {tag ? <div className="mb-1 text-[12px] italic" style={{ color: "var(--muted-foreground)" }}>{tag}</div> : null}
       {found.map((line) => (
@@ -1020,8 +1062,10 @@ export function ObjectConfidenceCard({ alert }) {
   // No object detected (puff-only smoking is hand movement alone): nothing to be confident about.
   const none = alert.objectConfidence == null || alert.cues?.puff_only;
   const vcolor = violationDisplay(alert.type).color;
+  const isDisposal = resolveViolationType({ code: alert.type }).code === "disposal";
+  const objTooltip = isDisposal ? OBJECT_TOOLTIP_WORLD : OBJECT_TOOLTIP_YOLO;
   return (
-    <InfoCard label="Object confidence" tooltip={OBJECT_TOOLTIP} tooltipAlign="right">
+    <InfoCard label="Object confidence" tooltip={objTooltip} tooltipAlign="right">
       <div className="text-[14px] font-semibold mt-1.5 leading-[22px]" style={{ color: none ? "var(--foreground)" : vcolor }}>
         {none ? "—" : `${Math.round(alert.objectConfidence * 100)}% conf`}
       </div>
@@ -1080,7 +1124,7 @@ const SUSPECT_TOOLTIP = "Whoever was beside the rubbish at the moment it appeare
 // that the thing in the zone is a vehicle.
 export function StatusAndConfidenceRow({ alert, testingTools = false }) {
   if (resolveViolationType({ code: alert.type }).code === "parking") {
-    return <ObjectConfidenceCard alert={alert} />;
+    return <div><ObjectConfidenceCard alert={alert} /></div>;
   }
   return (
     <div className="grid grid-cols-2 gap-3 items-stretch">
@@ -1097,27 +1141,45 @@ const AI_BADGE_STYLE = {
   unavailable: { color: "var(--muted-foreground)", bg: "rgba(100,116,139,0.14)", icon: Info },
 };
 
-function AIContextCard({ ai, testingTools = false }) {
+function AIContextCard({ ai, testingTools = false, alertId = null, onRetry = null }) {
   const state = ai?.state ?? "unavailable";
   const badge = ai?.badge ?? { code: "unavailable", text: "AI context unavailable" };
   const style = AI_BADGE_STYLE[badge.code] ?? AI_BADGE_STYLE.unavailable;
   const BadgeIcon = style.icon;
   const frames = ai?.frames ?? [];
   const checklist = ai?.checklist ?? [];
-  const details = testingTools && state === "done" && (checklist.length > 0 || frames.length > 0) && (
+  const [retrying, setRetrying] = useState(false);
+  const [retryError, setRetryError] = useState("");
+  const canRetry = alertId && onRetry && (state === "unavailable" || state === "deferred");
+
+  const handleRetry = async () => {
+    setRetrying(true);
+    setRetryError("");
+    try {
+      const updated = await retryAlertAI(alertId);
+      onRetry(updated);
+    } catch (e) {
+      setRetryError(e.message || "Retry failed.");
+    } finally {
+      setRetrying(false);
+    }
+  };
+  const details = state === "done" && (frames.length > 0 || (testingTools && checklist.length > 0)) && (
     <CardDetails title="AI details">
-      <div className="flex flex-col gap-1">
-        {checklist.map((c) => (
-          <div key={c.field} className="flex items-center gap-1.5 text-[13px]" style={{ color: "var(--foreground)" }}>
-            {c.value === true ? <Check size={12} style={{ color: "#10b981" }} />
-              : c.value === false ? <X size={12} style={{ color: "var(--muted-foreground)" }} />
-              : <Minus size={12} style={{ color: "var(--muted-foreground)" }} />}
-            <span>{c.label}{typeof c.value === "string" ? `: ${c.value}` : ""}</span>
-          </div>
-        ))}
-      </div>
+      {testingTools && (
+        <div className="flex flex-col gap-1">
+          {checklist.map((c) => (
+            <div key={c.field} className="flex items-center gap-1.5 text-[13px]" style={{ color: "var(--foreground)" }}>
+              {c.value === true ? <Check size={12} style={{ color: "#10b981" }} />
+                : c.value === false ? <X size={12} style={{ color: "var(--muted-foreground)" }} />
+                : <Minus size={12} style={{ color: "var(--muted-foreground)" }} />}
+              <span>{c.label}{typeof c.value === "string" ? `: ${c.value}` : ""}</span>
+            </div>
+          ))}
+        </div>
+      )}
       {frames.length > 0 && (
-        <div className="mt-2">
+        <div className={testingTools && checklist.length > 0 ? "mt-2" : undefined}>
           <div className="text-[12px] mb-1" style={{ color: "var(--muted-foreground)" }}>Frames the AI saw ({frames.length})</div>
           <div className="grid grid-cols-4 gap-1">
             {frames.map((u) => (
@@ -1147,6 +1209,19 @@ function AIContextCard({ ai, testingTools = false }) {
           {state === "done" && ai.observations && (
             <div className="mt-1.5 text-[13px] leading-snug italic break-words" style={{ color: "var(--foreground)" }}>
               &ldquo;{ai.observations}&rdquo;
+            </div>
+          )}
+          {canRetry && (
+            <div className="mt-2">
+              <button
+                onClick={handleRetry}
+                disabled={retrying}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[12px] font-medium transition-all"
+                style={{ background: "var(--secondary)", color: "var(--foreground)", border: "1px solid var(--border)", opacity: retrying ? 0.6 : 1 }}>
+                {retrying ? <Loader2 size={11} className="animate-spin" /> : <RotateCcw size={11} />}
+                {retrying ? "Checking…" : "Retry AI check"}
+              </button>
+              {retryError && <div className="mt-1 text-[12px]" style={{ color: "#ef4444" }}>{retryError}</div>}
             </div>
           )}
         </>
@@ -1522,6 +1597,10 @@ export function ViolationModal({
   const [confirmReopen, setConfirmReopen] = useState(false);
   const [showAllOfficers, setShowAllOfficers] = useState(false);
   const closed = alert.status === "acknowledged" || alert.status === "resolved";
+  // Locally-updated AI context after a successful retry (the parent poll will
+  // eventually refresh its own copy, but the user shouldn't have to wait for it).
+  const [localAiContext, setLocalAiContext] = useState(null);
+  const aiContext = localAiContext ?? alert.aiContext;
 
   // Assigned officers card — paired with "Detected object".
   const officersCard = (
@@ -1664,10 +1743,15 @@ export function ViolationModal({
                     on those alerts advertises a missing feature that was never
                     meant to exist. A kind that DOES have a checker still gets the
                     cards when a check failed or is pending, which is information. */}
-                {alert.aiContext && (
+                {aiContext && (
                   <>
-                    <AIContextCard ai={alert.aiContext} testingTools={testingTools} />
-                    <SuggestedStatusCard ai={alert.aiContext} official={alert.levelLabel} />
+                    <AIContextCard
+                      ai={aiContext}
+                      testingTools={testingTools}
+                      alertId={alert.dbId}
+                      onRetry={(updated) => setLocalAiContext(updated.aiContext)}
+                    />
+                    <SuggestedStatusCard ai={aiContext} official={alert.levelLabel} />
                   </>
                 )}
                 {/* Parking has no indicators or points (a stopped-time rule), so its breakdown

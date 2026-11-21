@@ -1187,6 +1187,9 @@ class Command(IncidentMixin, BaseCommand):
     def _save_clips(self, base, frame, now):
         """Write (or rewrite) the annotated and raw evidence clips named `base`.
         Returns (video_url, raw_video_url); either may be empty on failure."""
+        if self._clips_async():
+            # Live: encoded by the background writer so detection never stops for it.
+            return self._save_clips_async(base, frame, now)
         # Write the ~30s evidence clip (annotated frames leading up to the
         # alert). getattr guards --image test mode, which never creates
         # self.clip (mirrors watch_smoking/watch_drinking's own guard).
@@ -1207,7 +1210,7 @@ class Command(IncidentMixin, BaseCommand):
             # test mode, which never touches self.clip anyway).
             clip.add(frame, now if now is not None else time.time())
             video_name = f"{base}.mp4"
-            if clip.save(self.violations_dir / video_name):
+            if clip.save(self.violations_dir / video_name, mark_at=self._first_mark(base, now)):
                 video_url = violation_media_path(video_name)
 
         # RAW (unannotated, full source frame rate/resolution) clip. File
@@ -1239,6 +1242,7 @@ class Command(IncidentMixin, BaseCommand):
             self.stdout.write(self.style.WARNING(
                 "  raw clip not produced (see ffmpeg log above if one was attempted)"
             ))
+        self._postroll_arm(base, now)       # finished once the minute AFTER has been recorded
         return video_url, raw_video_url, clip_offset
 
     def _create_alert(self, score, label, frame, description, now=None,

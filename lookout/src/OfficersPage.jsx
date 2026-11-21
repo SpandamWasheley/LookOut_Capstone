@@ -839,14 +839,7 @@ export function OfficersPage({ alerts = [], onOpenAlerts = () => {} }) {
               <span>Officer</span>
               <span className="pl-3">Email</span>
               <span className="pl-3">Mobile</span>
-              <span className="flex items-center justify-center gap-2">
-                SMS
-                {/* The tooltip lives on a wrapping span: a `title` attribute on
-                    an <svg> is not what browsers show a tooltip for. */}
-                <span title={SMS_HINT} className="flex items-center flex-shrink-0 cursor-help">
-                  <Info size={11} style={{ color: "var(--muted-foreground)" }} />
-                </span>
-              </span>
+              <span className="pl-3">Username</span>
               <span />
             </div>
 
@@ -883,7 +876,7 @@ export function OfficersPage({ alerts = [], onOpenAlerts = () => {} }) {
                       <div>
                         <div className="text-[15px] font-medium text-white">{officer.name}</div>
                         <div className="text-[12px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
-                          {officer.badge} · {officer.username || "—"}
+                          {officer.badge}
                         </div>
                       </div>
                     </div>
@@ -898,19 +891,9 @@ export function OfficersPage({ alerts = [], onOpenAlerts = () => {} }) {
                       {officer.phone ? formatPhone(officer.phone) : "—"}
                     </div>
 
-                    {/* SMS */}
-                    <div className="flex items-center justify-center">
-                      <SmsToggle
-                        on={Boolean(officer.smsAlerts)}
-                        phone={officer.phone}
-                        // An empty username is how the serializer reports an
-                        // officer with no linked account.
-                        hasAccount={Boolean(officer.username)}
-                        onToggle={async (next) => {
-                          await updateOfficer(officer.dbId, { sms_alerts: next });
-                          await refreshOfficers();
-                        }}
-                      />
+                    {/* Username */}
+                    <div className="text-[13px] truncate pl-3" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+                      {officer.username || "—"}
                     </div>
 
                     {/* Actions */}
@@ -962,14 +945,7 @@ export function OfficersPage({ alerts = [], onOpenAlerts = () => {} }) {
               <span>Name</span>
               <span className="pl-3">Email</span>
               <span className="pl-3">Mobile</span>
-              <span className="flex items-center justify-center gap-2">
-                SMS
-                {/* The tooltip lives on a wrapping span: a `title` attribute on
-                    an <svg> is not what browsers show a tooltip for. */}
-                <span title={SMS_HINT} className="flex items-center flex-shrink-0 cursor-help">
-                  <Info size={11} style={{ color: "var(--muted-foreground)" }} />
-                </span>
-              </span>
+              <span className="pl-3">Username</span>
               <span />
             </div>
             {!loading && visibleDispatchers.length === 0 ? (
@@ -995,22 +971,14 @@ export function OfficersPage({ alerts = [], onOpenAlerts = () => {} }) {
                           </span>
                         )}
                       </div>
-                      <div className="text-[12px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>{d.username}</div>
                     </div>
                   </div>
                   <div className="text-[13px] truncate pl-3" style={{ color: "var(--muted-foreground)" }}>{d.email || "—"}</div>
                   <div className="text-[13px] truncate pl-3" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
                     {d.phone ? formatPhone(d.phone) : "—"}
                   </div>
-                  <div className="flex items-center justify-center">
-                    <SmsToggle
-                      on={Boolean(d.smsAlerts)}
-                      phone={d.phone}
-                      onToggle={async (next) => {
-                        await updateDispatcher(d.dbId, { sms_alerts: next });
-                        await refreshDispatchers();
-                      }}
-                    />
+                  <div className="text-[13px] truncate pl-3" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
+                    {d.username || "—"}
                   </div>
                   <div className="flex items-center gap-1 justify-end">
                     <button

@@ -21,7 +21,7 @@ class PublisherTests(TestCase):
         self.frame = np.full((720, 1280, 3), 40, np.uint8)
 
     def test_publishes_a_clean_frame_and_every_tracked_subject_including_below_monitoring(self):
-        s = scoring.Score("smoking", scoring.SMOKING_WEIGHTS, {"cigarette", "gesture"}, object_on=True)
+        s = scoring.Score("smoking", scoring.SMOKING_WEIGHTS, {"cigarette", "gesture", "puffs"}, object_on=True)
         self.pub.stash(self.frame)
         self.pub.note(("smoke", 1), "Smoking", 1, (10, 20, 110, 220), debug_view.status_for(s), 60,
                       debug_view.indicator_list(s), {}, 2.4)
@@ -30,7 +30,7 @@ class PublisherTests(TestCase):
         state = json.load(open(os.path.join(self.tmp.name, "state.json")))
         self.assertEqual({e["status"] for e in state["subjects"]}, {"Possible", "Below Monitoring"})
         first = [e for e in state["subjects"] if e["id"] == 1][0]
-        self.assertEqual(first["score"], 60)
+        self.assertEqual(first["score"], 60)   # the score is what the test passes to note(), not recomputed
         self.assertEqual(first["indicators"][0], {"name": "cigarette", "points": 40})
         self.assertEqual((state["frame_w"], state["frame_h"]), (1280, 720))
         self.assertTrue(os.path.getsize(os.path.join(self.tmp.name, "frame.jpg")) > 1000)

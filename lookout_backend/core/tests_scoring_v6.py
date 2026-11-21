@@ -31,7 +31,7 @@ class Tables(SimpleTestCase):
     def test_point_tables_match_the_spec_totals(self):
         self.assertAlmostEqual(sum(DRINKING_WEIGHTS.values()), 0.85)
         self.assertAlmostEqual(sum(SMOKING_WEIGHTS.values()), 1.00)
-        self.assertAlmostEqual(sum(HOLDUP_WEIGHTS.values()), 0.75)
+        self.assertAlmostEqual(sum(HOLDUP_WEIGHTS.values()), 0.60)   # Dangerous Weapon: knife 40 + persistence 20
 
     def test_no_ai_points_anywhere_in_the_official_score(self):
         for table in (DRINKING_WEIGHTS, SMOKING_WEIGHTS, HOLDUP_WEIGHTS):
@@ -101,18 +101,18 @@ class SmokingExamples(SimpleTestCase):
     def test_walking_smoker_with_a_cigarette(self):
         s = smoking({"cigarette"})
         self.assertEqual((round(s.score * 100), s.level), (40, MONITORING))
-        s = smoking({"cigarette", "gesture"})
-        self.assertEqual((round(s.score * 100), s.level), (60, WARNING))
-        s = smoking({"cigarette", "gesture", "near_mouth"})      # position is worth only 5: still Possible
-        self.assertEqual((round(s.score * 100), s.level), (65, WARNING))
-        s = smoking({"cigarette", "gesture", "puffs"})           # a second puff is what makes it Likely
-        self.assertEqual((round(s.score * 100), s.level), (80, VIOLATION))
+        s = smoking({"cigarette", "gesture"})                    # one puff is only 5: still Monitoring
+        self.assertEqual((round(s.score * 100), s.level), (45, MONITORING))
+        s = smoking({"cigarette", "gesture", "near_mouth"})      # position is worth only 5
+        self.assertEqual((round(s.score * 100), s.level), (50, MONITORING))
+        s = smoking({"cigarette", "gesture", "puffs"})           # a second puff is what makes it Possible
+        self.assertEqual((round(s.score * 100), s.level), (75, WARNING))   # (Likely is switched off)
 
     def test_walking_smoker_cigarette_missed_then_found(self):
         s = smoking({"gesture"})                       # one puff, no item
-        self.assertEqual((round(s.score * 100), s.level), (20, NONE))
+        self.assertEqual((round(s.score * 100), s.level), (5, NONE))
         s = smoking({"gesture", "cigarette"})          # the high-res check finds it
-        self.assertEqual((round(s.score * 100), s.level), (60, WARNING))
+        self.assertEqual((round(s.score * 100), s.level), (45, MONITORING))
 
     @needs_puff_only
     def test_lingering_puff_only(self):
@@ -148,72 +148,58 @@ class SmokingExamples(SimpleTestCase):
         self.assertEqual(s.level, VIOLATION)
 
 
+class DrinkingGatheringGate(SimpleTestCase):
+    """Drinking is a group violation: no gathering means the status is held at Monitoring."""
+
+    def test_bottle_and_mouth_alone_never_reach_possible(self):
+        s = drinking({"bottle", "at_mouth", "time_band"})
+        self.assertEqual(round(s.raw_score * 100), 60)   # would be Possible on points alone
+        self.assertEqual(round(s.score * 100), 54)       # ... but the score is held under the 55 line
+        self.assertEqual(s.level, MONITORING)
+        self.assertFalse(s.alerting)
+        self.assertEqual(s.capped, scoring.DRINKING_NO_GATHERING_TEXT)
+
+    def test_a_gathering_lifts_the_cap(self):
+        s = drinking({"bottle", "at_mouth", "gathering"})
+        self.assertEqual(round(s.score * 100), 65)
+        self.assertEqual(s.level, WARNING)
+        self.assertEqual(s.capped, "")
+
+    def test_the_gate_can_be_switched_off(self):
+        from unittest import mock
+        with mock.patch.object(scoring, "DRINKING_GATHERING_GATE", False):
+            self.assertEqual(drinking({"bottle", "at_mouth", "time_band"}).level, WARNING)
+
+    def test_other_detectors_are_untouched(self):
+        self.assertEqual(smoking({"cigarette", "gesture", "puffs"}).level, WARNING)
+
+
 class HoldupExamples(SimpleTestCase):
-    def test_a_vendor_in_the_afternoon(self):
-        # 16:30, x1.36 on every row
-        knife = holdup({"E14"}, 16)
-        self.assertEqual(round(knife.score * 100), 61)
-        self.assertEqual(knife.level, WARNING)         # second person near
-        frozen = holdup({"E14", "E12"}, 16)
-        self.assertEqual(round(frozen.score * 100), 88)
-        self.assertEqual(frozen.level, VIOLATION)
+    """Dangerous Weapon: knife (gate) 40 + momentum/persistence 20. The time of day and the pair / loiter cues no
+    longer score a knife (E12 / E10 / E11E12 are retired)."""
 
-    def test_a_real_one_at_night(self):
-        # 22:15, x0.87 on every row
-        self.assertEqual(round(holdup({"E10"}, 22).score * 100), 9)
-        self.assertEqual(holdup({"E10"}, 22).level, NONE)               # no knife
-        self.assertEqual(round(holdup({"E10", "E12"}, 22).score * 100), 26)
-        self.assertEqual(holdup({"E10", "E12"}, 22).level, NONE)
-        full = holdup({"E14", "E12", "E10"}, 22)
-        self.assertEqual(round(full.score * 100), 65)
-        self.assertEqual(full.level, WARNING)
-        reply = {"observations": "x", "people_count": 2, "object_pointed_at_a_person": True,
-                 "victim_response_visible": True, "holdup_likelihood": "likely",
-                 "scene_type": "confrontation", "confidence": "high"}
-        sug = ai_status.suggest_status(full.level, "holdup", reply)
-        self.assertEqual(sug["text"], "Possible → Likely (suggested) — AI sees a confrontation")
-        self.assertEqual(full.level, WARNING)        # the AI cannot raise it
-
-    def test_knife_alone_at_0700_is_monitoring(self):
-        s = holdup({"E14"}, 7)
-        self.assertEqual(round(s.score * 100), 25)     # 45 x 0.56
+    def test_a_knife_without_persistence_is_monitoring(self):
+        s = Score("holdup", HOLDUP_WEIGHTS, {"E14"})
+        self.assertEqual(round(s.score * 100), 40)
         self.assertEqual(s.level, MONITORING)
         self.assertTrue(s.stored)
         self.assertFalse(s.alerting)
 
-    def test_one_person_with_a_knife_gets_no_holdup_alert(self):
-        # Peak afternoon would be 61 (Possible) -- but nobody is near the holder.
-        s = holdup({"E14"}, 16, people_near=False)
-        self.assertEqual(s.level, MONITORING)
-        self.assertTrue(s.holdup_capped)
-        self.assertFalse(s.alerting)
-        # even with every other cue
-        s = holdup({"E14", "E12", "E10"}, 16, people_near=False)
-        self.assertEqual(s.level, MONITORING)
+    def test_a_persistent_knife_is_possible(self):
+        s = Score("holdup", HOLDUP_WEIGHTS, {"E14", "momentum"})
+        self.assertEqual(round(s.score * 100), 60)
+        self.assertEqual(s.level, WARNING)
+        self.assertTrue(s.alerting)
 
     def test_no_knife_nothing_is_shown(self):
-        self.assertEqual(holdup({"E12", "E10"}, 16).level, NONE)
+        self.assertEqual(Score("holdup", HOLDUP_WEIGHTS, {"momentum"}).level, NONE)
 
     def test_theft_evidence_follows_the_same_rules(self):
-        solo = theft.Evidence("weapon", (0, 0, 10, 10), {"E14": 0.45}, {},
-                              set(), [1], "x", people_near=False)
-        self.assertEqual(solo.band, MONITORING)
-        # Holdup v2: a knife with someone near is STILL Monitoring until a
-        # behavioural cue backs it up. (v6.2.1: only a frozen pair, E12, counts; E10 alone does not.)
-        near = theft.Evidence("weapon", (0, 0, 10, 10), {"E14": 0.45, "E20": 0.10}, {},
-                              set(), [1], "x", people_near=True)
-        self.assertEqual(near.band, MONITORING)
-        from unittest import mock
-        with mock.patch("core.vision.location_momentum.HOLDUP_V621_RULES", True):
-            loiter_only = theft.Evidence("weapon", (0, 0, 10, 10),
-                                         {"E14": 0.45, "E10": 0.10, "E20": 0.10}, {},
-                                         set(), [1], "x", people_near=True)
-            self.assertEqual(loiter_only.band, MONITORING)    # v6.2.1 holdup rules: loitering no longer corroborates
-            self.assertEqual(loiter_only.capped, "capped: no frozen pair")
-        corroborated = theft.Evidence("weapon", (0, 0, 10, 10),
-                                      {"E14": 0.45, "E12": 0.20, "E20": 0.05}, {},
-                                      set(), [1], "x", people_near=True)
-        self.assertEqual(corroborated.band, WARNING)
+        knife = theft.Evidence("weapon", (0, 0, 10, 10), {"E14": 0.40}, {}, set(), [1], "x", people_near=False)
+        self.assertEqual((knife.band, round(knife.score, 2)), (MONITORING, 0.40))
+        persistent = theft.Evidence("weapon", (0, 0, 10, 10), {"E14": 0.40, "momentum": 0.20}, {},
+                                    set(), [1], "x", people_near=False)      # nobody near: still Possible
+        self.assertEqual((persistent.band, round(persistent.score, 2)), (WARNING, 0.60))
         pair = theft.Evidence("holdup", (0, 0, 10, 10), {"E12": 0.2, "E10": 0.1}, {},
                               set(), [1, 2], "x")
         self.assertEqual(pair.band, NONE)               # no knife
@@ -261,7 +247,7 @@ class AiSuggestion(SimpleTestCase):
             self.assertEqual(sug["text"], "AI context unavailable")
             self.assertFalse(sug["changed"])
             self.assertEqual(ai_status.ai_badge("smoking", bad)["code"], "unavailable")
-        self.assertEqual(smoking({"cigarette", "gesture"}).level, WARNING)
+        self.assertEqual(smoking({"cigarette", "gesture", "puffs"}).level, WARNING)
 
     def test_medium_or_low_confidence_is_no_change(self):
         for conf in ("medium", "low"):

@@ -189,11 +189,23 @@ GROUP_MATCH_DIST = 1.2
 # has nothing worth reviving, unlike an individual's dwell progress).
 GROUP_MAX_GAP = 3.0
 
-# Tolerate a brief dip below drinking_min_group (one dropped frame, someone
-# briefly occluded) before resetting the accumulated duration — mirrors
-# Track's own PRESENCE_GRACE_SECONDS pattern rather than requiring literal
-# every-frame compliance, which would be brittle at low FPS.
-GROUP_PRESENCE_GRACE_SECONDS = 3.0
+# Tolerate a brief dip below drinking_min_group before resetting the
+# accumulated duration. 3 s was fine for near-view; far-view pedestrian
+# occlusions routinely last 4-8 s (a slow walker crossing the frame at
+# distance), so the timer kept resetting whenever one drinker was briefly
+# blocked. 7 s covers a typical walking-pace crossing without being so long
+# that a genuinely dispersed group banks extra credit — the stationarity and
+# bottle checks downstream still have to pass for an alert to fire.
+GROUP_PRESENCE_GRACE_SECONDS = 7.0
+
+# After the grace window elapses, accumulated duration drains at this rate
+# (seconds of duration lost per second of inactive time) rather than resetting
+# to zero in one step. 0.5 means every 2 s of absence costs 1 s of credit — a
+# 20 s gap past grace loses 10 s, leaving whatever had accrued mostly intact;
+# a 100 s gap would still drain the timer to zero, but that is the right answer
+# when the people have genuinely dispersed. Set to 0.0 to restore hard-reset
+# semantics (the original behaviour before this change).
+DURATION_DRAIN_RATE = 0.5
 
 # Tombstone revival for a gathering that drops out of the matched set for a
 # frame or two (bytetrack losing a member mid-frame, a tiling pass that missed
@@ -1219,11 +1231,20 @@ class Cluster:
             return None
         return self.evidence
 
-    def tick(self, now, active):
+    def tick(self, now, active, drain_rate=0.0):
         """Advances the duration clock, crediting only confirmed (>= min_group)
-        time. Returns the total confirmed seconds held so far."""
-        if self._last_tick is not None and active:
-            self.duration_held += now - self._last_tick
+        time. Returns the total confirmed seconds held so far.
+
+        drain_rate: when > 0 and the cluster is inactive, the accumulated
+        duration is reduced at this rate (s of credit per s of absence) instead
+        of a hard reset. The caller passes a non-zero rate only after the grace
+        window has elapsed, so brief dips still cost nothing."""
+        if self._last_tick is not None:
+            dt = now - self._last_tick
+            if active:
+                self.duration_held += dt
+            elif drain_rate > 0.0:
+                self.duration_held = max(0.0, self.duration_held - dt * drain_rate)
         self._last_tick = now
         if active:
             self.last_active_seen = now
@@ -1330,9 +1351,9 @@ class GroupTracker:
             cluster.note_position(now)
 
             active = len(members) >= min_group
-            cluster.tick(now, active)
-            if not active and now - cluster.last_active_seen > GROUP_PRESENCE_GRACE_SECONDS:
-                cluster.reset_duration()
+            time_inactive = 0.0 if active else (now - cluster.last_active_seen)
+            drain = DURATION_DRAIN_RATE if time_inactive > GROUP_PRESENCE_GRACE_SECONDS else 0.0
+            cluster.tick(now, active, drain_rate=drain)
 
             matched_ids.add(id(cluster))
             seen.append(cluster)

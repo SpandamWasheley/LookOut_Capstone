@@ -186,7 +186,7 @@ If **no smoking item** is detected but **3+ puffs occur within 5 minutes**, an a
 
 ## 5. DRINKING (public drinking)
 
-**Algorithm.** merged_v2 detects `Bottle` → momentum gate → pose finds bottle-at-mouth → persons are clustered into gatherings ("inuman") → time band checked. Two evidence paths: **Path A (solo)** — an individual's bottle is verifiable on its own near the camera; **Path B (gathering)** — at range a sustained group is still verifiable.
+**Algorithm.** merged_v2 detects `Bottle` → momentum gate → pose finds bottle-at-mouth → persons are clustered into gatherings ("inuman") → time band checked. **Gathering-only** (`SOLO_DRINKING_ENABLED = False`, `DRINKING_GATHERING_GATE = True`): a lone person with a bottle is capped at Monitoring; only a confirmed gathering of ≥ 2 stationary people can unlock Possible or Likely.
 
 ### 5.1 Indicators 📋
 
@@ -205,11 +205,12 @@ Other drinking parameters: bottle evidence in a cluster must be seen within **12
 
 | Evidence | Score | Status |
 |---|---|---|
-| Bottle only | 0.40 | Monitoring |
-| Bottle + at mouth | 0.55 | Possible |
-| Bottle + at mouth + group | 0.65 | Possible |
+| Bottle only (no gathering) | 0.40 → capped 0.54 | Monitoring (gathering gate) |
+| Bottle + at mouth (no gathering) | 0.55 → capped 0.54 | Monitoring (gathering gate) |
+| Bottle + group | 0.50 | Monitoring |
+| Bottle + group + at mouth | 0.65 | Possible |
 | Bottle + group + 10 min + evening | 0.70 | Possible |
-| Bottle + at mouth + group + 10 min | 0.80 | Likely |
+| Bottle + group + at mouth + 10 min | 0.80 | Likely |
 | All five | 0.85 | Likely |
 
 ---
@@ -430,7 +431,7 @@ A local **Qwen3-VL** model (Ollama, temperature 0, JSON-schema constrained reply
 | Violation | Gate (required object) | Supporting indicators | Max score | Possible ≥ 0.55 example | Likely ≥ 0.75 example |
 |---|---|---|---|---|---|
 | Smoking | Cigarette (0.40) | Hand to mouth 0.20 · 2+ puffs 0.20 · 3+ puffs/5 min 0.15 · Item at mouth 0.15 | 1.00 (sum 1.10) | Cigarette + at mouth | Cigarette + at mouth + hand-to-mouth |
-| Drinking | Bottle (0.40) | Group of 2+ 0.10 · Stayed 10+ min 0.15 · Bottle at mouth 0.15 · Evening 0.05 | 0.85 | Bottle + at mouth | Bottle + at mouth + group + 10 min |
+| Drinking | Bottle (0.40) + Gathering (0.10, **required gate**) | Stayed 10+ min 0.15 · Bottle at mouth 0.15 · Evening 0.05 | 0.85 | Bottle + group + at mouth | Bottle + group + at mouth + 10 min |
 | Holdup | Knife near a hand (0.45) | Frozen pair 0.20 · Loitering first 0.10 · Approach→freeze 0.10 · Time of day +0.01–0.10 | ≈ 0.95–1.00 | Knife + frozen pair | Knife + frozen pair + loitering |
 | Parking obstruction | Vehicle inside the no-parking zone (≥ 35 % of footprint) | Stopped (≤ 0.15 box-widths drift over 3 s); dwell accrues seconds | 120 s dwell | ≥ 66 s banked | 120 s banked → alert |
 | Improper disposal | Static new object (≥ 2 s still, not a person/vehicle) | Zero-shot garbage score ≥ 15 % and above every look-alike; owner has walked away | – | Garbage leads but < 15 % | Garbage ≥ 15 % and beats all rejects |

@@ -150,6 +150,20 @@ class ClipRecorder:
         # ONE frame instead of a shorter, less misleading gap.
         self._max_hold_seconds = 2.0
 
+    def snapshot(self):
+        """A frozen copy of the buffer as it is right now, with its own save().
+
+        Saving is slow -- a raw clip takes about half a minute -- and while it
+        runs on the detection thread nothing is being watched, so the buffer
+        the NEXT clip needs stays empty. A snapshot lets a background thread do
+        the encoding while detection carries on. It shares the frame arrays
+        (nothing writes to a frame once it is buffered) and copies only the
+        index."""
+        snap = object.__new__(type(self))
+        snap.__dict__.update(self.__dict__)
+        snap._buf = deque(self._buf)
+        return snap
+
     def add(self, frame, now):
         """Keep this frame, unless one was kept less than 1/playback_fps ago.
 
@@ -202,6 +216,18 @@ class ClipRecorder:
         if len(self._buf) < 2:
             return 0.0
         return max(0.0, self._buf[-1][0] - self._buf[0][0])
+
+    def describe(self):
+        """One line on what the buffer holds: frames, seconds covered, and the
+        longest stretch with NO frame in it. A clip that is shorter than the
+        window is either a short buffer or a hole in it, and only the longest
+        gap tells the two apart (a detector blocked for a minute leaves one)."""
+        stamps = [ts for ts, _f in self._buf]
+        if len(stamps) < 2:
+            return f"{len(stamps)} frame(s) buffered"
+        gap = max(b - a for a, b in zip(stamps, stamps[1:]))
+        return (f"{len(stamps)} frames over {stamps[-1] - stamps[0]:.0f}s, "
+                f"longest gap {gap:.1f}s")
 
     def save(self, path, mark_at=None):
         """Writes the buffered clip to `path` (MP4). Returns True on success.
@@ -470,6 +496,14 @@ class RawFrameRecorder:
         self._max_hold_seconds = 2.0
         self._buf = deque()  # (timestamp, jpeg_bytes)
 
+    def snapshot(self):
+        """See ClipRecorder.snapshot: a frozen copy whose save() can run on
+        another thread while this buffer keeps filling."""
+        snap = object.__new__(type(self))
+        snap.__dict__.update(self.__dict__)
+        snap._buf = deque(self._buf)
+        return snap
+
     def add(self, frame, now):
         ok, enc = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, self.quality])
         if ok:
@@ -486,8 +520,13 @@ class RawFrameRecorder:
             return 0.0
         return max(0.0, self._buf[-1][0] - self._buf[0][0])
 
-    def save(self, path):
-        """Writes the buffered clip to `path` (MP4). Returns True on success."""
+    def save(self, path, mark_at=None):
+        """Writes the buffered clip to `path` (MP4). Returns True on success.
+
+        `mark_at` / `self.mark_offset` work exactly as on ClipRecorder.save:
+        the moment in the capture clock the caller wants a player pointed at,
+        reported afterwards in PLAYBACK seconds of the clip written."""
+        self.mark_offset = None
         if len(self._buf) < 2:
             return False
         frames = list(self._buf)
@@ -506,14 +545,18 @@ class RawFrameRecorder:
             )
             if not writer.isOpened():
                 return False
+            written = 0
             for i, (ts, enc) in enumerate(frames):
                 frame = cv2.imdecode(np.frombuffer(enc, np.uint8), cv2.IMREAD_COLOR)
                 if frame is None:
                     continue
+                if mark_at is not None and (self.mark_offset is None or ts <= mark_at):
+                    self.mark_offset = written / self.playback_fps
                 nxt = frames[i + 1][0] if i + 1 < len(frames) else ts + 1.0 / self.playback_fps
                 reps = _hold_reps(ts, nxt, self.playback_fps, self._max_hold_seconds)
                 for _ in range(reps):
                     writer.write(frame)
+                written += reps
             writer.release()
 
             return _run_ffmpeg([

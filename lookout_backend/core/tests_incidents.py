@@ -84,19 +84,24 @@ class SmokingIncidentTests(TestCase):
             self.step(i * 0.25, [CIG])                       # Monitoring (40)
         self.puff(8.0)
         for i in range(8):
-            self.step(8.0 + i * 0.25, [CIG])                 # + 1 puff = 60 -> Possible
-        self.assertEqual(self.rows()[-1].level, scoring.WARNING)
-        self.assertTrue(self.clip_calls, "no clip written on reaching Possible")
+            self.step(8.0 + i * 0.25, [CIG])                 # + 1 puff = 45 -> still Monitoring (gesture is only 5)
+        self.assertEqual(self.rows()[-1].level, scoring.MONITORING)
         self.puff(10.0)
         for i in range(8):
-            self.step(12.0 + i * 0.25, [CIG], near_mouth=True)   # + 2nd puff (80) + at mouth (5) = 85 -> Likely
+            self.step(10.5 + i * 0.25, [CIG])                # + 2nd puff = 40 + 5 + 30 = 75 -> Possible
+        self.assertEqual(self.rows()[-1].level, scoring.WARNING)
+        self.assertTrue(self.clip_calls, "no clip written on reaching Possible")
+        self.puff(13.0)
+        for i in range(8):
+            self.step(13.5 + i * 0.25, [CIG], near_mouth=True)   # + 3rd puff and at mouth: 100 -> still Possible (Likely is off)
         rows = self.rows()
         self.assertEqual(len(rows), 1, "a new row was created instead of updating the old one")
-        self.assertEqual(rows[0].level, scoring.VIOLATION)
-        self.assertAlmostEqual(rows[0].confidence, 0.85, places=2)
+        self.assertEqual(rows[0].level, scoring.WARNING)
+        self.assertGreaterEqual(rows[0].confidence, 0.75)
         self.assertTrue(rows[0].video_url)
-        self.assertEqual(rows[0].cues["level"], scoring.VIOLATION)
-        self.assertIn("near_mouth", rows[0].cues["cues"])
+        self.assertEqual(rows[0].cues["level"], scoring.WARNING)
+        # (the stored cue vector is rewritten only when the status RISES; with Likely off, a 3rd puff changes nothing)
+        self.assertIn("puffs", rows[0].cues["cues"])
 
     @needs_puff_only
     def test_puff_only_without_any_item_is_held_at_monitoring(self):
@@ -186,43 +191,38 @@ class ThiefAndDrinkingTests(TestCase):
         t.last_seen = 0.0
         return t
 
-    def test_a_knife_with_nobody_near_is_monitoring_only(self):
+    def test_a_knife_with_nobody_near_is_decided_by_persistence_alone(self):
+        # Dangerous Weapon: knife 40 + persistence 20. A second person is no longer needed for Possible.
         holder = self._knife_track(1, (400, 200, 520, 500))
         self.thief._frame_tracks = [holder]
-        ev = self.thief._knife_evidence(holder, "knife", 3.0, 10.0, holder.box)
-        self.assertEqual(ev.band, scoring.MONITORING)
+        ev = self.thief._knife_evidence(holder, "knife", 3.0, 10.0, holder.box, persistent=False)
+        self.assertEqual((ev.band, round(ev.score, 2)), (scoring.MONITORING, 0.40))
         self.assertFalse(ev.people_near)
+        ev = self.thief._knife_evidence(holder, "knife", 3.0, 10.0, holder.box, persistent=True)
+        self.assertEqual((ev.band, round(ev.score, 2)), (scoring.WARNING, 0.60))
+        self.assertIn("momentum", ev.cues)
 
-    def test_a_second_person_near_the_holder_allows_possible(self):
-        holder = self._knife_track(1, (400, 200, 520, 500))          # 300 px tall
+    def test_a_second_person_near_the_holder_changes_nothing(self):
+        holder = self._knife_track(1, (400, 200, 520, 500))
         near = self._knife_track(2, (560, 200, 680, 500))            # ~1.0 heights away
-        far = self._knife_track(3, (1100, 200, 1220, 500))           # ~2.3 heights away
         import datetime
-        # an uploaded clip filmed at 16:00 (the x1.36 block) via --clock
+        # a clip filmed at 16:00 would have added E20 points before; the knife score is exactly 40 / 60 now
         self.thief._source_path = "clip.mp4"
         self.thief.clock_start = datetime.datetime(2026, 10, 2, 16, 0)
-        self.thief._frame_tracks = [holder, far]
-        self.assertEqual(self.thief._knife_evidence(holder, "knife", 3.0, 0.0, holder.box).band,
-                         scoring.MONITORING)
         self.thief._frame_tracks = [holder, near]
-        ev = self.thief._knife_evidence(holder, "knife", 3.0, 0.0, holder.box)
+        ev = self.thief._knife_evidence(holder, "knife", 3.0, 0.0, holder.box, persistent=False)
         self.assertTrue(ev.people_near)
-        # Holdup v2: someone near is not enough -- a knife alone stays Monitoring.
-        self.assertEqual(ev.band, scoring.MONITORING)
-        self.assertAlmostEqual(ev.score, 0.45, places=3)
-        # With loitering remembered (E10) the same scene is Possible: 45 + 10,
-        # then E20 (10 points at 16:00) is capped so the base band is kept.
-        from core.vision import theft
-        self.thief.engine = theft.TheftEngine()
-        holder.loiter_last_seen = 0.0
-        ev = self.thief._knife_evidence(holder, "knife", 3.0, 0.0, holder.box)
-        self.assertEqual(ev.band, scoring.WARNING)
-        self.assertAlmostEqual(ev.score, 0.65, places=3)
+        self.assertEqual((ev.band, round(ev.score, 3)), (scoring.MONITORING, 0.40))
+        ev = self.thief._knife_evidence(holder, "knife", 3.0, 0.0, holder.box, persistent=True)
+        self.assertEqual((ev.band, round(ev.score, 3)), (scoring.WARNING, 0.60))
+        self.assertNotIn("E20", ev.cues)
+        self.assertNotIn("E10", ev.cues)
+        self.assertNotIn("E12", ev.cues)
 
     def test_the_knife_row_stores_the_score_not_the_yolo_confidence(self):
         holder = self._knife_track(1, (400, 200, 520, 500))
         self.thief._frame_tracks = [holder]
-        ev = self.thief._knife_evidence(holder, "knife", 3.0, 10.0, holder.box)
+        ev = self.thief._knife_evidence(holder, "knife", 3.0, 10.0, holder.box, persistent=False)
         self.thief._incident_sync(
             ("knife", 1), ev, 10.0, frame=self.frame, box=holder.box,
             create=lambda level, with_clip: self.thief._create_alert(
@@ -317,12 +317,13 @@ class AICheckerWiringTests(SmokingIncidentTests):
         self.cmd._incident_gc(t, self.frame)
 
     def rise_to_possible(self):
-        """Cigarette for a while (Monitoring), then one puff -> 60 -> Possible."""
+        """Cigarette for a while (Monitoring), then two puffs -> 75 -> Possible (one puff is only 45)."""
         for i in range(30):
             self.frame_step(i * 0.25, [CIG])
         self.puff(8.0)
+        self.puff(10.0)
         for i in range(8):
-            self.frame_step(8.0 + i * 0.25, [CIG])
+            self.frame_step(10.5 + i * 0.25, [CIG])
 
     def test_monitoring_alone_never_calls_the_checker(self):
         # Thirty frames of a cigarette and nothing else: a real event, a real
@@ -377,9 +378,9 @@ class AICheckerWiringTests(SmokingIncidentTests):
         # the ones from the start, which show only the object sitting there.
         self.rise_to_possible()
         sent = sorted(float(t) for t, _jpg, _boxes in
-                      self.cmd.ai_ring.window(9.75))
+                      self.cmd.ai_ring.window(10.5))   # the 2nd puff lands at 10.0: Possible from the next frame
         self.assertTrue(sent, "nothing was in the ring around the trigger")
-        self.assertGreaterEqual(min(sent), 9.75 - ai_checker.FRAMES_BEFORE - 1e-9,
+        self.assertGreaterEqual(min(sent), 10.5 - ai_checker.FRAMES_BEFORE - 1e-9,
                                 "frames from before the window were sent")
         self.assertLess(self.cmd.ai_ring._items[0][0], min(sent),
                         "the ring held nothing older than the window, so this proves nothing")
@@ -577,7 +578,7 @@ class LevelSurvivesACuelessFrameTests(SmokingIncidentTests):
         return score
 
     def open_at_possible(self):
-        self.sync({"cigarette", "gesture"}, 0.0, puffed=True)         # puffed: not capped, 0.60
+        self.sync({"cigarette", "gesture", "puffs"}, 0.0, puffed=True)   # puffed: not capped, 0.75
         row = self.rows()[-1]
         self.assertEqual(row.level, scoring.WARNING)
         return row
@@ -587,7 +588,7 @@ class LevelSurvivesACuelessFrameTests(SmokingIncidentTests):
         none = self.sync(set(), 0.25)                                  # the cue-less frame
         self.assertEqual(none.level, scoring.NONE)
         self.assertEqual(self.cmd._incident_level(self.KEY), scoring.WARNING, "the incident's level was reset")
-        again = self.sync({"cigarette", "gesture"}, 0.5)               # same cues, no puff this time
+        again = self.sync({"cigarette", "gesture", "puffs"}, 0.5)      # same cues, no puff this time
         self.assertEqual(again.level, scoring.WARNING, "the sticky cap did not hold after the gap")
         row.refresh_from_db()
         self.assertEqual(row.level, scoring.WARNING)

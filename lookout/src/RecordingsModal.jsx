@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { X, Video, Download, Circle, AlertTriangle, HardDrive, Loader2 } from "lucide-react";
+import { X, Video, Download, Circle, AlertTriangle, HardDrive, Loader2, Play, Pause } from "lucide-react";
 import { getRecordings } from "./api";
 
 // The continuous CCTV tape (core/recording.py), the way an NVR is browsed: a
@@ -29,7 +29,13 @@ const fmtLength = (seconds) => {
   return m ? `${m}m ${s.toString().padStart(2, "0")}s` : `${s}s`;
 };
 
-export function RecordingsModal({ onClose }) {
+const fmtTime = (s) => {
+  if (!isFinite(s) || s < 0) return "0:00";
+  const m = Math.floor(s / 60);
+  return `${m}:${Math.floor(s % 60).toString().padStart(2, "0")}`;
+};
+
+export function RecordingsModal({ onClose, jumpTo = null }) {
   const [days, setDays] = useState([]);
   const [status, setStatus] = useState(null);
   const [date, setDate] = useState(null);
@@ -40,6 +46,10 @@ export function RecordingsModal({ onClose }) {
   const [atTime, setAtTime] = useState(null);       // wall clock under the player
   const videoRef = useRef(null);
   const retriedRef = useRef(false);
+  const isDraggingRef = useRef(false);
+  const [vidCurrent, setVidCurrent] = useState(0);
+  const [vidDuration, setVidDuration] = useState(0);
+  const [vidPaused, setVidPaused] = useState(true);
 
   // The days index. Polled, not read once: the tape is being written while
   // this is open, so a day that gains its first segment should appear.
@@ -81,12 +91,45 @@ export function RecordingsModal({ onClose }) {
     return () => clearInterval(id);
   }, [date, loadDay]);
 
-  const open = (segment) => {
+  const autoJumpedRef = useRef(false);
+
+  const open = (segment, resumeAt = 0) => {
     if (!segment.playable) return;
     retriedRef.current = false;
-    setPlaying({ ...segment, src: segment.url });
-    setAtTime(new Date(segment.started_at));
+    isDraggingRef.current = false;
+    setPlaying({ ...segment, src: segment.url, resumeAt: resumeAt || undefined });
+    setAtTime(new Date(new Date(segment.started_at).getTime() + (resumeAt || 0) * 1000));
+    setVidCurrent(resumeAt || 0);
+    setVidDuration(0);
+    setVidPaused(false);
   };
+
+  // When opened from an alert's "In Tape" button, auto-select the matching day
+  // and segment and seek to the moment the alert was detected.
+  useEffect(() => {
+    if (!jumpTo || autoJumpedRef.current || days.length === 0) return;
+    const d = new Date(jumpTo);
+    const dayStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const found = days.find((day) => day.date === dayStr);
+    if (found) setDate(found.date);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [days, jumpTo]);
+
+  const [jumpNotFound, setJumpNotFound] = useState(false);
+
+  useEffect(() => {
+    if (!jumpTo || autoJumpedRef.current || segments.length === 0) return;
+    const ts = new Date(jumpTo).getTime();
+    const seg = segments.find((s) => {
+      const start = new Date(s.started_at).getTime();
+      return ts >= start && ts < start + (s.seconds ?? 0) * 1000 && s.playable;
+    });
+    autoJumpedRef.current = true;
+    if (!seg) { setJumpNotFound(true); return; }
+    setJumpNotFound(false);
+    open(seg, Math.max(0, (ts - new Date(seg.started_at).getTime()) / 1000));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [segments, jumpTo]);
 
   // A segment's URL carries a ticket good for a few minutes, so a panel left
   // open on one paused segment eventually holds a stale one. Ask the server
@@ -109,13 +152,25 @@ export function RecordingsModal({ onClose }) {
       .catch(() => setError("That segment could not be played."));
   };
 
+  const onDurationChange = () => {
+    const v = videoRef.current;
+    if (v && isFinite(v.duration)) setVidDuration(v.duration);
+  };
+
+  const togglePlay = () => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused) v.play().catch(() => {}); else v.pause();
+  };
+
   // The clock under the player: where the playhead is in REAL time, which is
   // the only time an operator is thinking in. The segment's own position is
   // meaningless on its own — "four minutes into a file" is not an answer.
   const onTimeUpdate = () => {
-    if (!playing) return;
+    if (!playing || isDraggingRef.current) return;
     const v = videoRef.current;
     if (!v) return;
+    setVidCurrent(v.currentTime);
     setAtTime(new Date(new Date(playing.started_at).getTime() + v.currentTime * 1000));
   };
 
@@ -173,6 +228,14 @@ export function RecordingsModal({ onClose }) {
           {status?.free_bytes != null && <span>{fmtBytes(status.free_bytes)} free on disk</span>}
         </div>
 
+        {jumpNotFound && jumpTo && (
+          <div className="flex items-center gap-2 px-5 py-2 text-[13px] flex-shrink-0"
+            style={{ color: "#f59e0b", borderBottom: "1px solid var(--border)" }}>
+            <AlertTriangle size={13} />
+            The recording that contained this clip could not be found — it may have been deleted by the retention policy.
+          </div>
+        )}
+
         {error && (
           <div className="flex items-center gap-2 px-5 py-2 text-[13px] flex-shrink-0"
             style={{ color: "#f59e0b" }}>
@@ -218,25 +281,74 @@ export function RecordingsModal({ onClose }) {
 
           {/* Player and the day's segments */}
           <div className="flex-1 min-w-0 flex flex-col">
-            <div className="flex items-center justify-center flex-shrink-0"
+            <div className="flex items-center justify-center flex-shrink-0 relative"
               style={{ background: "#000", aspectRatio: "16 / 9", maxHeight: "46vh" }}>
               {playing ? (
-                <video
-                  ref={videoRef}
-                  key={playing.src}
-                  src={playing.src}
-                  controls
-                  autoPlay
-                  onTimeUpdate={onTimeUpdate}
-                  onError={onVideoError}
-                  onLoadedMetadata={() => {
-                    // Only after a token retry: putting the playhead back where
-                    // the operator was, instead of restarting the segment.
-                    const v = videoRef.current;
-                    if (v && playing.resumeAt) v.currentTime = playing.resumeAt;
-                  }}
-                  style={{ width: "100%", height: "100%", objectFit: "contain" }}
-                />
+                <>
+                  <video
+                    ref={videoRef}
+                    key={playing.src}
+                    src={playing.src}
+                    autoPlay
+                    onPlay={() => setVidPaused(false)}
+                    onPause={() => setVidPaused(true)}
+                    onTimeUpdate={onTimeUpdate}
+                    onDurationChange={onDurationChange}
+                    onSeeked={() => { isDraggingRef.current = false; }}
+                    onError={onVideoError}
+                    onLoadedMetadata={() => {
+                      onDurationChange();
+                      const v = videoRef.current;
+                      if (v && playing.resumeAt) v.currentTime = playing.resumeAt;
+                    }}
+                    style={{ width: "100%", height: "100%", objectFit: "contain" }}
+                  />
+                  {/* Custom controls overlay — avoids the React re-render vs native
+                      scrubber fight that caused seeking to snap back to the start. */}
+                  <div
+                    className="absolute bottom-0 left-0 right-0"
+                    style={{
+                      background: "linear-gradient(to top, rgba(0,0,0,0.88) 0%, transparent 100%)",
+                      padding: "36px 14px 10px",
+                    }}
+                  >
+                    <input
+                      type="range"
+                      min={0}
+                      max={vidDuration || 0.001}
+                      step={0.1}
+                      value={vidCurrent}
+                      style={{ width: "100%", display: "block", cursor: "pointer", accentColor: "#ef4444" }}
+                      onMouseDown={() => { isDraggingRef.current = true; }}
+                      onChange={(e) => setVidCurrent(Number(e.target.value))}
+                      onMouseUp={(e) => {
+                        const t = Number(e.currentTarget.value);
+                        setVidCurrent(t);
+                        if (videoRef.current) videoRef.current.currentTime = t;
+                        if (playing) setAtTime(new Date(new Date(playing.started_at).getTime() + t * 1000));
+                        // isDraggingRef cleared by onSeeked — keeps timeupdate from
+                        // snapping the scrubber back before the seek is confirmed.
+                      }}
+                      onTouchStart={() => { isDraggingRef.current = true; }}
+                      onTouchEnd={(e) => {
+                        const t = Number(e.currentTarget.value);
+                        setVidCurrent(t);
+                        if (videoRef.current) videoRef.current.currentTime = t;
+                      }}
+                    />
+                    <div className="flex items-center gap-3 mt-1.5">
+                      <button
+                        onClick={togglePlay}
+                        style={{ color: "#fff", background: "none", border: "none", cursor: "pointer", padding: 0, lineHeight: 0 }}
+                      >
+                        {vidPaused ? <Play size={15} /> : <Pause size={15} />}
+                      </button>
+                      <span style={{ color: "rgba(255,255,255,0.8)", fontFamily: "'DM Mono', monospace", fontSize: 11 }}>
+                        {fmtTime(vidCurrent)} / {fmtTime(vidDuration)}
+                      </span>
+                    </div>
+                  </div>
+                </>
               ) : (
                 <div className="text-[13px]" style={{ color: "#6b7280" }}>
                   Choose a time below to play it.

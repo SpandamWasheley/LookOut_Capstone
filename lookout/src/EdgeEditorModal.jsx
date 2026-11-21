@@ -13,14 +13,14 @@ import { ConfirmDialog } from "./ConfirmDialog";
 const ALLOWED_EXTENSIONS = [".mp4", ".mkv", ".avi"];
 const MAX_BYTES = 1024 * 1024 * 1024; // 1GB, matches the backend's limit
 
-// How tall the picture may get while expanded: the window, less this modal's
-// own header, footer and padding. Points are placed by eye against kerbs and
-// wall lines a few pixels wide in the frame's own scale, so the only thing
-// that makes them placeable is size — but a picture taller than the window
-// hides the far end of the road behind the footer, and the editor would have
-// traded one unclickable area for another. One number, used both by the
-// canvas and by the hint badge pinned to its corner.
-const EXPANDED_FIT = "calc(96vh - 200px)";
+// How tall the picture may get in fullscreen expand mode: the viewport minus
+// the compact top/bottom HUD bars (~60px each). Points are placed by eye
+// against kerbs and wall lines a few pixels wide in the frame's own scale, so
+// the only thing that makes them placeable is size — but a picture taller than
+// the window hides the far end of the road behind the footer, and the editor
+// would have traded one unclickable area for another. One number, used both by
+// the canvas and by the aspect-ratio wrapper that keeps the badge in the corner.
+const EXPANDED_FIT = "calc(100vh - 120px)";
 
 // The two areas `Camera.edges` holds, in the order the selector lists them.
 // `kind` is the one name that travels: EdgeCanvas's prop, the trace job's
@@ -40,8 +40,8 @@ const ZONES = [
     key: "disposal",
     kind: "disposal",
     icon: Trash2,
-    label: "Improper disposal",
-    section: "Rubbish area",
+    label: "Waste",
+    section: "Waste area",
     traceLabel: "Trace area",
     tip: "Outline where rubbish gets dumped: kerb, footpath, corners. Drag to move a point, right-click to remove. Optional; if left empty, it's auto-traced.",
   },
@@ -107,7 +107,6 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
   // Seeds EdgeCanvas once the frame is known — see acceptFrame below.
   const [prefill, setPrefill] = useState({ points: [], legacyKerbs: false });
   const [edgeSpec, setEdgeSpec] = useState({});
-  const [canSave, setCanSave] = useState(false);
 
   // Two independent areas: parking's no-parking road polygon and improper
   // disposal's watch area. Both canvases stay mounted (the inactive one is just
@@ -356,7 +355,12 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
     || Number(pct) !== Number(camera.obstruction_pct ?? 35)
     || Number(minutes) !== Number(camera.obstruction_minutes ?? 2);
   const disposalDirty = JSON.stringify(disposalSpec) !== disposalInitial;
-  const savable = (parkingDirty || disposalDirty) && (!parkingDirty || canSave);
+  // An area is saveable when it is a real shape (3+ points) OR deliberately empty (0 points = "no zone",
+  // which the server turns into "parking off" / "disposal watches the whole frame"). Only a half-drawn
+  // one or two points blocks Save, because that would silently be saved as an empty area.
+  const shapeOk = (n) => n === 0 || n >= 3;
+  const halfDrawn = !shapeOk(edgePoints) || !shapeOk(disposalPoints);
+  const savable = (parkingDirty || disposalDirty) && !halfDrawn;
 
   const handleSave = async () => {
     if (!savable || !frame) return;
@@ -480,47 +484,114 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
 
   return (
     <div
-      className={`fixed inset-0 z-[70] flex items-center justify-center ${expanded ? "p-2" : "p-4"}`}
+      className={`fixed inset-0 z-[70] flex items-center justify-center ${expanded ? "p-0" : "p-4"}`}
       style={{ background: "rgba(0,0,0,0.72)", backdropFilter: "blur(6px)" }}
       onClick={(e) => { if (e.target === e.currentTarget && !saving) requestClose(); }}
     >
       <div
-        className={`w-full rounded-2xl overflow-hidden shadow-2xl flex flex-col ${expanded ? "max-w-[1800px]" : "max-w-[1000px]"}`}
-        style={{ background: "var(--card)", border: "1px solid var(--border)", maxHeight: expanded ? "96vh" : "92vh" }}
+        className={`w-full overflow-hidden shadow-2xl flex flex-col ${expanded ? "h-full rounded-none" : "max-w-[1000px] rounded-2xl"}`}
+        style={{ background: expanded ? "#0b0d0f" : "var(--card)", border: expanded ? "none" : "1px solid var(--border)", maxHeight: expanded ? "100vh" : "92vh" }}
       >
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 flex-shrink-0"
-          style={{ borderBottom: "1px solid var(--border)" }}>
-          <div>
-            <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>
-              Edge zones
-            </div>
-            <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>
-              {camera.name} ({camera.id})
-            </div>
-          </div>
-          <div className="flex items-center gap-1.5">
-            {frame && (
-              <button onClick={() => setExpanded((v) => !v)}
-                title={expanded ? "Shrink the view (Esc)" : "Expand the view for drawing"}
-                aria-label={expanded ? "Shrink the view" : "Expand the view"}
-                aria-pressed={expanded}
+        {/* Header — compact zone/action HUD in fullscreen, title+buttons normally */}
+        {expanded ? (
+          <div className="flex items-center gap-2 px-4 py-2.5 flex-shrink-0"
+            style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+            {/* Zone type pills */}
+            {ZONES.map((zone) => {
+              const on = tab === zone.key;
+              const count = zone.key === "disposal" ? disposalPoints : edgePoints;
+              const ZIcon = zone.icon;
+              return (
+                <button key={zone.key} onClick={() => setTab(zone.key)}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[12px] font-medium"
+                  style={{
+                    background: on ? "rgba(255,255,255,0.14)" : "rgba(255,255,255,0.05)",
+                    color: on ? "#fff" : "rgba(255,255,255,0.45)",
+                    border: "1px solid rgba(255,255,255,0.1)",
+                  }}>
+                  <ZIcon size={12} />
+                  {zone.label}
+                  <span style={{ opacity: 0.6, fontSize: "11px" }}>
+                    {count ? `${count}pt` : "—"}
+                  </span>
+                </button>
+              );
+            })}
+            <div className="h-4 w-px flex-shrink-0 mx-1" style={{ background: "rgba(255,255,255,0.1)" }} />
+            {/* Undo / Clear */}
+            <button onClick={() => activeActions.current?.undo?.()} disabled={!activeCount}
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[12px] font-medium disabled:opacity-30"
+              style={{ background: "rgba(255,255,255,0.05)", color: "rgba(255,255,255,0.7)", border: "1px solid rgba(255,255,255,0.1)" }}>
+              <Undo2 size={11} /> Undo
+            </button>
+            <button onClick={requestClear} disabled={!activeCount}
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[12px] font-medium disabled:opacity-30"
+              style={{ background: "rgba(255,255,255,0.05)", color: "rgba(255,255,255,0.7)", border: "1px solid rgba(255,255,255,0.1)" }}>
+              <Trash2 size={11} /> Clear
+            </button>
+            {/* Trace */}
+            <button onClick={() => handleTrace(active.kind)} disabled={tracing || saving}
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[12px] font-medium"
+              style={{ background: "rgba(255,255,255,0.05)", color: "rgba(255,255,255,0.7)", border: "1px solid rgba(255,255,255,0.1)",
+                opacity: (tracing || saving) ? 0.5 : 1, cursor: (tracing || saving) ? "not-allowed" : "pointer" }}>
+              {tracing ? <Loader2 size={11} className="animate-spin" /> : <Wand2 size={11} />}
+              {active.traceLabel}
+            </button>
+            {tracing && (
+              <span className="text-[12px]" style={{ color: "rgba(255,255,255,0.4)" }}>
+                ~{trace.estimated_seconds ?? 48}s ({Math.round((trace.progress ?? 0) * 100)}%)
+                <button onClick={handleCancelTrace} className="ml-1.5 underline" style={{ color: "rgba(255,255,255,0.4)" }}>Cancel</button>
+              </span>
+            )}
+            {/* Minimize */}
+            <div className="ml-auto flex items-center gap-1.5">
+              <button onClick={() => setExpanded(false)}
+                title="Shrink the view (Esc)"
+                aria-label="Shrink the view"
                 className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[12px] font-medium"
-                style={{ color: "var(--foreground)", background: "var(--secondary)", border: "1px solid var(--border)" }}>
-                {expanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
-                {expanded ? "Shrink" : "Expand"}
+                style={{ background: "rgba(255,255,255,0.08)", color: "rgba(255,255,255,0.8)", border: "1px solid rgba(255,255,255,0.15)" }}>
+                <Minimize2 size={11} /> Shrink
               </button>
-            )}
-            {!saving && (
-              <button onClick={requestClose} className="p-1.5 rounded-lg"
-                style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}>
-                <X size={14} />
-              </button>
-            )}
+              {!saving && (
+                <button onClick={requestClose} className="p-1.5 rounded-lg"
+                  style={{ color: "rgba(255,255,255,0.4)", background: "rgba(255,255,255,0.05)" }}>
+                  <X size={14} />
+                </button>
+              )}
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="flex items-center justify-between px-5 py-4 flex-shrink-0"
+            style={{ borderBottom: "1px solid var(--border)" }}>
+            <div>
+              <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>
+                Edge zones
+              </div>
+              <div className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>
+                {camera.name} ({camera.id})
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5">
+              {frame && (
+                <button onClick={() => setExpanded(true)}
+                  title="Expand the view for drawing"
+                  aria-label="Expand the view"
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[12px] font-medium"
+                  style={{ color: "var(--foreground)", background: "var(--secondary)", border: "1px solid var(--border)" }}>
+                  <Maximize2 size={13} /> Expand
+                </button>
+              )}
+              {!saving && (
+                <button onClick={requestClose} className="p-1.5 rounded-lg"
+                  style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}>
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+          </div>
+        )}
 
-        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3.5">
+        <div className={expanded && frame ? "flex-1 min-h-0 flex flex-col" : "flex-1 overflow-y-auto px-5 py-4 space-y-3.5"}>
           {loadingLive && (
             <div className="flex flex-col items-center justify-center gap-2 py-16">
               <Loader2 size={22} className="animate-spin" style={{ color: "var(--muted-foreground)" }} />
@@ -594,9 +665,10 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
               {/* Picture on the left, every control on the right. Below md
                   the controls stack under the frame rather than being squeezed
                   beside it. */}
-              <div className={`grid grid-cols-1 gap-4 items-start ${
-                expanded ? "md:grid-cols-[minmax(0,1fr)_300px]" : "md:grid-cols-[minmax(0,60fr)_minmax(0,40fr)]"
-              }`}>
+              <div className={expanded
+                ? "flex-1 min-h-0 flex items-center justify-center"
+                : "grid grid-cols-1 md:grid-cols-[minmax(0,60fr)_minmax(0,40fr)] gap-4 items-start"
+              }>
                 {/* LEFT - the frame and its overlay. Both canvases stay MOUNTED
                     (the inactive one is only hidden) because EdgeCanvas owns
                     its points: unmounting on a switch would throw away a
@@ -613,7 +685,7 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
                       actionsRef={parkingActions}
                       onChange={(spec, can, count) => {
                         setParkingInitial((prev) => prev ?? JSON.stringify(spec));
-                        setEdgeSpec(spec); setCanSave(can);
+                        setEdgeSpec(spec);
                         setEdgePoints(count);
                       }}
                     />
@@ -646,8 +718,9 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
                   )}
                 </div>
 
-                {/* RIGHT - the controls for whichever area is selected. */}
-                <div className="space-y-3">
+                {/* RIGHT - the controls for whichever area is selected. Hidden in fullscreen
+                    expand mode: the HUD header holds the zone/action controls there. */}
+                <div className={expanded ? "hidden" : "space-y-3"}>
                   <div className="text-[11px] font-medium uppercase tracking-wider"
                     style={{ color: "var(--muted-foreground)" }}>
                     Zone type
@@ -769,14 +842,15 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
                 </div>
               </div>
 
-              {applyNote && (
+              {/* Notes hidden in expanded mode — shown in footer instead */}
+              {!expanded && applyNote && (
                 <div className="flex items-start gap-2 text-[13px] px-3 py-2.5 rounded-xl"
                   style={{ background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.25)", color: "#22c55e" }}>
                   <Info size={13} className="flex-shrink-0 mt-0.5" /><span>{applyNote}</span>
                 </div>
               )}
 
-              {saveError && (
+              {!expanded && saveError && (
                 <div className="flex items-start gap-2 text-[14px] px-3 py-2.5 rounded-xl"
                   style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", color: "#ef4444" }}>
                   <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
@@ -788,28 +862,44 @@ export function EdgeEditorModal({ camera, onClose, onSaved }) {
         </div>
 
         {/* Footer */}
-        <div className="px-5 py-4 flex items-center justify-end gap-2 flex-shrink-0"
-          style={{ borderTop: "1px solid var(--border)" }}>
-          {!saving && (
-            <button onClick={requestClose} className="px-4 py-2 rounded-xl text-sm font-medium"
-              style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}>
-              {applyNote ? "Close" : "Cancel"}
-            </button>
+        <div className="px-5 py-4 flex flex-col gap-2 flex-shrink-0"
+          style={{ borderTop: expanded ? "1px solid rgba(255,255,255,0.08)" : "1px solid var(--border)" }}>
+          {/* Notes surfaced here when in fullscreen expand mode */}
+          {expanded && applyNote && (
+            <div className="flex items-start gap-2 text-[13px] px-3 py-2 rounded-xl"
+              style={{ background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.25)", color: "#22c55e" }}>
+              <Info size={13} className="flex-shrink-0 mt-0.5" /><span>{applyNote}</span>
+            </div>
           )}
-          <button
-            disabled={!savable || saving || !!applyNote}
-            onClick={requestSave}
-            className="flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-medium"
-            style={{
-              background: "#f59e0b",
-              color: "#0c0f16",
-              cursor: (!savable || saving) ? "not-allowed" : "pointer",
-              opacity: (!savable || saving) ? 0.5 : 1,
-            }}
-          >
-            {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
-            {saving ? "Saving…" : "Save zones"}
-          </button>
+          {expanded && saveError && (
+            <div className="flex items-start gap-2 text-[13px] px-3 py-2 rounded-xl"
+              style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)", color: "#ef4444" }}>
+              <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" /><span>{saveError}</span>
+            </div>
+          )}
+          <div className="flex items-center justify-end gap-2">
+            {!saving && (
+              <button onClick={requestClose} className="px-4 py-2 rounded-xl text-sm font-medium"
+                style={{ background: expanded ? "rgba(255,255,255,0.08)" : "var(--secondary)", color: expanded ? "rgba(255,255,255,0.65)" : "var(--muted-foreground)", border: expanded ? "1px solid rgba(255,255,255,0.1)" : "1px solid var(--border)" }}>
+                {applyNote ? "Close" : "Cancel"}
+              </button>
+            )}
+            <button
+              disabled={!savable || saving || !!applyNote}
+              title={halfDrawn ? "Finish the shape (at least 3 points) or clear it before saving." : undefined}
+              onClick={requestSave}
+              className="flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-medium"
+              style={{
+                background: "#f59e0b",
+                color: "#0c0f16",
+                cursor: (!savable || saving) ? "not-allowed" : "pointer",
+                opacity: (!savable || saving) ? 0.5 : 1,
+              }}
+            >
+              {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
+              {saving ? "Saving…" : "Save zones"}
+            </button>
+          </div>
         </div>
       </div>
 

@@ -532,7 +532,7 @@ function FeedImage({ src, alt, offline, className, iconSize = 22 }) {
   );
 }
 
-export function CameraGrid({ compact = false, isAdmin: isAdminRole = false }) {
+export function CameraGrid({ compact = false, isAdmin: isAdminRole = false, jumpToTimestamp = null, onRecordingsOpened = null }) {
   // Upload Video and History are testing tools: admin only AND switched on in Settings -> System.
   const testingTools = useTestingTools(isAdminRole);
   const isAdmin = isAdminRole;
@@ -548,7 +548,17 @@ export function CameraGrid({ compact = false, isAdmin: isAdminRole = false }) {
   const [showUpload, setShowUpload] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [showRecordings, setShowRecordings] = useState(false);
+  const [recordingsJumpTo, setRecordingsJumpTo] = useState(null);
   const [detectionJobs, setDetectionJobs] = useState([]);
+
+  // Open recordings with the timestamp passed down from admin_dashboard (which
+  // captured it from the event before this component was mounted).
+  useEffect(() => {
+    if (!jumpToTimestamp) return;
+    setRecordingsJumpTo(jumpToTimestamp);
+    setShowRecordings(true);
+    onRecordingsOpened?.();
+  }, [jumpToTimestamp, onRecordingsOpened]);
   const [dismissedJobIds, setDismissedJobIds] = useState(() => new Set());
 
   useEffect(() => {
@@ -563,7 +573,7 @@ export function CameraGrid({ compact = false, isAdmin: isAdminRole = false }) {
           setAllCameras(mapped);
         })
         .catch(() => {});
-      getAlerts().then((res) => setAlerts(res.results ?? res)).catch(() => {});
+      getAlerts({ ongoing: 1 }).then((res) => setAlerts(res.results ?? res)).catch(() => {});
     };
     refresh();
     const interval = setInterval(refresh, 4000);
@@ -677,14 +687,6 @@ export function CameraGrid({ compact = false, isAdmin: isAdminRole = false }) {
           {/* The continuous tape, beside the layout switcher rather than under
               testing tools: looking back at what the camera saw is ordinary
               operation for the desk, not a test harness. */}
-          <button
-            onClick={() => setShowRecordings(true)}
-            className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[14px] transition-colors"
-            style={{ border: "1px solid var(--border)", background: "var(--card)", color: "var(--foreground)" }}
-          >
-            <Video size={14} />
-            <span>Recordings</span>
-          </button>
           <div className="relative" ref={menuRef}>
           <button
             onClick={() => setMenuOpen((o) => !o)}
@@ -791,7 +793,7 @@ export function CameraGrid({ compact = false, isAdmin: isAdminRole = false }) {
         />
       )}
 
-      {showRecordings && <RecordingsModal onClose={() => setShowRecordings(false)} />}
+      {showRecordings && <RecordingsModal onClose={() => { setShowRecordings(false); setRecordingsJumpTo(null); }} jumpTo={recordingsJumpTo} />}
 
       {testingTools && showHistory && (
         <DetectionJobHistoryModal jobs={detectionJobs} onClose={() => setShowHistory(false)} onCancel={handleCancelJob} />

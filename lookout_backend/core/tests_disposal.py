@@ -486,19 +486,20 @@ class ScoredDisposalTests(TestCase):
         self.assertAlmostEqual(self.score("object", "arrival").score, 0.60)
         self.assertEqual(self.score("object", "arrival").level, scoring.WARNING)
 
-    def test_the_full_sequence_is_likely(self):
+    def test_the_full_sequence_is_possible_while_likely_is_off(self):
         """A person, then rubbish, then they leave it -- the ordinance's own
-        description of the offence."""
+        description of the offence. Scores 1.00; Likely is switched off
+        (scoring.LIKELY_ENABLED), so the strongest status is Possible."""
         full = self.score("object", "arrival", "person", "left", "persisted")
         self.assertAlmostEqual(full.score, 1.0)
-        self.assertEqual(full.level, scoring.VIOLATION)
+        self.assertEqual(full.level, scoring.WARNING)
 
-    def test_a_dark_sack_the_arrival_test_missed_is_still_likely(self):
+    def test_a_dark_sack_the_arrival_test_missed_is_still_possible(self):
         """The night case: too few pixels moved for the arrival cue, but the
         person evidence is all there."""
         s = self.score("object", "person", "left", "persisted")
         self.assertAlmostEqual(s.score, 0.80)
-        self.assertEqual(s.level, scoring.VIOLATION)
+        self.assertEqual(s.level, scoring.WARNING)
 
     def test_walking_away_cannot_score_without_having_been_there(self):
         """A conditional cue, like at_mouth needing a bottle. Without it an
@@ -1279,11 +1280,12 @@ class BehaviourOnlyPathTests(TestCase):
         self.assertEqual(s.level, scoring.NONE)
 
     def test_a_confirmed_bag_does_not_use_this_path(self):
-        """It has the real gate cue and must be free to reach Likely."""
+        """It has the real gate cue and must be free to reach the top status
+        (Possible, while Likely is switched off)."""
         cues = self.BEHAVIOUR | {"object"}
         on, s = self.scored(self.cand(weak=False), cues, confirmed=True)
         self.assertFalse(on)
-        self.assertEqual(s.level, scoring.VIOLATION)
+        self.assertEqual(s.level, scoring.WARNING)
 
 
 class DwellCueTests(TestCase):
@@ -2756,14 +2758,14 @@ class DisposalStatusFlowTests(TestCase):
         self.assertEqual(e["status"], "Monitoring")
         self.assertEqual(e["score"], 40)
 
-    def test_the_full_sequence_is_likely(self):
+    def test_the_full_sequence_is_possible_while_likely_is_off(self):
         self.cand.confirmed = True
         self.cand.label, self.cand.score = "garbage bag", 0.42
         self.proven_arrival()
         self.cand.claim_owners([(400.0, 205.0)], 0.0)
         self.cand.confirm_count = 2
         e = self.publish(now=60.0, static_seconds=2.0)
-        self.assertEqual(e["status"], "Likely")
+        self.assertEqual(e["status"], "Possible")
         self.assertEqual(e["score"], 100)
 
     def test_a_winning_reject_class_is_below_monitoring(self):
@@ -3017,23 +3019,25 @@ class PossibleAlertTests(TestCase):
         self.assertEqual(alert.peak_level, scoring.WARNING)
         self.assertEqual(cand.alert_pk, alert.pk)
 
-    def test_a_confirmed_verdict_files_at_likely(self):
+    def test_a_confirmed_verdict_files_at_possible(self):
+        """Full evidence files at Possible, the top status while Likely is off."""
         cmd, _mod = self._command()
         self.assertTrue(self._fire(cmd, self._candidate(), scoring.VIOLATION))
         alert = Alert.objects.get(type__code="disposal")
-        self.assertEqual(alert.level, scoring.VIOLATION)
-        self.assertEqual(alert.peak_level, scoring.VIOLATION)
+        self.assertEqual(alert.level, scoring.WARNING)
+        self.assertEqual(alert.peak_level, scoring.WARNING)
 
     def test_a_confirmation_upgrades_the_one_row_instead_of_filing_a_second(self):
+        # Likely is off, so the rise a confirmation can make is Monitoring -> Possible.
         cmd, _mod = self._command()
         cand = self._candidate()
-        self._fire(cmd, cand, scoring.WARNING)
+        self._fire(cmd, cand, scoring.MONITORING)
         pk = cand.alert_pk
         self.assertTrue(self._fire(cmd, cand, scoring.VIOLATION, score=0.4))
         self.assertEqual(Alert.objects.filter(type__code="disposal").count(), 1)
         alert = Alert.objects.get(pk=pk)
-        self.assertEqual(alert.level, scoring.VIOLATION)
-        self.assertEqual(alert.peak_level, scoring.VIOLATION)
+        self.assertEqual(alert.level, scoring.WARNING)
+        self.assertEqual(alert.peak_level, scoring.WARNING)
         self.assertAlmostEqual(alert.object_confidence, 0.4, places=5)
 
     def test_the_upgrade_is_recorded_on_the_timeline(self):
@@ -3041,10 +3045,10 @@ class PossibleAlertTests(TestCase):
         different badge than the reviewer saw a minute ago."""
         cmd, _mod = self._command()
         cand = self._candidate()
-        self._fire(cmd, cand, scoring.WARNING)
+        self._fire(cmd, cand, scoring.MONITORING)
         self._fire(cmd, cand, scoring.VIOLATION)
         events = Alert.objects.get(pk=cand.alert_pk).timeline
-        self.assertEqual([e["label"] for e in events], ["Likely"])
+        self.assertEqual([e["label"] for e in events], ["Possible"])
 
     def test_a_weaker_second_look_lowers_the_status_but_not_the_peak(self):
         """peak_level is what the Potential Violations list reads, so an event a
@@ -3052,10 +3056,10 @@ class PossibleAlertTests(TestCase):
         cmd, _mod = self._command()
         cand = self._candidate()
         self._fire(cmd, cand, scoring.VIOLATION)
-        self.assertTrue(self._fire(cmd, cand, scoring.WARNING))
+        self.assertTrue(self._fire(cmd, cand, scoring.MONITORING))
         alert = Alert.objects.get(pk=cand.alert_pk)
-        self.assertEqual(alert.level, scoring.WARNING)
-        self.assertEqual(alert.peak_level, scoring.VIOLATION)
+        self.assertEqual(alert.level, scoring.MONITORING)
+        self.assertEqual(alert.peak_level, scoring.WARNING)
 
     def test_restating_the_same_status_writes_nothing(self):
         """The presence loop re-asks every few seconds and almost always gets
@@ -3074,7 +3078,7 @@ class PossibleAlertTests(TestCase):
         cmd, _mod = self._command()
         cd = disposal.SpatialCooldown(seconds=120, distance=60)
         first = self._candidate()
-        self._fire(cmd, first, scoring.WARNING, cooldown=cd)
+        self._fire(cmd, first, scoring.MONITORING, cooldown=cd)
         replacement = disposal.Candidate(2, self.OBJ_BOX, 0.0)
         self.assertTrue(self._fire(cmd, replacement, scoring.VIOLATION,
                                    cooldown=cd, now=30.0))
@@ -3089,10 +3093,10 @@ class PossibleAlertTests(TestCase):
         cmd, _mod = self._command()
         cand = self._candidate()
         cd = disposal.SpatialCooldown(seconds=120, distance=60)
-        self._fire(cmd, cand, scoring.WARNING, cooldown=cd)
+        self._fire(cmd, cand, scoring.MONITORING, cooldown=cd)
         self.assertTrue(cd.blocks(cand.center, 30.0), "same spot, inside the window")
         self.assertTrue(self._fire(cmd, cand, scoring.VIOLATION, cooldown=cd, now=30.0))
-        self.assertEqual(Alert.objects.get(pk=cand.alert_pk).level, scoring.VIOLATION)
+        self.assertEqual(Alert.objects.get(pk=cand.alert_pk).level, scoring.WARNING)
 
     def test_an_upgrade_re_shoots_the_still(self):
         """The caption carries the score, so a card badged Likely over a photo
@@ -3100,7 +3104,7 @@ class PossibleAlertTests(TestCase):
         contradicting itself."""
         cmd, _mod = self._command()
         cand = self._candidate()
-        self._fire(cmd, cand, scoring.WARNING, score=0.11)
+        self._fire(cmd, cand, scoring.MONITORING, score=0.11)
         with mock.patch.object(cmd, "_save_still",
                                return_value="/media/violations/x.jpg") as shot:
             self._fire(cmd, cand, scoring.VIOLATION, score=0.40)
@@ -3116,7 +3120,7 @@ class PossibleAlertTests(TestCase):
         self._fire(cmd, cand, scoring.VIOLATION, score=0.40)
         before = Alert.objects.get(pk=cand.alert_pk).image_url
         with mock.patch.object(cmd, "_save_still") as shot:
-            self._fire(cmd, cand, scoring.WARNING, score=0.11)
+            self._fire(cmd, cand, scoring.MONITORING, score=0.11)
         shot.assert_not_called()
         self.assertEqual(Alert.objects.get(pk=cand.alert_pk).image_url, before)
 
@@ -3236,14 +3240,14 @@ class OneRowPerPlaceTests(TestCase):
         reported again from scratch."""
         cmd, cd = self._command(), self._cooldown()
         first = disposal.Candidate(1, self.LEFT, 0.0)
-        self._fire(cmd, first, cd, level=scoring.WARNING, score=0.11, now=10.0)
+        self._fire(cmd, first, cd, level=scoring.MONITORING, score=0.11, now=10.0)
         again = disposal.Candidate(2, self.LEFT, 60.0)
         self.assertTrue(self._fire(cmd, again, cd, level=scoring.VIOLATION,
                                    score=0.4, now=70.0))
         self.assertEqual(self._rows().count(), 1)
         row = self._rows().get()
         self.assertEqual(row.pk, first.alert_pk)
-        self.assertEqual(row.level, scoring.VIOLATION)
+        self.assertEqual(row.level, scoring.WARNING)
 
     def test_rubbish_somewhere_else_is_its_own_violation(self):
         """Left and right are two things to go and clear. Reporting them as one
@@ -3579,7 +3583,7 @@ class CollectionWindowAlertTests(TestCase):
 
     def test_after_the_window_it_alerts_normally(self):
         self.fire(self.candidate(), scoring.VIOLATION, at(MON, 8))
-        self.assertEqual(self.row().level, scoring.VIOLATION)
+        self.assertEqual(self.row().level, scoring.WARNING)
         self.assertNotIn("collection window", self.row().description)
 
     def test_before_the_window_it_alerts_normally(self):
@@ -3588,18 +3592,18 @@ class CollectionWindowAlertTests(TestCase):
 
     def test_sunday_morning_alerts_normally(self):
         self.fire(self.candidate(), scoring.VIOLATION, at(SUN, 5))
-        self.assertEqual(self.row().level, scoring.VIOLATION)
+        self.assertEqual(self.row().level, scoring.WARNING)
 
     def test_with_no_clock_the_rule_is_skipped(self):
         self.fire(self.candidate(), scoring.VIOLATION, None)
-        self.assertEqual(self.row().level, scoring.VIOLATION)
+        self.assertEqual(self.row().level, scoring.WARNING)
 
     def test_switched_off_it_alerts_normally(self):
         cfg = SystemSettings.load()
         cfg.disposal_collection_enabled = False
         cfg.save()
         self.fire(self.candidate(), scoring.VIOLATION, at(MON, 5))
-        self.assertEqual(self.row().level, scoring.VIOLATION)
+        self.assertEqual(self.row().level, scoring.WARNING)
 
     def test_a_changed_window_is_honoured(self):
         cfg = SystemSettings.load()
@@ -3617,8 +3621,8 @@ class CollectionWindowAlertTests(TestCase):
         self.fire(cand, scoring.VIOLATION, at(MON, 5))
         self.assertTrue(self.fire(cand, scoring.VIOLATION, at(MON, 7, 1), now=7300.0))
         row = self.row()
-        self.assertEqual(row.level, scoring.VIOLATION)
-        self.assertEqual(row.peak_level, scoring.VIOLATION)
+        self.assertEqual(row.level, scoring.WARNING)
+        self.assertEqual(row.peak_level, scoring.WARNING)
         self.assertFalse(cand.window_held)
         self.assertNotIn("collection window", row.description)
         self.assertEqual(Alert.objects.filter(type__code="disposal").count(), 1)
@@ -3647,13 +3651,13 @@ class CollectionWindowAlertTests(TestCase):
         cd.remember(first.center, 7390.0, first.alert_pk, scoring.MONITORING)
         again = self.candidate(2)
         self.fire(again, scoring.VIOLATION, at(MON, 7, 2), now=7400.0, cd=cd)
-        self.assertEqual(self.row().level, scoring.VIOLATION)
+        self.assertEqual(self.row().level, scoring.WARNING)
 
     def test_a_row_already_at_likely_is_not_walked_back_down(self):
         cand = self.candidate()
         self.fire(cand, scoring.VIOLATION, at(MON, 3))          # before the window
         self.fire(cand, scoring.VIOLATION, at(MON, 5), now=7200.0)
-        self.assertEqual(self.row().level, scoring.VIOLATION)
+        self.assertEqual(self.row().level, scoring.WARNING)
         self.assertFalse(cand.window_held)
 
     def test_release_restarts_the_pin_clock(self):

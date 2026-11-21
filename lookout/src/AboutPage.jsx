@@ -5,7 +5,7 @@ import { Cigarette, Beer, Car, Siren, Trash2, ShieldCheck, Lock, Users, Info } f
 
 const STUDY_TITLE = "LookOut: A Computer Vision-Based System for Detecting Selected Barangay Ordinance Violations with Automated Barangay Authority Response in Zamboanga City";   // TODO: replace with the full study title
 const TAGLINE =
-  "LookOut watches a CCTV feed or footage for five violations. It then detects possible violations and proposes an alert " +
+  "LookOut watches a camera feed or footage for five violations. It then detects possible violations and proposes an alert " +
   "for an officer to review. It never decides on its own.";
 const VERSION = "Version 1.0";
 const TEAM = [
@@ -16,20 +16,18 @@ const TEAM = [
 ];
 
 const VIOLATIONS = [
-  { icon: Cigarette, color: "#6b8cae", name: "Smoking", law: "", note: "Smoking in public places." },
-  { icon: Beer, color: "#8b5cf6", name: "Drinking", law: "", note: "Drinking in public." },
+  { icon: Cigarette, color: "#6b8cae", name: "Potential Smoking", law: "", note: "Cigarette smoking in public places: a cigarette seen with the hand-to-mouth movement of smoking." },
+  { icon: Beer, color: "#8b5cf6", name: "Plausible Group Drinking", law: "", note: "Group drinking in public: two or more people staying together with a bottle for the set time (1 minute by default). One person alone with a bottle is not reported." },
   { icon: Car, color: "#ef4444", name: "Parking Obstruction", law: "", note: "Vehicles obstructing the road." },
-  { icon: Siren, color: "#dc2626", name: "Dangerous Weapon Observed", law: "", note: "A person holding a knife near another person. Loitering first, or the two people freezing close together, makes it stronger." },
-  { icon: Trash2, color: "#22c55e", name: "Discarded Waste", law: "", note: "A big item, such as a bag of rubbish, left in the frame or zone. Only large items trigger an alert, not small litter." },
+  { icon: Siren, color: "#dc2626", name: "Dangerous Weapon Observed", law: "", note: "A knife seen in a person's hand while another person is close by. The system only reports what it sees; an officer decides what it means." },
+  { icon: Trash2, color: "#22c55e", name: "Potential Discarded Waste", law: "", note: "A big item, such as a bag of rubbish, left in the frame or zone. Only large items trigger an alert, not small litter." },
 ];
 
 const STATUSES = [
   { name: "Monitoring", color: "#64748b",
     text: "An object or indicator linked to a violation was identified or noticed." },
   { name: "Possible", color: "#f59e0b",
-    text: "Some signs of a violation, but not enough to be sure. Review the alert before acting." },
-  { name: "Likely", color: "#dc2626",
-    text: "Strong evidence of a violation. Review and respond." },
+    text: "The signs of a violation were seen. Review the alert and respond. An officer always makes the final call." },
 ];
 
 function Section({ icon: Icon, title, children }) {
@@ -84,6 +82,11 @@ export function AboutPage() {
               as vaping, so LookOut also uses YOLO pose to track body keypoints and spot the hand-to-mouth gesture.
               Once the heuristic rules are applied, it proposes an alert with a status. An officer then reviews
               the alert and marks it accordingly. A person always makes the final call.
+              <br /><br />
+              <b>Cigarette smoking</b> is detected from a cigarette plus the hand-to-mouth puff movement.
+              <b> Group drinking</b> is detected from a bottle with a group of two or more people who stay together.
+              The group's stay is timed first, and the alert only appears once the set time (1 minute by default,
+              adjustable in Settings) is reached.
               <br /><br />
               <b>Improper disposal</b> has no trained class either. LookOut looks for an object that appears in the scene
               and then stops moving, then checks whether it looks like a garbage bag. Rubbish that stays put is
