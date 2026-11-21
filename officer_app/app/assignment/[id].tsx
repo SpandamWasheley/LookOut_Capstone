@@ -362,6 +362,10 @@ interface ResolveModalProps {
   // validation are the same — a second form would be the same code drifting
   // apart.
   editing: api.ApiCitation | null;
+  // Chosen from the preview behind the "N filed so far" banner: reopen the
+  // record file this officer filed last so a mistake in it can be corrected,
+  // instead of leaving the only way back a close-and-reopen of the whole sheet.
+  onEditPrevious: (citation: api.ApiCitation) => void;
   onClose: () => void;
   onFiled: () => void;
   onFinished: () => void;
@@ -374,6 +378,7 @@ function ResolveModal({
   officerName,
   existingCitations,
   editing,
+  onEditPrevious,
   onClose,
   onFiled,
   onFinished,
@@ -404,6 +409,8 @@ function ResolveModal({
   const [suffixSheetVisible, setSuffixSheetVisible] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [reviewState, setReviewState] = useState<{ action: "finish" | "another"; duplicateName: string | null } | null>(null);
+  const [previousFileVisible, setPreviousFileVisible] = useState(false);
+  const [finishConfirmVisible, setFinishConfirmVisible] = useState(false);
   const [formError, setFormError] = useState("");
 
   // Fill the form from the citation being corrected, and empty it again on the
@@ -433,6 +440,8 @@ function ResolveModal({
     }
     setFormError("");
     setJustFiledName(null);
+    setPreviousFileVisible(false);
+    setFinishConfirmVisible(false);
   }, [editing, visible]);
 
   const lastNameRef = useRef<TextInput>(null);
@@ -583,7 +592,7 @@ function ResolveModal({
       }
     } catch (err) {
       setFormError(err instanceof Error ? err.message
-        : editing ? "Failed to save the correction." : "Failed to save citation.");
+        : editing ? "Failed to save the correction." : "Failed to save record file.");
     } finally {
       setSubmitting(false);
       submitLockRef.current = false;
@@ -605,6 +614,43 @@ function ResolveModal({
   };
 
   const hasFiledAny = existingCitations.length > 0;
+  // "Save & add another" clears the name fields, so `canSubmit` goes false and
+  // the officer who turns out to have no second violator was left with two
+  // dead buttons and no way to resolve the scene short of inventing one. Once
+  // something IS filed, an untouched form means "I'm done": finish files
+  // nothing and just resolves. Untouched is judged on the per-person fields
+  // only — barangay and violation types are deliberately carried forward, so
+  // they are set on a form nobody has typed into.
+  const formUntouched = !firstName.trim() && !middleName.trim() && !lastName.trim()
+    && !suffix && !notes.trim();
+  const canFinishWithoutFiling = !editing && hasFiledAny && formUntouched && !submitting;
+
+  const finishWithoutFiling = () => {
+    setFinishConfirmVisible(false);
+    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    onFinished();
+  };
+  // What the back arrow goes to: the most recent record file on this scene
+  // that THIS officer filed (the server list is newest-first), which is the
+  // only one it would let them correct — CanEditOwnOpenCitation. Nothing to
+  // go back to while already correcting one, so the arrow is absent in edit
+  // mode and the banner stays a plain banner.
+  const previousCitation = editing || officerId == null
+    ? null
+    : existingCitations.find((ec) => ec.officer === officerId) ?? null;
+  const FiledBanner = previousCitation ? Pressable : View;
+  // Warned about in the preview, because filling the form from the previous
+  // record file overwrites whatever has been typed for the next person.
+  const hasTypedForNext = !!(firstName.trim() || lastName.trim() || middleName.trim() || notes.trim());
+
+  const editPreviousFile = () => {
+    const target = previousCitation;
+    setPreviousFileVisible(false);
+    if (!target) return;
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    onEditPrevious(target);
+  };
+
   const selectedBarangayLabel = BARANGAY_OPTIONS.find((b) => b.value === violatorBarangay)?.label;
   // Matched on the LABEL, which is what is on screen and what the officer is
   // typing from. Case- and punctuation-insensitive, so "sto nino" finds
@@ -630,12 +676,12 @@ function ResolveModal({
             </View>
             <View style={{ flex: 1 }}>
               <Text style={[rStyles.title, { color: c.foreground }]}>
-                {editing ? "Edit Citation" : "Confirm Resolution"}
+                {editing ? "Edit Record File" : "Confirm Resolution"}
               </Text>
               <Text style={[rStyles.subtitle, { color: c.mutedForeground }]}>
                 {editing
                   ? `Correcting ${editing.violator_name}`
-                  : "File a citation for this scene"}
+                  : "File a record file for this scene"}
               </Text>
             </View>
             <Pressable
@@ -664,18 +710,36 @@ function ResolveModal({
               >
                 <Feather name="check-circle" size={15} color="#fff" />
                 <Text style={cfStyles.justFiledBannerText}>
-                  Citation filed for {justFiledName} — ready for the next person
+                  Record file saved for {justFiledName} — ready for the next person
                 </Text>
               </Animated.View>
             )}
 
             {hasFiledAny && !editing && (
-              <View style={[cfStyles.filedBanner, { backgroundColor: c.successLight, borderColor: c.success }]}>
-                <Feather name="check-circle" size={13} color={c.success} />
+              <FiledBanner
+                {...(previousCitation
+                  ? {
+                      onPress: () => {
+                        if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        setPreviousFileVisible(true);
+                      },
+                      accessibilityRole: "button" as const,
+                      accessibilityLabel: `View the last record file filed, for ${previousCitation.violator_name}`,
+                    }
+                  : {})}
+                style={[cfStyles.filedBanner, { backgroundColor: c.successLight, borderColor: c.success }]}
+              >
+                <Feather name="check-circle" size={14} color={c.success} />
+                {/* The count is the banner's job; the hint is there because
+                    nothing else on this sheet says a green strip can be
+                    tapped, and an officer who does not know that has no way
+                    back from an accidental "Save & add another". */}
                 <Text style={[cfStyles.filedBannerText, { color: c.success }]}>
-                  {existingCitations.length} citation{existingCitations.length !== 1 ? "s" : ""} filed so far for this scene
+                  {existingCitations.length} record file{existingCitations.length !== 1 ? "s" : ""} filed so far for this scene
+                  {previousCitation ? " — tap to view the last one" : ""}
                 </Text>
-              </View>
+                {!!previousCitation && <Feather name="chevron-right" size={14} color={c.success} />}
+              </FiledBanner>
             )}
 
             <Text style={[cfStyles.lockedLine, { color: c.mutedForeground }]}>
@@ -809,13 +873,18 @@ function ResolveModal({
 
           <View style={cfStyles.actionRow}>
             <Pressable
-              onPress={() => handlePress("finish")}
-              disabled={!canSubmit}
+              onPress={() => (canSubmit ? handlePress("finish") : setFinishConfirmVisible(true))}
+              disabled={!canSubmit && !canFinishWithoutFiling}
               accessibilityRole="button"
               accessibilityLabel={editing
-                ? "Save the correction to this citation"
-                : "Save and finish, resolving this assignment"}
-              style={[cfStyles.primaryBtn, { backgroundColor: c.primary, opacity: !canSubmit ? 0.5 : 1 }]}
+                ? "Save the correction to this record file"
+                : canSubmit
+                  ? "Save and finish, resolving this assignment"
+                  : "Finish without another violator, resolving this assignment"}
+              style={[cfStyles.primaryBtn, {
+                backgroundColor: c.primary,
+                opacity: !canSubmit && !canFinishWithoutFiling ? 0.5 : 1,
+              }]}
             >
               {submitting ? (
                 <Spinner size={18} color={c.primaryForeground} track={c.primaryForeground + "33"} />
@@ -823,7 +892,11 @@ function ResolveModal({
                 <>
                   <Feather name={editing ? "save" : "check-circle"} size={16} color={c.primaryForeground} />
                   <Text style={[cfStyles.primaryBtnText, { color: c.primaryForeground }]}>
-                    {editing ? "Save changes" : "Save & finish"}
+                    {editing
+                      ? "Save changes"
+                      : canSubmit
+                        ? "Save & finish"
+                        : `Finish · ${existingCitations.length} filed`}
                   </Text>
                 </>
               )}
@@ -928,6 +1001,150 @@ function ResolveModal({
         </View>
       </Modal>
 
+      {/* Reached by tapping the "N filed so far" banner. It opens as a VIEW of
+          the last record file this officer filed on this scene — who, what for,
+          where they live, any notes — with correcting it as a second step.
+
+          A preview rather than a bare yes/no, because the usual way here is an
+          accidental "Save & add another": the question in the officer's head is
+          "what did I just file?", and a dialog that only says a name cannot
+          answer it. Going straight into the form would answer it by
+          overwriting whatever has been typed for the next person. */}
+      <Modal visible={previousFileVisible} animationType="fade" transparent onRequestClose={() => setPreviousFileVisible(false)}>
+        <Pressable style={officersStyles.overlay} onPress={() => setPreviousFileVisible(false)}>
+          <Pressable
+            style={[officersStyles.sheet, { backgroundColor: c.card, borderColor: c.border }]}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View style={rStyles.header}>
+              <View style={[rStyles.iconWrap, { backgroundColor: c.successLight }]}>
+                <Feather name="file-text" size={18} color={c.success} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[rStyles.title, { color: c.foreground }]}>Previous record file</Text>
+                <Text style={[rStyles.subtitle, { color: c.mutedForeground }]}>
+                  {previousCitation ? `Filed ${formatDate(previousCitation.created_at)}` : ""}
+                </Text>
+              </View>
+            </View>
+
+            {/* Capped and scrollable: notes are free text, and a long one would
+                otherwise push Edit off the bottom of the sheet. */}
+            <ScrollView style={{ maxHeight: windowHeight * 0.4 }} showsVerticalScrollIndicator={false}>
+              <View style={cfStyles.reviewBlock}>
+                <Text style={[cfStyles.reviewLabel, { color: c.mutedForeground }]}>Violator</Text>
+                <Text style={[cfStyles.reviewValue, { color: c.foreground }]}>
+                  {previousCitation?.violator_name}
+                </Text>
+              </View>
+
+              <View style={cfStyles.reviewBlock}>
+                <Text style={[cfStyles.reviewLabel, { color: c.mutedForeground }]}>Violation types</Text>
+                {/* The same coloured rows the form above uses, so a glance
+                    compares like with like. violation_labels is the fallback
+                    for the moment before the types have loaded. */}
+                {previousCitation && violationTypes.some((t) => previousCitation.violations.includes(t.id)) ? (
+                  <View style={{ marginTop: 4 }}>
+                    {violationTypes
+                      .filter((t) => previousCitation.violations.includes(t.id))
+                      .map((t) => (
+                        <View key={t.id} style={[cfStyles.confirmedTypeRow, { backgroundColor: `${t.color}18`, borderColor: t.color }]}>
+                          <Feather name={getViolationIconName(t.icon)} size={15} color={t.color} />
+                          <Text style={[cfStyles.typeLabel, { color: t.color, fontSize: 14 }]}>{displayLabel(t)}</Text>
+                        </View>
+                      ))}
+                  </View>
+                ) : (
+                  <Text style={[cfStyles.reviewValue, { color: c.foreground }]}>
+                    {previousCitation?.violation_labels.join(", ") || "—"}
+                  </Text>
+                )}
+              </View>
+
+              <View style={cfStyles.reviewBlock}>
+                <Text style={[cfStyles.reviewLabel, { color: c.mutedForeground }]}>Home barangay</Text>
+                <Text style={[cfStyles.reviewValue, { color: c.foreground }]}>
+                  {BARANGAY_OPTIONS.find((b) => b.value === previousCitation?.violator_barangay)?.label
+                    ?? previousCitation?.violator_barangay
+                    ?? "—"}
+                </Text>
+              </View>
+
+              {!!previousCitation?.notes.trim() && (
+                <View style={cfStyles.reviewBlock}>
+                  <Text style={[cfStyles.reviewLabel, { color: c.mutedForeground }]}>Notes</Text>
+                  <Text style={[cfStyles.reviewValue, { color: c.foreground }]}>{previousCitation.notes}</Text>
+                </View>
+              )}
+            </ScrollView>
+
+            {/* Only when there is something to lose. Editing reuses this one
+                form, so opening the filed person's details necessarily clears
+                the half-typed next one. */}
+            {hasTypedForNext && (
+              <View style={[cfStyles.filedBanner, { backgroundColor: c.warningLight, borderColor: c.warning, marginTop: 14, marginBottom: 0 }]}>
+                <Feather name="alert-triangle" size={13} color={c.warning} />
+                <Text style={[cfStyles.filedBannerText, { color: c.warning }]}>
+                  Editing this clears what you have typed in for the next violator.
+                </Text>
+              </View>
+            )}
+
+            <View style={[rStyles.footerBtns, { marginTop: 16, width: "100%" }]}>
+              <Pressable onPress={() => setPreviousFileVisible(false)} style={[rStyles.cancelBtn, { borderColor: c.border }]}>
+                <Text style={[rStyles.cancelText, { color: c.mutedForeground }]}>Close</Text>
+              </Pressable>
+              <Pressable onPress={editPreviousFile} style={[rStyles.confirmBtn, { backgroundColor: c.primary }]}>
+                <Feather name="edit-2" size={16} color={c.primaryForeground} />
+                <Text style={[rStyles.confirmText, { color: c.primaryForeground }]} numberOfLines={1}>Edit this record file</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* The way here is almost always an accidental "Save & add another
+          violator" on a scene with only one person. Asked rather than done
+          because it resolves the assignment, which the officer cannot undo
+          from the app. */}
+      <Modal visible={finishConfirmVisible} animationType="fade" transparent onRequestClose={() => setFinishConfirmVisible(false)}>
+        <Pressable style={officersStyles.overlay} onPress={() => setFinishConfirmVisible(false)}>
+          <Pressable
+            style={[officersStyles.sheet, { backgroundColor: c.card, borderColor: c.border }]}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View style={rStyles.header}>
+              <View style={[rStyles.iconWrap, { backgroundColor: c.successLight }]}>
+                <Feather name="check-circle" size={18} color={c.success} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[rStyles.title, { color: c.foreground }]}>Finish without another violator?</Text>
+                <Text style={[rStyles.subtitle, { color: c.mutedForeground }]}>
+                  {existingCitations.length} record file{existingCitations.length !== 1 ? "s" : ""} filed for this scene
+                </Text>
+              </View>
+            </View>
+
+            <Text style={[cfStyles.reviewValue, { color: c.foreground, marginTop: 14 }]}>
+              Nothing new is saved — the empty form is discarded.
+            </Text>
+            <Text style={[cfStyles.reviewLabel, { color: c.mutedForeground, marginTop: 6, marginBottom: 0 }]}>
+              What you have already filed is kept, and this assignment is resolved.
+            </Text>
+
+            <View style={[rStyles.footerBtns, { marginTop: 16, width: "100%" }]}>
+              <Pressable onPress={() => setFinishConfirmVisible(false)} style={[rStyles.cancelBtn, { borderColor: c.border }]}>
+                <Text style={[rStyles.cancelText, { color: c.mutedForeground }]}>Keep adding</Text>
+              </Pressable>
+              <Pressable onPress={finishWithoutFiling} style={[rStyles.confirmBtn, { backgroundColor: c.primary }]}>
+                <Feather name="check-circle" size={16} color={c.primaryForeground} />
+                <Text style={[rStyles.confirmText, { color: c.primaryForeground }]}>Finish</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
       <Modal visible={!!reviewState} animationType="fade" transparent onRequestClose={() => setReviewState(null)}>
         <Pressable style={officersStyles.overlay} onPress={() => setReviewState(null)}>
           <Pressable
@@ -939,7 +1156,7 @@ function ResolveModal({
                 <Feather name="clipboard" size={18} color={c.success} />
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={[rStyles.title, { color: c.foreground }]}>Review citation</Text>
+                <Text style={[rStyles.title, { color: c.foreground }]}>Review record file</Text>
                 <Text style={[rStyles.subtitle, { color: c.mutedForeground }]}>
                   {reviewState?.action === "finish" ? "This will resolve the assignment." : "You can file another after this."}
                 </Text>
@@ -950,7 +1167,7 @@ function ResolveModal({
               <View style={[cfStyles.filedBanner, { backgroundColor: c.warningLight, borderColor: c.warning, marginTop: 6 }]}>
                 <Feather name="alert-triangle" size={13} color={c.warning} />
                 <Text style={[cfStyles.filedBannerText, { color: c.warning }]}>
-                  Already cited a {reviewState.duplicateName} for this alert.
+                  A record file for a {reviewState.duplicateName} is already filed on this alert.
                 </Text>
               </View>
             )}
@@ -1403,7 +1620,7 @@ export default function AssignmentDetailScreen() {
               <Text style={[styles.closedBody, { color: c.foreground }]}>
                 {assignment.status === "acknowledged"
                   ? (assignment.notes || "No reason provided.")
-                  : (assignment.citationIssued ? "Citation issued" : "No citation")}
+                  : (assignment.citationIssued ? "Record file filed" : "No record file")}
               </Text>
             </View>
           </View>
@@ -1554,7 +1771,7 @@ export default function AssignmentDetailScreen() {
         {citationsForAlert.length > 0 && (
           <View style={[styles.card, { backgroundColor: c.card, borderColor: c.border }]}>
             <Text style={[styles.cardLabel, { color: c.foreground }]}>
-              Citations filed ({citationsForAlert.length})
+              Record files filed ({citationsForAlert.length})
             </Text>
             <View style={{ gap: 8 }}>
               {citationsForAlert.map((cit) => {
@@ -1571,7 +1788,7 @@ export default function AssignmentDetailScreen() {
                       ? {
                           onPress: () => { setEditingCitation(cit); setResolveModalVisible(true); },
                           accessibilityRole: "button" as const,
-                          accessibilityLabel: `Edit the citation for ${cit.violator_name}`,
+                          accessibilityLabel: `Edit the record file for ${cit.violator_name}`,
                         }
                       : {})}
                     style={[officersStyles.row, { backgroundColor: c.secondary, borderColor: c.border }]}
@@ -1684,6 +1901,7 @@ export default function AssignmentDetailScreen() {
         officerName={officer?.name ?? ""}
         existingCitations={citationsForAlert}
         editing={editingCitation}
+        onEditPrevious={(cit) => setEditingCitation(cit)}
         onClose={() => { setResolveModalVisible(false); setEditingCitation(null); }}
         onFiled={refreshCitations}
         onFinished={handleFinished}
@@ -1811,7 +2029,7 @@ const cfStyles = StyleSheet.create({
   // The gap belongs here rather than as a margin on barangayRow: that row
   // style is shared with the Suffix sheet, whose rows are direct children of
   // a container that already gaps them, and would end up double-spaced.
-  barangayListContent: { gap: 8, paddingBottom: 4 },
+  barangayListContent: { gap: 12, paddingBottom: 4 },
   barangayEmpty: { fontSize: 14, lineHeight: 20, paddingHorizontal: 4, paddingVertical: 18, textAlign: "center" },
   barangayRowText: { fontSize: 16, fontFamily: "Inter_600SemiBold" },
   reviewBlock: { marginTop: 12 },

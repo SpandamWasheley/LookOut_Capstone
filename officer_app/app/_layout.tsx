@@ -12,10 +12,12 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
+import { Dialog } from "@/components/ui/Dialog";
 import { AssignmentProvider } from "@/context/AssignmentContext";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
 import { ThemeProvider, useTheme } from "@/context/ThemeContext";
 import { useAssignmentNotifications } from "@/hooks/useAssignmentNotifications";
+import { useAutoUpdate } from "@/hooks/useAutoUpdate";
 import { useColors } from "@/hooks/useColors";
 
 SplashScreen.preventAutoHideAsync();
@@ -59,6 +61,10 @@ function RootLayoutNav() {
   // tapped notification. Here rather than in a screen for the same
   // reason NavigationGuard is: there is exactly one of it.
   useAssignmentNotifications();
+  // Applies a published update on this launch rather than the next one, so a
+  // fix does not wait on an officer happening to cold-start the app twice.
+  // `justUpdated` is true on the launch that came back UP from that reload.
+  const { justUpdated, dismiss } = useAutoUpdate();
   return (
     <>
       <NavigationGuard />
@@ -78,6 +84,21 @@ function RootLayoutNav() {
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="assignment/[id]" />
       </Stack>
+
+      {/* Shown on the launch that came back up from an auto-update, over
+          whatever screen that is — the officer may well be on the login
+          screen, and "why did the app just restart on its own?" deserves an
+          answer wherever they are standing. One button: there is nothing to
+          cancel, the update has already happened. */}
+      <Dialog
+        visible={justUpdated}
+        title="App updated"
+        message="LookOut restarted itself to pick up the latest version. Nothing else to do."
+        confirmLabel="Got it"
+        cancelLabel={null}
+        onConfirm={dismiss}
+        onCancel={dismiss}
+      />
     </>
   );
 }

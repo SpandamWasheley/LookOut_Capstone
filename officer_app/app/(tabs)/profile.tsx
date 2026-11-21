@@ -17,11 +17,12 @@ import * as api from "@/lib/api";
 import { formatPhone, isValidPhone } from "@/lib/phone";
 import { currentPushStatus, registerForPush, type PushStatus } from "@/lib/notifications";
 
-// The three choices, in the order they are offered. "System" FIRST and
-// default: a phone that dims itself at dusk should take the app with it, and
-// an officer who never opens this setting gets that for free.
-const THEME_CHOICES: { value: ThemePreference; label: string; icon: keyof typeof Feather.glyphMap }[] = [
-  { value: "system", label: "System", icon: "smartphone" },
+// The two choices offered. "system" is still a real ThemePreference and is
+// still the value an officer who has never opened this screen holds — it is
+// simply not something to pick any more. Until they do pick, the segment
+// matching what is actually on screen is the one lit, so the control never
+// looks dead for the default case.
+const THEME_CHOICES: { value: Exclude<ThemePreference, "system">; label: string; icon: keyof typeof Feather.glyphMap }[] = [
   { value: "light", label: "Light", icon: "sun" },
   { value: "dark", label: "Dark", icon: "moon" },
 ];
@@ -30,7 +31,7 @@ export default function ProfileScreen() {
   const { officer: authOfficer, logout } = useAuth();
   const { assignments } = useAssignments();
   const c = useColors();
-  const { preference, setPreference } = useTheme();
+  const { preference, scheme, setPreference } = useTheme();
   const insets = useSafeAreaInsets();
 
   const [profile, setProfile] = useState<api.ApiOfficer | null>(null);
@@ -358,13 +359,16 @@ export default function ProfileScreen() {
         </Section>
 
         <Section title="Appearance">
-          {/* A segmented control, not a switch: "follow the phone" is a real
-              third option and a two-position switch cannot say it. Whichever
-              way such a switch booted, the first tap would silently pin the
-              app to one theme for good. */}
+          {/* Still a segmented control rather than a switch: a two-position
+              switch has to boot into one position, and on an untouched account
+              the stored preference is "system" — so the switch would be
+              claiming a choice nobody made. */}
           <View style={[styles.segments, { backgroundColor: c.secondary, borderColor: c.border }]}>
             {THEME_CHOICES.map((choice) => {
-              const active = preference === choice.value;
+              // Against the RESOLVED scheme, not the raw preference: an officer
+              // still on the "system" default must see one of these two lit,
+              // and it has to be the one they are actually looking at.
+              const active = scheme === choice.value;
               return (
                 <Pressable
                   key={choice.value}
@@ -396,7 +400,7 @@ export default function ProfileScreen() {
           </View>
           <Text style={[T.meta, { color: c.mutedForeground }]}>
             {preference === "system"
-              ? "Following your phone's light and dark setting."
+              ? `Matching your phone for now. Tap to keep the app ${scheme}.`
               : `Always ${preference}, whatever the phone is set to.`}
           </Text>
         </Section>

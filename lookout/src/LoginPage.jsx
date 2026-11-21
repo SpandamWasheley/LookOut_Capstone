@@ -1,6 +1,9 @@
 import { useState } from "react";
+// Eye/EyeOff here are the password reveal toggle, not the brand — the logo is
+// LookOutMark, which draws the app's own eye rather than the icon set's.
 import { Eye, EyeOff, Lock, User, AlertTriangle } from "lucide-react";
 import { login } from "./api";
+import { LookOutMark } from "./LookOutMark";
 
 export default function LoginPage({ onLogin, onForgotPassword }) {
   const [username, setUsername] = useState("");
@@ -38,15 +41,7 @@ export default function LoginPage({ onLogin, onForgotPassword }) {
         style={{ background: "var(--sidebar)", borderRight: "1px solid var(--sidebar-border)" }}
       >
         <div className="flex flex-col items-center gap-6 text-center">
-          <div
-            className="w-20 h-20 rounded-2xl flex items-center justify-center"
-            style={{
-              background: "var(--sidebar-primary)",
-              boxShadow: "0 8px 32px rgba(234,243,242,0.15)",
-            }}
-          >
-            <Eye size={40} color="var(--sidebar-primary-foreground)" strokeWidth={2} />
-          </div>
+          <LookOutMark size={80} style={{ boxShadow: "0 8px 32px rgba(234,243,242,0.15)" }} />
 
           <div>
             <div
@@ -74,9 +69,7 @@ export default function LoginPage({ onLogin, onForgotPassword }) {
         <div className="w-full max-w-sm">
           {/* Mobile logo */}
           <div className="flex items-center gap-3 mb-10 lg:hidden">
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: "#85B7D6" }}>
-              <Eye size={16} color="#0c0f16" strokeWidth={2.5} />
-            </div>
+            <LookOutMark size={32} />
             <div>
               <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>LookOut</div>
               <div className="text-[13px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>Barangay Tetuan</div>
