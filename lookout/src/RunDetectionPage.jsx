@@ -722,12 +722,6 @@ export function RunDetectionPage() {
                 </div>
               </div>
             )}
-            {needsEdges && source === "camera" && cameraId && (
-              <div className="text-[13px] px-3 py-2 rounded-xl"
-                style={{ background: "rgba(59,130,246,0.08)", border: "1px solid rgba(59,130,246,0.2)", color: "#60a5fa" }}>
-                {edgeCameraNote(violationType, detectorLabel)}
-              </div>
-            )}
           </>
         )}
       </div>
