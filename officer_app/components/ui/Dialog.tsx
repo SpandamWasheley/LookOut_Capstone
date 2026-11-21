@@ -10,7 +10,9 @@ interface Props {
   title: string;
   message?: string;
   confirmLabel: string;
-  cancelLabel?: string;
+  /** `null` drops the second button, for a notice that only needs
+   *  acknowledging — there is nothing to cancel out of. */
+  cancelLabel?: string | null;
   onConfirm: () => void;
   onCancel: () => void;
   /** `danger` for anything that destroys or closes something. */
@@ -100,7 +102,9 @@ export function Dialog({
                 variant={tone === "danger" ? "danger" : "primary"}
                 loading={loading}
               />
-              <Button label={cancelLabel} onPress={onCancel} variant="quiet" disabled={loading} />
+              {cancelLabel !== null && (
+                <Button label={cancelLabel} onPress={onCancel} variant="quiet" disabled={loading} />
+              )}
             </View>
           </Pressable>
         </Animated.View>
