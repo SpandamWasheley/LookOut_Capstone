@@ -365,7 +365,8 @@ GATE_CUES = {
     "drinking": "bottle",
     "smoking": "cigarette",
     "holdup": "E14",        # weapon present
-    "disposal": "object",   # the bag check led and cleared the floor
+    # disposal has no gate: rejected candidates are blocked in _score() directly;
+    # everything else scores on the cue table. See watch_disposal._score().
 }
 
 # Dependent cues score only when their partner fired: an object AT THE MOUTH

@@ -1228,10 +1228,11 @@ class Command(BaseCommand):
         return scoring.Score(
             "disposal", scoring.DISPOSAL_WEIGHTS, cues,
             previous_level=cand.alert_level or None,
-            # `object_on` is what admits an event at all. The behaviour path
-            # opens it without the gate cue, exactly as the puff-only path does
-            # for smoking, and the cap above is what keeps it honest.
-            object_on=True if behaviour else None,
+            # Gate removed: any candidate except a positively rejected one is
+            # admitted. A weak match is still capped at Possible (the behaviour
+            # cap above); a rejected object (look-alike led the check) stays
+            # blocked; everything else scores on the cue table alone.
+            object_on=(False if cand.rejected else True),
             cap=cap, cap_reason=reason,
             detail=cand.label or "")
 
