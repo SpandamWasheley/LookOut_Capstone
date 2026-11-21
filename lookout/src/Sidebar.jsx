@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
 import {
   LayoutDashboard, Camera, Bell, Settings,
-  ChevronLeft, ChevronRight, Eye, LogOut, Shield,
+  ChevronLeft, ChevronRight, LogOut, Shield,
   Archive, TrendingUp, Sun, Moon, PlayCircle, Info,
 } from "lucide-react";
+import { LookOutMark } from "./LookOutMark";
 
 const navGroups = [
   {
@@ -88,12 +89,7 @@ export function Sidebar({ activeView, onViewChange, activeRole, onRoleChange, al
         className="flex items-center h-14 flex-shrink-0 px-3 gap-2.5"
         style={{ borderBottom: `1px solid ${sidebarBorder}` }}
       >
-        <div
-          className="w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0"
-          style={{ background: "var(--sidebar-primary)" }}
-        >
-          <Eye size={14} color="var(--sidebar-primary-foreground)" strokeWidth={2.5} />
-        </div>
+        <LookOutMark size={28} />
         {!collapsed && (
           <div className="min-w-0 flex-1">
             <div className="text-sm font-semibold leading-none" style={{ color: "var(--sidebar-primary)" }}>
