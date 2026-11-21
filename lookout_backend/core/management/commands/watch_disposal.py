@@ -1367,7 +1367,7 @@ class Command(BaseCommand):
                 elif cand.pinned:
                     detail = self.DETAIL_PINNED
             self.debug_pub.note(
-                key=("disposal", cand.id), violation="disposal", ident=cand.id,
+                key=("disposal", cand.id), violation="Waste", ident=cand.id,
                 box=box, status=status, score_pct=pct, indicators=indicators,
                 multipliers={}, momentum=round(still, 1), kind="object",
                 detail=detail,
