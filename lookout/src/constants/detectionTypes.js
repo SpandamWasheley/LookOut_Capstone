@@ -61,7 +61,9 @@ export const TYPES_WITH_OPTIONAL_EDGES = new Set(["disposal", "parking", "merged
 // exactly as to a drawn one, while disposal draws an area and has no
 // thresholds at all. Tying them together hid parking's only real controls the
 // moment its polygon stopped being compulsory.
-export const TYPES_WITH_AREA_THRESHOLDS = new Set(["parking", "merged4", "everything"]);
+// merged4 no longer runs parking, so it has no "% inside zone / for N minutes"
+// thresholds to show. Only parking and everything (which includes parking) need them.
+export const TYPES_WITH_AREA_THRESHOLDS = new Set(["parking", "everything"]);
 
 // Which rule a drawn polygon belongs to, which is NOT always the detector you
 // picked. On an All 5 run parking traces its own no-parking area from the
@@ -71,14 +73,14 @@ export const TYPES_WITH_AREA_THRESHOLDS = new Set(["parking", "merged4", "everyt
 // was read as both, and a tight no-parking polygon silently confined the
 // rubbish search to the carriageway.
 export const edgeKind = (key) =>
-  (key === "disposal" || key === "everything") ? "disposal" : "zone";
+  (key === "disposal" || key === "merged4" || key === "everything") ? "disposal" : "zone";
 
 // What the polygon MEANS, which is not the same sentence for every detector:
 // parking judges vehicles against a no-parking area, disposal just confines
 // where it looks. Calling disposal's a "no-parking area" would describe a rule
 // that does not exist.
 export const edgeHeading = (key, label) =>
-  key === "disposal"
+  (key === "disposal" || key === "merged4")
     ? "Draw the area to watch for dumped rubbish (optional)"
     : key === "everything"
       // Parking traces its own from the traffic on this run, so this canvas
@@ -89,7 +91,9 @@ export const edgeHeading = (key, label) =>
 
 export const edgeCameraNote = (key, label) =>
   key === "everything"
-    ? `${label} runs the merged four plus disposal as a second process. Parking works its no-parking area out from the footage; a rubbish area drawn here is used by disposal only.`
+    ? `${label} runs smoking, drinking, knife and parking together, plus disposal as a second process. Parking works its no-parking area out from the footage; a rubbish area drawn here is used by disposal only.`
+    : key === "merged4"
+    ? `${label} runs smoking, drinking and knife together, plus disposal as a second process. A rubbish area drawn here is used by disposal only.`
     : key === "disposal"
     ? `${label} uses the area saved on the camera (Feeds → Edge Zones). Without one it watches the whole frame.`
     : `${label} uses the no-parking area saved on the camera (Feeds → Edge Zones). Without one it works the road out from the first half-minute of footage and saves what it finds.`;

@@ -1872,12 +1872,10 @@ DETECTION_COMMANDS = {
     # ViolationTypes; "merged" itself is only the DetectionJob's own label,
     # not a ViolationType.
     "merged": "watch_merged",
-    # The same three plus road-edge obstruction, from one feed (see
-    # watch_merged_all.py). Parking's own detector and rule layer run
-    # alongside the merged model's, so a single run can produce alerts of all
-    # four ViolationTypes. Obstruction only — it refuses to start without a
-    # marked no-parking area, which is why it is in EDGE_REQUIRED below.
-    "merged4": "watch_merged_all",
+    # The same three (smoking/drinking/knife) plus improper disposal, run as a
+    # companion process — same arrangement as "everything" but without parking.
+    # Disposal cannot share the merged model pass, so it runs headless beside it.
+    "merged4": "watch_merged",
     # Improper disposal. Not part of any merged pass: it runs no trained
     # violation class at all (dual background subtraction + a zero-shot bag
     # check), so it has nothing to share a model forward pass with.
@@ -1941,6 +1939,10 @@ EDGE_CAPABLE = frozenset({"parking", "disposal", "merged4", "everything"})
 # and subjects. The page therefore shows the merged four tracking, while
 # disposal files its alerts without appearing there.
 DETECTION_COMPANIONS = {
+    # merged4: smoking + drinking + knife (merged pass) + disposal (companion).
+    "merged4": ("watch_disposal",),
+    # everything: merged4 + parking = all five. watch_merged_all runs the merged
+    # three plus parking; disposal runs headless beside it.
     "everything": ("watch_disposal",),
 }
 
