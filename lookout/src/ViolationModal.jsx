@@ -1206,27 +1206,27 @@ function AIContextCard({ ai, testingTools = false, alertId = null, onRetry = nul
         </div>
       ) : (
         <>
-          <div className="mt-1.5 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[12px] font-medium"
-            style={{ background: style.bg, color: style.color }}>
-            <BadgeIcon size={11} /> {badge.text}
-            {state === "done" && ai.confidence ? <span style={{ opacity: 0.8 }}>· {ai.confidence} confidence</span> : null}
-          </div>
-          {state === "done" && ai.observations && (
-            <div className="mt-1.5 text-[13px] leading-snug italic break-words" style={{ color: "var(--foreground)" }}>
-              &ldquo;{ai.observations}&rdquo;
+          <div className="mt-1.5 flex items-center justify-between gap-2">
+            <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[12px] font-medium"
+              style={{ background: style.bg, color: style.color }}>
+              <BadgeIcon size={11} /> {badge.text}
+              {state === "done" && ai.confidence ? <span style={{ opacity: 0.8 }}>· {ai.confidence} confidence</span> : null}
             </div>
-          )}
-          {canRetry && (
-            <div className="mt-2">
+            {canRetry && (
               <button
                 onClick={handleRetry}
                 disabled={retrying}
-                className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg text-[11px] font-medium transition-all"
-                style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)", opacity: retrying ? 0.6 : 1 }}>
-                {retrying ? <Loader2 size={10} className="animate-spin" /> : <RotateCcw size={10} />}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[12px] font-medium transition-all"
+                style={{ background: "var(--secondary)", color: "var(--foreground)", border: "1px solid var(--border)", opacity: retrying ? 0.6 : 1 }}>
+                {retrying ? <Loader2 size={11} className="animate-spin" /> : <RotateCcw size={11} />}
                 {retrying ? "Checking…" : "Retry AI check"}
               </button>
-              {retryError && <div className="mt-1 text-[11px]" style={{ color: "#ef4444" }}>{retryError}</div>}
+            )}
+          </div>
+          {retryError && <div className="mt-1 text-[11px]" style={{ color: "#ef4444" }}>{retryError}</div>}
+          {state === "done" && ai.observations && (
+            <div className="mt-1.5 text-[13px] leading-snug italic break-words" style={{ color: "var(--foreground)" }}>
+              &ldquo;{ai.observations}&rdquo;
             </div>
           )}
         </>
