@@ -144,7 +144,14 @@ export function AssignmentProvider({ children }: { children: React.ReactNode }) 
   const fetchAssignments = useCallback(async (silent = false) => {
     if (!silent) setError("");
     try {
-      const [alertsRes, typesRes] = await Promise.all([api.getAlerts(), api.getViolationTypes()]);
+      // Scoped to this officer on the server. Both tabs discard everything
+      // else anyway, and asking for the whole barangay meant the newest fifty
+      // alerts were all the app ever saw — an assignment older than those was
+      // invisible however many times it was re-assigned.
+      const [alertsRes, typesRes] = await Promise.all([
+        api.getAlerts(officer?.officerId ?? null),
+        api.getViolationTypes(),
+      ]);
       const alerts = Array.isArray(alertsRes) ? alertsRes : alertsRes.results;
       const types = Array.isArray(typesRes) ? typesRes : typesRes.results;
       const typesByCode = Object.fromEntries(
@@ -176,8 +183,11 @@ export function AssignmentProvider({ children }: { children: React.ReactNode }) 
     }
     // `announce` is rebuilt when the signed-in officer changes, which the
     // poll's own effect reacts to as well — without it here, polling would go
-    // on calling the previous officer's version.
-  }, [announce]);
+    // on calling the previous officer's version. The id is named explicitly
+    // too, now that the REQUEST is scoped by it: leaving it to be carried in
+    // on announce's coat-tails would be one refactor away from a handset that
+    // keeps fetching the previous officer's workload.
+  }, [announce, officer?.officerId]);
 
   const refreshAssignments = useCallback(() => fetchAssignments(false), [fetchAssignments]);
 

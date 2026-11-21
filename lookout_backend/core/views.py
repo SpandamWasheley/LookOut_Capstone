@@ -1515,7 +1515,13 @@ class AlertViewSet(viewsets.ModelViewSet):
         .all()
     )
     serializer_class = AlertSerializer
-    filterset_fields = ["status", "type", "camera"]
+    # `officers_assigned` is here for the officer app, which displays nothing
+    # else: both its tabs already discard every alert the signed-in officer is
+    # not on. Without it the phone had to download all 340 alerts to find its
+    # own 16 — and, since the list is paginated at 50 and ordered newest-first,
+    # an assignment older than the newest fifty was never in the page it read.
+    # A push would arrive for an alert the app could not show.
+    filterset_fields = ["status", "type", "camera", "officers_assigned"]
 
     def get_queryset(self):
         """Monitoring events are a quiet watchlist (spec v6): they never appear in

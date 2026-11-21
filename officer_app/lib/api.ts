@@ -390,7 +390,48 @@ export interface ApiAlert {
   ai_context: ApiAiContext | null;
 }
 
-export const getAlerts = () => apiFetch<{ results: ApiAlert[] } | ApiAlert[]>("/alerts/");
+// Every alert this officer is on, across however many pages that takes.
+//
+// Two things had to be true for the app to show an assignment, and neither was.
+// `/alerts/` is paginated at 50 and ordered newest-first, so reading only the
+// first page capped the app at the newest fifty alerts IN THE BARANGAY — an
+// officer assigned anything older simply never saw it, while the push for it
+// arrived normally. And the app downloaded all of them to then throw away every
+// one it was not on, which is what `officers_assigned` now avoids: both tabs
+// already filter to exactly this officer, so the server may as well.
+//
+// Scoped first, paged second. The filter makes one page the normal case; the
+// loop is what stops a long-serving officer silently losing their oldest work
+// the day they pass fifty. MAX_PAGES is a guard against a server that keeps
+// answering `next` forever, not an expected limit.
+const MAX_ALERT_PAGES = 20;
+
+export const getAlerts = async (officerId: number | null) => {
+  // A signed-in account with no Officer row behind it — a `both` account that
+  // was never given one. Every screen filters on officerId, so its lists are
+  // empty whatever comes back; fetching unscoped would page the entire table
+  // every four seconds to build that same empty list.
+  if (officerId == null) return { results: [] as ApiAlert[] };
+
+  const query = (page: number) => {
+    const params = new URLSearchParams({ officers_assigned: String(officerId) });
+    if (page > 1) params.set("page", String(page));
+    return `/alerts/?${params.toString()}`;
+  };
+
+  const first = await apiFetch<{ results: ApiAlert[]; next?: string | null } | ApiAlert[]>(query(1));
+  // An unpaginated server hands back a bare array; nothing to follow.
+  if (Array.isArray(first) || !Array.isArray(first.results)) return first;
+
+  const results = [...first.results];
+  let more = Boolean(first.next);
+  for (let page = 2; more && page <= MAX_ALERT_PAGES; page++) {
+    const next = await apiFetch<{ results: ApiAlert[]; next?: string | null }>(query(page));
+    results.push(...(next.results || []));
+    more = Boolean(next.next);
+  }
+  return { ...first, results, next: null };
+};
 export const updateAlert = (id: number, payload: Partial<ApiAlert>) =>
   apiFetch<ApiAlert>(`/alerts/${id}/`, { method: "PATCH", body: JSON.stringify(payload) });
 // Atomically adds the current officer to officers_assigned (and promotes
