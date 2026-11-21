@@ -495,6 +495,20 @@ class AlertSerializer(serializers.ModelSerializer):
         """
         return str(obj.reviewed_by) if obj.reviewed_by else ""
 
+    def _check_media_file(self, value):
+        """Return None if value is a local media path whose file does not exist on disk."""
+        if not value or value.startswith(("http://", "https://")):
+            return value
+        from django.conf import settings
+        import os
+        rel = value.lstrip("/")
+        media_prefix = settings.MEDIA_URL.lstrip("/")
+        if rel.startswith(media_prefix):
+            rel = rel[len(media_prefix):]
+        if not os.path.exists(os.path.join(settings.MEDIA_ROOT, rel)):
+            return None
+        return value
+
     def _resolve_media_url(self, value):
         if not value:
             return value
@@ -515,10 +529,10 @@ class AlertSerializer(serializers.ModelSerializer):
         return self._resolve_media_url(obj.image_url)
 
     def get_video_url(self, obj):
-        return self._resolve_media_url(obj.video_url)
+        return self._resolve_media_url(self._check_media_file(obj.video_url))
 
     def get_raw_video_url(self, obj):
-        return self._resolve_media_url(obj.raw_video_url)
+        return self._resolve_media_url(self._check_media_file(obj.raw_video_url))
 
     def get_suspect_image_url(self, obj):
         return self._resolve_media_url(obj.suspect_image_url)

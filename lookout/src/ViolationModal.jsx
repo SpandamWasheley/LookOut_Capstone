@@ -101,6 +101,7 @@ export function RecordingPlayer({ alert, timeline = false, testingTools = false 
   // way because ours are inside the element being expanded.
   const shellRef = useRef(null);
   const [expanded, setExpanded] = useState(false);
+  const [processedFailed, setProcessedFailed] = useState(false);
 
   useEffect(() => {
     const sync = () => setExpanded(document.fullscreenElement === shellRef.current);
@@ -148,6 +149,7 @@ export function RecordingPlayer({ alert, timeline = false, testingTools = false 
     setElapsed(0);
     setDuration(0);
     setAspectRatio(16 / 9);
+    setProcessedFailed(false);
   }, [src]);
 
   const fmtSec = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
@@ -222,6 +224,12 @@ export function RecordingPlayer({ alert, timeline = false, testingTools = false 
           }}
           onTimeUpdate={(e) => { if (!scrubDraggingRef.current) setElapsed(e.currentTarget.currentTime); }}
           onEnded={() => setPlaying(false)}
+          onError={() => {
+            if (!showingRaw && hasRaw) {
+              setUseRaw(true);
+              setProcessedFailed(true);
+            }
+          }}
           onClick={togglePlay}
         />
         {timeline && <TimelineButton alert={alert} />}
@@ -263,26 +271,34 @@ export function RecordingPlayer({ alert, timeline = false, testingTools = false 
         {/* RAW/ANNOTATED toggle — hidden when only one version exists (older
             alerts, or a raw/annotated cut that failed) so it degrades gracefully. */}
         {hasRaw && hasAnnotated && (
-          <div className="flex items-center gap-1.5 mb-3">
-            <button
-              onClick={() => setUseRaw(true)}
-              className="flex-1 text-[13px] font-medium py-1.5 rounded-lg transition-all"
-              style={{
-                background: useRaw ? "var(--primary)" : "var(--secondary)",
-                color: useRaw ? "#0c0f16" : "var(--muted-foreground)",
-              }}>
-              Normal
-            </button>
-            <button
-              onClick={() => setUseRaw(false)}
-              className="flex-1 text-[13px] font-medium py-1.5 rounded-lg transition-all"
-              style={{
-                background: !useRaw ? "var(--primary)" : "var(--secondary)",
-                color: !useRaw ? "#0c0f16" : "var(--muted-foreground)",
-              }}>
-              Processed
-            </button>
-          </div>
+          <>
+            <div className="flex items-center gap-1.5 mb-3">
+              <button
+                onClick={() => { setUseRaw(true); setProcessedFailed(false); }}
+                className="flex-1 text-[13px] font-medium py-1.5 rounded-lg transition-all"
+                style={{
+                  background: useRaw ? "var(--primary)" : "var(--secondary)",
+                  color: useRaw ? "#0c0f16" : "var(--muted-foreground)",
+                }}>
+                Normal
+              </button>
+              <button
+                onClick={() => { setUseRaw(false); setProcessedFailed(false); }}
+                className="flex-1 text-[13px] font-medium py-1.5 rounded-lg transition-all"
+                style={{
+                  background: !useRaw ? "var(--primary)" : "var(--secondary)",
+                  color: !useRaw ? "#0c0f16" : "var(--muted-foreground)",
+                }}>
+                Processed
+              </button>
+            </div>
+            {processedFailed && (
+              <div className="mb-2 text-[12px] px-2.5 py-1.5 rounded-lg"
+                style={{ background: "rgba(245,158,11,0.1)", color: "#d97706", border: "1px solid rgba(245,158,11,0.25)" }}>
+                Processed clip unavailable — showing Normal.
+              </div>
+            )}
+          </>
         )}
         {/* Native range scrubber — avoids the React re-render / seek-snap issue
             that the old pointer-capture implementation caused. Same pattern as
