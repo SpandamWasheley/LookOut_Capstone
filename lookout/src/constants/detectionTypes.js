@@ -8,29 +8,21 @@ import { Cigarette, Beer, Car, ShieldAlert, Trash2, Layers, Layers3, SquareStack
 // watch_thief command and DETECTION_COMMANDS use "thief", and "merged" isn't
 // a ViolationType at all, just a job type. See violationTypes.js's own note.
 export const DETECTION_TYPES = [
-  { key: "smoking", label: "Smoking", icon: Cigarette, color: "#6b8cae" },
-  { key: "drinking", label: "Drinking", icon: Beer, color: "#8b5cf6" },
+  { key: "smoking",    label: "Gray",   icon: Cigarette,   color: "#9ca3af" },
+  { key: "drinking",   label: "Violet", icon: Beer,        color: "#8b5cf6" },
   // The KEY stays "thief" -- it is the watch_thief command's own name, which
   // DETECTION_COMMANDS matches on. Only the label an operator reads changes.
-  { key: "thief", label: "Dangerous Weapon", icon: ShieldAlert, color: "#ef4444" },
-  { key: "parking", label: "Parking", icon: Car, color: "#f97316" },
-  // green-600, not the green-500 the violation chip uses: "Merged (All 3)"
-  // below already owns #22c55e, and these two appear in the SAME picker list.
-  { key: "disposal", label: "Waste", icon: Trash2, color: "#16a34a" },
-  { key: "merged", label: "Merged (All 3)", icon: Layers, color: "#22c55e" },
-  // Smoking + drinking + theft off one merged-model pass, plus road-edge
-  // obstruction running its own vehicle model beside them (watch_merged_all).
-  { key: "merged4", label: "Merged (All 4)", icon: Layers3, color: "#14b8a6" },
-  // Every violation in scope, presented as the next step in the Merged family
-  // — same label shape, same stacked icon, next colour in the progression.
-  //
-  // Worth knowing when reading the code rather than the picker: unlike its two
-  // siblings this is NOT one shared model pass. Disposal runs no trained
-  // violation class (dual background subtraction, then a zero-shot crop
-  // check), so it cannot read from the merged_v2.pt pass the other four share
-  // and is launched as its own process beside it — see DETECTION_COMPANIONS in
-  // views.py. The run costs two detectors, not one wider one.
-  { key: "everything", label: "Merged (All 5)", icon: SquareStack, color: "#0ea5e9" },
+  { key: "thief",      label: "Red",    icon: ShieldAlert, color: "#ef4444" },
+  { key: "parking",    label: "Orange", icon: Car,         color: "#f97316" },
+  { key: "disposal",   label: "Green",  icon: Trash2,      color: "#22c55e" },
+  { key: "merged",     label: "Pink",   icon: Layers,      color: "#ec4899" },
+  // Gray + Violet + Red (merged model) + Green (disposal, separate process).
+  { key: "merged4",    label: "Cyan",   icon: Layers3,     color: "#06b6d4" },
+  // All five: Gray + Violet + Red + Green + Orange.
+  // Worth knowing: disposal (Green) runs no trained violation class — dual
+  // background subtraction + zero-shot crop — so it cannot share the
+  // merged_v2.pt pass and is launched as its own process beside it.
+  { key: "everything", label: "Black",  icon: SquareStack, color: "#18181b" },
 ];
 
 // Detectors that use a drawn area, in three tiers that mirror the backend's
