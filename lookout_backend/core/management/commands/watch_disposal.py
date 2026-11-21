@@ -199,6 +199,11 @@ class Command(BaseCommand):
             "--show-mask", action="store_true",
             help="With --debug, also show the static-object mask (stage 1's output).",
         )
+        parser.add_argument(
+            "--companion", action="store_true",
+            help="Run beside another detector: publish subjects only (no video "
+                 "frames) so the primary's live view is not overwritten.",
+        )
 
     def handle(self, *args, **options):
         # No migration creates these, so get_or_create self-heals a fresh DB —
@@ -224,7 +229,7 @@ class Command(BaseCommand):
         # us. Set here rather than in _run_stream for the same reason as the
         # four above: _create_alert and _publish_view must never AttributeError
         # on a path that skipped the stream setup.
-        self.debug_pub = debug_view.DebugPublisher.from_env()
+        self.debug_pub = debug_view.DebugPublisher.from_env(companion=options["companion"])
         self._movers = []
         # None, not [] -- "the person pass has not run / is unavailable", which
         # the owner rule has to be able to tell apart from "it ran and saw

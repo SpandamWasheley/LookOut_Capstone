@@ -35,10 +35,13 @@ def _pretty(name):
 
 
 class DebugPublisher:
-    def __init__(self, directory, interval=FRAME_INTERVAL):
+    def __init__(self, directory, interval=FRAME_INTERVAL, companion=False):
         self._area = None      # a fixed region to draw; see set_area
         self.dir = directory
         self.interval = interval
+        # companion=True: write subjects to state_companion.json and skip the
+        # frame write so the primary detector's frame.jpg is never overwritten.
+        self._companion = companion
         os.makedirs(self.dir, exist_ok=True)
         self._clean = None
         self._last_pub = 0.0
@@ -48,9 +51,9 @@ class DebugPublisher:
         self.published = 0
 
     @classmethod
-    def from_env(cls):
+    def from_env(cls, companion=False):
         directory = os.environ.get("LOOKOUT_DEBUG_DIR", "").strip()
-        return cls(directory) if directory and cv2 is not None else None
+        return cls(directory, companion=companion) if directory and cv2 is not None else None
 
     # ---- per frame ---------------------------------------------------------------
 
@@ -121,17 +124,24 @@ class DebugPublisher:
         for key in [k for k, e in self._entries.items() if now - e["seen"] > KEEP_SECONDS]:
             del self._entries[key]
         h, w = clean.shape[:2]
-        scale = min(1.0, MAX_WIDTH / float(w))
-        small = cv2.resize(clean, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA) if scale < 1 else clean
-        ok, buf = cv2.imencode(".jpg", small, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY])
-        if not ok:
-            return
         self._seq += 1
         state = {
             "seq": self._seq, "wall": now, "media_ts": media_ts,
             "frame_w": w, "frame_h": h, "area": self._area,
             "subjects": sorted(self._entries.values(), key=lambda e: (e["violation"], str(e["id"]))),
         }
+        if self._companion:
+            # Subjects-only: write to a separate file so the primary's
+            # frame.jpg and state.json are never touched. read_state() merges
+            # these subjects into the primary's state before serving the page.
+            self._write(os.path.join(self.dir, "state_companion.json"), json.dumps(state).encode("utf8"), binary=True)
+            self.published += 1
+            return
+        scale = min(1.0, MAX_WIDTH / float(w))
+        small = cv2.resize(clean, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA) if scale < 1 else clean
+        ok, buf = cv2.imencode(".jpg", small, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY])
+        if not ok:
+            return
         self._write(os.path.join(self.dir, "frame.jpg"), buf.tobytes(), binary=True)
         self._write(os.path.join(self.dir, "state.json"), json.dumps(state).encode("utf8"), binary=True)
         self.published += 1
@@ -183,6 +193,19 @@ def read_state(directory, since=None):
         return None, None
     if since is not None and state.get("seq") == since:
         return state, None
+    # Merge subjects written by a companion (e.g. watch_disposal running beside
+    # watch_merged). The companion writes state_companion.json with its zone and
+    # candidate boxes so they appear in the same live view without overwriting
+    # the primary's frame. The area is taken from the companion when the primary
+    # has none (Cyan / merged4 has no zone of its own).
+    try:
+        with open(os.path.join(directory, "state_companion.json"), "rb") as fh:
+            companion = json.loads(fh.read().decode("utf8"))
+        state["subjects"] = (state.get("subjects") or []) + companion.get("subjects", [])
+        if not state.get("area") and companion.get("area"):
+            state["area"] = companion["area"]
+    except (OSError, ValueError):
+        pass
     try:
         with open(os.path.join(directory, "frame.jpg"), "rb") as fh:
             return state, fh.read()

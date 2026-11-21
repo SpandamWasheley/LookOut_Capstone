@@ -2858,14 +2858,18 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
                 raise
             job.pid = proc.pid
 
-            # Companions, each its own process on the same source. Deliberately
-            # WITHOUT LOOKOUT_DEBUG_DIR: see DETECTION_COMPANIONS.
+            # Companions, each its own process on the same source. Each runs
+            # with --companion so it writes state_companion.json (subjects only,
+            # no frame) rather than overwriting the primary's frame.jpg and
+            # state.json. read_state() merges the companion subjects before
+            # serving the live view — the zone and candidate boxes appear on the
+            # primary's frame without any flicker or overwrite.
             extras = []
-            companion_env = {k: v for k, v in env.items() if k != "LOOKOUT_DEBUG_DIR"}
+            companion_env = dict(env)
             for companion in DETECTION_COMPANIONS.get(violation_type, ()):
                 try:
                     extra = subprocess.Popen(
-                        [sys.executable, "manage.py", companion,
+                        [sys.executable, "manage.py", companion, "--companion",
                          "--source", source_arg, "--camera", camera_code],
                         cwd=str(django_settings.BASE_DIR),
                         stdout=log_file, stderr=subprocess.STDOUT,
