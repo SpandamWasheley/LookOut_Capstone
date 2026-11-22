@@ -333,6 +333,21 @@ export function RunDetectionPage() {
     }
   };
 
+  // Ctrl+1–9: pick detector by index without touching the mouse.
+  // preventDefault stops Chrome/Edge from switching browser tabs on Ctrl+1–8.
+  useEffect(() => {
+    if (job) return undefined;
+    const onKey = (e) => {
+      if (!e.ctrlKey || e.shiftKey || e.altKey || e.metaKey) return;
+      const idx = parseInt(e.key, 10);
+      if (isNaN(idx) || idx < 1 || idx > DETECTION_TYPES.length) return;
+      e.preventDefault();
+      setViolationType(DETECTION_TYPES[idx - 1].key);
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [job]);
+
   // Escape shrinks rather than resets, and yields to a question on top of it.
   useEffect(() => {
     if (!expanded || ask) return undefined;
@@ -461,7 +476,7 @@ export function RunDetectionPage() {
             <div className="rounded-xl px-4 py-2.5 flex flex-wrap items-center justify-between gap-3" style={barStyle}>
               <div className="flex items-center gap-2 text-[14px]" style={{ color: "var(--foreground)" }}>
                 {running
-                  ? <Loader2 size={14} className="animate-spin" style={{ color: "#22c55e" }} />
+                  ? <Loader2 size={14} className="animate-spin" style={{ color: DETECTION_TYPES.find((t) => t.key === violationType)?.color ?? "#22c55e" }} />
                   : <CheckCircle2 size={14} style={{ color: jobStatus === "done" ? "#22c55e" : "#f59e0b" }} />}
                 <span style={{ color: "var(--foreground)", fontWeight: 600 }}>
                   {source === "camera" ? "Detection on the Live Camera" : staged?.sourceFilename}
@@ -496,16 +511,6 @@ export function RunDetectionPage() {
           <>
             {/* Compact full-width setup bar */}
             <div className="rounded-xl p-3 flex flex-wrap items-center gap-x-5 gap-y-3" style={barStyle}>
-              {/* Active detector indicator — click to jump to the picker below */}
-              {(() => {
-                const active = DETECTION_TYPES.find((t) => t.key === violationType);
-                return (
-                  <div className="flex items-center gap-1.5" title={`Detector: ${active?.label ?? violationType} — scroll down to change`}>
-                    <div className="w-4 h-4 rounded-full flex-shrink-0" style={{ background: active?.color ?? "var(--muted-foreground)" }} />
-                    <span className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>{active?.label ?? violationType}</span>
-                  </div>
-                );
-              })()}
 
               <div className="flex items-center gap-1 p-0.5 rounded-full" style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
                 {[{ k: "file", l: "Upload clip", I: Upload }, { k: "camera", l: "Live camera", I: Radio }].map(({ k, l, I }) => (
@@ -735,24 +740,6 @@ export function RunDetectionPage() {
           </>
         )}
 
-        {/* Detector type picker — at the very bottom so it stays out of view */}
-        {!job && (
-          <div className="rounded-xl p-3 flex flex-wrap items-center justify-center gap-1.5 mt-2" style={barStyle}>
-            {DETECTION_TYPES.map((t) => {
-              const isActive = violationType === t.key;
-              return (
-                <button key={t.key} onClick={() => setViolationType(t.key)}
-                  title={t.label} aria-label={t.label} aria-pressed={isActive}
-                  className="w-14 h-7 rounded-full transition-all"
-                  style={{
-                    background: isActive ? t.color : "var(--secondary)",
-                    border: `1px solid ${isActive ? t.color : "var(--border)"}`,
-                  }}
-                />
-              );
-            })}
-          </div>
-        )}
       </div>
 
       {/* Replacing a drawn area, discarding a staged clip, stopping a run. */}

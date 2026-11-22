@@ -16,6 +16,12 @@ import { getViolationTypes, getBarangays, createCitation, searchViolators, getAc
 // browser can seek inside without server-side Range support. Without this,
 // Django's media serving returns 200 (no Accept-Ranges) so seeking snaps
 // back to 0:00. The blob is revoked when the source changes or the component unmounts.
+//
+// Falls back to the direct URL after BLOB_TIMEOUT_MS so a slow or unreachable
+// backend never leaves the player spinning indefinitely. On a hosted server
+// with nginx/gunicorn, Range requests work fine so the direct URL is playable
+// and seekable anyway; seek-snap only happens with Django's dev server.
+const BLOB_TIMEOUT_MS = 20_000;
 function useClipBlobUrl(src) {
   const [blobUrl, setBlobUrl] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -26,7 +32,14 @@ function useClipBlobUrl(src) {
     setLoading(true);
     setBlobUrl(null);
     const token = getAccessToken();
-    fetch(src, token ? { headers: { Authorization: `Bearer ${token}` } } : {})
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      controller.abort();
+    }, BLOB_TIMEOUT_MS);
+    fetch(src, {
+      signal: controller.signal,
+      ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
+    })
       .then((r) => r.ok ? r.blob() : Promise.reject(r.status))
       .then((blob) => {
         if (cancelled) return;
@@ -35,11 +48,16 @@ function useClipBlobUrl(src) {
         setBlobUrl(url);
       })
       .catch(() => {
-        if (!cancelled) setBlobUrl(src); // fall back to direct URL on fetch error
+        if (!cancelled) setBlobUrl(src); // fall back to direct URL on error or timeout
       })
-      .finally(() => { if (!cancelled) setLoading(false); });
+      .finally(() => {
+        clearTimeout(timer);
+        if (!cancelled) setLoading(false);
+      });
     return () => {
       cancelled = true;
+      clearTimeout(timer);
+      controller.abort();
       if (created) URL.revokeObjectURL(created);
     };
   }, [src]);
