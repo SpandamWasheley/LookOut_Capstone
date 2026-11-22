@@ -254,7 +254,7 @@ export function RunDetectionPage() {
     ? ` (resumed — ${formatBytes(progress.resumedBytes)} was already up)`
     : "";
 
-  const usesClock = source === "file" && ["thief", "drinking", "merged", "merged4", "disposal"].includes(violationType);
+  const usesClock = source === "file";
   const canStart = source === "camera"
     ? !!cameraId
     : staged && (!needsEdges || edgesOptional || canSaveEdges);

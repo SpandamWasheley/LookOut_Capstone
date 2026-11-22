@@ -2817,7 +2817,7 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
             # and only the commands that take --clock.
             recorded_at = (request.data.get("recorded_at") or "").strip().replace("T", " ")[:16]
             if recorded_at and camera is None and violation_type in (
-                    "drinking", "thief", "merged", "merged4", "disposal"):
+                    "drinking", "thief", "merged", "smdrink", "merged4", "everything", "disposal"):
                 from core.vision.clock import parse_clock
                 try:
                     parse_clock(recorded_at)
