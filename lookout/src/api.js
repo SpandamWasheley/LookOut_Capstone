@@ -644,7 +644,7 @@ export const abortUploadSession = (id) =>
 // against so the backend can rescale it correctly at analysis time.
 export const startStagedDetectionJob = (
   { stagedToken, sourceFilename, violationType, recordedAt, edges, edgesWidth, edgesHeight,
-    obstructionPct, obstructionMinutes, trimStart, trimEnd },
+    obstructionPct, obstructionMinutes, trimStart, trimEnd, useEngine },
 ) => {
   const formData = new FormData();
   formData.append("staged_token", stagedToken);
@@ -679,6 +679,7 @@ export const startStagedDetectionJob = (
   if (obstructionMinutes !== undefined && obstructionMinutes !== null) {
     formData.append("obstruction_minutes", obstructionMinutes);
   }
+  if (useEngine) formData.append("use_engine", "1");
   return apiUpload("/detection-jobs/", formData);
 };
 // Starts a job against a live camera's stream_url instead of a file — no
@@ -686,10 +687,11 @@ export const startStagedDetectionJob = (
 // itself first via EdgeEditorModal (updateCamera), which already writes
 // camera.edges directly and is picked up the same way any other run does.
 // The resulting job never reaches EOF on its own; see cancelDetectionJob.
-export const startLiveDetectionJob = ({ violationType, cameraId }) => {
+export const startLiveDetectionJob = ({ violationType, cameraId, useEngine }) => {
   const formData = new FormData();
   formData.append("violation_type", violationType);
   formData.append("camera_id", cameraId);
+  if (useEngine) formData.append("use_engine", "1");
   return apiUpload("/detection-jobs/", formData);
 };
 

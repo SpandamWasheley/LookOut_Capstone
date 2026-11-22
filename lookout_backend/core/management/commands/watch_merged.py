@@ -94,6 +94,10 @@ class Command(BaseCommand):
         "--source for an RTSP/CCTV URL or video file."
     )
 
+    # Class-level copy so subclasses can restrict routing without touching the
+    # module-level dict (e.g. watch_smoke_drink excludes knife → thief).
+    ROUTE_ENGINE = ROUTE_ENGINE
+
     # Engines that do NOT come from the merged model. It has three classes
     # (Bottle/Cigarette/knife) and no vehicle class, so a fourth violation has
     # to bring its own detector and its own rule layer; that is what an extra
@@ -391,9 +395,9 @@ class Command(BaseCommand):
         hours into a review. Checked here so it can't happen unnoticed.
         """
         names = model.names.values() if isinstance(model.names, dict) else model.names
-        covered = {ROUTE_ENGINE[label.lower()] for label in names
-                  if label.lower() in ROUTE_ENGINE}
-        missing = set(ROUTE_ENGINE.values()) - covered
+        covered = {self.ROUTE_ENGINE[label.lower()] for label in names
+                  if label.lower() in self.ROUTE_ENGINE}
+        missing = set(self.ROUTE_ENGINE.values()) - covered
         if missing:
             return (
                 f"Merged model's classes {sorted(names)!r} route (via ROUTE_ENGINE) to "
@@ -650,7 +654,7 @@ class Command(BaseCommand):
 
         routed = {"smoking": [], "drinking": [], "thief": []}
         for d in dets:
-            engine = ROUTE_ENGINE.get(d[5].lower())
+            engine = self.ROUTE_ENGINE.get(d[5].lower())
             if engine is not None:
                 routed[engine].append(d)
 

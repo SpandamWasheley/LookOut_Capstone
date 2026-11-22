@@ -1872,6 +1872,9 @@ DETECTION_COMMANDS = {
     # ViolationTypes; "merged" itself is only the DetectionJob's own label,
     # not a ViolationType.
     "merged": "watch_merged",
+    # Cigarette + Bottle only — knife/thief detections are dropped. One merged
+    # model pass, two rule engines.
+    "smdrink": "watch_smoke_drink",
     # The same three (smoking/drinking/knife) plus improper disposal, run as a
     # companion process — same arrangement as "everything" but without parking.
     # Disposal cannot share the merged model pass, so it runs headless beside it.
@@ -2773,6 +2776,17 @@ class DetectionJobViewSet(viewsets.ModelViewSet):
             # happened to launch `runserver`.
             env = os.environ.copy()
             env["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+            if request.data.get("use_engine"):
+                engine_path = django_settings.BASE_DIR / "core" / "vision" / "merged_v2.engine"
+                if not engine_path.exists():
+                    log_file.close()
+                    return Response(
+                        {"detail": "TensorRT engine not found. Export it first by running: "
+                                   "python -c \"from ultralytics import YOLO; "
+                                   "YOLO('core/vision/merged_v2.pt').export(format='engine', half=True, device=0, dynamic=True)\""},
+                        status=400,
+                    )
+                env["LOOKOUT_MODEL"] = str(engine_path)
             # --cascade only exists on watch_smoking (native-res person crops —
             # matches smoking_v5's ~25px training domain). The other three
             # watchers never define this flag, so passing it to them would

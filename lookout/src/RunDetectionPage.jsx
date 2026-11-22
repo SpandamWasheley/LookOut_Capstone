@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Upload, FileVideo, Loader2, AlertTriangle, RotateCcw, Play, Radio, Square, CheckCircle2, X, History, Wand2, Info,
-         Maximize2, Minimize2 } from "lucide-react";
+         Maximize2, Minimize2, Zap } from "lucide-react";
 import {
   startStagedDetectionJob, startLiveDetectionJob, getCameras, getJobState, cancelDetectionJob,
   traceZoneFromStaged,
@@ -127,6 +127,7 @@ export function RunDetectionPage() {
 
   // When the clip was recorded (datetime-local). Optional; becomes --clock for the detector.
   const [recordedAt, setRecordedAt] = useState("");
+  const [useEngine, setUseEngine] = useState(false);
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState("");
   const [job, setJob] = useState(null);
@@ -294,7 +295,7 @@ export function RunDetectionPage() {
     setStartError("");
     try {
       const started = source === "camera"
-        ? await startLiveDetectionJob({ violationType, cameraId })
+        ? await startLiveDetectionJob({ violationType, cameraId, useEngine })
         : await startStagedDetectionJob({
             stagedToken: staged.stagedToken,
             sourceFilename: staged.sourceFilename,
@@ -321,6 +322,7 @@ export function RunDetectionPage() {
               obstructionPct: Number(pct),
               obstructionMinutes: Number(minutes),
             } : {}),
+            useEngine,
           });
       setJob(started);
       setJobStatus("running");
@@ -494,21 +496,16 @@ export function RunDetectionPage() {
           <>
             {/* Compact full-width setup bar */}
             <div className="rounded-xl p-3 flex flex-wrap items-center gap-x-5 gap-y-3" style={barStyle}>
-              <div className="flex items-center flex-wrap gap-1.5">
-                {DETECTION_TYPES.map((t) => {
-                  const isActive = violationType === t.key;
-                  return (
-                    <button key={t.key} onClick={() => setViolationType(t.key)}
-                      title={t.label} aria-label={t.label} aria-pressed={isActive}
-                      className="w-14 h-7 rounded-full transition-all"
-                      style={{
-                        background: isActive ? t.color : "var(--secondary)",
-                        border: `1px solid ${isActive ? t.color : "var(--border)"}`,
-                      }}
-                    />
-                  );
-                })}
-              </div>
+              {/* Active detector indicator — click to jump to the picker below */}
+              {(() => {
+                const active = DETECTION_TYPES.find((t) => t.key === violationType);
+                return (
+                  <div className="flex items-center gap-1.5" title={`Detector: ${active?.label ?? violationType} — scroll down to change`}>
+                    <div className="w-4 h-4 rounded-full flex-shrink-0" style={{ background: active?.color ?? "var(--muted-foreground)" }} />
+                    <span className="text-[13px]" style={{ color: "var(--muted-foreground)" }}>{active?.label ?? violationType}</span>
+                  </div>
+                );
+              })()}
 
               <div className="flex items-center gap-1 p-0.5 rounded-full" style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
                 {[{ k: "file", l: "Upload clip", I: Upload }, { k: "camera", l: "Live camera", I: Radio }].map(({ k, l, I }) => (
@@ -592,6 +589,19 @@ export function RunDetectionPage() {
                     style={{ background: "var(--secondary)", border: "1px solid var(--border)", color: "var(--foreground)" }} />
                 </label>
               )}
+
+              <button
+                onClick={() => setUseEngine((v) => !v)}
+                title={useEngine ? "Using TensorRT engine (.engine) — click to switch to PyTorch (.pt)" : "Using PyTorch model (.pt) — click to switch to TensorRT engine"}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[13px] font-medium"
+                style={{
+                  background: useEngine ? "rgba(99,102,241,0.15)" : "var(--secondary)",
+                  color: useEngine ? "#818cf8" : "var(--muted-foreground)",
+                  border: `1px solid ${useEngine ? "rgba(99,102,241,0.4)" : "var(--border)"}`,
+                }}>
+                <Zap size={12} fill={useEngine ? "#818cf8" : "none"} />
+                {useEngine ? "TensorRT" : "PyTorch"}
+              </button>
 
               <button disabled={!canStart || starting} onClick={handleStart}
                 className="flex items-center gap-2 px-5 py-2 rounded-xl text-sm font-medium ml-auto"
@@ -723,6 +733,25 @@ export function RunDetectionPage() {
               </div>
             )}
           </>
+        )}
+
+        {/* Detector type picker — at the very bottom so it stays out of view */}
+        {!job && (
+          <div className="rounded-xl p-3 flex flex-wrap items-center justify-center gap-1.5 mt-2" style={barStyle}>
+            {DETECTION_TYPES.map((t) => {
+              const isActive = violationType === t.key;
+              return (
+                <button key={t.key} onClick={() => setViolationType(t.key)}
+                  title={t.label} aria-label={t.label} aria-pressed={isActive}
+                  className="w-14 h-7 rounded-full transition-all"
+                  style={{
+                    background: isActive ? t.color : "var(--secondary)",
+                    border: `1px solid ${isActive ? t.color : "var(--border)"}`,
+                  }}
+                />
+              );
+            })}
+          </div>
         )}
       </div>
 

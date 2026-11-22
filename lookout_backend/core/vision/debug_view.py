@@ -44,6 +44,7 @@ class DebugPublisher:
         self._companion = companion
         os.makedirs(self.dir, exist_ok=True)
         self._clean = None
+        self._clean_orig_wh = None   # original (w, h) before the stash downscale
         self._last_pub = 0.0
         self._entries = {}
         self._seq = 0
@@ -74,8 +75,23 @@ class DebugPublisher:
 
     def stash(self, frame):
         """Take a clean copy of this frame, but only when a publish is due (the detectors draw on
-        the frame in place, so the pixels must be copied BEFORE any drawing)."""
-        if frame is not None and time.monotonic() - self._last_pub >= self.interval:
+        the frame in place, so the pixels must be copied BEFORE any drawing).
+
+        Downscaled to MAX_WIDTH here rather than in commit() so a 2560×1440 frame
+        (10.5 MiB) is never kept in memory as a full-res copy — that caused OOM
+        crashes on high-resolution clips when RAM was under pressure.  Original
+        dimensions are stored separately so state.json still reports the original
+        frame_w / frame_h (which is the coordinate space the box data lives in).
+        """
+        if frame is None or time.monotonic() - self._last_pub < self.interval:
+            return
+        h, w = frame.shape[:2]
+        self._clean_orig_wh = (w, h)
+        if w > MAX_WIDTH:
+            scale = MAX_WIDTH / float(w)
+            self._clean = cv2.resize(frame, (int(w * scale), int(h * scale)),
+                                     interpolation=cv2.INTER_AREA)
+        else:
             self._clean = frame.copy()
 
     def note(self, key, violation, ident, box, status, score_pct, indicators, multipliers, momentum,
@@ -117,17 +133,23 @@ class DebugPublisher:
     def commit(self, media_ts=None):
         """End of the frame: publish if a clean frame was stashed."""
         clean, self._clean = self._clean, None
+        orig_wh, self._clean_orig_wh = self._clean_orig_wh, None
         if clean is None:
             return
         self._last_pub = time.monotonic()
         now = time.time()
         for key in [k for k, e in self._entries.items() if now - e["seen"] > KEEP_SECONDS]:
             del self._entries[key]
-        h, w = clean.shape[:2]
+        # Use the original frame dimensions for frame_w / frame_h: the page
+        # maps detector box coordinates (which are in the original frame's pixel
+        # space) onto the displayed image using these values, so they must match
+        # the coordinate space the boxes live in even though the JPEG we're
+        # about to write is already downscaled.
+        orig_w, orig_h = orig_wh if orig_wh else (clean.shape[1], clean.shape[0])
         self._seq += 1
         state = {
             "seq": self._seq, "wall": now, "media_ts": media_ts,
-            "frame_w": w, "frame_h": h, "area": self._area,
+            "frame_w": orig_w, "frame_h": orig_h, "area": self._area,
             "subjects": sorted(self._entries.values(), key=lambda e: (e["violation"], str(e["id"]))),
         }
         if self._companion:
@@ -137,9 +159,8 @@ class DebugPublisher:
             self._write(os.path.join(self.dir, "state_companion.json"), json.dumps(state).encode("utf8"), binary=True)
             self.published += 1
             return
-        scale = min(1.0, MAX_WIDTH / float(w))
-        small = cv2.resize(clean, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA) if scale < 1 else clean
-        ok, buf = cv2.imencode(".jpg", small, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY])
+        # clean is already downscaled to MAX_WIDTH by stash(); no second resize.
+        ok, buf = cv2.imencode(".jpg", clean, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY])
         if not ok:
             return
         self._write(os.path.join(self.dir, "frame.jpg"), buf.tobytes(), binary=True)

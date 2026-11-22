@@ -1,4 +1,4 @@
-import { Cigarette, Beer, Car, ShieldAlert, Trash2, Layers, Layers3, SquareStack } from "lucide-react";
+import { Cigarette, Beer, Car, ShieldAlert, Trash2, Layers, Layers2, Layers3, SquareStack } from "lucide-react";
 
 // The 8 detectors DetectionJobViewSet.DETECTION_COMMANDS knows how to run,
 // shared by every upload-a-clip-and-detect entry point (UploadDetectionModal,
@@ -15,6 +15,8 @@ export const DETECTION_TYPES = [
   { key: "thief",      label: "Red",    icon: ShieldAlert, color: "#ef4444" },
   { key: "parking",    label: "Orange", icon: Car,         color: "#f97316" },
   { key: "disposal",   label: "Green",  icon: Trash2,      color: "#22c55e" },
+  // Cigarette + Bottle only — same merged pass as Pink but knife/thief dropped.
+  { key: "smdrink",    label: "Yellow", icon: Layers2,     color: "#eab308" },
   { key: "merged",     label: "Pink",   icon: Layers,      color: "#ec4899" },
   // Gray + Violet + Red (merged model) + Green (disposal, separate process).
   { key: "merged4",    label: "Cyan",   icon: Layers3,     color: "#06b6d4" },
