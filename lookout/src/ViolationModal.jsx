@@ -10,7 +10,7 @@ import { violationDisplay, resolveViolationType } from "./constants/violationTyp
 import { levelColor } from "./alertModel";
 import { useTestingTools } from "./useTestingTools";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { getViolationTypes, getBarangays, createCitation, searchViolators, getAccessToken, retryAlertAI } from "./api";
+import { getViolationTypes, getBarangays, createCitation, searchViolators, getAccessToken, retryAlertAI, TUNNEL_HEADERS } from "./api";
 
 // Fetches a clip URL with the auth token and returns a stable blob URL that the
 // browser can seek inside without server-side Range support. Without this,
@@ -38,7 +38,7 @@ function useClipBlobUrl(src) {
     }, BLOB_TIMEOUT_MS);
     fetch(src, {
       signal: controller.signal,
-      ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
+      headers: { ...TUNNEL_HEADERS, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     })
       .then((r) => r.ok ? r.blob() : Promise.reject(r.status))
       .then((blob) => {

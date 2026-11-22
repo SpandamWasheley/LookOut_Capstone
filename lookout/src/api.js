@@ -6,7 +6,7 @@ const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000/api"
 // tunnel fails as a CORS error even though Django's own CORS config is right.
 // This header opts out of the interstitial; harmless on any other host.
 // It is a custom header, so it must also be in the API's CORS_ALLOW_HEADERS.
-const TUNNEL_HEADERS = { "ngrok-skip-browser-warning": "true" };
+export const TUNNEL_HEADERS = { "ngrok-skip-browser-warning": "true" };
 
 // The access token lives only in memory, for the life of the page — never
 // written to storage, so it can't be read out of a DevTools storage panel or
