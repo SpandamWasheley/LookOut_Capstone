@@ -1002,6 +1002,7 @@ class Command(IncidentMixin, BaseCommand):
         # watchlist), so there is no stationary requirement.
         cue = self._object_cue(track, dets, now_ts)
         object_on, best_label, best_score = cue.on, cue.label, cue.conf
+        self._draw_object_cue(frame, track, dets, cue, color_on=(200, 80, 160))
         posture = "held"
         if object_on:
             # Posture describes the object being scored, not the person in
@@ -1066,7 +1067,6 @@ class Command(IncidentMixin, BaseCommand):
             # not even a Monitoring row. Only a gathering (_process_cluster) can alert.
             self.stats["discarded: solo drinker (solo drinking is off)"] += 1
             return
-        self._draw_object_cue(frame, track, dets, cue, color_on=(200, 80, 160))
         self._debug_note("Drinking", key, track.id, track.box, score, cue.momentum,
                          # solo_sip gate indicators (bottle_held / sip labels) are hidden:
                          # the solo path is off (SOLO_DRINKING_ENABLED = False) and "sip" is not

@@ -14,9 +14,8 @@ import { getViolationTypes, getBarangays, createCitation, searchViolators, getAc
 
 // Fetches a clip URL with the auth token and returns a stable blob URL that the
 // browser can seek inside without server-side Range support. Without this,
-// Django's media serving returns 200 (no Accept-Ranges) so the browser can only
-// play from the start and snaps back to 0:00 on any seek attempt.
-// The blob URL is revoked when the source changes or the component unmounts.
+// Django's media serving returns 200 (no Accept-Ranges) so seeking snaps
+// back to 0:00. The blob is revoked when the source changes or the component unmounts.
 function useClipBlobUrl(src) {
   const [blobUrl, setBlobUrl] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -36,7 +35,7 @@ function useClipBlobUrl(src) {
         setBlobUrl(url);
       })
       .catch(() => {
-        if (!cancelled) setBlobUrl(src); // fall back to direct URL
+        if (!cancelled) setBlobUrl(src); // fall back to direct URL on fetch error
       })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => {
@@ -81,8 +80,9 @@ export function RecordingPlayer({ alert, timeline = false, testingTools = false 
   const hasRaw = !!alert.rawVideoUrl;
   const hasAnnotated = !!alert.videoUrl;
   const hasVideo = hasRaw || hasAnnotated;
-  // RAW by default when it exists; otherwise fall back to whichever exists.
-  const [useRaw, setUseRaw] = useState(hasRaw);
+  // Processed (annotated) by default when it exists; fall back to raw only
+  // when there is no annotated clip.
+  const [useRaw, setUseRaw] = useState(!hasAnnotated);
   const [playing, setPlaying] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -139,11 +139,6 @@ export function RecordingPlayer({ alert, timeline = false, testingTools = false 
   //
   // Null on alerts written before the field existed, and whenever a clip was
   // not produced: no marker rather than a guessed one.
-  const offsetForClip = showingRaw ? alert.clipOffset : alert.annotatedOffset;
-  const detectedAt = offsetForClip != null && offsetForClip >= 0
-    ? offsetForClip
-    : null;
-
   useEffect(() => {
     setPlaying(false);
     setElapsed(0);
@@ -153,9 +148,6 @@ export function RecordingPlayer({ alert, timeline = false, testingTools = false 
   }, [src]);
 
   const fmtSec = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
-  const markPct = detectedAt != null && duration > 0
-    ? Math.min(100, (detectedAt / duration) * 100)
-    : null;
 
   // Seconds under a pointer x, clamped to the clip.
   const seekTo = (seconds) => {
@@ -211,7 +203,7 @@ export function RecordingPlayer({ alert, timeline = false, testingTools = false 
           </div>
         )}
         <video
-          key={blobSrc || src}
+          key={src}
           ref={videoRef}
           src={blobSrc || undefined}
           playsInline
@@ -225,7 +217,9 @@ export function RecordingPlayer({ alert, timeline = false, testingTools = false 
           onTimeUpdate={(e) => { if (!scrubDraggingRef.current) setElapsed(e.currentTarget.currentTime); }}
           onEnded={() => setPlaying(false)}
           onError={() => {
-            if (!showingRaw && hasRaw) {
+            // Guard: while the blob is loading, blobSrc is null and no src is set —
+            // that is not an error. Only fall back to raw once the fetch has settled.
+            if (!showingRaw && hasRaw && !clipLoading) {
               setUseRaw(true);
               setProcessedFailed(true);
             }
@@ -300,25 +294,7 @@ export function RecordingPlayer({ alert, timeline = false, testingTools = false 
             )}
           </>
         )}
-        {/* Native range scrubber — avoids the React re-render / seek-snap issue
-            that the old pointer-capture implementation caused. Same pattern as
-            RecordingsModal. The detection marker is a pointer-events-none overlay. */}
         <div className="relative mb-2">
-          {markPct != null && (
-            <div
-              className="absolute pointer-events-none z-10"
-              style={{
-                left: `calc(${markPct}% - 1.5px)`,
-                top: "50%",
-                transform: "translateY(-50%)",
-                width: 3,
-                height: 10,
-                background: violationDisplay(alert.type).color,
-                borderRadius: 2,
-                boxShadow: "0 0 0 1px rgba(0,0,0,0.45)",
-              }}
-            />
-          )}
           <input
             type="range"
             min={0}
@@ -354,7 +330,6 @@ export function RecordingPlayer({ alert, timeline = false, testingTools = false 
               else if (e.key === "ArrowLeft") { e.preventDefault(); seekTo(Math.max(elapsed - step, 0)); }
               else if (e.key === "Home") { e.preventDefault(); seekTo(0); }
               else if (e.key === "End") { e.preventDefault(); seekTo(duration); }
-              else if (e.key.toLowerCase() === "d" && detectedAt != null) { e.preventDefault(); seekTo(detectedAt); }
             }}
           />
         </div>
@@ -382,23 +357,6 @@ export function RecordingPlayer({ alert, timeline = false, testingTools = false 
               style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
               {fmtSec(elapsed)} / {fmtSec(duration)}
             </span>
-            {/* Names the tick on the bar, and jumps to it. Without the label
-                the marker is an unexplained coloured line. */}
-            {detectedAt != null && (
-              <button
-                type="button"
-                onClick={() => seekTo(detectedAt)}
-                title="Jump to the moment the detector fired"
-                className="flex items-center gap-1.5 text-[12px] px-2 py-1 rounded-md"
-                style={{ color: "var(--muted-foreground)", border: "1px solid var(--border)" }}
-                onMouseEnter={(e) => (e.currentTarget.style.color = "var(--foreground)")}
-                onMouseLeave={(e) => (e.currentTarget.style.color = "var(--muted-foreground)")}
-              >
-                <span className="inline-block w-[3px] h-[10px] rounded-sm"
-                  style={{ background: violationDisplay(alert.type).color }} />
-                Detected {fmtSec(detectedAt)}
-              </button>
-            )}
           </div>
           <div className="flex items-center gap-1">
           <button

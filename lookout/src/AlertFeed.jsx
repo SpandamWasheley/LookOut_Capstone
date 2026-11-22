@@ -607,7 +607,7 @@ export function AlertFeed({ showFilters = false, externalAlerts = null, user }) 
           ? new Date(a.timestamp) - new Date(b.timestamp)
           : new Date(b.timestamp) - new Date(a.timestamp)
       )
-    : filtered;
+    : [...filtered].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
   // Responsive fit for the compact overview panel: measure the available height and a
   // real card, then show as many as fit. Re-measures on container/window resize.
