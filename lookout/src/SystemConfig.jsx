@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Save, RotateCcw, Car, Cigarette, Siren, Beer, Trash2, AlertTriangle, Loader2, SlidersHorizontal, User, Play, Square } from "lucide-react";
+import { Save, RotateCcw, Car, Cigarette, Siren, Beer, Trash2, AlertTriangle, Loader2, SlidersHorizontal, User, Play, Square, Film } from "lucide-react";
 import { getSettings, saveSettings, getMonitor, startMonitor, stopMonitor } from "./api";
 import { readTestingTools, writeTestingTools } from "./useTestingTools";
 import { readAlertSound, writeAlertSound } from "./alertSound";
@@ -633,7 +633,7 @@ export function SystemConfig({ role = "admin" }) {
               value={form.far_mode} differs={differs("far_mode")}
               onChange={(v) => set("far_mode", v)} />
             <Toggle label="Show testing tools"
-              desc="Shows Run Detection and Upload Video on Feeds, for trying the system on recorded clips. Leave off for normal use. Takes effect right away — no need to save."
+              desc="For testing purposes."
               value={testingTools} differs={testingTools}
               onChange={(v) => { writeTestingTools(v); setTestingTools(v); }} />
             <Toggle label="Alert sound"
@@ -679,6 +679,17 @@ export function SystemConfig({ role = "admin" }) {
                 desc="Stamps the date and time onto the video, so a file saved to USB still carries its own time. Not available in Original mode, which copies the camera stream without re-encoding."
                 value={form.recording_timestamp} differs={differs("recording_timestamp")}
                 onChange={(v) => set("recording_timestamp", v)} />
+              <div className="flex justify-end pt-1">
+                <button
+                  onClick={() => window.dispatchEvent(new CustomEvent("lookout:open-recordings"))}
+                  className="flex items-center gap-2 px-3.5 py-2 rounded-xl text-[13px] font-medium"
+                  style={{ background: "var(--border)", color: "var(--foreground)" }}
+                  onMouseEnter={(e) => { e.currentTarget.style.opacity = "0.75"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.opacity = "1"; }}>
+                  <Film size={13} />
+                  Browse Recordings
+                </button>
+              </div>
             </Card>
             <Card title="Event confirmation" onReset={() => resetKeys(["object_confirm_seconds", "cue_hold_seconds", "monitoring_min_seconds"])}>
               <Row label="How long an object must be seen"

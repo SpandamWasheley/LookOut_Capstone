@@ -105,10 +105,12 @@ function AdminDashboard({ user, onLogout }) {
   // switch — CameraGrid may not be mounted yet when the event fires, so passing
   // it as a prop is the only way it reaches the RecordingsModal reliably.
   const [recordingsJumpTo, setRecordingsJumpTo] = useState(null);
+  const [openRecordingsTick, setOpenRecordingsTick] = useState(0);
   useEffect(() => {
     const onOpenRec = (e) => {
       setActivePage("cameras");
       setRecordingsJumpTo(e.detail?.timestamp ?? null);
+      setOpenRecordingsTick((n) => n + 1);
     };
     window.addEventListener("lookout:open-recordings", onOpenRec);
     return () => window.removeEventListener("lookout:open-recordings", onOpenRec);
@@ -291,7 +293,7 @@ function AdminDashboard({ user, onLogout }) {
               <LiveClock />
             </div>
             <div className="flex-1 overflow-auto p-6">
-              <CameraGrid isAdmin={role === "admin"} jumpToTimestamp={recordingsJumpTo} onRecordingsOpened={() => setRecordingsJumpTo(null)} />
+              <CameraGrid isAdmin={role === "admin"} jumpToTimestamp={recordingsJumpTo} openRecordingsTick={openRecordingsTick} onRecordingsOpened={() => setRecordingsJumpTo(null)} />
             </div>
           </div>
         )}

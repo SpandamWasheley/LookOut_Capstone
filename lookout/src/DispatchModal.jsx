@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Radio, X, Check, MapPin, AlertTriangle, Search } from "lucide-react";
+import { Radio, X, Check, MapPin, AlertTriangle, Search, ArrowLeft } from "lucide-react";
 import { violationDisplay } from "./constants/violationTypes";
 import { RecordingPlayer, QuietCard, StatusAndConfidenceRow } from "./ViolationModal";
 
@@ -47,10 +47,6 @@ function OfficerRow({ officer, count, isChecked, onToggle }) {
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           <span className="text-[15px] font-medium truncate" style={{ color: "var(--foreground)" }}>{officer.name}</span>
-          <span className="text-[12px] px-1.5 py-0.5 rounded-full font-medium flex-shrink-0"
-            style={{ background: `${sColor}22`, color: sColor }}>
-            {officer.status.replace("-", " ")}
-          </span>
         </div>
         <div className="flex items-center gap-3 mt-0.5">
           <span className="text-[12px] flex items-center gap-1" style={{ color: "var(--muted-foreground)" }}>
@@ -73,7 +69,7 @@ function OfficerRow({ officer, count, isChecked, onToggle }) {
   );
 }
 
-export function DispatchModal({ alert, officers, alerts, onAssign, onClose }) {
+export function DispatchModal({ alert, officers, alerts, onAssign, onClose, onBack }) {
   // Same icon/color source as ViolationModal (violationTypes.js) — see
   // violationDisplay's own doc comment for why this never shows a raw db
   // code even for an unmapped (out-of-scope) type.
@@ -126,9 +122,16 @@ export function DispatchModal({ alert, officers, alerts, onAssign, onClose }) {
         style={{ background: "var(--card)", border: "1px solid var(--border)", maxHeight: "90vh" }}
       >
         {/* Header */}
-        <div className="flex items-start justify-between px-6 py-4 flex-shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
-          <div className="flex items-start gap-3">
-            <span className="mt-0.5"><VIcon size={20} style={{ color: vcfg.color }} /></span>
+        <div className="flex items-center justify-between px-6 py-4 flex-shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
+          <div className="flex items-center gap-3">
+            {onBack && (
+              <button onClick={onBack} className="p-1.5 rounded-lg flex-shrink-0"
+                style={{ color: "var(--muted-foreground)", background: "var(--secondary)" }}
+                title="Back to alert">
+                <ArrowLeft size={14} />
+              </button>
+            )}
+            <VIcon size={20} style={{ color: vcfg.color }} />
             <div>
               <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>Assign Officers</div>
               <div className="text-[13px] mt-0.5" style={{ color: "var(--muted-foreground)" }}>

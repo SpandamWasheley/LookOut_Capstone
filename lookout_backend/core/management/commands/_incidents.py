@@ -803,6 +803,13 @@ class IncidentMixin:
         if level != cues.get("level"):
             cues["level"] = level
             cues["label"] = scoring.label_of(level)
+        # If the ratchet raised the status above what the current score alone would give,
+        # record why — the testing view shows this so a reviewer can tell "40 → Possible"
+        # is intentional (the incident already proved itself) rather than a threshold bug.
+        if scoring.LEVEL_ORDER.get(level, 0) > scoring.LEVEL_ORDER.get(score.level, 0):
+            cues["held"] = True
+        else:
+            cues.pop("held", None)
         if self.spec_snapshot is not None:
             cues["settings"] = self.spec_snapshot
         if extra_cues:

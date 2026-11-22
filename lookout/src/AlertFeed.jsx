@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Bell, Clock, AlertTriangle, Radio, CheckCircle, X, Camera as CameraIcon, Moon, Sun, Sunset, ChevronRight, Search } from "lucide-react";
 import { resolveViolationType, violationDisplay } from "./constants/violationTypes";
 import { ViolationModal } from "./ViolationModal";
@@ -573,7 +573,13 @@ export function AlertFeed({ showFilters = false, externalAlerts = null, user }) 
 
   // When the parent provides alerts (compact panel), use those directly.
   // When polling independently (full Violations tab), use own state.
-  const alerts = externalAlerts !== null ? externalAlerts.map(mapAlert) : ownAlerts;
+  // useMemo keeps the array reference stable between renders in the same poll
+  // cycle — without it, .map() returns a new array on every render, which makes
+  // the sync useEffect fire every render and loop infinitely.
+  const alerts = useMemo(
+    () => externalAlerts !== null ? externalAlerts.map(mapAlert) : ownAlerts,
+    [externalAlerts, ownAlerts],
+  );
 
   const ongoing = alerts.filter((a) => a.status === "active" || a.status === "dispatched");
   const filtered = ongoing.filter((a) => {
@@ -765,11 +771,15 @@ export function AlertFeed({ showFilters = false, externalAlerts = null, user }) 
 
   // Keep the open modal's alert in sync with the latest fetch — otherwise
   // saves (candidate, dispatch, etc.) only show up after closing/reopening.
+  // Depends only on `alerts`, NOT on `selectedAlert`: including selectedAlert
+  // causes an infinite loop because setSelectedAlert changes selectedAlert,
+  // which re-triggers the effect, which calls setSelectedAlert again every poll.
   useEffect(() => {
     if (!selectedAlert) return;
     const updated = alerts.find((a) => a.id === selectedAlert.id);
     if (updated && updated !== selectedAlert) setSelectedAlert(updated);
-  }, [alerts, selectedAlert]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [alerts]);
 
   const assignedOfficerNames = (alertId) =>
     alerts.find((x) => x.id === alertId)?.officersAssignedNames ?? [];
@@ -868,6 +878,7 @@ export function AlertFeed({ showFilters = false, externalAlerts = null, user }) 
           alerts={alerts}
           onAssign={handleAssign}
           onClose={() => setDispatchingAlert(null)}
+          onBack={() => { setSelectedAlert(dispatchingAlert); setDispatchingAlert(null); }}
         />
       )}
     </>

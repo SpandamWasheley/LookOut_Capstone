@@ -462,7 +462,7 @@ export function RunDetectionPage() {
                   ? <Loader2 size={14} className="animate-spin" style={{ color: "#22c55e" }} />
                   : <CheckCircle2 size={14} style={{ color: jobStatus === "done" ? "#22c55e" : "#f59e0b" }} />}
                 <span style={{ color: "var(--foreground)", fontWeight: 600 }}>
-                  {source === "camera" ? "Detection on the Live Camera" : <><b>{detectorLabel}</b>{" on "}{staged?.sourceFilename}</>}
+                  {source === "camera" ? "Detection on the Live Camera" : staged?.sourceFilename}
                 </span>
                 <span style={{ color: "var(--muted-foreground)" }}>
                   {" · "}{running ? "processing" : jobStatus === "done" ? "finished" : jobStatus}
@@ -486,7 +486,7 @@ export function RunDetectionPage() {
             <ProcessingView
               fetchState={fetchState}
               testingTools={testingTools}
-              title={source === "camera" ? "Detection on the Live Camera · processing" : `${detectorLabel} · processing`}
+              title={source === "camera" ? "Detection on the Live Camera · processing" : `${staged?.sourceFilename ?? "File"} · processing`}
               finishedNote={!running ? "The run has finished." : ""}
             />
           </>

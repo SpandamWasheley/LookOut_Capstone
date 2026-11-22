@@ -1373,6 +1373,13 @@ function ScoreBreakdown({ alert }) {
             <td className="py-0.5">status</td>
             <td className="py-0.5 text-right">{c.label || alert.levelLabel || "—"}{c.tag ? ` · ${c.tag}` : ""}</td>
           </tr>
+          {c.held && (
+            <tr>
+              <td colSpan={2} className="py-0.5 text-[12px]" style={{ color: "var(--muted-foreground)" }}>
+                Status held — incident already reached Possible (score rose higher on an earlier frame)
+              </td>
+            </tr>
+          )}
           {noItemPuffsText(c.no_item_puffs) && (
             <tr>
               <td className="py-0.5">puffs (no item)</td>

@@ -240,7 +240,6 @@ class Command(IncidentMixin, BaseCommand):
         self._frame_tracks = []
         self.clock_start = None       # --clock footage start (file sources only)
         self._holdup_cues = {}        # holder track id -> (time, Layer E cues seen recently)
-        self._partner_logged = {}     # (holder id, other id) -> last verdict logged, so a change is logged once
         self._knife_hits = {}         # track id -> last KNIFE_PERSIST_WINDOW frames: knife detected?
         self._e14_times = {}          # track id -> times a knife was SEEN on them (after the wrist rule)
         self._knife_persist_at = {}   # track id -> last time the 2-of-5 persistence test was met
@@ -989,7 +988,6 @@ class Command(IncidentMixin, BaseCommand):
         # times the time-of-day block, Monitoring until a second person is NEAR
         # the holder -- never the raw YOLO box confidence.
         evidence = self._knife_evidence(track, best_label, present_for, now_ts, box, persistent=is_persistent)
-        self._ai_note(("partner", track.id), getattr(evidence, "partner_box", None))
         self._debug_note("Dangerous Weapon", ("knife", track.id), track.id, box, evidence, cue.momentum)
         who = track.display
         summary = ", ".join(sorted({s[5] for s in track.dets}))
@@ -1010,20 +1008,16 @@ class Command(IncidentMixin, BaseCommand):
             blocked=lambda: "cooldown" not in self.ablate and self._cooldown_blocks(box, now_ts, cooldown),
             ai=self._ai_request(track, evidence),
             extra_cues={"object_confidence": round(best_score, 3), "momentum": cue.snapshot},
-            partner=(evidence.partner_id, evidence.partner_box) if getattr(evidence, "partner_box", None) else None,
+            partner=None,
         )
         if alert is not None or self.dry_run:
             self.stats[f"status:{evidence.band}:{best_label}"] += 1
 
     def _ai_request(self, track, evidence):
-        """What to ask the AI checker for a knife incident: both people (the holder and the
-        nearest other person) in the crop, and the system note in the spec's wording."""
+        """What to ask the AI checker for a knife incident."""
         keys = [("track", track.id)]
-        partner = getattr(evidence, "partner_box", None)
-        if partner is not None:
-            keys.append(("partner", track.id))
         return {"kind": "holdup", "keys": keys,
-                "note": ai_checker.system_note("holdup", people=2 if evidence.people_near else None)}
+                "note": ai_checker.system_note("holdup", people=None)}
 
     def _clock_now(self, now_ts):
         """Time of day for scoring, in Manila time.
@@ -1077,45 +1071,11 @@ class Command(IncidentMixin, BaseCommand):
         # if bonus and "e20" not in self.ablate:
         #     cues["E20"] = bonus
         mult = {}
-        near_limit = engine.near_person_heights if engine is not None else theft.NEAR_PERSON_HEIGHTS
-        partner = self._valid_partner(track, near_limit, now_ts)
-        near = partner is not None
         ev = theft.Evidence(
             "weapon", tuple(box), cues, mult, set(), [track.id],
             f"{label} (momentum {present_for:.1f})",
-            people_near=near, previous_level=self._incident_level(("knife", track.id)))
-        ev.partner_id = partner.id if partner is not None else None
-        ev.partner_box = tuple(partner.box) if partner is not None else None   # the AI checker's crop and the evidence clip
+            people_near=False, previous_level=self._incident_level(("knife", track.id)))
         return ev
-
-    def _valid_partner(self, holder, near_limit, now_ts):
-        """The nearest OTHER person who is a real second person (theft.partner_problem), or None.
-
-        Every candidate within reach is logged once per change of verdict ($LOOKOUT_MOUTH_LOG, kind "partner"): who it was, how
-        old the track is, how long since the detector last matched it, how big its box is -- so a ghost partner can be told
-        from a real one after the run."""
-        best, best_d = None, None
-        for o in self._frame_tracks:
-            if o is holder or getattr(o, "is_scene", False):
-                continue
-            d = theft._person_norm_distance(holder.box, o.box)
-            if d > near_limit:
-                continue
-            why = theft.partner_problem(holder, o, now_ts)
-            verdict = why or "valid"
-            if self._partner_logged.get((holder.id, o.id)) != verdict:
-                self._partner_logged[(holder.id, o.id)] = verdict
-                self.stats[f"holdup partner: {verdict}"] += 1
-                recognition.log_mouth(
-                    kind="partner", holder=holder.id, partner=o.id, verdict=verdict, t=round(now_ts, 2),
-                    partner_age_s=round(o.age(now_ts), 1), missed_frames=o.missed_frames,
-                    seconds_since_detected=round(now_ts - o.last_seen, 2),
-                    partner_box_wh=[o.box[2] - o.box[0], o.box[3] - o.box[1]],
-                    holder_box_wh=[holder.box[2] - holder.box[0], holder.box[3] - holder.box[1]],
-                    partner_conf=None if o.conf is None else round(o.conf, 2), distance_heights=round(d, 2))
-            if not why and (best_d is None or d < best_d):
-                best, best_d = o, d
-        return best
 
     # ---- Layer E evidence handling (E29) ----------------------------------
 

@@ -526,7 +526,7 @@ function FeedImage({ src, alt, offline, className, iconSize = 22 }) {
   );
 }
 
-export function CameraGrid({ compact = false, isAdmin: isAdminRole = false, jumpToTimestamp = null, onRecordingsOpened = null }) {
+export function CameraGrid({ compact = false, isAdmin: isAdminRole = false, jumpToTimestamp = null, openRecordingsTick = 0, onRecordingsOpened = null }) {
   // Upload Video and History are testing tools: admin only AND switched on in Settings -> System.
   const testingTools = useTestingTools(isAdminRole);
   const isAdmin = isAdminRole;
@@ -545,14 +545,15 @@ export function CameraGrid({ compact = false, isAdmin: isAdminRole = false, jump
   const [recordingsJumpTo, setRecordingsJumpTo] = useState(null);
   const [detectionJobs, setDetectionJobs] = useState([]);
 
-  // Open recordings with the timestamp passed down from admin_dashboard (which
-  // captured it from the event before this component was mounted).
+  // Open recordings with the timestamp (or just open it) when signalled from
+  // admin_dashboard. openRecordingsTick increments on every event so this
+  // fires even when jumpToTimestamp is null (no specific time to seek to).
   useEffect(() => {
-    if (!jumpToTimestamp) return;
+    if (!openRecordingsTick) return;
     setRecordingsJumpTo(jumpToTimestamp);
     setShowRecordings(true);
     onRecordingsOpened?.();
-  }, [jumpToTimestamp, onRecordingsOpened]);
+  }, [openRecordingsTick]); // eslint-disable-line react-hooks/exhaustive-deps
   const [dismissedJobIds, setDismissedJobIds] = useState(() => new Set());
 
   useEffect(() => {

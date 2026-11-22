@@ -421,9 +421,21 @@ def classify(best_g, best_r, conf=CONFIRM_CONF):
     MAYBE: the model does think it is a bag and is merely unsure, which is
     exactly the case that deserves another look as the scene changes rather
     than being buried in Below Monitoring.
+
+    0% across ALL classes -- neither garbage nor any reject class scored --
+    is UNCERTAINTY, not a rejection. Night footage, low contrast, a small
+    distant blob: the model simply cannot see it. Returning REJECTED in that
+    case would silence the behaviour cues (arrival, person, left) that can
+    still establish a dumping even when appearance evidence is unavailable.
+    So a totally silent check returns WEAK and lets the cue table score;
+    REJECTED is reserved for when a reject class ACTIVELY wins.
     """
-    if not best_g[0] or best_g[1] < best_r[1]:
+    if best_r[0] and best_g[1] < best_r[1]:
+        # A named reject class outscored garbage — positive identification.
         return REJECTED
+    if not best_g[0] or best_g[1] == 0:
+        # Nothing scored at all — uncertain, not rejected.
+        return WEAK
     return CONFIRMED if best_g[1] >= conf else WEAK
 
 # --- combining the synonymous prompts --------------------------------------

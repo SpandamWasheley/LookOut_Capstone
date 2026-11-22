@@ -202,7 +202,7 @@ class ClipRecorder:
         t = datetime.datetime.fromtimestamp(ts)
         text = t.strftime("%Y-%m-%d %H:%M:%S.") + f"{t.microsecond // 100000}"
         if self.label:
-            text = f"{self.label}  {text}"
+            text = f"{self.label.split('-')[0]}  {text}"
         h, w = frame.shape[:2]
         scale = max(0.5, min(1.0, w / 1280))
         (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, 2)
