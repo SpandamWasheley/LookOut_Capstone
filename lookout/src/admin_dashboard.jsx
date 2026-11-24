@@ -293,7 +293,7 @@ function AdminDashboard({ user, onLogout }) {
               <LiveClock />
             </div>
             <div className="flex-1 overflow-auto p-6">
-              <CameraGrid isAdmin={role === "admin"} jumpToTimestamp={recordingsJumpTo} openRecordingsTick={openRecordingsTick} onRecordingsOpened={() => setRecordingsJumpTo(null)} />
+              <CameraGrid isAdmin={role === "admin"} jumpToTimestamp={recordingsJumpTo} openRecordingsTick={openRecordingsTick} onRecordingsOpened={() => { setRecordingsJumpTo(null); setOpenRecordingsTick(0); }} />
             </div>
           </div>
         )}

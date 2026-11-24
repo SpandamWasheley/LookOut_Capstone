@@ -187,9 +187,19 @@ export function RecordingPlayer({ alert, timeline = false, testingTools = false 
         <div className="relative w-full" style={{ aspectRatio: 16 / 9 }}>
           <img src={alert.imageUrl} alt="Evidence" className="absolute inset-0 w-full h-full object-cover" />
           {timeline && <TimelineButton alert={alert} />}
-          <div className="absolute bottom-3 left-3 right-3 text-[13px] text-center py-1.5 rounded-lg"
+          <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between gap-2 text-[13px] py-1.5 px-3 rounded-lg"
             style={{ background: "rgba(0,0,0,0.6)", color: "var(--muted-foreground)" }}>
-            No evidence clip available for this alert — still image only.
+            <span>Still image only — no clip recorded.</span>
+            <button
+              type="button"
+              title="Find this moment in the recordings tape"
+              onClick={() => window.dispatchEvent(new CustomEvent("lookout:open-recordings", { detail: { timestamp: alert.timestamp } }))}
+              className="flex items-center gap-1 flex-shrink-0 px-2 py-0.5 rounded-md"
+              onMouseEnter={(e) => { e.currentTarget.style.color = "var(--foreground)"; e.currentTarget.style.background = "rgba(255,255,255,0.12)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = ""; e.currentTarget.style.background = "transparent"; }}
+            >
+              <Film size={11} /> In Tape
+            </button>
           </div>
         </div>
       </div>
