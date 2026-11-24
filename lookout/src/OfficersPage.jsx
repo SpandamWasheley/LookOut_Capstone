@@ -1056,8 +1056,8 @@ export function OfficersPage({ alerts = [], onOpenAlerts = () => {} }) {
 
       <NoticeDialog
         open={!!removeError}
-        title={`Could not remove that ${removeError?.type ?? "account"}`}
-        body={removeError ? `${removeError.message} The account is unchanged.` : ""}
+        title="This officer has records and cannot be deleted"
+        body="This officer has citations on record and cannot be deleted. The account is unchanged."
         onClose={() => setRemoveError(null)}
       />
     </div>
