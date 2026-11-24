@@ -328,22 +328,23 @@ SMOKING_WEIGHTS = {             # total 1.00 (near_mouth was 0.15 / total 1.10: 
 #
 # `person` + `left` are deliberately not worth more together than object +
 # arrival: both die together when the person pass misses, so the object route
-# has to reach Possible on its own (0.40 + 0.20 = 0.60). That is the whole
+# has to reach Possible on its own (0.30 + 0.35 = 0.65). That is the whole
 # repair, and it is why `person` is only 0.10.
 #   dwell      it has been sitting on the Monitoring watchlist for
-#              MONITORING_DWELL_SECONDS and is still there. Time alone is the
-#              weakest evidence in the table, which is why it is worth exactly
-#              enough to lift a confirmed bag (0.40) over the Possible line and
-#              no more -- and why it can only ever ESCALATE a row that already
-#              has a gate cue, never open one. A shadow that lingers all
-#              afternoon has no gate and still scores nothing.
-DISPOSAL_WEIGHTS = {            # total 1.15, capped at 1.00 (as SMOKING_WEIGHTS is)
-    "object":    0.40,   # GATE -- garbage leads every reject class AND clears the floor
-    "arrival":   0.20,   # the spot changed, more than its surroundings did
+#              MONITORING_DWELL_SECONDS and is still there. Needs `arrival`
+#              (not `object`) so a candidate whose spot was SHOWN to have
+#              changed can escalate over time even when YOLO-World cannot read
+#              the object: arrival(0.35) + persisted(0.05) = 0.40 -> Monitoring,
+#              then +dwell(0.15) = 0.55 -> Possible after MONITORING_DWELL_SECONDS.
+#              A candidate with no arrival proof stays at whatever the other
+#              cues give it and cannot climb by waiting alone.
+DISPOSAL_WEIGHTS = {            # total 1.20, capped at 1.00 (as SMOKING_WEIGHTS is)
+    "object":    0.30,   # GATE -- garbage leads every reject class AND clears the floor
+    "arrival":   0.35,   # the spot changed, more than its surroundings did
     "person":    0.10,   # somebody was beside it as it appeared
     "left":      0.25,   # ... and then walked away (needs `person`)
     "persisted": 0.05,   # still there at a later re-check
-    "dwell":     0.15,   # still on the watchlist N seconds later (needs `object`)
+    "dwell":     0.15,   # still on the watchlist N seconds later (needs `arrival`)
 }
 
 # Dangerous Weapon (was "holdup"): the knife and how steadily it was seen, nothing else.
@@ -378,11 +379,13 @@ CONDITIONAL_CUES = {
     # You cannot walk away from something you were never beside. Without this,
     # an object with no owner detected at all would score the departure cue on
     # the vacuously-true reading of "no owner is near it".
-    # `dwell` needs `object` for the same reason: time is an escalation of an
-    # existing claim, not a claim of its own. Without this, a candidate parked
-    # at Monitoring by the collection-window rule -- or any row whose object
-    # cue later weakened -- would climb to Possible purely by waiting.
-    "disposal": {"left": "person", "dwell": "object"},
+    # `dwell` needs `arrival` (not `object`): time escalates a claim already
+    # grounded in physical evidence. A candidate whose spot was shown to have
+    # changed can climb to Possible by waiting; one with no arrival proof
+    # (reference frame unavailable, lighting transient) cannot. The collection-
+    # window hold clears `monitoring_since` on release so a bag that was parked
+    # during the window restarts its dwell clock, not carries it in.
+    "disposal": {"left": "person", "dwell": "arrival"},
 }
 
 # Disposal's capped path, the exact analogue of the puff-only one above: the
