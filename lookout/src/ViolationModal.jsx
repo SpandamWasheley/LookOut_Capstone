@@ -931,8 +931,7 @@ const STATUS_TOOLTIP = (
     what the system detected (objects, movement, duration, and time), not on the AI.
     <div className="mt-1.5">
       <b>Monitoring:</b> An object or indicator linked to a violation was identified or noticed. Watch the scene.<br />
-      <b>Possible:</b> Some signs of a violation, but not enough to be sure. Review the alert before acting.<br />
-      <b>Likely:</b> Strong evidence of a violation. Review and respond.
+      <b>Possible:</b> Some signs of a violation, but not enough to be sure. Review the alert before acting.
     </div>
   </>
 );
@@ -1737,8 +1736,14 @@ export function ViolationModal({
 
               <div className="flex flex-col gap-3 min-w-0">
                 <QuietCard label="Camera" value={alert.cameraZone || alert.cameraAddress || "—"} />
-                <StatusAndConfidenceRow alert={alert} testingTools={testingTools} />
-                <SuspectCard alert={alert} />
+                {resolveViolationType({ code: alert.type }).code === "disposal" ? (
+                  <div className="grid grid-cols-2 gap-3 items-stretch">
+                    <StatusCard alert={alert} testingTools={testingTools} />
+                    {officersCard}
+                  </div>
+                ) : (
+                  <StatusAndConfidenceRow alert={alert} testingTools={testingTools} />
+                )}
                 {/* Null (not merely empty) means this violation has no AI checker
                     at all — parking, whose rule is a measurement with nothing for
                     a vision model to adjudicate. Drawing "AI context unavailable"
@@ -1764,10 +1769,12 @@ export function ViolationModal({
                 {testingTools && !["parking", "disposal"].includes(resolveViolationType({ code: alert.type }).code) && (
                   <ScoreBreakdown alert={alert} />
                 )}
-                <div className="grid grid-cols-2 gap-3">
-                  <QuietCard label="Detected object" value={alert.suspect || "—"} />
-                  {officersCard}
-                </div>
+                {resolveViolationType({ code: alert.type }).code !== "disposal" && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <QuietCard label="Detected object" value={alert.suspect || "—"} />
+                    {officersCard}
+                  </div>
+                )}
               </div>
             </div>
           </div>

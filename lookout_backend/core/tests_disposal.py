@@ -1262,7 +1262,7 @@ class BehaviourOnlyPathTests(TestCase):
         lists the behaviour and not 'Looks like dumped rubbish'."""
         _on, s = self.scored(self.cand(), self.BEHAVIOUR)
         found = s.checklist()["found"]
-        self.assertNotIn("Looks like dumped rubbish", found)
+        self.assertNotIn("Looks like dumped rubbish (YOLO-World)", found)
         self.assertIn("That person walked away and left it", found)
 
     def test_a_weak_bag_without_the_behaviour_opens_nothing(self):
@@ -3133,7 +3133,7 @@ class PossibleAlertTests(TestCase):
         self.assertEqual(cues["kind"], "disposal")
         self.assertIn("settings", cues)
         self.assertIn("object", cues["cues"])
-        self.assertIn("Looks like dumped rubbish", cues["checklist"]["found"])
+        self.assertIn("Looks like dumped rubbish (YOLO-World)", cues["checklist"]["found"])
 
     def test_a_dry_run_writes_no_row_and_leaves_the_candidate_unmarked(self):
         cmd, _mod = self._command()

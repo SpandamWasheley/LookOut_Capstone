@@ -557,7 +557,7 @@ class Score:
         "E11E12": "Approach, then freeze (E11→E12)",
         "E20": "Time of day",
         # disposal
-        "object": "Looks like dumped rubbish",
+        "object": "Looks like dumped rubbish (YOLO-World)",
         "arrival": "This spot changed — something was put here",
         "person": "Somebody was beside it as it appeared",
         "left": "That person walked away and left it",
