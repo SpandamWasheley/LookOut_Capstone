@@ -269,7 +269,8 @@ MIN_CROP = 96               # px, minimum crop side at full resolution
 # confused with -- a bin or a bucket that lives there and was never dumped --
 # so those are named explicitly instead.
 PROMPTS = ["plastic bag", "garbage bag", "trash bag", "pile of trash", "sack",
-           "cardboard box", "rice sack", "styrofoam", "pile of plastic bottles"]
+           "cardboard box", "rice sack", "styrofoam", "pile of plastic bottles",
+           "grocery bag", "shopping bag", "bundle of bags", "litter"]
 REJECT = ["person", "dog", "cat", "motorcycle", "car", "bicycle", "chair",
           "trash can", "garbage bin", "bucket", "potted plant"]
 
