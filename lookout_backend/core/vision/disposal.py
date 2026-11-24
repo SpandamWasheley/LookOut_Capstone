@@ -73,6 +73,18 @@ MAX_AREA_FRAC = 0.08        # <= 8% of frame
 
 MATCH_DIST = 40             # px at PROC_WIDTH to call a blob the same candidate
 CANDIDATE_GRACE = 2.0       # s a candidate may go unseen before it is dropped
+
+# When stage 1's morphological open/close leaves a gap in a large or irregular
+# static foreground region, one pile of rubbish produces several separate
+# contours. Each would otherwise become its own candidate and file its own
+# alert. Blobs whose bounding boxes are within this many pixels of each other
+# are merged into their bounding union before _match, so fragments of one
+# object never receive separate ids.
+#
+# 15px at PROC_WIDTH is about half a bag-width at this scale. Morphology gaps
+# in a single blob are 1-10px; two legitimately separate sacks sit at least
+# one bag-width (≈30px) apart. The value sits between those two populations.
+BLOB_MERGE_GAP = 15         # px at PROC_WIDTH to treat nearby blobs as one
 RECHECK_SECONDS = 10.0      # re-ask stage 2 about a rejected candidate after this
 
 # --- owner proximity (the abandoned-object rule) ----------------------------
@@ -1102,7 +1114,8 @@ class StaticObjectDetector:
                  arrival_lookback=ARRIVAL_LOOKBACK, arrival_pad=ARRIVAL_PAD,
                  arrival_interval=ARRIVAL_INTERVAL,
                  arrival_ref_seconds=ARRIVAL_REF_SECONDS,
-                 owner_lookback=OWNER_LOOKBACK):
+                 owner_lookback=OWNER_LOOKBACK,
+                 blob_merge_gap=BLOB_MERGE_GAP):
         self.area = area
         self.proc_width = proc_width
         self.warmup_seconds = warmup_seconds
@@ -1119,6 +1132,7 @@ class StaticObjectDetector:
         self.arrival_interval = arrival_interval
         self.arrival_ref_seconds = arrival_ref_seconds
         self.owner_lookback = owner_lookback
+        self.blob_merge_gap = blob_merge_gap
         # Off for the stage-1 unit tests, which have no use for JPEG encoding
         # a synthetic rectangle four times a second.
         self.lookback = SuspectLookback() if suspect_window else None
@@ -1242,6 +1256,13 @@ class StaticObjectDetector:
             blobs = [b for b in blobs if b not in self.ignored]
         else:
             self.ignored = []
+
+        # Merge adjacent/overlapping blobs before assigning ids. One pile of
+        # rubbish can produce several separate contours when the morphological
+        # pass leaves internal gaps; without this each fragment would become
+        # its own candidate, file its own alert and read as three "separate"
+        # violations of the same dump. See BLOB_MERGE_GAP.
+        blobs = self._merge_blobs(blobs)
 
         # The same boxes go to _match, so it can tell a candidate that is
         # HIDDEN behind one from a candidate that has actually been taken away.
@@ -1376,6 +1397,45 @@ class StaticObjectDetector:
             if area > best_area:
                 best, best_area = box, area
         return best
+
+    def _merge_blobs(self, blobs):
+        """Merge overlapping or near-touching blobs into bounding-union boxes.
+
+        Runs before _match so fragments of one object never receive separate
+        ids. Iterates until stable (a merged box may now touch a third blob
+        it did not reach before). The gap test pads each box by blob_merge_gap
+        on each side, so two blobs separated by fewer than that many pixels in
+        any direction are treated as one object.
+        """
+        if len(blobs) <= 1 or self.blob_merge_gap < 0:
+            return blobs
+        gap = self.blob_merge_gap
+        changed = True
+        while changed:
+            changed = False
+            out, taken = [], [False] * len(blobs)
+            for i in range(len(blobs)):
+                if taken[i]:
+                    continue
+                x0, y0, x1, y1 = (blobs[i][0], blobs[i][1],
+                                   blobs[i][0] + blobs[i][2],
+                                   blobs[i][1] + blobs[i][3])
+                for j in range(i + 1, len(blobs)):
+                    if taken[j]:
+                        continue
+                    jx, jy, jw, jh = blobs[j]
+                    if jx < x1 + gap and jx + jw > x0 - gap and \
+                            jy < y1 + gap and jy + jh > y0 - gap:
+                        x0 = min(x0, jx)
+                        y0 = min(y0, jy)
+                        x1 = max(x1, jx + jw)
+                        y1 = max(y1, jy + jh)
+                        taken[j] = True
+                        changed = True
+                taken[i] = True
+                out.append((x0, y0, x1 - x0, y1 - y0))
+            blobs = out
+        return blobs
 
     def _match(self, blobs, now, occluders=None):
         """Nearest-centre association of blobs to existing candidates.

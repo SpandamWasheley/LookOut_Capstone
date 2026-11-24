@@ -45,6 +45,7 @@ CLASS_FLIP_IOU = 0.3
 # seen at that wrist or at the mouth within +/- PUFF_PAIR_WINDOW_SECONDS, in either order)
 PUFF_PAIR_WINDOW_SECONDS = 5.0      # was 3 s one-way in v6.2
 PUFF_CLOSE_SHOULDER_FRAC = 0.7      # "wrist at the mouth" / "cigarette at the mouth" radius x shoulder width (the momentum gate keeps 0.5)
+PUFF_MIN_ANCHOR_PX = 20             # floor for close_wrist / close_mouth; stops the radii shrinking below usable size on far/small persons
 ELBOW_FALLBACK = True               # v6.2.6: a missing wrist keypoint falls back to its elbow for the wrist-at-mouth test
 PUFF_ELBOW_SHOULDER_FRAC = 1.1      # elbow-to-mouth radius x shoulder width (measured: ~0.9-1.1 with the hand at the mouth, median 1.5 hanging)
 PUFF_MIN_GAP_SECONDS = 1.0         # two wrist-to-mouth reaches closer than this are one
@@ -70,7 +71,7 @@ PUFF_GESTURE_SLACK_SECONDS = 0.5    # the cycle may complete this long before th
 FAR_PUFF_BELOW_FRAC = 0.25          # legacy size trigger: NOT used since v6.2.11 (the object puff needs pose to be unable to measure)
 FAR_PUFF_HEAD_ZONE = 0.22           # head zone = top this fraction of the person box (0 = top, 1 = bottom)
 FAR_PUFF_BODY_ZONE = (0.30, 0.70)   # chest / hand zone
-FAR_PUFF_PAIR_SECONDS = 4.0         # head and body sightings must be this close in time (either order)
+FAR_PUFF_PAIR_SECONDS = 6.0         # head and body sightings must be this close in time (either order)
 FAR_PUFF_MIN_GAP_SECONDS = 2.0      # at most one object puff per track per this long
 # near_mouth is "held for cue_hold seconds after it last fired", but it was only evaluated while the object cue was ON, so a cigarette
 # seen at the mouth BEFORE the cue finished confirming (ON for object_confirm_seconds) was never remembered, and the status came up
@@ -106,6 +107,17 @@ POSSIBLE_MOUTH_MOMENTUM = 1.0
 # True = a cigarette sitting on the mouth anchor with momentum >= POSSIBLE_MOUTH_MOMENTUM may reach Possible WITHOUT a counted puff.
 # False (the default) = a counted puff is REQUIRED for Possible: gesture + cigarette near the mouth alone stays Monitoring.
 POSSIBLE_MOUTH_WITHOUT_PUFF = False
+# Gesture fallback: if the pose gesture counter saw >= GESTURE_PUFF_FALLBACK_COUNT hand-to-mouth cycles (the puff_pattern
+# threshold) AND the cigarette momentum is >= GESTURE_PUFF_FALLBACK_MOMENTUM, treat the puff gate as satisfied for Possible.
+# This handles far/night subjects where the strict wrist-reach+cigarette pair fails because keypoints or detection boxes are
+# too imprecise to land within the matching radius, yet the pose model clearly sees repeated smoking behaviour.
+# Capped at Possible (warning), never Likely — the conf and 2-puff checks still apply above it.
+GESTURE_PUFF_FALLBACK_COUNT = 1        # 1+ confirmed hand-to-mouth cycle is enough when cigarette is on
+# Momentum when the gesture fires is typically in the hysteresis zone (OFF=0.4 … ON=1.5) because
+# the cigarette peaked earlier and has decayed by the time the pose model completes the cycle.
+# 1.0 is well above OFF (0.4) so the cigarette must still be actively tracked, while being
+# achievable at gesture-time (peak ~1.3 seen in practice).
+GESTURE_PUFF_FALLBACK_MOMENTUM = 1.0
 # A "cigarette" box that overlaps a Bottle the drinking engine has seen (smoking Command._bottle_near_box) is the bottle, not smoke:
 # it is dropped from puff evidence (the cigarette-at-wrist / at-mouth sightings that pair with a reach).
 BOTTLE_OVERLAP_VETO = True
@@ -579,9 +591,9 @@ def update_puffs(cmd, track, dets, now):
     if anchors is None:
         _expire_reaches(loc, now)
         return len(loc.puffs)
-    close_wrist = anchors["close"]                      # 0.5 x shoulder width (the momentum rule)
-    close_mouth = (anchors["close"] * (PUFF_CLOSE_SHOULDER_FRAC / CLOSE_SHOULDER_FRAC)
-                   if anchors.get("has_shoulders") else anchors["close"])
+    close_wrist = max(anchors["close"], PUFF_MIN_ANCHOR_PX)   # floor: 0.5 x shoulder, never under PUFF_MIN_ANCHOR_PX
+    close_mouth = max((anchors["close"] * (PUFF_CLOSE_SHOULDER_FRAC / CLOSE_SHOULDER_FRAC)
+                       if anchors.get("has_shoulders") else anchors["close"]), PUFF_MIN_ANCHOR_PX)
     mouth = anchors.get(MOUTH)
     shoulder_w = anchors["close"] / CLOSE_SHOULDER_FRAC if anchors.get("has_shoulders") else 0.0
     cig_dets = [(tuple(d[:4]), float(d[4])) for d in dets if str(d[5]).lower() == "cigarette"
@@ -657,9 +669,12 @@ def _frame_height(cmd):
 
 def _object_puff_applies(cmd, track, kp):
     """The object-based puff is used only when pose cannot measure this person: the nose OR both wrists are under
-    KP_CONF_MIN, or there are no keypoints at all. Box size alone is no longer a trigger (v6.2.11): a small person whose
-    nose and wrists are readable is judged by the pose puff, like everyone else."""
+    KP_CONF_MIN, or the person box is below the gesture tracker's minimum height (small person — the pose puff
+    also cannot fire there, so the object path is the only route), or there are no keypoints at all."""
     if kp is None:
+        return True
+    box = getattr(track, "box", None)
+    if box is not None and (box[3] - box[1]) < recognition.GESTURE_MIN_PERSON_HEIGHT_PX:
         return True
     return kp[recognition.KP_NOSE][2] < KP_CONF_MIN or all(
         kp[i][2] < KP_CONF_MIN for i in (recognition.KP_LWRIST, recognition.KP_RWRIST))
@@ -711,7 +726,7 @@ def accepted_at_mouth(track, now, cls="cigarette"):
     return last is not None and MOUTH in last[2] and now - last[3] <= MOUTH_ACCEPT_FRESH_SECONDS
 
 
-def puff_cap(track, now, previous_level=None, conf=None, momentum=None):
+def puff_cap(track, now, previous_level=None, conf=None, momentum=None, gesture_puffs=0):
     """(max level name or None, reason text) for a smoking incident WITH an object. Level names are
     scoring's stored values ('monitoring' / 'warning').
 
@@ -719,19 +734,29 @@ def puff_cap(track, now, previous_level=None, conf=None, momentum=None):
     never pushed back to Monitoring because the 10 s window ran out, and one that reached Likely keeps it.
 
     `conf` (the Cigarette detection confidence) and `momentum` switch on the Possible evidence rule (see POSSIBLE_MIN_CONF);
-    left None, only the puff rule applies."""
+    left None, only the puff rule applies.
+
+    `gesture_puffs` is the pose gesture counter's count. When it reaches GESTURE_PUFF_FALLBACK_COUNT and the
+    cigarette momentum is >= GESTURE_PUFF_FALLBACK_MOMENTUM, the puff gate is treated as satisfied for Possible:
+    this handles far/night subjects where the strict wrist-reach+cigarette pair fails on geometry but the pose
+    model clearly sees repeated smoking behaviour. Capped at Possible — Likely still needs 2 loc.puffs."""
     puffed = puffs_within(track, now, POSSIBLE_PUFF_WINDOW_SECONDS) >= POSSIBLE_MIN_PUFFS
     mouth_ok = (POSSIBLE_MOUTH_WITHOUT_PUFF and conf is not None
                 and accepted_at_mouth(track, now) and (momentum or 0.0) >= POSSIBLE_MOUTH_MOMENTUM)
-    if not puffed and not mouth_ok:
+    # Gesture fallback: repeated pose cycles + confirmed cigarette satisfy the gate for Possible.
+    gesture_ok = (gesture_puffs >= GESTURE_PUFF_FALLBACK_COUNT
+                  and (momentum or 0.0) >= GESTURE_PUFF_FALLBACK_MOMENTUM)
+    if not puffed and not mouth_ok and not gesture_ok:
         if previous_level in ("warning", "violation"):
             return None, ""
         return "monitoring", CAP_NO_PUFF_TEXT
-    if conf is not None and conf < POSSIBLE_MIN_CONF:
+    # gesture_ok skips the per-frame conf check: momentum >= GESTURE_PUFF_FALLBACK_MOMENTUM is the quality gate there.
+    if not gesture_ok and conf is not None and conf < POSSIBLE_MIN_CONF:
         if previous_level in ("warning", "violation"):
             return None, ""
         return "monitoring", CAP_LOW_CONF_TEXT
     if not puffed:
+        # gesture_ok (or mouth_ok) got us here but no loc.puff — cap at Possible, not Likely.
         return "warning", CAP_FEW_PUFFS_TEXT
     if puffs_within(track, now, LIKELY_PUFF_WINDOW_SECONDS) < LIKELY_MIN_PUFFS:
         if previous_level == "violation":

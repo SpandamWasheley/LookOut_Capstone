@@ -39,6 +39,21 @@ PRESENCE_GRACE_SECONDS = 2    # tolerate a couple smoke-free frames before reset
 # cooldown, not just the ~10s tombstone gap — a person has more time to move.
 COOLDOWN_CENTER_DIST = 1.5
 
+# Tracker-swap guard. Two independent checks:
+#
+#  1. Per-frame jump (INCIDENT_LOCK_WIDTHS): a greedy tracker can hand the
+#     same id to a nearby bystander in one frame, teleporting the box by
+#     1–5 body-widths. Legitimate walking is < 0.5 widths/frame at typical
+#     detector FPS, so 1.5 is a comfortable cut.
+#
+#  2. Origin drift (INCIDENT_ORIGIN_WIDTHS): a gradual swap spreads the
+#     teleport over many frames, each small step passing the per-frame check.
+#     The origin box (stored once when the incident opens) measures total
+#     displacement; a smoker standing still or shifting slightly never exceeds
+#     3 body-widths, while slow tracker drift to a different person does.
+INCIDENT_LOCK_WIDTHS = 1.5
+INCIDENT_ORIGIN_WIDTHS = 3.0
+
 # Ablation switches. Disabling one heuristic stage at a time lets the same
 # footage be replayed with a single rule removed, so each rule's contribution to
 # the true/false alert counts can be measured rather than asserted. Everything is
@@ -158,6 +173,15 @@ class Command(IncidentMixin, BaseCommand):
         self.preprocess = False
         self.sharpen = False
         self.ablate = set()
+        # Last box where each incident key had real evidence (score.stored).
+        # Used by the tracker-swap guard in _process_track.
+        self._incident_last_box = {}
+        # Origin box: the box from the FIRST scored frame of each incident.
+        # Never updated — measures total drift so a gradual swap is caught
+        # even when each individual step is below INCIDENT_LOCK_WIDTHS.
+        # Cleared when _incident_level returns None (incident closed) so a
+        # new person who inherits the same track id starts fresh.
+        self._incident_origin_box = {}
         # Set only for a file source (see _run_stream) — lets _create_alert cut
         # a RAW evidence clip straight from the source instead of the sparser
         # annotated-frame buffer. Both stay None for webcam/RTSP sources.
@@ -1035,6 +1059,17 @@ class Command(IncidentMixin, BaseCommand):
         # no-item draws: pose draws plus small-Bottle puffs, an object puff next to a pose draw counted once
         draws_now = 0 if getattr(track, "smoke_item_seen", False) else len(track.no_item_puffs(now_ts))
         puffs_cue = max(puffs, draws_now)
+        # Persist a "ever made a hand-to-mouth gesture on this track" flag that survives window expiry.
+        # gesture_count() is destructive (popleft) so once a gesture ages past puff_window it is gone from
+        # the deque; without this flag the gesture fallback never fires when the cigarette momentum only
+        # confirms AFTER the gesture scrolled out of the window.
+        if puffs_cue >= 1:
+            track._ever_gestured = True
+        # When the cigarette is confirmed, an expired-but-ever-seen gesture counts as evidence for scoring.
+        # puff_cap gates the actual status rise with its own momentum check (GESTURE_PUFF_FALLBACK_MOMENTUM).
+        # Only active when object_on: without a confirmed cigarette, an expired gesture is not evidence.
+        gesture_cue = puffs_cue if puffs_cue >= 1 else (
+            1 if (object_on and getattr(track, '_ever_gestured', False)) else 0)
         cues = set()
         if (location_momentum.LOCATION_AWARE_MOMENTUM and location_momentum.NEAR_MOUTH_HELD_BEFORE_CONFIRM
                 and not object_on):
@@ -1043,9 +1078,9 @@ class Command(IncidentMixin, BaseCommand):
             cues.add("cigarette")
             if self._near_mouth(track, now_ts):
                 cues.add("near_mouth")
-        if puffs_cue >= 1:
+        if gesture_cue >= 1:
             cues.add("gesture")
-        if puffs_cue >= 2:
+        if gesture_cue >= 2:
             cues.add("puffs")
         strong = track.strong_gesture(now_ts)      # sustained close-range draws lift the no-item cap (tracking.STRONG_GESTURE_*)
         if puffs_cue >= self.puff_count or strong:     # the repeated-draw rule opens the puff-only path on its own count of draws
@@ -1060,7 +1095,8 @@ class Command(IncidentMixin, BaseCommand):
             if object_on:
                 # sticky: the caps only block the FIRST rise to Possible / Likely
                 cap, cap_reason = location_momentum.puff_cap(track, now_ts, self._incident_level(("smoke", track.id)),
-                                                           conf=best_score, momentum=cue.momentum)
+                                                           conf=best_score, momentum=cue.momentum,
+                                                           gesture_puffs=gesture_cue)
 
         key = ("smoke", track.id)
         item_seen = getattr(track, "smoke_item_seen", False)
@@ -1081,6 +1117,39 @@ class Command(IncidentMixin, BaseCommand):
             return
 
         box = track.box
+
+        # Tracker-swap guard — two checks, see constants at the top of the file.
+        level = self._incident_level(key)
+        # If the incident closed, clear origin so the next person with this id
+        # starts fresh rather than inheriting the previous incident's anchor.
+        if level is None:
+            self._incident_origin_box.pop(key, None)
+        last = self._incident_last_box.get(key)
+        origin = self._incident_origin_box.get(key)
+        if last is not None and level:
+            nx1, ny1, nx2, ny2 = box
+            ncx, ncy = (nx1 + nx2) / 2, (ny1 + ny2) / 2
+            # Check 1: per-frame jump (catches a sudden single-frame swap).
+            ox1, oy1, ox2, oy2 = last
+            mean_w = ((ox2 - ox1) + (nx2 - nx1)) / 2.0
+            if mean_w > 0:
+                ocx, ocy = (ox1 + ox2) / 2, (oy1 + oy2) / 2
+                if ((ncx - ocx) ** 2 + (ncy - ocy) ** 2) ** 0.5 > INCIDENT_LOCK_WIDTHS * mean_w:
+                    self.stats["skipped: tracker swap"] += 1
+                    return
+            # Check 2: cumulative drift from origin (catches a gradual swap).
+            if origin is not None:
+                or1, ory1, or2, ory2 = origin
+                origin_w = ((or2 - or1) + (nx2 - nx1)) / 2.0
+                if origin_w > 0:
+                    orx, ory = (or1 + or2) / 2, (ory1 + ory2) / 2
+                    if ((ncx - orx) ** 2 + (ncy - ory) ** 2) ** 0.5 > INCIDENT_ORIGIN_WIDTHS * origin_w:
+                        self.stats["skipped: tracker drift"] += 1
+                        return
+        self._incident_last_box[key] = box
+        if key not in self._incident_origin_box:
+            self._incident_origin_box[key] = box
+
         summary = best_label or ", ".join(sorted({s[5] for s in track.dets})) or "hand-to-mouth movement"
         who = track.display
 
