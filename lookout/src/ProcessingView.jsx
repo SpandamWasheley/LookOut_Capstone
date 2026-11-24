@@ -118,15 +118,14 @@ export function ProcessingView({ fetchState, testingTools = false, title = "Proc
         <span className="text-[14px] font-semibold" style={{ color: "var(--foreground)" }}>{title}</span>
         <div className="flex items-center gap-2">
           {testingTools && (
-            <div className="flex items-center gap-0.5 p-0.5 rounded-full" style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-              {[{ k: "panel", l: "Panel view", I: Eye }, { k: "testing", l: "Testing view", I: FlaskConical }].map(({ k, l, I }) => (
-                <button key={k} onClick={() => setMode(k)}
-                  className="flex items-center gap-1 px-2.5 py-1 text-[13px] font-medium rounded-full"
-                  style={{ background: view === k ? "var(--card)" : "transparent", color: view === k ? "var(--foreground)" : "var(--muted-foreground)" }}>
-                  <I size={12} /> {l}
-                </button>
-              ))}
-            </div>
+            <button
+              onClick={() => setMode(v => v === "panel" ? "testing" : "panel")}
+              title={view === "panel" ? "Using Panel view — click to switch to Testing view" : "Using Testing view — click to switch to Panel view"}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[13px] font-medium"
+              style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}>
+              {view === "panel" ? <Eye size={12} /> : <FlaskConical size={12} />}
+              {view === "panel" ? "Panel view" : "Testing view"}
+            </button>
           )}
           <button onClick={toggleFullscreen} title={fullscreen ? "Exit full screen" : "Full screen"}
             className="p-1.5 rounded-lg" style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}>
