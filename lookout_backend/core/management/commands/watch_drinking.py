@@ -1204,14 +1204,15 @@ class Command(IncidentMixin, BaseCommand):
             return
 
         box = tuple(int(v) for v in cluster.bbox)
-        cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), GATHERING_ALERT_COLOR, 3)
-        recognition.draw_label(
-            frame,
-            f"GATHERING {n}p - {ev_label} {ev_score * 100:.0f}% - "
-            f"{cluster.duration_held:.0f}/{group_duration:.0f}s"
-            + (f" [{why}]" if why else ""),
-            box[0], max(box[1] - 10, 0), GATHERING_ALERT_COLOR,
-        )
+        if score.alerting:
+            cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), GATHERING_ALERT_COLOR, 3)
+            recognition.draw_label(
+                frame,
+                f"GATHERING {n}p - {ev_label} {ev_score * 100:.0f}% - "
+                f"{cluster.duration_held:.0f}/{group_duration:.0f}s"
+                + (f" [{why}]" if why else ""),
+                box[0], max(box[1] - 10, 0), GATHERING_ALERT_COLOR,
+            )
 
         def describe(sc):
             return descriptions.gathering(n, cluster.duration_held)
