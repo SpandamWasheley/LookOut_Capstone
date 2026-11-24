@@ -18,8 +18,8 @@ const TEAM = [
 const VIOLATIONS = [
   { icon: Cigarette, color: "#6b8cae", name: "Potential Smoking", law: "", note: "Cigarette smoking in public places: a cigarette seen with the hand-to-mouth movement of smoking." },
   { icon: Beer, color: "#8b5cf6", name: "Plausible Group Drinking", law: "", note: "Group drinking in public: two or more people staying together with a bottle for the set time (1 minute by default). One person alone with a bottle is not reported." },
-  { icon: Car, color: "#ef4444", name: "Parking Obstruction", law: "", note: "Vehicles obstructing the road." },
-  { icon: Siren, color: "#dc2626", name: "Dangerous Weapon Observed", law: "", note: "A knife seen in a person's hand while another person is close by. The system only reports what it sees; an officer decides what it means." },
+  { icon: Car, color: "#ef4444", name: "Plausible Parking Obstruction", law: "", note: "Vehicles obstructing the road." },
+  { icon: Siren, color: "#dc2626", name: "Potential Dangerous Weapon Observed", law: "", note: "A knife seen in a person's hand while another person is close by. The system only reports what it sees; an officer decides what it means." },
   { icon: Trash2, color: "#22c55e", name: "Potential Discarded Waste", law: "", note: "A big item, such as a bag of rubbish, left in the frame or zone. Only large items trigger an alert, not small litter." },
 ];
 

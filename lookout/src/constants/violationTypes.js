@@ -30,7 +30,7 @@ export const VIOLATION_TYPES = {
   },
   parking: {
     code: "parking",
-    label: "Potential Parking Obstruction in Road",
+    label: "Plausible Parking Obstruction in Road",
     short: "Parking",
     icon: Car,
     aliases: [
@@ -41,6 +41,7 @@ export const VIOLATION_TYPES = {
       "parking obstruction in area",
       "parking obstruction in road",
       "potential parking obstruction in road",
+      "plausible parking obstruction in road",
     ],
   },
   // watch_thief.py used to create a SECOND ViolationType row (code "thief")
@@ -55,7 +56,7 @@ export const VIOLATION_TYPES = {
     // finds is a knife in someone's hand near another person. The code stays
     // "theft" -- every alert, citation and statistic already filed points at
     // that row (see migration 0079).
-    label: "Dangerous Weapon Observed",
+    label: "Potential Dangerous Weapon Observed",
     short: "Weapon",
     icon: ShieldAlert,
     // The old names STAY. Aliases are how free text from before the rename --
@@ -64,6 +65,7 @@ export const VIOLATION_TYPES = {
     aliases: [
       "theft", "thief", "theft violation", "theft / robbery", "theft (holdup)",
       "holdup in public area", "holdup", "dangerous weapon observed",
+      "potential dangerous weapon observed",
     ],
   },
   disposal: {
