@@ -50,17 +50,8 @@ export default function LoginPage({ onLogin, onForgotPassword }) {
             >
               LookOut
             </div>
-            <div className="text-sm mt-2" style={{ color: "var(--sidebar-foreground)" }}>
-              Barangay Tetuan, Zamboanga City
-            </div>
           </div>
 
-          <div
-            className="text-[12px] tracking-widest"
-            style={{ color: "var(--sidebar-foreground)", fontFamily: "'DM Mono', monospace", opacity: 0.7 }}
-          >
-            v2.4.1 · YOLOv8
-          </div>
         </div>
       </div>
 
@@ -72,7 +63,6 @@ export default function LoginPage({ onLogin, onForgotPassword }) {
             <LookOutMark size={32} />
             <div>
               <div className="text-sm font-semibold" style={{ color: "var(--foreground)" }}>LookOut</div>
-              <div className="text-[13px]" style={{ color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>Barangay Tetuan</div>
             </div>
           </div>
 

@@ -95,10 +95,6 @@ export function Sidebar({ activeView, onViewChange, activeRole, onRoleChange, al
             <div className="text-sm font-semibold leading-none" style={{ color: "var(--sidebar-primary)" }}>
               LookOut
             </div>
-            <div className="text-[13px] mt-0.5 truncate"
-              style={{ color: mutedColor, fontFamily: "'DM Mono', monospace" }}>
-              Barangay Tetuan
-            </div>
           </div>
         )}
       </div>

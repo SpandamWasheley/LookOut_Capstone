@@ -1406,9 +1406,6 @@ function whenText(ts) {
 const DISMISS_REASONS = [
   "False positive — no violation present",
   "Duplicate alert — already handled",
-  "Outside barangay jurisdiction",
-  "Handled before an officer was assigned",
-  "Technical glitch / sensor error",
   "Other",
 ];
 
